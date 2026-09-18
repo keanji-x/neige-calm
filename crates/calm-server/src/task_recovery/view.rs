@@ -7,7 +7,7 @@ use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, TrackId};
-use crate::model::{Task, TaskStatus};
+use crate::model::{Task, TaskStatus, Track};
 use calm_types::task_recovery::{
     TaskAttemptAllocation, TaskAttemptOrigin, TaskAttemptView, TaskRecoveryCapability,
     TaskRecoveryView,
@@ -65,6 +65,15 @@ pub(crate) async fn task_recovery_view_tx(
         .map(|(view, _)| view)
 }
 
+/// A refused admission together with the Track row admission itself read
+/// under the transaction. Guidance derives lifecycle wording from this
+/// Track, never from a snapshot resolved before the transaction opened.
+#[derive(Clone, Debug)]
+pub(crate) struct RefusedRecovery {
+    pub refusal: RecoveryRefusal,
+    pub track: Track,
+}
+
 /// The view plus the typed admission refusal behind a refused `recovery`
 /// capability, for projections that add guidance without re-deriving the
 /// code from the wire string. `None` when recovery is allowed or the
@@ -75,7 +84,7 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
     key: &str,
     actor: &ActorId,
     task_budget_default: i64,
-) -> Result<(TaskRecoveryView, Option<RecoveryRefusal>)> {
+) -> Result<(TaskRecoveryView, Option<RefusedRecovery>)> {
     let track = crate::track_lifecycle::track_get_tx(tx, track_id).await?;
     let event = Event::PlanUpdated {
         track_id: track.id.clone(),
@@ -202,7 +211,10 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
                         code: refused.code.as_str().into(),
                         reason: refused.reason.clone(),
                     };
-                    refusal = Some(refused);
+                    refusal = Some(RefusedRecovery {
+                        refusal: refused,
+                        track: track.clone(),
+                    });
                     capability
                 }
                 Err(AdmissionError::Other(error)) => return Err(error),

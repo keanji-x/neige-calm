@@ -327,7 +327,14 @@ async fn check_constraint_tx(
 /// fence: a PTY leader exit, terminal session state or released lease does not
 /// prove descendants stopped writing, so once a worker was prepared the same
 /// key is never recoverable; the way forward is a new task on the retained tree.
-async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Admission<()> {
+///
+/// Actor-independent and read-only: `calm.plan.list` guidance re-evaluates it
+/// behind an actor-dependent policy refusal so a continuation it advertises is
+/// one the kernel would admit.
+pub(crate) async fn require_recoverable_predecessor_tx(
+    tx: &mut Tx<'_>,
+    task: &Task,
+) -> Admission<()> {
     // Keyed Operation rows are permanent (migration 0093). Prepared targets and
     // tx_output remain evidence even if worker cards/sessions were later deleted.
     // Read every operation sharing the execution key, including a foreign kind
@@ -356,14 +363,16 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Adm
             .await;
     }
 
-    if task.worker_card_id.is_some()
-        || task.gate_attempt != 0
-        || task.gate_pid.is_some()
-        || task.gate_result_json.is_some()
-    {
+    if task.worker_card_id.is_some() {
         return Err(refuse(
             RecoveryRefusalCode::PredecessorNotQuiescent,
-            ORDINARY_WORKER_NO_STOP_PROOF,
+            ORDINARY_WORKER_PREPARED_NO_STOP_PROOF,
+        ));
+    }
+    if task.gate_attempt != 0 || task.gate_pid.is_some() || task.gate_result_json.is_some() {
+        return Err(refuse(
+            RecoveryRefusalCode::PredecessorNotQuiescent,
+            VERIFICATION_EFFECTS_NO_STOP_PROOF,
         ));
     }
     if task
@@ -374,7 +383,7 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Adm
     {
         return Err(refuse(
             RecoveryRefusalCode::PredecessorNotQuiescent,
-            ORDINARY_WORKER_NO_STOP_PROOF,
+            FAILURE_AFTER_PREPARATION_NO_STOP_PROOF,
         ));
     }
     for operation in operations {
@@ -417,10 +426,21 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Adm
     Ok(())
 }
 
-/// Reason for an ordinary (non-isolated) worker that was prepared before it
-/// failed. Same-key recovery is permanently unavailable; the continuation is
-/// a new task key that starts from the retained worktree.
-pub(crate) const ORDINARY_WORKER_NO_STOP_PROOF: &str = "ordinary workers have no stop proof; same-key recovery is unavailable once a worker was prepared. Continue by declaring a new task (new key) that starts from the retained worktree.";
+/// Reason for an ordinary (non-isolated) worker that was prepared before the
+/// attempt failed (`worker_card_id` is set). Same-key recovery is permanently
+/// unavailable; the continuation is a new task key. `calm.plan.list`
+/// guidance carries the retained worktree path when a lease exists.
+pub(crate) const ORDINARY_WORKER_PREPARED_NO_STOP_PROOF: &str = "an ordinary worker was prepared for this key and has no stop proof; same-key recovery is unavailable. Continue by declaring a new task (new key).";
+
+/// Reason when verification effects (`gate_attempt`, `gate_pid`,
+/// `gate_result_json`) exist for the key but no worker card was prepared:
+/// a detached verifier descendant may still write.
+pub(crate) const VERIFICATION_EFFECTS_NO_STOP_PROOF: &str = "verification effects were recorded for this key with no worker stop proof; same-key recovery is unavailable. Continue by declaring a new task (new key).";
+
+/// Reason when the failure is not a preparation failure yet neither a worker
+/// card nor verification effects remain (the card row may have been deleted):
+/// the kernel cannot prove nothing was prepared.
+pub(crate) const FAILURE_AFTER_PREPARATION_NO_STOP_PROOF: &str = "the failure was recorded after preparation could have started and the kernel holds no worker stop proof; same-key recovery is unavailable. Continue by declaring a new task (new key).";
 
 #[derive(sqlx::FromRow)]
 struct PredecessorOperation {

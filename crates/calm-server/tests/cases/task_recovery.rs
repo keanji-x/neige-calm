@@ -807,36 +807,38 @@ async fn task_recovery_of_legacy_attempt_states_its_actual_executor() {
     assert_eq!(replay, receipt);
 }
 
-/// #1727 S3 — an ordinary (shared) codex worker that timed out after it was
-/// prepared: the view names the way out, and `calm.plan.list` (MCP only)
-/// carries `recovery.guidance` with the retained worktree. The REST
-/// `TaskRecoveryView` stays `{allowed, code, reason}`.
-#[tokio::test]
-async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task() {
-    let boot = boot().await;
-    declare(
-        &boot,
-        json!({"key": "b", "kind": "codex", "goal": "do b", "depends_on": [],
-            "no_gate_reason": "ordinary worker timeout fixture",
-            "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "ready": true}),
-    )
-    .await;
-    let b = current(&boot, "b").await;
+fn ordinary_codex_declaration(key: &str) -> Value {
+    json!({"key": key, "kind": "codex", "goal": format!("do {key}"), "depends_on": [],
+        "no_gate_reason": "ordinary worker timeout fixture",
+        "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "ready": true})
+}
+
+/// The current attempt of `key` is claimed, prepared on `boot.worker_card_id`
+/// with a held workspace lease, then hit by the scheduler's liveness timeout
+/// (the same `task_fail_from_worker_tx(.., Kernel, "worker-timeout", ..)`
+/// `fail_task_liveness_timeout` issues), which releases the lease but keeps
+/// the directory. Returns the failed row and the lease path; the returned
+/// directory keeps the path alive.
+async fn time_out_prepared_ordinary_worker(
+    boot: &Boot,
+    key: &str,
+) -> (Task, String, tempfile::TempDir) {
+    let task = current(boot, key).await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let card_id = boot.worker_card_id.as_str().to_string();
     let track_id = boot.track_id.as_str().to_string();
-    // The worker's workspace lease, held while it ran; the timeout sweep
-    // releases it but keeps the directory.
     let lease_dir = tempfile::Builder::new()
         .prefix("neige-1727-lease-")
         .tempdir()
         .unwrap();
     let lease_path = lease_dir.path().display().to_string();
     let now = calm_server::model::now_ms();
+    let lease_id = format!("lease-1727-{}", task.id);
     sqlx::query(
         "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms, boot_id, created_at_ms, updated_at_ms) \
-         VALUES ('lease-1727', ?1, ?2, ?3, 'held', 'test-owner', ?4, NULL, ?5, ?5)",
+         VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6)",
     )
+    .bind(&lease_id)
     .bind(&card_id)
     .bind(&track_id)
     .bind(&lease_path)
@@ -845,32 +847,35 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
     .execute(&pool)
     .await
     .unwrap();
-    // Claim, run on the worker card, then the scheduler's liveness timeout:
-    // the same `task_fail_from_worker_tx(.., Kernel, "worker-timeout", ..)`
-    // `fail_task_liveness_timeout` issues.
     let monitor = TaskContextMonitor::new(
         boot.repo.clone(),
         boot.ctx.events.clone(),
         boot.ctx.write.clone(),
     );
-    let closure = monitor.resolve_task_closure(&track_id, "b").await.unwrap();
+    let closure = monitor.resolve_task_closure(&track_id, key).await.unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     assert_eq!(
-        task_claim_pending_tx(&mut tx, &b.id, 10, &closure.refs, closure.closure_truncated)
-            .await
-            .unwrap(),
+        task_claim_pending_tx(
+            &mut tx,
+            &task.id,
+            10,
+            &closure.refs,
+            closure.closure_truncated
+        )
+        .await
+        .unwrap(),
         1
     );
     sqlx::query("UPDATE tasks SET status='running', worker_card_id=?1 WHERE id=?2")
         .bind(&card_id)
-        .bind(&b.id)
+        .bind(&task.id)
         .execute(&mut *tx)
         .await
         .unwrap();
     assert_eq!(
         task_fail_from_worker_tx(
             &mut tx,
-            &b.id,
+            &task.id,
             &track_id,
             TaskReporter::Kernel,
             "worker-timeout",
@@ -880,14 +885,17 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
         .unwrap(),
         1
     );
-    sqlx::query("UPDATE workspace_leases SET state='released', released_at_ms=?1 WHERE lease_id='lease-1727'")
-        .bind(now + 1)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE workspace_leases SET state='released', released_at_ms=?1 WHERE lease_id=?2",
+    )
+    .bind(now + 1)
+    .bind(&lease_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
-    let failed = current(&boot, "b").await;
-    assert_eq!(failed.id, b.id);
+    let failed = current(boot, key).await;
+    assert_eq!(failed.id, task.id);
     assert_eq!(
         failed
             .status_detail
@@ -895,6 +903,49 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
             .map(calm_server::db::sqlite::status_detail_class),
         Some("worker-timeout")
     );
+    (failed, lease_path, lease_dir)
+}
+
+fn listed_entry(list: &Value, key: &str) -> Value {
+    list["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["key"] == key)
+        .unwrap()
+        .clone()
+}
+
+async fn append_worktree_event(boot: &Boot, event: calm_server::event::Event) {
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    calm_server::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &calm_server::ids::ActorId::KernelDispatcher,
+        &calm_server::event::EventScope::Card {
+            card: boot.worker_card_id.clone(),
+            track: boot.track_id.clone(),
+            area: boot.area_id.clone(),
+        },
+        None,
+        &event,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// #1727 S3 — an ordinary (shared) codex worker that timed out after it was
+/// prepared: the view names the way out, and `calm.plan.list` (MCP only)
+/// carries `recovery.guidance` with the retained worktree. The REST
+/// `TaskRecoveryView` stays `{allowed, code, reason}`.
+#[tokio::test]
+async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task() {
+    let boot = boot().await;
+    declare(&boot, ordinary_codex_declaration("b")).await;
+    let card_id = boot.worker_card_id.as_str().to_string();
+    let track_id = boot.track_id.as_str().to_string();
+    let (_failed, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
 
     let view = calm_server::task_recovery::task_recovery_view(
         boot.repo.as_ref(),
@@ -913,15 +964,7 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
         view.recovery.reason
     );
 
-    let entry = |list: &Value| {
-        list["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|task| task["key"] == "b")
-            .unwrap()
-            .clone()
-    };
+    let entry = |list: &Value| listed_entry(list, "b");
     let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
@@ -961,25 +1004,16 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
     assert_eq!(summary_guidance["retained"]["workspace_path"], lease_path);
 
     // A kernel-recorded commit for that card names the retained commit + branch.
-    let mut tx = pool.begin().await.unwrap();
-    calm_server::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &calm_server::ids::ActorId::KernelDispatcher,
-        &calm_server::event::EventScope::Track {
-            track: boot.track_id.clone(),
-            area: boot.area_id.clone(),
-        },
-        None,
-        &calm_server::event::Event::WorktreeCommitted {
+    append_worktree_event(
+        &boot,
+        calm_server::event::Event::WorktreeCommitted {
             track_id: boot.track_id.clone(),
             card_id: boot.worker_card_id.clone(),
             commit_sha: "abc123def".into(),
             branch: "neige/recorded-branch".into(),
         },
     )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    .await;
     let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
@@ -1001,4 +1035,215 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
             .collect::<Vec<_>>(),
         vec!["allowed", "code", "reason"]
     );
+}
+
+/// #1727 S3 fix G1 — admission checks the actor-dependent policy before the
+/// actor-independent predecessor fence. A generation-2 auto-declare Planner
+/// task whose recovered ordinary worker timed out is refused to the Planner
+/// with `recovery_limit_reached`, but a User recovery would hit the permanent
+/// fence next: guidance must advertise `new_task`, naming both conditions,
+/// never a `user_recovery` the kernel refuses.
+#[tokio::test]
+async fn task_recovery_guidance_does_not_advertise_a_user_recovery_the_predecessor_fence_refuses() {
+    let boot = boot().await;
+    declare(&boot, ordinary_codex_declaration("b")).await;
+    let first = current(&boot, "b").await;
+    finish(&boot, &first, false).await;
+    recover(&boot, &first, "planner-first").await;
+    let (second, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
+    assert_ne!(second.id, first.id);
+
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let entry = listed_entry(&list, "b");
+    assert_eq!(entry["generation"], 2);
+    let recovery = &entry["recovery"];
+    assert_eq!(recovery["allowed"], false);
+    assert_eq!(recovery["code"], "recovery_limit_reached", "{recovery}");
+    let guidance = &recovery["guidance"];
+    assert_eq!(guidance["supported_continuation"], "new_task", "{guidance}");
+    let condition = guidance["blocking_condition"].as_str().unwrap();
+    assert!(
+        condition.contains("User recovery") && condition.contains("no stop proof"),
+        "{condition}"
+    );
+    assert_eq!(guidance["retained"]["workspace_path"], lease_path);
+
+    // The User continuation the policy refusal alone would suggest is what
+    // the kernel refuses next, independently of the actor.
+    let user_view = calm_server::task_recovery::task_recovery_view(
+        boot.repo.as_ref(),
+        boot.track_id.as_str(),
+        "b",
+        calm_server::ids::ActorId::User,
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+    )
+    .await
+    .unwrap();
+    assert!(!user_view.recovery.allowed);
+    assert_eq!(user_view.recovery.code, "predecessor_not_quiescent");
+}
+
+/// #1727 S3 fix G2 — `retained` follows the kernel's worktree events: a
+/// `worktree.removed` newer than the last `worktree.provisioned` means the
+/// directory and slice branch are gone (`git branch -D`), so only `removed`
+/// and the commit object survive; a later re-provision brings the path back.
+#[tokio::test]
+async fn task_recovery_guidance_retained_follows_worktree_removal_and_reprovision() {
+    use calm_server::event::Event;
+    let boot = boot().await;
+    declare(&boot, ordinary_codex_declaration("b")).await;
+    let (_failed, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
+    let retained = || async {
+        let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+            .await
+            .unwrap();
+        listed_entry(&list, "b")["recovery"]["guidance"]["retained"].clone()
+    };
+    let track_id = boot.track_id.as_str().to_string();
+    let card_id = boot.worker_card_id.as_str().to_string();
+    let slice_branch = format!("neige/{track_id}/{card_id}");
+    assert_eq!(
+        retained().await,
+        json!({"workspace_path": lease_path, "branch": slice_branch})
+    );
+
+    // Removed with no provision recorded: nothing on disk is advertised.
+    append_worktree_event(
+        &boot,
+        Event::WorktreeRemoved {
+            track_id: boot.track_id.clone(),
+            card_id: boot.worker_card_id.clone(),
+            path: lease_path.clone(),
+        },
+    )
+    .await;
+    assert_eq!(retained().await, json!({"removed": true}));
+
+    // Re-provisioned after the removal (provisioned id > removed id).
+    append_worktree_event(
+        &boot,
+        Event::WorktreeProvisioned {
+            track_id: boot.track_id.clone(),
+            card_id: boot.worker_card_id.clone(),
+            path: lease_path.clone(),
+        },
+    )
+    .await;
+    assert_eq!(
+        retained().await,
+        json!({"workspace_path": lease_path, "branch": slice_branch})
+    );
+
+    // A kernel-recorded commit, then removal again: the object survives.
+    append_worktree_event(
+        &boot,
+        Event::WorktreeCommitted {
+            track_id: boot.track_id.clone(),
+            card_id: boot.worker_card_id.clone(),
+            commit_sha: "abc123def".into(),
+            branch: "neige/recorded-branch".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        retained().await,
+        json!({"workspace_path": lease_path, "branch": "neige/recorded-branch", "last_commit": "abc123def"})
+    );
+    append_worktree_event(
+        &boot,
+        Event::WorktreeRemoved {
+            track_id: boot.track_id.clone(),
+            card_id: boot.worker_card_id.clone(),
+            path: lease_path.clone(),
+        },
+    )
+    .await;
+    assert_eq!(
+        retained().await,
+        json!({"removed": true, "last_commit": "abc123def"})
+    );
+}
+
+/// #1727 S3 fix G4/G5 — a prepared terminal worker has no workspace lease:
+/// `retained` is `{}` in full mode and survives as `{}` in summary mode, and
+/// the reason never mentions a worktree it does not have.
+#[tokio::test]
+async fn task_recovery_summary_keeps_an_empty_retained_object_for_a_terminal_worker() {
+    let boot = boot().await;
+    declare(&boot, declaration("b", &[])).await;
+    let b = current(&boot, "b").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE id=?2")
+        .bind(boot.worker_card_id.as_str())
+        .bind(&b.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    finish(&boot, &b, false).await;
+    for detail in ["full", "summary"] {
+        let list = call_tool(
+            &boot,
+            "calm.plan.list",
+            planner_identity(&boot),
+            json!({"detail": detail, "key": "b"}),
+        )
+        .await
+        .unwrap();
+        let recovery = &listed_entry(&list, "b")["recovery"];
+        assert_eq!(recovery["code"], "predecessor_not_quiescent", "{detail}");
+        assert!(
+            !recovery["reason"].as_str().unwrap().contains("worktree"),
+            "{detail}: {}",
+            recovery["reason"]
+        );
+        let guidance = &recovery["guidance"];
+        assert_eq!(guidance["supported_continuation"], "new_task", "{detail}");
+        assert_eq!(guidance["retained"], json!({}), "{detail}: {guidance}");
+        assert!(
+            guidance["blocking_condition"]
+                .as_str()
+                .unwrap()
+                .contains("An ordinary worker was prepared"),
+            "{detail}: {guidance}"
+        );
+    }
+}
+
+/// #1727 S3 fix G5 — verification effects without a worker card: the reason
+/// and the guidance say so instead of claiming a worker was prepared.
+#[tokio::test]
+async fn task_recovery_guidance_names_verification_effects_when_no_worker_was_prepared() {
+    let boot = boot().await;
+    declare(&boot, declaration("b", &[])).await;
+    let b = current(&boot, "b").await;
+    finish(&boot, &b, false).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET gate_attempt=1 WHERE id=?1")
+        .bind(&b.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let recovery = &listed_entry(&list, "b")["recovery"];
+    assert_eq!(recovery["code"], "predecessor_not_quiescent");
+    assert!(
+        recovery["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("verification effects were recorded"),
+        "{}",
+        recovery["reason"]
+    );
+    let guidance = &recovery["guidance"];
+    assert_eq!(guidance["supported_continuation"], "new_task");
+    let condition = guidance["blocking_condition"].as_str().unwrap();
+    assert!(
+        !condition.contains("worker was prepared") && condition.contains("Verification effects"),
+        "{condition}"
+    );
+    assert_eq!(guidance["retained"], json!({}));
 }

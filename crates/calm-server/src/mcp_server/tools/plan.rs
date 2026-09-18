@@ -850,10 +850,12 @@ async fn plan_list(
                         entry["worktree"] = serde_json::to_value(facts)?;
                     }
                     // MCP-only: a refused recovery names its way out. The REST
-                    // wire type is unchanged; `guidance` exists only here.
-                    if let (Some(refusal), Some(task)) = (&refusal, &task) {
+                    // wire type is unchanged; `guidance` exists only here. The
+                    // refusal carries the Track admission read in this tx; the
+                    // `track` resolved before the tx is never consulted here.
+                    if let (Some(refused), Some(task)) = (&refusal, &task) {
                         entry["recovery"]["guidance"] =
-                            recovery_guidance::guidance_tx(tx, &track, task, refusal).await?;
+                            recovery_guidance::guidance_tx(tx, task, refused).await?;
                     }
                     tasks_json.push(if args.summary { list::summary(&entry) } else { entry });
                     after_key = Some(allocation.key);
