@@ -1,150 +1,52 @@
-//! `calm.plan.list` only: the way out of a refused recovery, computed from the
-//! typed refusal code plus what the failed attempt retained on disk. Not part
-//! of the REST `TaskRecoveryView` wire type.
+//! `calm.plan.list` only: the way out of a refused recovery. The refusing
+//! site decided the continuation and the sentence; this module carries
+//! them through and adds what the failed attempt retained on disk. Not
+//! part of the REST `TaskRecoveryView` wire type.
 use crate::error::Result;
-use crate::model::{Task, Track};
-use crate::task_recovery::{AdmissionError, RecoveryRefusalCode, RefusedRecovery};
+use crate::model::Task;
+use crate::task_recovery::{AdmissionError, RefusalSite, RefusedRecovery};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
 type Tx<'a> = Transaction<'a, Sqlite>;
 
-/// The single continuation the kernel supports for a refused recovery.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SupportedContinuation {
-    /// Declare a new task (new key); never retry the same key.
-    NewTask,
-    /// Only an explicit User recovery can allocate another execution.
-    UserRecovery,
-    /// The isolated predecessor is still stopping; its settlement briefing
-    /// re-opens the decision.
-    WaitForSettlement,
-    /// No kernel-supported continuation for this refusal.
-    None,
-}
-
-impl SupportedContinuation {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::NewTask => "new_task",
-            Self::UserRecovery => "user_recovery",
-            Self::WaitForSettlement => "wait_for_settlement",
-            Self::None => "none",
-        }
-    }
-}
-
-/// How the predecessor fence applies to this attempt: which stop proof is
-/// missing decides both the continuation and what the sentence may claim.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PredecessorShape {
-    /// The attempt selected the isolated codex route.
-    pub isolated: bool,
-    /// An ordinary worker card was prepared (`worker_card_id` is set).
-    pub worker_prepared: bool,
-}
-
-/// Total over `RecoveryRefusalCode`: a new code cannot ship without naming
-/// its continuation. `shape` distinguishes the predecessor fences.
-pub(crate) fn continuation_for(
-    code: RecoveryRefusalCode,
-    shape: PredecessorShape,
-    track: &Track,
-) -> (SupportedContinuation, String) {
-    match code {
-        RecoveryRefusalCode::PredecessorNotQuiescent if shape.isolated => (
-            SupportedContinuation::WaitForSettlement,
-            "The failed isolated execution has no confirmed namespace stop; recovery re-opens only if the kernel later records the namespace stop and delivers its settlement briefing; some isolated denials are permanent (ambiguous operations or verification effects).".into(),
-        ),
-        RecoveryRefusalCode::PredecessorNotQuiescent if shape.worker_prepared => (
-            SupportedContinuation::NewTask,
-            "An ordinary worker was prepared for this key and has no stop proof; same-key recovery is permanently unavailable.".into(),
-        ),
-        RecoveryRefusalCode::PredecessorNotQuiescent => (
-            SupportedContinuation::NewTask,
-            "Verification effects or a post-preparation failure were recorded for this key with no worker stop proof; same-key recovery is permanently unavailable.".into(),
-        ),
-        RecoveryRefusalCode::UserAuthorizationRequired => (
-            SupportedContinuation::UserRecovery,
-            "Planner recovery is not authorized for this task; an explicit User recovery is required.".into(),
-        ),
-        RecoveryRefusalCode::RecoveryLimitReached => (
-            SupportedContinuation::UserRecovery,
-            "The bounded Planner recovery for this key was consumed; only an explicit User recovery can allocate another execution.".into(),
-        ),
-        RecoveryRefusalCode::TrackNotReady => (
-            SupportedContinuation::None,
-            format!(
-                "Track lifecycle is {:?}; it does not schedule work, so recovery cannot be admitted until the Track is working again.",
-                track.lifecycle
-            ),
-        ),
-        RecoveryRefusalCode::NotAuthorized => (
-            SupportedContinuation::None,
-            "The requesting actor may not recover this task.".into(),
-        ),
-        RecoveryRefusalCode::UnsupportedSpawn => (
-            SupportedContinuation::None,
-            "Child-task routes are not recoverable.".into(),
-        ),
-        RecoveryRefusalCode::DeclarationWithdrawn => (
-            SupportedContinuation::None,
-            "The task declaration was withdrawn, is not ready, or is invalid; same-contract recovery has nothing current to honour.".into(),
-        ),
-        RecoveryRefusalCode::MissingFrozenContract => (
-            SupportedContinuation::None,
-            "The failed execution carries no complete frozen contract; same-contract recovery is unavailable.".into(),
-        ),
-        RecoveryRefusalCode::ContractChanged => (
-            SupportedContinuation::None,
-            "The frozen contract no longer matches the current report or its inputs; same-contract recovery is unavailable.".into(),
-        ),
-        RecoveryRefusalCode::RecoveryLineageMissing => (
-            SupportedContinuation::None,
-            "The accepted recovery lost its allocation or predecessor row.".into(),
-        ),
-    }
-}
-
 /// `{ blocking_condition, supported_continuation, retained }` for a refused
-/// recovery of `task` (the failed current attempt). The Track comes from the
-/// refusal: the row admission read under this transaction.
+/// recovery of `task` (the failed current attempt). `blocking_condition` is
+/// the refusal's reason sentence and `supported_continuation` the
+/// continuation its site decided; nothing is re-derived from the code or
+/// the task shape. The Track comes from the refusal: the row admission read
+/// under this transaction.
 ///
 /// Admission checks the actor-dependent policy before the actor-independent
-/// predecessor fence, so a policy refusal (`user_recovery`, lifecycle) can
-/// mask a permanent same-key fence. Guidance re-runs that fence read-only
-/// and, when it refuses, advertises the fence's continuation instead of a
-/// User recovery the kernel would refuse next.
+/// contract and predecessor checks, so a policy refusal (`user_recovery`,
+/// lifecycle) can mask a refusal any actor would meet next. Behind one of
+/// the three policy sites, guidance re-runs those checks read-only and, when
+/// they refuse, advertises THAT refusal's continuation and appends its
+/// sentence; `recovery.code` stays what admission returned.
 pub(crate) async fn guidance_tx(
     tx: &mut Tx<'_>,
     task: &Task,
     refused: &RefusedRecovery,
 ) -> Result<Value> {
-    let shape = PredecessorShape {
-        isolated: crate::isolated_codex::selected(task)?,
-        worker_prepared: task.worker_card_id.is_some(),
-    };
-    let code = refused.refusal.code;
-    let (mut continuation, mut blocking_condition) = continuation_for(code, shape, &refused.track);
+    let mut continuation = refused.refusal.continuation;
+    let mut blocking_condition = refused.refusal.reason.clone();
     if matches!(
-        code,
-        RecoveryRefusalCode::UserAuthorizationRequired
-            | RecoveryRefusalCode::RecoveryLimitReached
-            | RecoveryRefusalCode::TrackNotReady
+        refused.refusal.site,
+        RefusalSite::PlannerOutsideAutoDeclare
+            | RefusalSite::PlannerRetryLimit
+            | RefusalSite::TrackNotReady
     ) {
-        match crate::task_recovery::require_recoverable_predecessor_tx(tx, task).await {
-            Ok(()) => {}
-            Err(AdmissionError::Refused(fence))
-                if fence.code == RecoveryRefusalCode::PredecessorNotQuiescent =>
-            {
-                let (fenced, fence_condition) = continuation_for(fence.code, shape, &refused.track);
-                continuation = fenced;
+        match crate::task_recovery::admit_contract_and_predecessor_tx(tx, &refused.track, task)
+            .await
+        {
+            Ok(_) => {}
+            Err(AdmissionError::Refused(tail)) => {
+                continuation = tail.continuation;
                 blocking_condition = format!(
-                    "{blocking_condition} Independently of who asks, the same key is also blocked: {}",
-                    lowercase_first(&fence_condition)
+                    "{blocking_condition} Independently of who asks: {}",
+                    tail.reason
                 );
             }
-            Err(AdmissionError::Refused(_)) => {}
             Err(AdmissionError::Other(error)) => return Err(error),
         }
     }
@@ -157,14 +59,6 @@ pub(crate) async fn guidance_tx(
         "supported_continuation": continuation.as_str(),
         "retained": retained,
     }))
-}
-
-fn lowercase_first(sentence: &str) -> String {
-    let mut chars = sentence.chars();
-    match chars.next() {
-        Some(first) => first.to_lowercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 /// What the failed attempt's worker card left behind, keyed by the card:

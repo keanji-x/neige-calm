@@ -1,11 +1,14 @@
 //! Every admission refusal site, driven through the real admission function
-//! with a fixture that trips exactly that site, asserts its typed code. No
-//! assertion here reads the message text.
+//! with a fixture that trips exactly that site, asserts the `(site, code,
+//! kind, continuation)` it names. No assertion here reads the message text.
 use super::admission;
 use super::launch_test_support::{
     RecoveryFixture, initial_claimed_task, initial_claimed_task_among, recovered_claimed_task,
 };
-use super::refusal::{AdmissionError, RecoveryRefusalCode as Code, RefusalKind as Kind};
+use super::refusal::{
+    AdmissionError, RecoveryRefusal, RecoveryRefusalCode as Code, RefusalKind as Kind,
+    RefusalSite as Site, SupportedContinuation as Next,
+};
 use crate::db::prelude::*;
 use crate::db::sqlite::{SqlxRepo, TaskReporter, begin_immediate_tx, task_fail_from_worker_tx};
 use crate::event::{Event, EventBus, EventScope};
@@ -21,6 +24,14 @@ const PLANNER: &str = calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTH
 
 fn declaration(declared_by: &str) -> Value {
     json!({"key":"b","kind":"terminal","command":"true","ready":true,"declared_by":declared_by})
+}
+
+/// A user-owned declaration that selects the isolated codex route: the
+/// predecessor fence then consults the isolated operation's stop record.
+fn isolated_declaration() -> Value {
+    json!({"key":"b","kind":"codex","goal":"Write result.txt and report.","ready":true,
+        "declared_by":"user","no_gate_reason":"Isolated fixture; no machine verification.",
+        "context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}})
 }
 
 /// A file-delivery producer/consumer pair (the shape `prompts/planner.md`
@@ -207,18 +218,44 @@ async fn sql(fx: &Fx, statement: &str, binds: &[&str]) {
         .unwrap_or_else(|error| panic!("{statement}: {error}"));
 }
 
-async fn insert_operation(fx: &Fx, kind: &str, phase: &str, tx_output: Option<&str>) {
+/// Inserts a keyed operation row `op-{kind}-{phase}` and returns its id.
+async fn insert_operation(fx: &Fx, kind: &str, phase: &str, tx_output: Option<&str>) -> String {
+    insert_operation_with(fx, kind, phase, tx_output, None).await
+}
+
+async fn insert_operation_with(
+    fx: &Fx,
+    kind: &str,
+    phase: &str,
+    tx_output: Option<&str>,
+    compensation_state: Option<&str>,
+) -> String {
     let pool = fx.repo.sqlite_pool().unwrap();
-    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,tx_output_json,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,?3,'h','track',?4,'{}','{}',?5,?6,1,1)")
-        .bind(format!("op-{kind}-{phase}"))
+    let id = format!("op-{kind}-{phase}");
+    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,tx_output_json,compensation_state,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,?3,'h','track',?4,'{}','{}',?5,?6,?7,1,1)")
+        .bind(&id)
         .bind(kind)
         .bind(&fx.fixture.task.id)
         .bind(&fx.track_id)
         .bind(phase)
         .bind(tx_output)
+        .bind(compensation_state)
         .execute(&pool)
         .await
         .unwrap();
+    id
+}
+
+/// The isolated fence, driven directly with an operation id (admission only
+/// ever passes the single keyed isolated operation's id).
+async fn require_stopped(fx: &Fx, op_id: &str) -> Result<(), AdmissionError> {
+    let pool = fx.repo.sqlite_pool().unwrap();
+    let mut tx = begin_immediate_tx(&pool).await.unwrap();
+    let task = crate::db::sqlite::task_get_tx(&mut tx, &fx.fixture.task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    crate::isolated_codex::recovery::require_stopped_tx(&mut tx, &task, op_id).await
 }
 
 async fn frozen_refs(fx: &Fx) -> Vec<Value> {
@@ -390,10 +427,10 @@ async fn authorize(fx: &Fx, actor: ActorId) -> Result<(), AdmissionError> {
     admission::authorize_tx(&mut tx, &actor, &scope, &event).await
 }
 
-fn refused<T: std::fmt::Debug>(site: &str, outcome: Result<T, AdmissionError>) -> (Code, Kind) {
+fn refused<T: std::fmt::Debug>(site: Site, outcome: Result<T, AdmissionError>) -> RecoveryRefusal {
     match outcome {
-        Err(AdmissionError::Refused(refusal)) => (refusal.code, refusal.kind),
-        other => panic!("{site}: expected a typed refusal, got {other:?}"),
+        Err(AdmissionError::Refused(refusal)) => refusal,
+        other => panic!("{site:?}: expected a typed refusal, got {other:?}"),
     }
 }
 
@@ -412,715 +449,910 @@ async fn admissible_baselines_pass_so_each_case_trips_exactly_one_site() {
         .expect("a freshly recovered claimed attempt passes its recheck");
 }
 
-#[tokio::test]
-async fn every_refusal_site_names_its_typed_code() {
-    let planner = || ActorId::AiPlanner("planner".into());
-    let user = || ActorId::User;
-    let mut seen = Vec::new();
-    for site in [
-        "authorize_tx: actor is not a User or Planner",
-        "authorize_tx: Planner session cannot be resolved",
-        "recovery_policy: track lifecycle does not schedule",
-        "recovery_policy: child-task route",
-        "recovery_policy: Planner asks outside auto-declare (user-owned; declare-and-wait)",
-        "recovery_policy: Planner retry limit consumed",
-        "admit_recovery_tx: file-delivery input contract cannot be honoured",
-        "claim_constraint_tx: frozen context truncated",
-        "claim_constraint_tx: no frozen context",
-        "claim_constraint_tx: malformed frozen context",
-        "admit_recovery_tx: constraint shape invalid (no root reference)",
-        "declaration_tx: declaration missing for key",
-        "declaration_tx: declaration not ready",
-        "declaration_tx: declaration has validation errors",
-        "declaration_tx: declare-and-wait release withdrawn",
-        "check_constraint_tx: constraint shape invalid at the inner check",
-        "check_constraint_tx: route or author changed",
-        "check_constraint_tx: frozen context track missing",
-        "check_constraint_tx: context moved outside its area",
-        "check_constraint_tx: frozen context report missing",
-        "check_constraint_tx: frozen context block missing",
-        "check_constraint_tx: root declaration identity changed",
-        "check_constraint_tx: root hash changed",
-        "require_recoverable_predecessor_tx: isolated with ambiguous verification effects",
-        "isolated_codex::recovery::require_stopped_tx: no confirmed namespace stop",
-        "require_recoverable_predecessor_tx: ordinary worker was prepared",
-        "require_recoverable_predecessor_tx: verification effects without a worker card",
-        "require_recoverable_predecessor_tx: failure was not a spawn failure",
-        "require_recoverable_predecessor_tx: operation has uncertain external effects",
-        "check_recovery_attempt_tx: allocation missing",
-        "check_recovery_attempt_tx: predecessor row missing",
-        "check_recovery_attempt_tx: accepted actor provenance unsupported",
-        "check_recovery_attempt_tx: track no longer schedules",
-    ] {
-        let (code, kind) = match site {
-            "authorize_tx: actor is not a User or Planner" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    refused(site, authorize(&fx, ActorId::KernelDispatcher).await)
-                })
-                .await
-            }
-            "authorize_tx: Planner session cannot be resolved" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    refused(
-                        site,
-                        authorize(&fx, ActorId::AiPlannerSession("missing-session".into())).await,
-                    )
-                })
-                .await
-            }
-            "recovery_policy: track lifecycle does not schedule" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tracks SET lifecycle='done' WHERE id=?1",
-                        &[&fx.track_id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "recovery_policy: child-task route" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tasks SET spawn='sub-wave' WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "recovery_policy: Planner asks outside auto-declare (user-owned; declare-and-wait)" => {
-                Box::pin(async {
-                    // One site, two conditions of its `||`: both fixtures must
-                    // agree on the code.
-                    let fx = failed_initial("user").await;
-                    let user_owned = refused(site, admit(&fx, planner(), 1).await);
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1",
-                        &[&fx.track_id],
-                    )
-                    .await;
-                    let declare_and_wait = refused(site, admit(&fx, planner(), 1).await);
-                    assert_eq!(user_owned, declare_and_wait, "{site}");
-                    user_owned
-                })
-                .await
-            }
-            "admit_recovery_tx: file-delivery input contract cannot be honoured" => {
-                Box::pin(async {
-                    // A consumer claimed without its frozen input binding row:
-                    // `file_delivery::require_recovery_input_tx` refuses.
-                    let fx =
-                        failed_initial_among(&[producer_declaration()], consumer_declaration())
-                            .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "recovery_policy: Planner retry limit consumed" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    refused(site, admit(&fx, planner(), 2).await)
-                })
-                .await
-            }
-            "claim_constraint_tx: frozen context truncated" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tasks SET context_closure_truncated=1 WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "claim_constraint_tx: no frozen context" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tasks SET claim_context_json=NULL WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "claim_constraint_tx: malformed frozen context" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        // The column CHECKs json_valid; malformed here means
-                        // valid JSON that is not a reference list.
-                        "UPDATE tasks SET claim_context_json='{}' WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "admit_recovery_tx: constraint shape invalid (no root reference)" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    set_frozen_refs(&fx, Vec::new()).await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "declaration_tx: declaration missing for key" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    let block_id = fx.fixture.block_id().to_string();
-                    edit_report_crdt(&fx.repo.sqlite_pool().unwrap(), &fx.track_id, |doc| {
-                        doc.delete_block(&block_id).unwrap();
-                    })
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "declaration_tx: declaration not ready" => {
-                Box::pin(async {
-                    let fx = failed_initial("user").await;
-                    fx.fixture.withdraw().await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "declaration_tx: declaration has validation errors" => {
-                Box::pin(async {
-                    let fx = failed_initial("user").await;
-                    // The REST door refuses an invalid payload; only the CRDT
-                    // authority can hold one (an older document, a merge).
-                    let mut invalid = fx.fixture.declaration();
-                    invalid["goal"] = json!("a terminal task must not carry a goal");
-                    let block_id = fx.fixture.block_id().to_string();
-                    edit_report_crdt(&fx.repo.sqlite_pool().unwrap(), &fx.track_id, |doc| {
-                        doc.upsert_block(
-                            Some(&block_id),
-                            "task",
-                            &calm_types::report_blocks::render_fence("task", &invalid),
-                        )
-                        .unwrap();
-                    })
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "declaration_tx: declare-and-wait release withdrawn" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1",
-                        &[&fx.track_id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "check_constraint_tx: constraint shape invalid at the inner check" => {
-                Box::pin(async {
-                    // Neither view-consulted entry can trip this site:
-                    // `admit_recovery_tx` validates the same constraint for
-                    // the same Track first, and a stored allocation is
-                    // validated by `AllocationRow::decode` (Internal, not a
-                    // refusal) before `check_recovery_attempt_tx` reads it.
-                    // `validate_frozen_contract_tx` reaches it with the code
-                    // erased to `CalmError`. Drive the real function with a
-                    // constraint that parses but fails `validate()`.
-                    let fx = failed_initial(PLANNER).await;
-                    let pool = fx.repo.sqlite_pool().unwrap();
-                    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-                    let track = crate::track_lifecycle::track_get_tx(
-                        &mut tx,
-                        &TrackId::from(fx.track_id.as_str()),
-                    )
-                    .await
-                    .unwrap();
-                    let constraint = calm_types::task_recovery::TaskRecoveryConstraint::V1 {
-                        refs: Vec::new(),
-                        spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
-                        declared_by: PLANNER.into(),
-                    };
-                    refused(
-                        site,
-                        admission::check_constraint_tx(&mut tx, &track, "b", &constraint).await,
-                    )
-                })
-                .await
-            }
-            "check_constraint_tx: route or author changed" => {
-                Box::pin(async {
-                    let fx = failed_initial("user").await;
-                    sql(
-                        &fx,
-                        "UPDATE tasks SET declared_by='spec' WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "check_constraint_tx: frozen context track missing" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    let mut refs = frozen_refs(&fx).await;
-                    refs.push(foreign_ref("no-such-track", "b_missing"));
-                    set_frozen_refs(&fx, refs).await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "check_constraint_tx: context moved outside its area" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    let (track, block) = other_track(&fx, true).await;
-                    let mut refs = frozen_refs(&fx).await;
-                    refs.push(foreign_ref(&track, &block));
-                    set_frozen_refs(&fx, refs).await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "check_constraint_tx: frozen context report missing" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    let (track, block) = other_track(&fx, false).await;
-                    sql(
-                        &fx,
-                        "DELETE FROM cards WHERE track_id=?1 AND kind='track-report'",
-                        &[&track],
-                    )
-                    .await;
-                    let mut refs = frozen_refs(&fx).await;
-                    refs.push(foreign_ref(&track, &block));
-                    set_frozen_refs(&fx, refs).await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "check_constraint_tx: frozen context block missing" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    let (track, _) = other_track(&fx, false).await;
-                    let mut refs = frozen_refs(&fx).await;
-                    refs.push(foreign_ref(&track, "b_missing"));
-                    set_frozen_refs(&fx, refs).await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "check_constraint_tx: root declaration identity changed" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    let other = prose_block(&fx, &fx.track_id).await;
-                    let mut refs = frozen_refs(&fx).await;
-                    let root = refs
-                        .iter_mut()
-                        .find(|reference| reference["is_root"] == true)
-                        .unwrap();
-                    root["block_id"] = json!(other);
-                    set_frozen_refs(&fx, refs).await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "check_constraint_tx: root hash changed" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    let mut refs = frozen_refs(&fx).await;
-                    let root = refs
-                        .iter_mut()
-                        .find(|reference| reference["is_root"] == true)
-                        .unwrap();
-                    root["hash"] = json!("f".repeat(64));
-                    set_frozen_refs(&fx, refs).await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "require_recoverable_predecessor_tx: isolated with ambiguous verification effects" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    insert_operation(
-                        &fx,
-                        crate::isolated_codex::OPERATION_KIND,
-                        "failed",
-                        Some("{}"),
-                    )
-                    .await;
-                    sql(
-                        &fx,
-                        "UPDATE tasks SET gate_attempt=1 WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "isolated_codex::recovery::require_stopped_tx: no confirmed namespace stop" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    insert_operation(
-                        &fx,
-                        crate::isolated_codex::OPERATION_KIND,
-                        "failed",
-                        Some("{}"),
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "require_recoverable_predecessor_tx: ordinary worker was prepared" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tasks SET worker_card_id='card-prepared' WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "require_recoverable_predecessor_tx: verification effects without a worker card" => {
-                Box::pin(async {
-                    // The shape `task_recovery_refuses_live_verifier_descendant_after_gate_exit`
-                    // produces: a gate ran, no worker card was ever prepared.
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tasks SET gate_attempt=1 WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "require_recoverable_predecessor_tx: failure was not a spawn failure" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    sql(
-                        &fx,
-                        "UPDATE tasks SET status_detail='worker-timeout' WHERE id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "require_recoverable_predecessor_tx: operation has uncertain external effects" => {
-                Box::pin(async {
-                    let fx = failed_initial(PLANNER).await;
-                    insert_operation(&fx, "terminal-worker", "spawn_started", None).await;
-                    refused(site, admit(&fx, user(), 1).await)
-                })
-                .await
-            }
-            "check_recovery_attempt_tx: allocation missing" => {
-                Box::pin(async {
-                    // tasks(id,track_id,key) references the allocation, so an
-                    // existing row always has one; only an unknown attempt id
-                    // reaches this site.
-                    let fx = recovered().await;
-                    refused(site, check_attempt_for(&fx, "no-such-attempt").await)
-                })
-                .await
-            }
-            "check_recovery_attempt_tx: predecessor row missing" => {
-                Box::pin(async {
-                    let fx = recovered().await;
-                    sql(
-                        &fx,
-                        "DELETE FROM tasks WHERE track_id=?1 AND key='b' AND id<>?2",
-                        &[&fx.track_id, &fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, check_attempt(&fx).await)
-                })
-                .await
-            }
-            "check_recovery_attempt_tx: accepted actor provenance unsupported" => {
-                Box::pin(async {
-                    // Allocations are immutable (trigger) and the service
-                    // boundary only ever records User/Planner actors, so the
-                    // only way to this site is a successor allocation inserted
-                    // with a provenance admission would never have accepted.
-                    let fx = recovered().await;
-                    // The insert trigger requires a current failed predecessor.
-                    fail_current(&fx).await;
-                    sql(
-                        &fx,
-                        "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,created_at_ms) \
-                         SELECT 'kernel-provenance', track_id, key, 3, \
-                           json_set(origin_json,'$.previous_attempt_id',attempt_id,'$.idempotency_key','kernel-provenance', \
-                             '$.request_fingerprint','kernel-provenance','$.actor',json('{\"kind\":\"Kernel\"}')), \
-                           created_at_ms \
-                         FROM task_attempt_allocations WHERE attempt_id=?1",
-                        &[&fx.fixture.task.id],
-                    )
-                    .await;
-                    refused(site, check_attempt_for(&fx, "kernel-provenance").await)
-                })
-                .await
-            }
-            "check_recovery_attempt_tx: track no longer schedules" => {
-                Box::pin(async {
-                    let fx = recovered().await;
-                    sql(
-                        &fx,
-                        "UPDATE tracks SET lifecycle='blocked' WHERE id=?1",
-                        &[&fx.track_id],
-                    )
-                    .await;
-                    refused(site, check_attempt(&fx).await)
-                })
-                .await
-            }
-            other => unreachable!("unlisted site {other}"),
-        };
-        seen.push((site, code, kind));
-    }
-    let expected: Vec<(&str, Code, Kind)> = vec![
-        (
-            "authorize_tx: actor is not a User or Planner",
-            Code::NotAuthorized,
-            Kind::Forbidden,
-        ),
-        (
-            "authorize_tx: Planner session cannot be resolved",
-            Code::NotAuthorized,
-            Kind::Forbidden,
-        ),
-        (
-            "recovery_policy: track lifecycle does not schedule",
-            Code::TrackNotReady,
-            Kind::Conflict,
-        ),
-        (
-            "recovery_policy: child-task route",
-            Code::UnsupportedSpawn,
-            Kind::Conflict,
-        ),
-        (
-            "recovery_policy: Planner asks outside auto-declare (user-owned; declare-and-wait)",
-            Code::UserAuthorizationRequired,
-            Kind::Forbidden,
-        ),
-        (
-            "recovery_policy: Planner retry limit consumed",
-            Code::RecoveryLimitReached,
-            Kind::Forbidden,
-        ),
-        (
-            "admit_recovery_tx: file-delivery input contract cannot be honoured",
-            Code::ContractChanged,
-            Kind::Conflict,
-        ),
-        (
-            "claim_constraint_tx: frozen context truncated",
-            Code::MissingFrozenContract,
-            Kind::Conflict,
-        ),
-        (
-            "claim_constraint_tx: no frozen context",
-            Code::MissingFrozenContract,
-            Kind::Conflict,
-        ),
-        (
-            "claim_constraint_tx: malformed frozen context",
-            Code::MissingFrozenContract,
-            Kind::Conflict,
-        ),
-        (
-            "admit_recovery_tx: constraint shape invalid (no root reference)",
-            Code::MissingFrozenContract,
-            Kind::Conflict,
-        ),
-        (
-            "declaration_tx: declaration missing for key",
-            Code::DeclarationWithdrawn,
-            Kind::Conflict,
-        ),
-        (
-            "declaration_tx: declaration not ready",
-            Code::DeclarationWithdrawn,
-            Kind::Conflict,
-        ),
-        (
-            "declaration_tx: declaration has validation errors",
-            Code::DeclarationWithdrawn,
-            Kind::Conflict,
-        ),
-        (
-            "declaration_tx: declare-and-wait release withdrawn",
-            Code::DeclarationWithdrawn,
-            Kind::Conflict,
-        ),
-        (
-            "check_constraint_tx: constraint shape invalid at the inner check",
-            Code::MissingFrozenContract,
-            Kind::Conflict,
-        ),
-        (
-            "check_constraint_tx: route or author changed",
-            Code::ContractChanged,
-            Kind::Conflict,
-        ),
-        (
-            "check_constraint_tx: frozen context track missing",
-            Code::ContractChanged,
-            Kind::Conflict,
-        ),
-        (
-            "check_constraint_tx: context moved outside its area",
-            Code::ContractChanged,
-            Kind::Conflict,
-        ),
-        (
-            "check_constraint_tx: frozen context report missing",
-            Code::ContractChanged,
-            Kind::Conflict,
-        ),
-        (
-            "check_constraint_tx: frozen context block missing",
-            Code::ContractChanged,
-            Kind::Conflict,
-        ),
-        (
-            "check_constraint_tx: root declaration identity changed",
-            Code::ContractChanged,
-            Kind::Conflict,
-        ),
-        (
-            "check_constraint_tx: root hash changed",
-            Code::ContractChanged,
-            Kind::Conflict,
-        ),
-        (
-            "require_recoverable_predecessor_tx: isolated with ambiguous verification effects",
-            Code::PredecessorNotQuiescent,
-            Kind::Conflict,
-        ),
-        (
-            "isolated_codex::recovery::require_stopped_tx: no confirmed namespace stop",
-            Code::PredecessorNotQuiescent,
-            Kind::Conflict,
-        ),
-        (
-            "require_recoverable_predecessor_tx: ordinary worker was prepared",
-            Code::PredecessorNotQuiescent,
-            Kind::Conflict,
-        ),
-        (
-            "require_recoverable_predecessor_tx: verification effects without a worker card",
-            Code::PredecessorNotQuiescent,
-            Kind::Conflict,
-        ),
-        (
-            "require_recoverable_predecessor_tx: failure was not a spawn failure",
-            Code::PredecessorNotQuiescent,
-            Kind::Conflict,
-        ),
-        (
-            "require_recoverable_predecessor_tx: operation has uncertain external effects",
-            Code::PredecessorNotQuiescent,
-            Kind::Conflict,
-        ),
-        (
-            "check_recovery_attempt_tx: allocation missing",
-            Code::RecoveryLineageMissing,
-            Kind::Conflict,
-        ),
-        (
-            "check_recovery_attempt_tx: predecessor row missing",
-            Code::RecoveryLineageMissing,
-            Kind::Conflict,
-        ),
-        (
-            "check_recovery_attempt_tx: accepted actor provenance unsupported",
-            Code::NotAuthorized,
-            Kind::Conflict,
-        ),
-        (
-            "check_recovery_attempt_tx: track no longer schedules",
-            Code::TrackNotReady,
-            Kind::Conflict,
-        ),
-    ];
-    assert_eq!(seen, expected);
-    assert_eq!(
-        expected.len(),
-        production_refusal_sites(),
-        "every production refusal site needs exactly one row above (a row may drive several fixtures that trip the same site); a site no fixture can reach goes into UNREACHABLE_SITES with its reason"
-    );
-}
-
-/// Refusal sites no fixture can reach; each entry subtracts one from the
-/// ratchet with its reason. Empty today: every site has a row above.
-const UNREACHABLE_SITES: &[(&str, &str)] = &[];
-
-/// The production files that construct a typed refusal. Every line in them
-/// that names a `RecoveryRefusalCode::` variant is the argument of a refusal
-/// constructor (`refuse(..)`, `RecoveryRefusal::forbidden(..)`,
-/// `RecoveryRefusal::conflict(..)`); they never compare, import or re-export a
-/// code, which the guard below pins. `isolated_codex/workspace.rs` has a
-/// same-named `denied` closure that yields a plain `CalmError::Conflict`, not
-/// a typed refusal, and is not a site.
-const REFUSAL_SOURCES: &[(&str, &str)] = &[
-    ("task_recovery/admission.rs", include_str!("admission.rs")),
+/// What every site names, keyed by the site. A row's fixture must trip
+/// exactly that site (the returned refusal's `site` is asserted), so a
+/// fixture that drifts onto a neighbouring site is red, not silently green.
+const ROWS: &[(Site, Code, Kind, Next)] = &[
     (
-        "isolated_codex/recovery.rs",
-        include_str!("../isolated_codex/recovery.rs"),
+        Site::ActorNotUserOrPlanner,
+        Code::NotAuthorized,
+        Kind::Forbidden,
+        Next::None,
+    ),
+    (
+        Site::PlannerSessionUnresolved,
+        Code::NotAuthorized,
+        Kind::Forbidden,
+        Next::None,
+    ),
+    (
+        Site::TrackNotReady,
+        Code::TrackNotReady,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::ChildTaskRoute,
+        Code::UnsupportedSpawn,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::PlannerOutsideAutoDeclare,
+        Code::UserAuthorizationRequired,
+        Kind::Forbidden,
+        Next::UserRecovery,
+    ),
+    (
+        Site::PlannerRetryLimit,
+        Code::RecoveryLimitReached,
+        Kind::Forbidden,
+        Next::UserRecovery,
+    ),
+    (
+        Site::ConstraintShapeInvalid,
+        Code::MissingFrozenContract,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::FileDeliveryInputUnhonoured,
+        Code::ContractChanged,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::FrozenContextTruncated,
+        Code::MissingFrozenContract,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::FrozenContextMissing,
+        Code::MissingFrozenContract,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::FrozenContextMalformed,
+        Code::MissingFrozenContract,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::DeclarationMissing,
+        Code::DeclarationWithdrawn,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::DeclarationNotCurrent,
+        Code::DeclarationWithdrawn,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::DeclarationInvalid,
+        Code::DeclarationWithdrawn,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::ReleaseWithdrawn,
+        Code::DeclarationWithdrawn,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::InnerConstraintShapeInvalid,
+        Code::MissingFrozenContract,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::RouteOrAuthorChanged,
+        Code::ContractChanged,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::FrozenTrackMissing,
+        Code::ContractChanged,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::ContextMovedOutsideArea,
+        Code::ContractChanged,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::FrozenReportMissing,
+        Code::ContractChanged,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::FrozenBlockMissing,
+        Code::ContractChanged,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::RootIdentityChanged,
+        Code::ContractChanged,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::RootHashChanged,
+        Code::ContractChanged,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::IsolatedAmbiguousOperations,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::OrdinaryWorkerPrepared,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::NewTask,
+    ),
+    (
+        Site::VerificationEffectsWithoutWorker,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::NewTask,
+    ),
+    (
+        Site::NotSpawnFailedWithoutStopProof,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::NewTask,
+    ),
+    (
+        Site::OperationUncertainExternalEffects,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::NewTask,
+    ),
+    (
+        Site::IsolatedRouteMismatch,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::IsolatedOperationNotThisExecution,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::IsolatedCompensationRecorded,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::IsolatedStopPending,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::WaitForSettlement,
+    ),
+    (
+        Site::IsolatedOperationTerminalWithoutFailure,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::IsolatedRecordUnreadable,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::AllocationMissing,
+        Code::RecoveryLineageMissing,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::PredecessorRowMissing,
+        Code::RecoveryLineageMissing,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::ProvenanceUnsupported,
+        Code::NotAuthorized,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::TrackNoLongerSchedules,
+        Code::TrackNotReady,
+        Kind::Conflict,
+        Next::None,
     ),
 ];
 
-/// Number of places production code chooses a refusal code. A new site needs
-/// a row in `every_refusal_site_names_its_typed_code`.
-fn production_refusal_sites() -> usize {
-    let mut sites = 0;
-    for (name, source) in REFUSAL_SOURCES {
-        for (index, line) in source.lines().enumerate() {
-            if !line.contains("RecoveryRefusalCode::") {
-                continue;
-            }
-            assert!(
-                !line.contains("==")
-                    && !line.contains("!=")
-                    && !line.contains("matches!(")
-                    && !line.trim_start().starts_with("use ")
-                    && !line.trim_start().starts_with("//"),
-                "{name}:{}: names a code outside a refusal constructor; adjust the ratchet rule",
-                index + 1
-            );
-            sites += 1;
+/// Sites no fixture in this file can reach, each with its reason; the
+/// set-equality assertion below subtracts exactly these from [`Site::ALL`].
+/// Both sit behind `journal::load_tx` + `RunRecord::session()`, which need
+/// a prepared `RunRecord` whose `PreparedEndpoint` carries the private
+/// `LaunchConfig` only the dedicated-codex Controller writes; this file's
+/// fixtures cannot forge one. They are driven at integration level with the
+/// fake isolated backend's real receipt
+/// (`isolated_codex_retry::stop_evidence_corruption_and_ambiguous_operations_refuse_retry`
+/// mutates `/provider/record/stop` and the identity fields).
+const UNREACHABLE: &[(Site, &str)] = &[
+    (
+        Site::IsolatedStopUnconfirmed,
+        "needs a prepared run record whose stop state is not Quiesced; only the Controller writes one (covered by isolated_codex_retry with the fake backend)",
+    ),
+    (
+        Site::IsolatedStopIdentityMismatch,
+        "needs a prepared run record with a Quiesced stop whose identity chain is then broken; only the Controller writes one (covered by isolated_codex_retry with the fake backend)",
+    ),
+];
+
+/// Drives the real function with a fixture that trips exactly `site`.
+async fn drive(site: Site) -> RecoveryRefusal {
+    let planner = || ActorId::AiPlanner("planner".into());
+    let user = || ActorId::User;
+    match site {
+        Site::ActorNotUserOrPlanner => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                refused(site, authorize(&fx, ActorId::KernelDispatcher).await)
+            })
+            .await
+        }
+        Site::PlannerSessionUnresolved => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                refused(
+                    site,
+                    authorize(&fx, ActorId::AiPlannerSession("missing-session".into())).await,
+                )
+            })
+            .await
+        }
+        Site::TrackNotReady => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tracks SET lifecycle='done' WHERE id=?1",
+                    &[&fx.track_id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::ChildTaskRoute => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tasks SET spawn='sub-wave' WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::PlannerOutsideAutoDeclare => {
+            Box::pin(async {
+                // One site, two conditions of its `||`: both fixtures must
+                // agree on what it names.
+                let fx = failed_initial("user").await;
+                let user_owned = refused(site, admit(&fx, planner(), 1).await);
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1",
+                    &[&fx.track_id],
+                )
+                .await;
+                let declare_and_wait = refused(site, admit(&fx, planner(), 1).await);
+                assert_eq!(
+                    (
+                        user_owned.site,
+                        user_owned.code,
+                        user_owned.kind,
+                        user_owned.continuation
+                    ),
+                    (
+                        declare_and_wait.site,
+                        declare_and_wait.code,
+                        declare_and_wait.kind,
+                        declare_and_wait.continuation
+                    ),
+                    "{site:?}"
+                );
+                user_owned
+            })
+            .await
+        }
+        Site::PlannerRetryLimit => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                refused(site, admit(&fx, planner(), 2).await)
+            })
+            .await
+        }
+        Site::ConstraintShapeInvalid => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                set_frozen_refs(&fx, Vec::new()).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::FileDeliveryInputUnhonoured => {
+            Box::pin(async {
+                // A consumer claimed without its frozen input binding row:
+                // `file_delivery::require_recovery_input_tx` refuses.
+                let fx =
+                    failed_initial_among(&[producer_declaration()], consumer_declaration()).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::FrozenContextTruncated => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tasks SET context_closure_truncated=1 WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::FrozenContextMissing => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tasks SET claim_context_json=NULL WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::FrozenContextMalformed => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    // The column CHECKs json_valid; malformed here means
+                    // valid JSON that is not a reference list.
+                    "UPDATE tasks SET claim_context_json='{}' WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::DeclarationMissing => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                let block_id = fx.fixture.block_id().to_string();
+                edit_report_crdt(&fx.repo.sqlite_pool().unwrap(), &fx.track_id, |doc| {
+                    doc.delete_block(&block_id).unwrap();
+                })
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::DeclarationNotCurrent => {
+            Box::pin(async {
+                let fx = failed_initial("user").await;
+                fx.fixture.withdraw().await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::DeclarationInvalid => {
+            Box::pin(async {
+                let fx = failed_initial("user").await;
+                // The REST door refuses an invalid payload; only the CRDT
+                // authority can hold one (an older document, a merge).
+                let mut invalid = fx.fixture.declaration();
+                invalid["goal"] = json!("a terminal task must not carry a goal");
+                let block_id = fx.fixture.block_id().to_string();
+                edit_report_crdt(&fx.repo.sqlite_pool().unwrap(), &fx.track_id, |doc| {
+                    doc.upsert_block(
+                        Some(&block_id),
+                        "task",
+                        &calm_types::report_blocks::render_fence("task", &invalid),
+                    )
+                    .unwrap();
+                })
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::ReleaseWithdrawn => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1",
+                    &[&fx.track_id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::InnerConstraintShapeInvalid => {
+            Box::pin(async {
+                // Neither view-consulted entry can trip this site:
+                // `admit_contract_and_predecessor_tx` validates the same
+                // constraint for the same Track first, and a stored allocation
+                // is validated by `AllocationRow::decode` (Internal, not a
+                // refusal) before `check_recovery_attempt_tx` reads it.
+                // `validate_frozen_contract_tx` reaches it with the code erased
+                // to `CalmError`. Drive the real function with a constraint
+                // that parses but fails `validate()`.
+                let fx = failed_initial(PLANNER).await;
+                let pool = fx.repo.sqlite_pool().unwrap();
+                let mut tx = begin_immediate_tx(&pool).await.unwrap();
+                let track = crate::track_lifecycle::track_get_tx(
+                    &mut tx,
+                    &TrackId::from(fx.track_id.as_str()),
+                )
+                .await
+                .unwrap();
+                let constraint = calm_types::task_recovery::TaskRecoveryConstraint::V1 {
+                    refs: Vec::new(),
+                    spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
+                    declared_by: PLANNER.into(),
+                };
+                refused(
+                    site,
+                    admission::check_constraint_tx(&mut tx, &track, "b", &constraint).await,
+                )
+            })
+            .await
+        }
+        Site::RouteOrAuthorChanged => {
+            Box::pin(async {
+                let fx = failed_initial("user").await;
+                sql(
+                    &fx,
+                    "UPDATE tasks SET declared_by='spec' WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::FrozenTrackMissing => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                let mut refs = frozen_refs(&fx).await;
+                refs.push(foreign_ref("no-such-track", "b_missing"));
+                set_frozen_refs(&fx, refs).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::ContextMovedOutsideArea => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                let (track, block) = other_track(&fx, true).await;
+                let mut refs = frozen_refs(&fx).await;
+                refs.push(foreign_ref(&track, &block));
+                set_frozen_refs(&fx, refs).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::FrozenReportMissing => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                let (track, block) = other_track(&fx, false).await;
+                sql(
+                    &fx,
+                    "DELETE FROM cards WHERE track_id=?1 AND kind='track-report'",
+                    &[&track],
+                )
+                .await;
+                let mut refs = frozen_refs(&fx).await;
+                refs.push(foreign_ref(&track, &block));
+                set_frozen_refs(&fx, refs).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::FrozenBlockMissing => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                let (track, _) = other_track(&fx, false).await;
+                let mut refs = frozen_refs(&fx).await;
+                refs.push(foreign_ref(&track, "b_missing"));
+                set_frozen_refs(&fx, refs).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::RootIdentityChanged => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                let other = prose_block(&fx, &fx.track_id).await;
+                let mut refs = frozen_refs(&fx).await;
+                let root = refs
+                    .iter_mut()
+                    .find(|reference| reference["is_root"] == true)
+                    .unwrap();
+                root["block_id"] = json!(other);
+                set_frozen_refs(&fx, refs).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::RootHashChanged => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                let mut refs = frozen_refs(&fx).await;
+                let root = refs
+                    .iter_mut()
+                    .find(|reference| reference["is_root"] == true)
+                    .unwrap();
+                root["hash"] = json!("f".repeat(64));
+                set_frozen_refs(&fx, refs).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::IsolatedAmbiguousOperations => {
+            Box::pin(async {
+                let fx = failed_initial_with(isolated_declaration()).await;
+                insert_operation(
+                    &fx,
+                    crate::isolated_codex::OPERATION_KIND,
+                    "failed",
+                    Some("{}"),
+                )
+                .await;
+                sql(
+                    &fx,
+                    "UPDATE tasks SET gate_attempt=1 WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::OrdinaryWorkerPrepared => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tasks SET worker_card_id='card-prepared' WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::VerificationEffectsWithoutWorker => {
+            Box::pin(async {
+                // The shape `task_recovery_refuses_live_verifier_descendant_after_gate_exit`
+                // produces: a gate ran, no worker card was ever prepared.
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tasks SET gate_attempt=1 WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::NotSpawnFailedWithoutStopProof => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sql(
+                    &fx,
+                    "UPDATE tasks SET status_detail='worker-timeout' WHERE id=?1",
+                    &[&fx.fixture.task.id],
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::OperationUncertainExternalEffects => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                insert_operation(&fx, "terminal-worker", "spawn_started", None).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::IsolatedRouteMismatch => {
+            Box::pin(async {
+                // An isolated operation with a preparation receipt on a key
+                // whose frozen contract is an ordinary terminal task.
+                let fx = failed_initial(PLANNER).await;
+                insert_operation(
+                    &fx,
+                    crate::isolated_codex::OPERATION_KIND,
+                    "failed",
+                    Some("{}"),
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::IsolatedOperationNotThisExecution => {
+            Box::pin(async {
+                // Admission only ever passes the keyed isolated operation's own
+                // id; a settlement event naming another operation reaches the
+                // fence directly.
+                let fx = failed_initial_with(isolated_declaration()).await;
+                insert_operation(
+                    &fx,
+                    crate::isolated_codex::OPERATION_KIND,
+                    "failed",
+                    Some("{}"),
+                )
+                .await;
+                refused(site, require_stopped(&fx, "op-of-another-execution").await)
+            })
+            .await
+        }
+        Site::IsolatedCompensationRecorded => {
+            Box::pin(async {
+                let fx = failed_initial_with(isolated_declaration()).await;
+                insert_operation_with(
+                    &fx,
+                    crate::isolated_codex::OPERATION_KIND,
+                    "failed",
+                    Some("{}"),
+                    Some("{}"),
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::IsolatedStopPending => {
+            Box::pin(async {
+                // The task failed while its operation is still running its
+                // stop. (`parked` itself is CHECK-bound to a real run record;
+                // `planner_observes_failure_then_settled_isolated_recovery`
+                // drives that shape through the same site.)
+                let fx = failed_initial_with(isolated_declaration()).await;
+                insert_operation(
+                    &fx,
+                    crate::isolated_codex::OPERATION_KIND,
+                    "spawn_succeeded",
+                    Some("{}"),
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::IsolatedOperationTerminalWithoutFailure => {
+            Box::pin(async {
+                let fx = failed_initial_with(isolated_declaration()).await;
+                insert_operation(
+                    &fx,
+                    crate::isolated_codex::OPERATION_KIND,
+                    "succeeded",
+                    Some("{}"),
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::IsolatedRecordUnreadable => {
+            Box::pin(async {
+                // A failed isolated operation whose receipt is not a run record.
+                let fx = failed_initial_with(isolated_declaration()).await;
+                insert_operation(
+                    &fx,
+                    crate::isolated_codex::OPERATION_KIND,
+                    "failed",
+                    Some("{}"),
+                )
+                .await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::IsolatedStopUnconfirmed | Site::IsolatedStopIdentityMismatch => {
+            unreachable!("{site:?} is listed in UNREACHABLE and never driven")
+        }
+        Site::AllocationMissing => {
+            Box::pin(async {
+                // tasks(id,track_id,key) references the allocation, so an
+                // existing row always has one; only an unknown attempt id
+                // reaches this site.
+                let fx = recovered().await;
+                refused(site, check_attempt_for(&fx, "no-such-attempt").await)
+            })
+            .await
+        }
+        Site::PredecessorRowMissing => {
+            Box::pin(async {
+                let fx = recovered().await;
+                sql(
+                    &fx,
+                    "DELETE FROM tasks WHERE track_id=?1 AND key='b' AND id<>?2",
+                    &[&fx.track_id, &fx.fixture.task.id],
+                )
+                .await;
+                refused(site, check_attempt(&fx).await)
+            })
+            .await
+        }
+        Site::ProvenanceUnsupported => {
+            Box::pin(async {
+            // Allocations are immutable (trigger) and the service
+            // boundary only ever records User/Planner actors, so the
+            // only way to this site is a successor allocation inserted
+            // with a provenance admission would never have accepted.
+            let fx = recovered().await;
+            // The insert trigger requires a current failed predecessor.
+            fail_current(&fx).await;
+            sql(
+                &fx,
+                "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,created_at_ms) \
+                 SELECT 'kernel-provenance', track_id, key, 3, \
+                   json_set(origin_json,'$.previous_attempt_id',attempt_id,'$.idempotency_key','kernel-provenance', \
+                     '$.request_fingerprint','kernel-provenance','$.actor',json('{\"kind\":\"Kernel\"}')), \
+                   created_at_ms \
+                 FROM task_attempt_allocations WHERE attempt_id=?1",
+                &[&fx.fixture.task.id],
+            )
+            .await;
+            refused(site, check_attempt_for(&fx, "kernel-provenance").await)
+            })
+            .await
+        }
+        Site::TrackNoLongerSchedules => {
+            Box::pin(async {
+                let fx = recovered().await;
+                sql(
+                    &fx,
+                    "UPDATE tracks SET lifecycle='blocked' WHERE id=?1",
+                    &[&fx.track_id],
+                )
+                .await;
+                refused(site, check_attempt(&fx).await)
+            })
+            .await
         }
     }
-    sites - UNREACHABLE_SITES.len()
+}
+
+/// Every row drives the real function and asserts what the site named; the
+/// sites actually returned must be exactly `Site::ALL` minus `UNREACHABLE`,
+/// so a site without a row (or a row that never reaches its site) is red.
+#[tokio::test]
+async fn every_refusal_site_names_its_code_kind_and_continuation() {
+    let mut exercised = std::collections::BTreeSet::new();
+    for &(site, code, kind, continuation) in ROWS {
+        let refusal = Box::pin(drive(site)).await;
+        assert_eq!(
+            (
+                refusal.site,
+                refusal.code,
+                refusal.kind,
+                refusal.continuation
+            ),
+            (site, code, kind, continuation),
+            "{site:?} named {refusal:?}"
+        );
+        assert!(
+            exercised.insert(refusal.site),
+            "{site:?} has more than one row"
+        );
+    }
+    let expected: std::collections::BTreeSet<Site> = Site::ALL
+        .iter()
+        .copied()
+        .filter(|site| {
+            !UNREACHABLE
+                .iter()
+                .any(|(unreachable, _)| unreachable == site)
+        })
+        .collect();
+    assert_eq!(
+        exercised, expected,
+        "every production refusal site needs exactly one row in ROWS, or an UNREACHABLE entry with its reason"
+    );
+    for (site, reason) in UNREACHABLE {
+        assert!(Site::ALL.contains(site), "{site:?} is not a site");
+        assert!(!reason.is_empty(), "{site:?} needs its reason");
+    }
+}
+
+/// `Site::ALL` is exhaustive: the wildcard-free match below does not compile
+/// once a variant exists that it does not map, and its index must be the
+/// variant's position in `ALL`, so a variant added to the enum (or to the
+/// match) without an `ALL` entry is red.
+#[test]
+fn refusal_site_all_lists_every_variant_exactly_once() {
+    fn position(site: Site) -> usize {
+        match site {
+            Site::ActorNotUserOrPlanner => 0,
+            Site::PlannerSessionUnresolved => 1,
+            Site::TrackNotReady => 2,
+            Site::ChildTaskRoute => 3,
+            Site::PlannerOutsideAutoDeclare => 4,
+            Site::PlannerRetryLimit => 5,
+            Site::ConstraintShapeInvalid => 6,
+            Site::FileDeliveryInputUnhonoured => 7,
+            Site::FrozenContextTruncated => 8,
+            Site::FrozenContextMissing => 9,
+            Site::FrozenContextMalformed => 10,
+            Site::DeclarationMissing => 11,
+            Site::DeclarationNotCurrent => 12,
+            Site::DeclarationInvalid => 13,
+            Site::ReleaseWithdrawn => 14,
+            Site::InnerConstraintShapeInvalid => 15,
+            Site::RouteOrAuthorChanged => 16,
+            Site::FrozenTrackMissing => 17,
+            Site::ContextMovedOutsideArea => 18,
+            Site::FrozenReportMissing => 19,
+            Site::FrozenBlockMissing => 20,
+            Site::RootIdentityChanged => 21,
+            Site::RootHashChanged => 22,
+            Site::IsolatedAmbiguousOperations => 23,
+            Site::OrdinaryWorkerPrepared => 24,
+            Site::VerificationEffectsWithoutWorker => 25,
+            Site::NotSpawnFailedWithoutStopProof => 26,
+            Site::OperationUncertainExternalEffects => 27,
+            Site::IsolatedRouteMismatch => 28,
+            Site::IsolatedOperationNotThisExecution => 29,
+            Site::IsolatedCompensationRecorded => 30,
+            Site::IsolatedStopPending => 31,
+            Site::IsolatedOperationTerminalWithoutFailure => 32,
+            Site::IsolatedRecordUnreadable => 33,
+            Site::IsolatedStopUnconfirmed => 34,
+            Site::IsolatedStopIdentityMismatch => 35,
+            Site::AllocationMissing => 36,
+            Site::PredecessorRowMissing => 37,
+            Site::ProvenanceUnsupported => 38,
+            Site::TrackNoLongerSchedules => 39,
+        }
+    }
+    const VARIANTS: usize = 40;
+    assert_eq!(Site::ALL.len(), VARIANTS);
+    for (index, site) in Site::ALL.iter().enumerate() {
+        assert_eq!(position(*site), index, "{site:?} is misplaced in ALL");
+    }
 }
 
 /// The wire spellings are a published vocabulary: every variant is distinct

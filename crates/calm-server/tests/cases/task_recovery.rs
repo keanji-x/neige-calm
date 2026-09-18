@@ -1201,11 +1201,16 @@ async fn task_recovery_summary_keeps_an_empty_retained_object_for_a_terminal_wor
         let guidance = &recovery["guidance"];
         assert_eq!(guidance["supported_continuation"], "new_task", "{detail}");
         assert_eq!(guidance["retained"], json!({}), "{detail}: {guidance}");
+        // The guidance sentence is the refusal's reason, verbatim.
+        assert_eq!(
+            guidance["blocking_condition"], recovery["reason"],
+            "{detail}: {guidance}"
+        );
         assert!(
             guidance["blocking_condition"]
                 .as_str()
                 .unwrap()
-                .contains("An ordinary worker was prepared"),
+                .starts_with("an ordinary worker was prepared"),
             "{detail}: {guidance}"
         );
     }
@@ -1242,7 +1247,8 @@ async fn task_recovery_guidance_names_verification_effects_when_no_worker_was_pr
     assert_eq!(guidance["supported_continuation"], "new_task");
     let condition = guidance["blocking_condition"].as_str().unwrap();
     assert!(
-        !condition.contains("worker was prepared") && condition.contains("Verification effects"),
+        !condition.contains("worker was prepared")
+            && condition.starts_with("verification effects were recorded"),
         "{condition}"
     );
     assert_eq!(guidance["retained"], json!({}));

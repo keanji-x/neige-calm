@@ -3,17 +3,32 @@ use super::{journal, record::Admission};
 use crate::dedicated_codex::StopState;
 use crate::model::{Task, TaskStatus};
 use crate::operation::Tx;
-use crate::task_recovery::{AdmissionError, RecoveryRefusal, RecoveryRefusalCode};
+use crate::task_recovery::{
+    AdmissionError, RecoveryRefusal, RecoveryRefusalCode, RefusalSite, SupportedContinuation,
+};
 use sha2::{Digest, Sha256};
 
-/// Every refusal here is the same typed fact: the predecessor's namespace
-/// stop is not confirmed. The write path still surfaces it as a Conflict.
-fn denied() -> AdmissionError {
+/// Every refusal here is the typed fact that the predecessor's namespace
+/// stop is not confirmed, decided per branch: the operation may still be
+/// stopping (its settlement briefing re-opens the decision) or the denial is
+/// permanent (no briefing will ever confirm this stop). The write path
+/// surfaces each as a Conflict.
+fn denied(
+    site: RefusalSite,
+    continuation: SupportedContinuation,
+    reason: String,
+) -> AdmissionError {
     RecoveryRefusal::conflict(
+        site,
         RecoveryRefusalCode::PredecessorNotQuiescent,
-        "predecessor isolated execution has no matching confirmed namespace stop; wait for its execution to stop before retrying",
+        continuation,
+        reason,
     )
     .into()
+}
+
+fn permanent(site: RefusalSite, reason: String) -> AdmissionError {
+    denied(site, SupportedContinuation::None, reason)
 }
 
 /// Used by the shared predecessor fence at recovery admission and again before
@@ -23,20 +38,50 @@ pub(crate) async fn require_stopped_tx(
     task: &Task,
     op_id: &str,
 ) -> Result<(), AdmissionError> {
-    if task.status != TaskStatus::Failed || !super::selected(task).map_err(|_| denied())? {
-        return Err(denied());
+    if task.status != TaskStatus::Failed || !super::selected(task).unwrap_or(false) {
+        return Err(permanent(
+            RefusalSite::IsolatedRouteMismatch,
+            "predecessor isolated operation does not belong to a failed isolated-route execution; its namespace stop cannot fence this key, so same-key recovery is permanently unavailable".into(),
+        ));
     }
-    let valid_operation: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM operations WHERE id=?1 AND kind='codex-isolated-worker' \
-         AND idempotency_key=?2 AND phase='failed' AND spawn_artifacts_json IS NULL \
-         AND compensation_state IS NULL)",
+    let operation: Option<(String, String, bool, bool)> = sqlx::query_as(
+        "SELECT kind, phase, spawn_artifacts_json IS NOT NULL, compensation_state IS NOT NULL \
+         FROM operations WHERE id=?1 AND idempotency_key=?2",
     )
     .bind(op_id)
     .bind(&task.id)
-    .fetch_one(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await?;
-    if !valid_operation {
-        return Err(denied());
+    let Some((_, phase, spawn_artifacts, compensation)) =
+        operation.filter(|(kind, ..)| kind == super::OPERATION_KIND)
+    else {
+        return Err(permanent(
+            RefusalSite::IsolatedOperationNotThisExecution,
+            "predecessor isolated operation named for settlement is not this execution's keyed isolated operation; its namespace stop cannot fence this key, so same-key recovery is permanently unavailable".into(),
+        ));
+    };
+    if spawn_artifacts || compensation {
+        return Err(permanent(
+            RefusalSite::IsolatedCompensationRecorded,
+            "predecessor isolated execution recorded spawn artifacts or compensation state, so its namespace stop is not attributable; same-key recovery is permanently unavailable and no settlement briefing re-opens it".into(),
+        ));
+    }
+    if phase != "failed" {
+        if matches!(phase.as_str(), "succeeded" | "stuck") {
+            return Err(permanent(
+                RefusalSite::IsolatedOperationTerminalWithoutFailure,
+                format!(
+                    "predecessor isolated operation ended in phase {phase} rather than failed; the failed execution has no matching stop proof, so same-key recovery is permanently unavailable"
+                ),
+            ));
+        }
+        return Err(denied(
+            RefusalSite::IsolatedStopPending,
+            SupportedContinuation::WaitForSettlement,
+            format!(
+                "predecessor isolated execution has no confirmed namespace stop yet (operation phase {phase}); recovery re-opens if the kernel records the stop and delivers its settlement briefing"
+            ),
+        ));
     }
     confirmed_record_tx(tx, task, op_id).await.map(|_| ())
 }
@@ -50,10 +95,21 @@ pub(super) async fn confirmed_record_tx(
 ) -> Result<super::record::RunRecord, AdmissionError> {
     // The typed private reader already binds Operation payload/output/target.
     // Do not expose parse errors or the private record through this capability.
-    let record = journal::load_tx(tx, op_id).await.map_err(|_| denied())?;
-    let session = record.session().map_err(|_| denied())?;
+    let unreadable = || {
+        permanent(
+            RefusalSite::IsolatedRecordUnreadable,
+            "predecessor isolated operation's journal cannot be read as a prepared run, so no namespace stop proof exists for it; same-key recovery is permanently unavailable".into(),
+        )
+    };
+    let record = journal::load_tx(tx, op_id)
+        .await
+        .map_err(|_| unreadable())?;
+    let session = record.session().map_err(|_| unreadable())?;
     let StopState::Quiesced(proof) = &session.stop else {
-        return Err(denied());
+        return Err(permanent(
+            RefusalSite::IsolatedStopUnconfirmed,
+            "predecessor isolated execution has no recorded namespace quiescence proof although its operation is terminal, and the kernel will not record one; same-key recovery is permanently unavailable".into(),
+        ));
     };
     let identity = &record.request.identity;
     let endpoint = &session.endpoint;
@@ -94,7 +150,10 @@ pub(super) async fn confirmed_record_tx(
             "prior_boot" | "init_absent" | "init_reaped" | "init_pid_reused"
         )
     {
-        return Err(denied());
+        return Err(permanent(
+            RefusalSite::IsolatedStopIdentityMismatch,
+            "predecessor isolated execution's recorded namespace stop proof does not match its retained identity; same-key recovery is permanently unavailable".into(),
+        ));
     }
     Ok(record)
 }

@@ -5,11 +5,13 @@ mod admission;
 mod refusal;
 mod view;
 pub(crate) use admission::{
-    check_recovery_attempt_tx, require_attempt_startable_tx, require_recoverable_predecessor_tx,
+    admit_contract_and_predecessor_tx, check_recovery_attempt_tx, require_attempt_startable_tx,
     validate_frozen_contract_tx, validate_isolated_start_tx,
 };
 pub use calm_types::task_recovery::{TaskAttemptView, TaskRecoveryCapability, TaskRecoveryView};
-pub(crate) use refusal::{AdmissionError, RecoveryRefusal, RecoveryRefusalCode};
+pub(crate) use refusal::{
+    AdmissionError, RecoveryRefusal, RecoveryRefusalCode, RefusalSite, SupportedContinuation,
+};
 pub(crate) use view::current_blocking_reason_tx;
 pub use view::task_recovery_view;
 pub(crate) use view::{RefusedRecovery, task_recovery_view_tx, task_recovery_view_with_refusal_tx};
