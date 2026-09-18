@@ -61,7 +61,12 @@ describe('production scan session owner', () => {
   });
   it('does not grant authority when marker removal fails', async () => {
     const h = harness(); h.ports.storage.removeItem.mockImplementation(() => { throw new Error('disk'); });
-    h.session.start(); await settle(); expect(h.ports.version).not.toHaveBeenCalled(); expect(h.values.has(logoutMarkerKey())).toBe(true); expect(h.session.identity).toBeNull();
+    h.session.start(); await settle();
+    // Version is a read-only part of the proof. Marker removal is deferred so
+    // cancellation during that read still retains the logout denial.
+    expect(h.ports.version).toHaveBeenCalledOnce();
+    expect(h.values.has(logoutMarkerKey())).toBe(true); expect(h.session.identity).toBeNull();
+    expect(h.access.read().phase).toBe('login'); expect(() => h.access.capture()).toThrow();
   });
   it('cancels a late claim and never redeems after pause', async () => {
     const h = harness(); let finish!: (response: ApiTransportResponse) => void;
@@ -77,8 +82,9 @@ describe('production scan session owner', () => {
   });
   it('uses ordinary reconnect after accepted identity when version times out', async () => {
     const h = harness(); h.ports.version.mockImplementationOnce(() => new Promise(() => {}));
-    h.session.start(); await settle(); expect(h.values.has(logoutMarkerKey())).toBe(false);
+    h.session.start(); await settle(); expect(h.values.has(logoutMarkerKey())).toBe(true);
     await vi.advanceTimersByTimeAsync(8_001); expect(h.access.read().phase).toBe('offline');
+    expect(h.values.has(logoutMarkerKey())).toBe(false);
     h.session.retry(); await settle(); expect(h.access.read().phase).toBe('syncing');
     expect(h.send).toHaveBeenCalledTimes(2); expect(h.ports.identity).toHaveBeenCalledTimes(2);
   });
@@ -86,5 +92,18 @@ describe('production scan session owner', () => {
     const h = harness(); await vi.advanceTimersByTimeAsync(100_000); h.session.start(); await settle();
     expect(h.send).not.toHaveBeenCalled(); await h.session.verifyNewSession(); h.session.resume();
     expect(h.ports.identity).not.toHaveBeenCalled(); expect(h.values.has(logoutMarkerKey())).toBe(true);
+  });
+  it('cancelling scan during version retains denial and cannot be upgraded into manual proof', async () => {
+    const h = harness(); let finish!: (version: Awaited<ReturnType<typeof h.ports.version>>) => void;
+    h.ports.version.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    h.session.start(); await settle();
+    expect(h.ports.identity).toHaveBeenCalledOnce(); expect(h.values.has(logoutMarkerKey())).toBe(true);
+    h.session.cancelAuthentication();
+    finish({ webCompatVersion: 28, minWebCompatVersion: 28, syncEventVersion: 3, dbInstanceId: 'db' });
+    await settle();
+    expect(h.session.identity).toBeNull(); expect(h.values.has(logoutMarkerKey())).toBe(true);
+    expect(await h.session.verifyNewSession()).toBeNull(); expect(() => h.session.beginAuthentication()).toThrow();
+    h.session.resume(); await settle(); expect(h.send).toHaveBeenCalledTimes(2);
+    expect(() => h.access.capture()).toThrow();
   });
 });

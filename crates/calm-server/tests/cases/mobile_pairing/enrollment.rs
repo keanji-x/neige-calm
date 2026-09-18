@@ -2,6 +2,9 @@ use super::*;
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
+#[path = "browser_contract.rs"]
+mod browser_contract;
+
 pub(super) fn control_response(bytes: &[u8]) -> calm_types::enrollment::EnrollmentResponse {
     use calm_types::enrollment::{
         EnrollmentAction, EnrollmentRequest, EnrollmentResponse, EnrollmentResult,
