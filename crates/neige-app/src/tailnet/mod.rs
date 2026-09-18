@@ -86,14 +86,13 @@ impl TailnetManager {
             let _ = Self::stop_child(state).await;
             if self.cfg.enrollment_config.is_some() && Instant::now() >= state.next_cleanup {
                 state.next_cleanup = Instant::now() + Duration::from_secs(60);
-                if let Ok(mut child) = self.spawn_mode(true) {
-                    if tokio::time::timeout(Duration::from_secs(10), child.wait())
+                if let Ok(mut child) = self.spawn_mode(true)
+                    && tokio::time::timeout(Duration::from_secs(10), child.wait())
                         .await
                         .is_err()
-                    {
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                    }
+                {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
                 }
             }
             return;
