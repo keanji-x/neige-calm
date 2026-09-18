@@ -872,6 +872,7 @@ mod tests {
             terminal_at: None,
             recipe_id: None,
             recipe_revision: None,
+            claude_permissions_policy: None,
             workspace: Default::default(),
             created_at: 0,
             updated_at: 0,

@@ -3,6 +3,7 @@
 //! This bottom layer contains no sqlx, axum, tokio, or other IO dependencies.
 
 pub mod boot_budget;
+pub mod claude_permissions;
 pub mod compatibility;
 pub mod error;
 pub mod event;

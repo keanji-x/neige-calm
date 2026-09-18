@@ -36,6 +36,7 @@ use calm_server::model::{
     TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
+use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::event::{
     ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject, TaskContextRef,
 };
@@ -132,6 +133,7 @@ fn track_min() -> Track {
         terminal_at: None,
         recipe_id: None,
         recipe_revision: None,
+        claude_permissions_policy: None,
         workspace: TrackWorkspace::default(),
         created_at: 1000,
         updated_at: 2000,
@@ -218,6 +220,13 @@ golden_test!(
             // case that pins the populated wire shape of both.
             recipe_id: Some("recipe-01".into()),
             recipe_revision: Some(7),
+            // #1704 S2 — the populated policy, only here; the other three
+            // pin the always-emitted `null`.
+            claude_permissions_policy: Some(ClaudePermissionsScope {
+                edit: Some(vec!["src/**".into(), "tests/**".into()]),
+                bash: Some(vec!["git".into(), "python3 -m unittest".into()]),
+                deny: Some(vec!["git rebase".into()]),
+            }),
             ..track_min()
         },
         Some("planner says hi".into()),

@@ -7265,6 +7265,42 @@
           }
         }
       },
+      "ClaudePermissionsScope": {
+        "type": "object",
+        "description": "A declared Claude Code permission scope: the `claude_permissions` argument\nof `calm.terminal.open` and, since S2, the value of\n`tracks.claude_permissions_policy`.\n\nThe derive is lenient on unknown keys on purpose: it decodes stored rows\nand stored operation payloads, which a newer binary may have written with\na key this one does not know, and a list route must not fail for a whole\narea over one such row. Strictness (unknown key, wrong list type, a JSON\narray or `null` in place of the object) lives in [`parse_scope_named`],\nwhich every untrusted entry runs first.",
+        "properties": {
+          "bash": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "default": null
+          },
+          "deny": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "default": null
+          },
+          "edit": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "default": null
+          }
+        }
+      },
       "ConnectorInstall": {
         "type": "object",
         "description": "The operator-supplied half of an `mcp-http` connector install.\n\nMirrors the request body of `POST /api/plugins/install` with\n`source.kind = \"mcp_http\"`. Everything the *kernel* decides — the secrets\nkey name, the manifest version, `min_kernel_version` — is a constant above,\nnot a field here.",
@@ -10450,6 +10486,17 @@
           "area_id": {
             "type": "string"
           },
+          "claude_permissions_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ClaudePermissionsScope",
+                "description": "#1704 S2 — the user-set Claude Code permission policy of this track's\nTREE, stored on the tree root only (`tracks.claude_permissions_policy`,\nmigration 0109): a child row is always `null` and a PATCH of a child\nis refused, while every CEILING read (`calm.terminal.open`) resolves\nthe root. This field is the raw column, so a child shows `null` here\neven when its root carries a policy. `null` for every track without\none; always serialized (the `recipe_id` convention)."
+              }
+            ]
+          },
           "created_at": {
             "type": "integer",
             "format": "int64"
@@ -11080,6 +11127,17 @@
               "null"
             ],
             "description": "Issue #985 — per-track declaration policy. A present null resets to\nthe kernel default."
+          },
+          "claude_permissions_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ClaudePermissionsScope",
+                "description": "#1704 S2 — the Claude Code permission policy of the WHOLE track tree\n(`tracks.claude_permissions_policy`, migration 0109). Tree-root-only,\nenforced by `track_update_tx` like `tree_task_budget`: a child row is\nalways NULL and every ceiling read resolves the root. `Some(Some(scope))`\nsets it (the route validates the scope first), `Some(None)` clears it,\nomit to leave alone. The value is read through `parse_scope_named`, so\nan array, a `null` list or an unknown key is a shape error naming\n`claude_permissions_policy`, never a lenient decode."
+              }
+            ]
           },
           "lifecycle": {
             "oneOf": [

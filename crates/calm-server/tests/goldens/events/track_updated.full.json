@@ -1,5 +1,5 @@
 {
-  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597). #1292 S3: the populated recipe provenance pair (the other track.updated goldens pin it as null).",
+  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597). #1292 S3: the populated recipe provenance pair (the other track.updated goldens pin it as null). #1704 S2: the populated claude_permissions_policy (a tree-root policy; the other three pin it as null).",
   "wire": {
     "ev": "track.updated",
     "data": {
@@ -25,7 +25,12 @@
       "updated_at": 2000,
       "agent_message": "planner says hi",
       "recipe_id": "recipe-01",
-      "recipe_revision": 7
+      "recipe_revision": 7,
+      "claude_permissions_policy": {
+        "edit": ["src/**", "tests/**"],
+        "bash": ["git", "python3 -m unittest"],
+        "deny": ["git rebase"]
+      }
     }
   }
 }

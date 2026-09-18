@@ -61,8 +61,21 @@ fn open_summary_names_the_permission_counts_only_when_the_block_is_echoed() {
         "terminal t-1 observation o-1 revision 3 owner 80x24 cursor 1,2 wait elapsed \
          permissions allow 2 ask 1 deny 0; full state in structuredContent"
     );
+    // #1704 S2 — the source follows the counts when the card carries it
+    // (a pre-S2 card has none: the line is S1's).
+    state["claude_permissions_source"] = json!("declared_within_policy");
+    assert_eq!(
+        observation_summary(&state),
+        "terminal t-1 observation o-1 revision 3 owner 80x24 cursor 1,2 wait elapsed \
+         permissions allow 2 ask 1 deny 0 source declared_within_policy; \
+         full state in structuredContent"
+    );
     state["claude_permissions"] = json!(null);
-    assert_eq!(observation_summary(&state), plain);
+    assert_eq!(
+        observation_summary(&state),
+        plain,
+        "a source without a block names nothing"
+    );
 }
 
 /// #1710 — an observe that searched the history names the verdict and the

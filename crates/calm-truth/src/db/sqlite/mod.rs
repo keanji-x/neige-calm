@@ -80,6 +80,9 @@ mod task_attempt_tests;
 mod task_projection;
 mod task_recovery_projection;
 mod track;
+mod track_claude_permissions;
+#[cfg(test)]
+mod track_claude_permissions_tests;
 mod track_recipe;
 mod track_tree;
 mod track_workspace;
@@ -166,6 +169,7 @@ pub use track::{
     track_delete_tx, track_require_candidate_verification_settled_tx, track_require_leaf_tx,
     track_update_tx,
 };
+pub use track_claude_permissions::track_claude_permissions_ceiling_read;
 pub use track_recipe::track_recipe_get_tx;
 pub use track_tree::{
     DEFAULT_TREE_TASK_BUDGET, MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_BOUNDED_PATH_SQL,

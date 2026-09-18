@@ -25,6 +25,7 @@ use crate::model::{
     Area, AreaFolder, AreaKind, Card, HarnessInputSegment, HarnessItem, Overlay, Track,
     TrackLifecycle, TrackWorkspace, TrackWorkspaceKind,
 };
+use calm_types::claude_permissions::ClaudePermissionsScope;
 
 /// Row mirror of [`Area`].
 #[derive(Debug, sqlx::FromRow)]
@@ -90,7 +91,8 @@ impl From<AreaFolderRow> for AreaFolder {
 /// Use [`TRACK_SELECT_COLUMNS_W`] where the query aliases the table as `w`.
 pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
      plugin_scope, purpose, template_input, terminal_at, recipe_id, recipe_revision, \
-     workspace_kind, workspace_path, workspace_frozen_at, created_at, updated_at";
+     workspace_kind, workspace_path, workspace_frozen_at, created_at, updated_at, \
+     claude_permissions_policy";
 
 /// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias.
 /// `#[sqlx(flatten)]` / `FromRow` still resolve the *unqualified* names, so the
@@ -98,7 +100,7 @@ pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, p
 pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
      w.template_id, w.plugin_scope, w.purpose, w.template_input, w.terminal_at, \
      w.recipe_id, w.recipe_revision, w.workspace_kind, w.workspace_path, \
-     w.workspace_frozen_at, w.created_at, w.updated_at";
+     w.workspace_frozen_at, w.created_at, w.updated_at, w.claude_permissions_policy";
 
 /// Row mirror of [`Track`].
 #[derive(Debug, sqlx::FromRow)]
@@ -139,6 +141,15 @@ pub struct TrackRow {
     pub workspace_frozen_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// #1704 S2 — migration 0109. The tree root's Claude Code permission
+    /// policy as stored (a child row is NULL; ceiling reads resolve the root
+    /// separately). Nullable JSON TEXT through the same `#[sqlx(json)]`
+    /// machinery as `template_input`; a value the scope derive cannot decode
+    /// fails the read (an error, never "no policy") — the derive is lenient
+    /// about unknown keys and, like any serde struct, accepts a positional
+    /// array.
+    #[sqlx(json(nullable))]
+    pub claude_permissions_policy: Option<ClaudePermissionsScope>,
 }
 
 impl From<TrackRow> for Track {
@@ -166,6 +177,7 @@ impl From<TrackRow> for Track {
                 path: r.workspace_path,
                 frozen_at: r.workspace_frozen_at,
             },
+            claude_permissions_policy: r.claude_permissions_policy,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }

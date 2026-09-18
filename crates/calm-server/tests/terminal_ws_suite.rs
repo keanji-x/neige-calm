@@ -12,6 +12,8 @@ mod terminal_input_control;
 mod terminal_lifecycle;
 #[path = "cases/terminal_open_wait.rs"]
 mod terminal_open_wait;
+#[path = "cases/terminal_permissions_policy.rs"]
+mod terminal_permissions_policy;
 #[path = "cases/terminal_receipt_summary.rs"]
 mod terminal_receipt_summary;
 #[path = "cases/terminal_replace.rs"]

@@ -1,0 +1,15 @@
+-- #1704 S2 — the Track tree's Claude Code permission policy.
+--
+-- A user-set scope (`{edit?, bash?, deny?}`, the same JSON the Planner
+-- declares as `claude_permissions` on `calm.terminal.open`) that is the
+-- ceiling of every Planner-opened Claude in the track's tree: with no
+-- declaration it is the rendered scope; a declared list must stay within it.
+--
+-- Tree-root-only, like `tree_task_budget`: a child row is always NULL, a
+-- PATCH of a child is refused, and every ceiling read walks to the root
+-- (`track_claude_permissions_ceiling_read`). NULL means "no policy".
+--
+-- Deliberately additive with no CHECK, like 0085: shape is validated by the
+-- writer (`parse_scope_named` + `validate_scope_named`), and a rebuilt
+-- `tracks` would mean reproducing every historical partial index and CHECK.
+ALTER TABLE tracks ADD COLUMN claude_permissions_policy TEXT;

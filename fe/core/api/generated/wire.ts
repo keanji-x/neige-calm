@@ -125,6 +125,30 @@ export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
 export type ChannelVerdictKind = "approved" | "changes_requested";
 
 /**
+ * A declared Claude Code permission scope: the `claude_permissions` argument
+ * of `calm.terminal.open` and, since S2, the value of
+ * `tracks.claude_permissions_policy`.
+ *
+ * The derive is lenient on unknown keys on purpose: it decodes stored rows
+ * and stored operation payloads, which a newer binary may have written with
+ * a key this one does not know, and a list route must not fail for a whole
+ * area over one such row. Strictness (unknown key, wrong list type, a JSON
+ * array or `null` in place of the object) lives in [`parse_scope_named`],
+ * which every untrusted entry runs first.
+ */
+export type ClaudePermissionsScope = { edit?: Array<string>, bash?: Array<string>, deny?: Array<string>, };
+
+/**
+ * #1704 S2 — which scope a terminal's rendered `permissions` block came
+ * from; stamped on the card beside the block as
+ * `Card.payload.claude_permissions_source` and echoed by the open.
+ *
+ * A card that carries `claude_permissions` and NO source predates S2 and
+ * reads as [`Declared`](Self::Declared); S3 (the card view) must apply that.
+ */
+export type ClaudePermissionsSource = "declared" | "track_policy" | "declared_within_policy";
+
+/**
  * Producer of a track-report edit. Existing variants are persisted wire values.
  */
 export type EditAuthor = "planner" | "user" | "assistant" | "kernel" | "plugin";
@@ -593,7 +617,17 @@ recipe_id: string | null,
  * later edits to the recipe bump the recipe's revision and leave this
  * alone, which is what makes it identify a version rather than a row.
  */
-recipe_revision: number | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
+recipe_revision: number | null, workspace: TrackWorkspace, 
+/**
+ * #1704 S2 — the user-set Claude Code permission policy of this track's
+ * TREE, stored on the tree root only (`tracks.claude_permissions_policy`,
+ * migration 0109): a child row is always `null` and a PATCH of a child
+ * is refused, while every CEILING read (`calm.terminal.open`) resolves
+ * the root. This field is the raw column, so a child shows `null` here
+ * even when its root carries a policy. `null` for every track without
+ * one; always serialized (the `recipe_id` convention).
+ */
+claude_permissions_policy: ClaudePermissionsScope | null, created_at: number, updated_at: number, };
 
 /**
  * One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
@@ -918,7 +952,17 @@ recipe_id: string | null,
  * later edits to the recipe bump the recipe's revision and leave this
  * alone, which is what makes it identify a version rather than a row.
  */
-recipe_revision: number | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
+recipe_revision: number | null, workspace: TrackWorkspace, 
+/**
+ * #1704 S2 — the user-set Claude Code permission policy of this track's
+ * TREE, stored on the tree root only (`tracks.claude_permissions_policy`,
+ * migration 0109): a child row is always `null` and a PATCH of a child
+ * is refused, while every CEILING read (`calm.terminal.open`) resolves
+ * the root. This field is the raw column, so a child shows `null` here
+ * even when its root carries a policy. `null` for every track without
+ * one; always serialized (the `recipe_id` convention).
+ */
+claude_permissions_policy: ClaudePermissionsScope | null, created_at: number, updated_at: number, };
 
 /**
  * A track's typed workspace. `path` is its single stored path.

@@ -15,8 +15,12 @@ use crate::terminal_interaction::{
     BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Occurrence, ScrollTo, Target,
     TerminalInteraction, WaitFor, WaitPlan, edits_the_draft, receipt_summary, summary_line,
 };
-use crate::terminal_permissions::{ClaudePermissionsScope, parse_scope, validate_scope};
-use crate::validation::TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY;
+use crate::terminal_permissions::{
+    ClaudePermissionsScope, apply_policy, parse_scope, validate_scope, wait_at_ceiling_checked_hook,
+};
+use crate::validation::{
+    TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY, TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -212,7 +216,9 @@ fn observation_summary(state: &Value) -> String {
         other => other.to_string(),
     };
     // #1704 S1 — an open that declared a scope echoes the effective block;
-    // its rule counts join the line (observe never carries the block).
+    // its rule counts join the line (observe never carries the block). S2 —
+    // the block's source (`declared`, `track_policy`,
+    // `declared_within_policy`) follows the counts when the card carries it.
     let permissions = match state[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY].as_object() {
         Some(block) => {
             let rules = |list: &str| {
@@ -221,8 +227,12 @@ fn observation_summary(state: &Value) -> String {
                     .and_then(Value::as_array)
                     .map_or(0, Vec::len)
             };
+            let source = match state[TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY].as_str() {
+                Some(source) => format!(" source {source}"),
+                None => String::new(),
+            };
             format!(
-                " permissions allow {} ask {} deny {}",
+                " permissions allow {} ask {} deny {}{source}",
                 rules("allow"),
                 rules("ask"),
                 rules("deny")
@@ -533,6 +543,38 @@ async fn call(
             let track_id = TerminalInteraction::authorize(ctx.repo.as_ref(), &identity)
                 .await
                 .map_err(failure)?;
+            let idempotency_key = format!(
+                "planner-terminal:{}:{}",
+                identity.session_id, args.request_id
+            );
+            let runtime = ctx
+                .operation_runtime
+                .get()
+                .ok_or_else(|| RpcError::internal("operation runtime unavailable"))?;
+            // #1704 S2 — the Track tree's policy is the ceiling of the
+            // declaration. Only a FRESH request_id is checked here (a known
+            // key is `submit`'s business: the same hash returns the existing
+            // terminal whatever the policy is now, another hash is its
+            // payload conflict), so a replay with the same arguments never
+            // meets a since-narrowed policy. The verdict is discarded: the
+            // payload keeps the DECLARED scope and the hash view is
+            // unchanged; `prepare_tx` re-reads the ceiling inside the write
+            // transaction and renders the merge there.
+            if runtime
+                .find_by_kind_and_idempotency("terminal-create", &idempotency_key)
+                .await
+                .map_err(failure)?
+                .is_none()
+            {
+                let ceiling = ctx
+                    .repo
+                    .track_claude_permissions_ceiling(&track_id)
+                    .await
+                    .map_err(failure)?;
+                apply_policy(ceiling.as_ref(), claude_permissions.as_ref())
+                    .map_err(RpcError::invalid_params)?;
+                wait_at_ceiling_checked_hook(&track_id).await;
+            }
             let request = normalize_terminal_create_request(TerminalCreateRequestPayload {
                 track_id: track_id.clone(),
                 title: args.title,
@@ -544,10 +586,7 @@ async fn call(
             });
             let key = OperationKey {
                 operation_key: new_id(),
-                idempotency_key: Some(format!(
-                    "planner-terminal:{}:{}",
-                    identity.session_id, args.request_id
-                )),
+                idempotency_key: Some(idempotency_key),
                 payload_hash: open_payload_hash(&identity, &request, claude_permissions.as_ref())?,
             };
             let payload = serde_json::to_value(TerminalCreateOperationPayload {
@@ -558,10 +597,6 @@ async fn call(
                 request,
             })
             .map_err(failure)?;
-            let runtime = ctx
-                .operation_runtime
-                .get()
-                .ok_or_else(|| RpcError::internal("operation runtime unavailable"))?;
             let operation = runtime
                 .submit("terminal-create", key, payload)
                 .await
@@ -660,9 +695,17 @@ async fn call(
             }
             metadata["card_id"] = json!(card.id);
             // #1704 S1 — the effective block is echoed from the stamped card
-            // (the source of truth), so a replay echoes the same block.
-            if let Some(block) = card.payload.get(TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY) {
-                metadata[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY] = block.clone();
+            // (the source of truth), so a replay echoes the same block; S2 —
+            // its source beside it, from the card for the same reason (a
+            // source recomputed against the CURRENT policy could mislabel
+            // the file the card carries).
+            for key in [
+                TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY,
+                TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY,
+            ] {
+                if let Some(value) = card.payload.get(key) {
+                    metadata[key] = value.clone();
+                }
             }
             metadata["operation_id"] = json!(operation);
             observation_result(metadata, png)

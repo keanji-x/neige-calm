@@ -1795,7 +1795,7 @@
   },
   {
     "name": "calm.terminal.open",
-    "description_sha256": "fcb4f6add84ccd2837d6cf26ff6e4c481fcfa89e5bae2241d21a00e75e32135e",
+    "description_sha256": "215b270b4e3b340e3297382c1a87e112e07ecf7d53b50a72c8b59cfa694eb6c4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

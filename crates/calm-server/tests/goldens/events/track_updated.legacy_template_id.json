@@ -36,7 +36,8 @@
         "frozen_at": null
       },
       "recipe_id": null,
-      "recipe_revision": null
+      "recipe_revision": null,
+      "claude_permissions_policy": null
     }
   }
 }

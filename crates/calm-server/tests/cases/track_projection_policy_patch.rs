@@ -185,6 +185,9 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     // a cross-column CHECK refuses one without the other.
     "recipe_id",
     "recipe_revision",
+    // #1704 S2 — migration 0109. The tree root's Claude Code permission
+    // policy; NULL on every child and on every track without one.
+    "claude_permissions_policy",
 ];
 
 type PersistedTrackEvent = (

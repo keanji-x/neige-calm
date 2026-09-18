@@ -56,6 +56,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use calm_types::claude_permissions::ClaudePermissionsSource;
+
 use crate::db::RepoRead;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
@@ -87,24 +89,35 @@ pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
 /// trail of the rules that terminal's Claude Code was given; absent on every
 /// other card.
 pub const TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY: &str = "claude_permissions";
+/// #1704 S2 — `Card.payload` key stamped beside [`TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`]
+/// with a [`ClaudePermissionsSource`] spelling: which scope the block came
+/// from (`declared`, `track_policy`, `declared_within_policy`). Absent on a
+/// card stamped before S2, which reads as `declared`.
+pub const TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY: &str = "claude_permissions_source";
 /// The `Card.payload` keys only the kernel writes (`card_with_terminal_create_tx`
 /// and the terminal adapter's stamp), refused from every client at every
 /// public write boundary and kept sticky by `card_update_tx`.
-pub const SERVER_OWNED_TERMINAL_PAYLOAD_KEYS: [&str; 2] = [
+pub const SERVER_OWNED_TERMINAL_PAYLOAD_KEYS: [&str; 3] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY,
+    TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY,
 ];
 
 /// Whether a STORED value of a server-owned key is the shape the kernel mints
 /// — and therefore the one `card_update_tx` re-inserts into a replacement
 /// payload (and whose presence refuses a non-object replacement):
 /// `terminal_signals` only when `true`, `claude_permissions` only when it is a
-/// JSON object. Any other stored shape was never minted by the kernel and is
-/// not kept sticky (the #1620 contract for the marker, unchanged by #1704).
+/// JSON object, `claude_permissions_source` only when it is one of the three
+/// source spellings. Any other stored shape was never minted by the kernel
+/// and is not kept sticky (the #1620 contract for the marker, unchanged by
+/// #1704).
 pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     match key {
         TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
         TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY => value.is_object(),
+        TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY => {
+            serde_json::from_value::<ClaudePermissionsSource>(value.clone()).is_ok()
+        }
         _ => false,
     }
 }
