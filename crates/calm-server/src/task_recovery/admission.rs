@@ -54,7 +54,7 @@ fn conflict(reason: impl Into<String>) -> CalmError {
 }
 
 /// A Conflict-kind refusal decided at `site`. `reason` is the complete
-/// sentence the wire and `calm.plan.list` guidance carry unchanged.
+/// sentence the wire carries.
 fn refuse(
     site: RefusalSite,
     code: RecoveryRefusalCode,

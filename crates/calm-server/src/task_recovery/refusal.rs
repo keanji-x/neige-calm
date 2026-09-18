@@ -237,8 +237,7 @@ pub(crate) enum RefusalKind {
 }
 
 /// A refusal as the site decided it. `reason` is a complete, true
-/// sentence: it is the wire `reason` and, unchanged, the
-/// `guidance.blocking_condition`.
+/// sentence: it is the wire `reason`.
 #[derive(Clone, Debug)]
 pub(crate) struct RecoveryRefusal {
     pub site: RefusalSite,
