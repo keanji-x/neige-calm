@@ -1,6 +1,8 @@
 //! Every admission refusal site, driven through the real admission function
 //! with a fixture that trips exactly that site, asserts the `(site, code,
-//! kind, continuation)` it names. No assertion here reads the message text.
+//! kind, continuation)` it names. The site table reads no message text; the
+//! two isolated sentences a branch predicate does not imply are pinned by
+//! text in their own test.
 use super::admission;
 use super::launch_test_support::{
     RecoveryFixture, initial_claimed_task, initial_claimed_task_among, recovered_claimed_task,
@@ -18,6 +20,7 @@ use crate::routes::theme::RequestTheme;
 use crate::state::WriteContext;
 use crate::track_report::{ReportDocOp, ReportEditTarget, TrackReportPayload};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 const PLANNER: &str = calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
@@ -264,6 +267,114 @@ async fn require_stopped(fx: &Fx, op_id: &str) -> Result<(), AdmissionError> {
     crate::isolated_codex::recovery::require_stopped_tx(&mut tx, &task, op_id).await
 }
 
+const ISOLATED_OP_ID: &str = "op-isolated-prepared";
+const ISOLATED_CARD_ID: &str = "card-isolated";
+
+/// The receipt the dedicated-codex Controller writes for a prepared isolated
+/// execution whose namespace stop it proved, as JSON: closed admission,
+/// `TurnActive`, a `Quiesced` proof whose handle is the endpoint boundary,
+/// and every identity field `confirmed_record_tx` compares consistent
+/// (`admissible_baselines_pass_so_each_case_trips_exactly_one_site` proves it
+/// admits). `RunRecord`, `SessionRecord` and `PreparedEndpoint` all derive
+/// `Deserialize`, so the private `launch` field is no barrier;
+/// `isolated_codex_retry::stop_evidence_corruption_and_ambiguous_operations_refuse_retry`
+/// forges the same shapes by JSON-pointer mutation of a real receipt.
+fn isolated_receipt(fx: &Fx) -> Value {
+    use crate::dedicated_codex::{DedicatedIdentity, DedicatedRequest};
+    let task_id = fx.fixture.task.id.clone();
+    let request = DedicatedRequest {
+        identity: DedicatedIdentity {
+            run_id: ISOLATED_OP_ID.into(),
+            attempt_id: task_id.clone(),
+            card_id: ISOLATED_CARD_ID.into(),
+            session_id: "session-isolated".into(),
+        },
+        workspace: "/workspaces/isolated".into(),
+        developer_instructions: "fixture".into(),
+    };
+    // The digest is over the typed request's own serialization, as the
+    // Controller computes it.
+    let request_digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&request).unwrap())
+    );
+    let request = serde_json::to_value(&request).unwrap();
+    let boundary = json!({
+        "run_id": ISOLATED_OP_ID, "attempt_id": task_id, "config_digest": "0".repeat(64),
+        "init": {"pid": 1, "start_time": 1, "boot_id": "boot", "namespace_inode": 1},
+    });
+    json!({
+        "version": "isolated-run-v1",
+        "request": request,
+        "track_id": fx.track_id,
+        "native_token": "token",
+        "admission": "closed",
+        "provider": {"state": "prepared", "record": {
+            "endpoint": {
+                "version": 2,
+                "request": request,
+                "home": {
+                    "version": 1, "run_id": ISOLATED_OP_ID, "request_digest": request_digest,
+                    "root": "/private/run", "home": "/private/run/home",
+                    "control": "/private/run/control", "socket": "/private/run/socket",
+                    "mcp_source_socket": "/private/mcp.sock", "mcp_device": 1, "mcp_inode": 1,
+                    "policy_digest": "policy", "authentication_digest": "auth",
+                },
+                "boundary": boundary,
+                "launch": {
+                    "attempt_id": task_id, "network": "isolated",
+                    "workspace": "/workspaces/isolated", "program": "/bin/true", "args": [],
+                    "environment": {}, "mounts": [],
+                },
+            },
+            "phase": {"TurnActive": {
+                "thread_id": "thread", "turn_id": "turn", "request_key": "key",
+                "prompt_digest": "digest",
+            }},
+            "stop": {"Quiesced": {
+                "handle": boundary, "observed_at_ms": 1, "method": "init_absent",
+            }},
+        }},
+    })
+}
+
+/// The keyed isolated operation row (`ISOLATED_OP_ID`) as
+/// `prepare_tx_and_advance` leaves it: card target, Kernel-dispatcher
+/// payload, `receipt` under `tx_output.data.isolated_execution`; `parked`
+/// rows carry the timestamps the phase CHECK requires.
+async fn insert_prepared_isolated_operation(fx: &Fx, phase: &str, receipt: &Value) {
+    let payload = crate::isolated_codex::WorkerPayload {
+        version: crate::isolated_codex::WorkerVersion::V1,
+        actor: ActorId::KernelDispatcher,
+        track_id: fx.track_id.clone(),
+        task_id: fx.fixture.task.id.clone(),
+        idempotency_key: fx.fixture.task.id.clone(),
+    };
+    let output = json!({
+        "target_type": "card", "target_id": ISOLATED_CARD_ID, "result": {},
+        "data": {"isolated_execution": receipt},
+    });
+    let parked = (phase == "parked").then_some(1_i64);
+    let pool = fx.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,\
+         target_type,target_id,target_json,payload_json,phase,tx_output_json,\
+         parked_at_ms,parked_deadline_ms,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,?3,'h',\
+         'card',?4,'{}',?5,?6,?7,?8,?8,1,1)",
+    )
+    .bind(ISOLATED_OP_ID)
+    .bind(crate::isolated_codex::OPERATION_KIND)
+    .bind(&fx.fixture.task.id)
+    .bind(ISOLATED_CARD_ID)
+    .bind(serde_json::to_string(&payload).unwrap())
+    .bind(phase)
+    .bind(output.to_string())
+    .bind(parked)
+    .execute(&pool)
+    .await
+    .unwrap();
+}
+
 async fn frozen_refs(fx: &Fx) -> Vec<Value> {
     let pool = fx.repo.sqlite_pool().unwrap();
     let json: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
@@ -453,6 +564,11 @@ async fn admissible_baselines_pass_so_each_case_trips_exactly_one_site() {
     check_attempt(&fx)
         .await
         .expect("a freshly recovered claimed attempt passes its recheck");
+    let fx = failed_initial_with(isolated_declaration()).await;
+    insert_prepared_isolated_operation(&fx, "failed", &isolated_receipt(&fx)).await;
+    admit(&fx, ActorId::User, 1)
+        .await
+        .expect("a failed isolated execution with a consistent, closed stop proof is admissible");
 }
 
 /// What every site names, keyed by the site. A row's fixture must trip
@@ -664,6 +780,18 @@ const ROWS: &[(Site, Code, Kind, Next)] = &[
         Next::None,
     ),
     (
+        Site::IsolatedStopUnconfirmed,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
+        Site::IsolatedStopIdentityMismatch,
+        Code::PredecessorNotQuiescent,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
         Site::AllocationMissing,
         Code::RecoveryLineageMissing,
         Kind::Conflict,
@@ -691,25 +819,7 @@ const ROWS: &[(Site, Code, Kind, Next)] = &[
 
 /// Sites no fixture in this file can reach, each with its reason; the
 /// set-equality assertion below subtracts exactly these from [`Site::ALL`].
-/// Both sit behind `journal::load_tx` + `RunRecord::session()`, which need
-/// a prepared `RunRecord` whose `PreparedEndpoint` carries the private
-/// `LaunchConfig` only the dedicated-codex Controller writes; this file's
-/// fixtures cannot forge one. They are driven at integration level with the
-/// fake isolated backend's real receipt
-/// (`isolated_codex_retry::stop_evidence_corruption_and_ambiguous_operations_refuse_retry`
-/// mutates `/provider/record/stop` and the identity fields).
-const UNREACHABLE: &[(Site, &str)] = &[
-    (
-        Site::IsolatedStopUnconfirmed,
-        "needs a prepared run record whose stop state is not Quiesced; only the Controller writes \
-         one (covered by isolated_codex_retry with the fake backend)",
-    ),
-    (
-        Site::IsolatedStopIdentityMismatch,
-        "needs a prepared run record with a Quiesced stop whose identity chain is then broken; \
-         only the Controller writes one (covered by isolated_codex_retry with the fake backend)",
-    ),
-];
+const UNREACHABLE: &[(Site, &str)] = &[];
 
 /// Drives the real function with a fixture that trips exactly `site`.
 async fn drive(site: Site) -> RecoveryRefusal {
@@ -1153,18 +1263,12 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::IsolatedStopPending => {
             Box::pin(async {
-                // The task failed while its operation is still running its
-                // stop. (`parked` itself is CHECK-bound to a real run record;
-                // `planner_observes_failure_then_settled_isolated_recovery`
-                // drives that shape through the same site.)
+                // The task failed and the Controller already checkpointed the
+                // matching `Quiesced` proof, but the parked-completion
+                // transaction that settles the operation has not run: the
+                // row is still `parked`. Only the phase is unmet.
                 let fx = failed_initial_with(isolated_declaration()).await;
-                insert_operation(
-                    &fx,
-                    crate::isolated_codex::OPERATION_KIND,
-                    "spawn_succeeded",
-                    Some("{}"),
-                )
-                .await;
+                insert_prepared_isolated_operation(&fx, "parked", &isolated_receipt(&fx)).await;
                 refused(site, admit(&fx, user(), 1).await)
             })
             .await
@@ -1198,8 +1302,32 @@ async fn drive(site: Site) -> RecoveryRefusal {
             })
             .await
         }
-        Site::IsolatedStopUnconfirmed | Site::IsolatedStopIdentityMismatch => {
-            unreachable!("{site:?} is listed in UNREACHABLE and never driven")
+        Site::IsolatedStopUnconfirmed => {
+            Box::pin(async {
+                // The operation is terminal, but the retained checkpoint is
+                // the stop request, never its proof
+                // (`isolated_codex_retry` mutates `/provider/record/stop` the
+                // same way on a real receipt).
+                let fx = failed_initial_with(isolated_declaration()).await;
+                let mut receipt = isolated_receipt(&fx);
+                *receipt.pointer_mut("/provider/record/stop").unwrap() = json!("Requested");
+                insert_prepared_isolated_operation(&fx, "failed", &receipt).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
+        }
+        Site::IsolatedStopIdentityMismatch => {
+            Box::pin(async {
+                // Every identity field unchanged and the proof recorded; only
+                // the admission never closed (`isolated_codex_retry` mutates
+                // `/admission` the same way on a real receipt).
+                let fx = failed_initial_with(isolated_declaration()).await;
+                let mut receipt = isolated_receipt(&fx);
+                *receipt.pointer_mut("/admission").unwrap() = json!("open");
+                insert_prepared_isolated_operation(&fx, "failed", &receipt).await;
+                refused(site, admit(&fx, user(), 1).await)
+            })
+            .await
         }
         Site::AllocationMissing => {
             Box::pin(async {
@@ -1304,6 +1432,30 @@ async fn every_refusal_site_names_its_code_kind_and_continuation() {
         assert!(Site::ALL.contains(site), "{site:?} is not a site");
         assert!(!reason.is_empty(), "{site:?} needs its reason");
     }
+}
+
+/// #1727 S3 fix 4 (M2) — the two isolated sentences name the condition their
+/// branch tests, not one inferred from it. `IsolatedStopPending` is reached
+/// with a matching quiescence proof already checkpointed (the Controller
+/// records `Quiesced` before the parked-completion transaction), so the
+/// sentence names the phase, not a missing stop. `IsolatedStopIdentityMismatch`
+/// is reached with every identity field unchanged when the admission never
+/// closed, so the sentence names the admission state.
+#[tokio::test]
+async fn isolated_stop_sentences_name_the_condition_their_branch_tests() {
+    let pending = Box::pin(drive(Site::IsolatedStopPending)).await;
+    assert_eq!(
+        pending.reason,
+        "predecessor isolated operation is in phase parked, not failed; the settlement that \
+         records its stop has not completed, so recovery re-opens once the kernel settles it \
+         and delivers the settlement briefing"
+    );
+    let mismatch = Box::pin(drive(Site::IsolatedStopIdentityMismatch)).await;
+    assert_eq!(
+        mismatch.reason,
+        "predecessor isolated execution's recorded run has admission state open, not closed; \
+         same-key recovery is permanently unavailable"
+    );
 }
 
 /// `Site::ALL` is exhaustive: the wildcard-free match below does not compile
