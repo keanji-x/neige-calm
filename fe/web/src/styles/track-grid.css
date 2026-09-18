@@ -218,20 +218,6 @@
     color: var(--text-3);
   }
 
-  .live-dot {
-    display: block;
-    width: 8px;
-    height: 8px;
-    border-radius: var(--radius-pill);
-    background: var(--accent);
-    animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
-  }
-
-  @keyframes dot-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
-  }
-
   .react-grid-item,
   .react-grid-item.cssTransforms {
     transition: transform var(--motion-snappy) ease, box-shadow var(--motion-snappy) ease;

@@ -39,8 +39,8 @@ function contrast(first: Rgb, second: Rgb): number {
 }
 
 const plannerNotification = [{
-  cardId: 'planner', source: 'Planner', message: 'Requires input to continue.',
-  state: 'awaiting-input' as const, updatedAt: 1,
+  origin: 'card' as const, id: 'planner', cardId: 'planner', source: 'Planner',
+  message: 'Requires input to continue.', state: 'awaiting-input' as const, updatedAt: 1,
 }];
 
 describe('the track lifecycle status in the page header', () => {

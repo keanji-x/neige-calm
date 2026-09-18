@@ -19,6 +19,12 @@ afterEach(cleanup);
 
 const NOW = 1_760_000_000_000;
 
+/* The thread's working marks: `ui/activity-indicator`, decorative by contract
+   (#1722 §6, the S2 a11y contract) — the accessible "in motion" fact is said
+   once, by the pending-reply placeholder's hidden text, and asserted by name
+   where it matters. Counted by the marker, not by a label. */
+const workingMarks = () => document.querySelectorAll('[data-nc-activity="working"]');
+
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null, kind: 'codex',
@@ -68,7 +74,7 @@ describe('QuietSyncFold in the thread', () => {
   it('folds a report-edit turn into one closed line and keeps the turn under it', async () => {
     const user = userEvent.setup();
     const { container } = render(
-      <ChatThread
+      <ChatThread cards={{}}
         conversation={conversation()}
         turns={[
           you('u1', 'Please draft the thesis.'), agent('a1', 'Drafted.'),
@@ -99,7 +105,7 @@ describe('QuietSyncFold in the thread', () => {
      bubble, outside the fold, after it. */
   it('draws a notify as an agent bubble outside the fold', () => {
     const { container } = render(
-      <ChatThread
+      <ChatThread cards={{}}
         conversation={conversation()}
         turns={[
           reportEdited('user'), activity('act1'),
@@ -128,7 +134,7 @@ describe('QuietSyncFold in the thread', () => {
      is drawn after the fold line, not inside the closed disclosure. */
   it('draws a failed sync outcome outside the fold, after it', () => {
     const { container } = render(
-      <ChatThread
+      <ChatThread cards={{}}
         conversation={conversation()}
         turns={[
           reportEdited('user'), activity('act1'),
@@ -155,7 +161,7 @@ describe('QuietSyncFold in the thread', () => {
       id: 's1', author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited, text, atMs: NOW,
     };
     const { container } = render(
-      <ChatThread
+      <ChatThread cards={{}}
         conversation={conversation()}
         turns={[you('u1', 'please add a risks section'), plain, activity('act1'), agent('a1', 'Added.')]}
       />,
@@ -169,7 +175,7 @@ describe('QuietSyncFold in the thread', () => {
      ends a fold. */
   it('never folds a turn the user opened', () => {
     const { container } = render(
-      <ChatThread
+      <ChatThread cards={{}}
         conversation={conversation()}
         turns={[
           you('u1', 'hello'), activity('act1'), agent('a1', 'hi'),
@@ -192,7 +198,7 @@ describe('QuietSyncFold in the thread', () => {
 
   it('draws no fold at all for a conversation without a report-edit wake', () => {
     const { container } = render(
-      <ChatThread conversation={conversation()} turns={[you('u1', 'hello'), agent('a1', 'hi')]} />,
+      <ChatThread cards={{}} conversation={conversation()} turns={[you('u1', 'hello'), agent('a1', 'hi')]} />,
     );
     expect(fold(container)).toBeNull();
   });
@@ -201,20 +207,23 @@ describe('QuietSyncFold in the thread', () => {
      in flight: the running activity that would carry it is inside a closed
      disclosure, and one mark must stay visible. */
   it('carries the live mark on the fold line while the sync is running', () => {
+    /* Live is the kernel's verdict for this card (#1722 §5.3), not the
+       session state on the row. */
     const { container } = render(
-      <ChatThread
+      <ChatThread cards={{ c1: 'working' }}
         conversation={conversation({ state: 'running' })}
         turns={[you('u1', 'hello'), reportEdited('assistant'), activity('act1', { verb: 'Reading report', state: 'running' })]}
       />,
     );
     const details = fold(container);
-    expect(details?.querySelector('summary [aria-label="Working"]')).not.toBeNull();
+    expect(details?.querySelector('summary [data-nc-activity="working"]')).not.toBeNull();
+    expect(workingMarks()).toHaveLength(1);
     expect(details?.querySelector('[data-nc-quiet-sync-label]')?.textContent).toContain('The assistant edited the report');
   });
 
   it('says the report was edited when the wake named no author', () => {
     const { container } = render(
-      <ChatThread conversation={conversation()} turns={[reportEdited(null)]} />,
+      <ChatThread cards={{}} conversation={conversation()} turns={[reportEdited(null)]} />,
     );
     const details = fold(container);
     expect(details?.getAttribute('data-nc-quiet-sync-author')).toBe('unknown');
@@ -226,7 +235,7 @@ describe('QuietSyncFold in the thread', () => {
      is appended (the live mark is the state). */
   it('ends the line with the verdict once the sync has completed', () => {
     const label = (turns: Parameters<typeof ChatThread>[0]['turns']) => {
-      const { container } = render(<ChatThread conversation={conversation()} turns={turns} />);
+      const { container } = render(<ChatThread cards={{}} conversation={conversation()} turns={turns} />);
       const details = fold(container);
       const result = {
         text: details?.querySelector('[data-nc-quiet-sync-label]')?.textContent ?? '',

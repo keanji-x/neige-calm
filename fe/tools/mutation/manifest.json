@@ -1365,15 +1365,16 @@
     "target": "web/src/app/providers/ui-preferences.tsx",
     "patch": "diff --git a/web/src/app/providers/ui-preferences.tsx b/web/src/app/providers/ui-preferences.tsx\nindex 2d603ac37..88784c304 100644\n--- a/web/src/app/providers/ui-preferences.tsx\n+++ b/web/src/app/providers/ui-preferences.tsx\n@@ -1,6 +1,6 @@\n import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';\n \n-import { createStorageKey, DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';\n+import { createStorageKey, DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';\n import { useState } from '../../ui/state/public.ts';\n \n type Preference = boolean | string | null;\n@@ -20,7 +20,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {\n    * `null` until the compat gate has confirmed the id for this load.\n    */\n   let database: string | null = null;\n-  try { database = storage?.getItem(DATABASE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }\n+  try { database = storage?.getItem(DB_INSTANCE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }\n   const notify = () => {\n     revision += 1;\n     for (const listener of listeners) listener();\n",
     "expected_red": [
-      "records the initially visible track under the first discovered instance",
       "database_id_change_overwrites_the_key",
-      "local read receipts keeps read receipts across reloads, accepts only newer acknowledgements, and isolates databases",
-      "local read receipts construction_seeds_from_database_id_key",
-      "local read receipts null_scope_is_never_unread",
       "does not overwrite a newer acknowledgement from another tab",
-      "uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading",
       "keeps new replies unread while reopening cached history is still loading",
-      "shows a closed Planner working and preserves unread completion until its history is read"
+      "local read receipts construction_seeds_from_database_id_key",
+      "local read receipts keeps read receipts across reloads, accepts only newer acknowledgements, and isolates databases",
+      "local read receipts null_scope_is_never_unread",
+      "records the initially visible track under the first discovered instance",
+      "shows a closed Planner working and preserves unread completion until its history is read",
+      "the injected planner row reads activity.cards and last_turn_completed_ms",
+      "uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading"
     ],
     "selection_paths": [
       "web/src/app/providers/read-receipts.test.tsx",
@@ -1441,7 +1442,6 @@
       "degraded workspace reads stay usable does not claim empty activity while the areas read is unavailable",
       "degraded workspace reads stay usable does not claim empty activity while the tracks read is unavailable",
       "degraded workspace reads stay usable does not claim empty activity while the activity read is unavailable",
-      "degraded workspace reads stay usable keeps Today content when one area track read fails",
       "Today rows carry the track read receipt",
       "Today clock counts waiting on you by the kernel verdict and In progress by lifecycle phase"
     ],
@@ -1451,5 +1451,209 @@
       "web/src/features/today/public.test.tsx"
     ],
     "why_more_than_one": "Grouping In progress by isWorking instead of the lifecycle phase empties the section for the phase-only fixtures: the Today unit case, the router-level Today row case and the degraded-read cases that count a working-phase track all move."
+  },
+  {
+    "mutation_id": "s2b-conversation-row-from-session-state",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/features/chat/list/public.tsx",
+    "patch": "diff --git a/web/src/features/chat/list/public.tsx b/web/src/features/chat/list/public.tsx\nindex 1e1ebe781..b1d95fb35 100644\n--- a/web/src/features/chat/list/public.tsx\n+++ b/web/src/features/chat/list/public.tsx\n@@ -76,7 +76,9 @@ export function ChatList({\n         const echo = local !== null && local.id === conversation.id ? local : null;\n         const unread = unreadIds?.has(conversation.id) ?? false;\n         const activity = activityStateOf({\n-          working: verdict === 'working' || (echo?.working ?? false),\n+          working: verdict === 'working' || (echo?.working ?? false)\n+            // MUT-1722-S2B-1: the row spins on the server's session reading again\n+            || conversation.state === 'starting' || conversation.state === 'running' || conversation.state === 'turn_pending',\n           attention: echo?.stalled ? 'failed' : attentionOfCard(verdict),\n           unread,\n         });\n",
+    "expected_red": [
+      "#1341 Today lists the launchpad track’s conversations the launchpad summary row reads the launchpad activity overlay",
+      "conversation rows read activity.cards, not session state",
+      "conversation rows read activity.cards, not session state keeps only the open row’s declared local echoes: the sender’s send and the drawer’s wedge",
+      "conversation rows read activity.cards, not session state reads another card’s verdict as nothing about this row",
+      "conversation rows read activity.cards, not session state shows nothing for a turn_pending row the kernel lists no verdict for",
+      "conversation rows read activity.cards, not session state shows unread from the receipt set, below every kernel verdict",
+      "the injected planner row reads activity.cards and last_turn_completed_ms"
+    ],
+    "selection_paths": [
+      "web/src/app/router/today-conversation.test.tsx",
+      "web/src/app/router/track-conversation.test.tsx",
+      "web/src/features/chat/list/public.test.tsx"
+    ],
+    "why_more_than_one": "The row's fold is one function of the verdict, the receipt and the local echo, so a session-state OR reddens every list case that expects a turn_pending row to stay quiet: the chat/list unit cases, the router-level server-row and injected-planner-row cases, and Today's launchpad row (its summary writer is turn_pending while it writes)."
+  },
+  {
+    "mutation_id": "s2b-planner-row-from-runtime-status",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/router/public.tsx",
+    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\nindex 6e7f38a76..82bcf7280 100644\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -2957,7 +2957,10 @@ function TrackRouteBody({\n       scopeId: track.id,\n       rows,\n       /* The track's own overlay-derived verdicts (`toTrack(detail, detailActivity)`). */\n-      cards: track.cards,\n+      // MUT-1722-S2B-2: the injected planner row's verdict re-derived from its runtime status\n+      cards: plannerCard?.runtime !== undefined && (plannerCard.runtime.status === 'turn_pending'\n+        || plannerCard.runtime.status === 'running' || plannerCard.runtime.status === 'starting')\n+        ? { ...track.cards, [plannerCard.id]: 'working' } : track.cards,\n       /* Unlike an area's, these rows are on a track the reader can be sent to —\n          this very route — so Today may hold and open them. The store checks\n          each row's `trackId` against this, so a row from anywhere else is not\n",
+    "expected_red": [
+      "the injected planner row reads activity.cards and last_turn_completed_ms"
+    ],
+    "selection_paths": [
+      "web/src/app/router/track-conversation.test.tsx"
+    ],
+    "why_more_than_one": "Only the injected planner row is re-derived from its runtime status here; the router case whose planner runtime says turn_pending with no verdict is the one that reddens."
+  },
+  {
+    "mutation_id": "s2b-thread-live-from-session-state",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/features/chat/thread/public.tsx",
+    "patch": "diff --git a/web/src/features/chat/thread/public.tsx b/web/src/features/chat/thread/public.tsx\nindex bfcbab5d0..2fbf795c1 100644\n--- a/web/src/features/chat/thread/public.tsx\n+++ b/web/src/features/chat/thread/public.tsx\n@@ -95,7 +95,9 @@ export function ChatThread({ conversation, turns, pending = false, cards }: Chat\n    * reading, which sits at `turn_pending` / `running` long after a turn\n    * ended: the spinner that never stopped (#1722 §1).\n    */\n-  const live = pending || cardActivityOf({ cards }, conversation.id) === 'working';\n+  const live = pending || cardActivityOf({ cards }, conversation.id) === 'working'\n+    // MUT-1722-S2B-3: the drawer's live mark reads the session state again\n+    || conversation.state === 'starting' || conversation.state === 'running' || conversation.state === 'turn_pending';\n   const lastTurn = turns[turns.length - 1];\n   const endRef = useRef<HTMLDivElement | null>(null);\n   /** The box every marker lookup starts from. It is not `.thread` itself\n",
+    "expected_red": [
+      "ChatThread thread live mark follows activity.cards",
+      "tool activity groups does not spin for a call left running by a conversation that is no longer live"
+    ],
+    "selection_paths": [
+      "web/src/features/chat/thread/activity-groups.browser.test.tsx",
+      "web/src/features/chat/thread/public.test.tsx"
+    ],
+    "why_more_than_one": "The drawer's live mark is read from one place, so a session-state OR relights every thread case that renders a running/turn_pending conversation without a verdict: the jsdom live-mark case and the browser cases that rerender a finished call under a still-running session reading."
+  },
+  {
+    "mutation_id": "s2b-card-row-from-runtime-status",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/view/track-page.ts",
+    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex e5344390c..ca9cb6398 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -180,7 +180,8 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa\n     /* A card row reports no run. */\n     status: taskStatus ?? (card.runtime === undefined ? null\n       : { token: card.runtime.status, phrase: card.runtime.status }),\n-    activity: rowActivity(activity, card.id),\n+    // MUT-1722-S2B-4: a card row spins on its runtime status again\n+    activity: rowActivity(activity, card.id) ?? (card.runtime?.status === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
+    "expected_red": [
+      "TrackPage task inventory card and task rows paint activity.cards, not runtime status"
+    ],
+    "selection_paths": [
+      "web/src/features/track/page/public.test.tsx"
+    ],
+    "why_more_than_one": "The derivation is shared by both painters, but only the page case that puts a runtime.status of running beside an unlisted card sees the fallback; the projection suites compare the derivation to itself and stay green by construction."
+  },
+  {
+    "mutation_id": "s2b-task-row-from-token",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/view/track-page.ts",
+    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex e5344390c..878b40e7a 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -272,7 +272,8 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity): PanelRow {\n     /* By the worker card, which is how the kernel keys a dispatched task's\n        verdict (§4.2 W); a task with no worker card yet has no indicator, and\n        `execution.status === 'running'` does not put one there. */\n-    activity: rowActivity(activity, workerCardId),\n+    // MUT-1722-S2B-5: a task row spins on its status token again\n+    activity: rowActivity(activity, workerCardId) ?? (currentStatus === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
+    "expected_red": [
+      "TrackPage task inventory card and task rows paint activity.cards, not runtime status"
+    ],
+    "selection_paths": [
+      "web/src/features/track/page/public.test.tsx"
+    ],
+    "why_more_than_one": "Only the page case with a running execution whose worker card the kernel did not list, and a running task with no worker card at all, reaches the token fallback."
+  },
+  {
+    "mutation_id": "s2b-terminal-head-from-session-state",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/systems/cards/builtins/terminal-card.tsx",
+    "patch": "diff --git a/web/src/systems/cards/builtins/terminal-card.tsx b/web/src/systems/cards/builtins/terminal-card.tsx\nindex d2ac69a7e..964bc95e4 100644\n--- a/web/src/systems/cards/builtins/terminal-card.tsx\n+++ b/web/src/systems/cards/builtins/terminal-card.tsx\n@@ -81,8 +81,9 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle\n            (the indicator) and the session / connection text. Neither stands\n            in for the other — a failed session can be red AND say `Session\n            failed.`, and a connected terminal with no verdict says nothing. */\n-        status={activity === null && statusText === null ? undefined : <>\n-          {activity !== null && <ActivityIndicator state={cardActivityState(activity)} />}\n+        status={activity === null && statusText === null && card.sessionState !== 'running' ? undefined : <>\n+          {/* MUT-1722-S2B-6: the head spins on the session reading again */}\n+          {(activity !== null || card.sessionState === 'running') && <ActivityIndicator state={cardActivityState(activity ?? 'working')} />}\n           {statusText !== null && <span role=\"status\">{statusText}</span>}\n         </>}\n         onClose={onRemove}\n",
+    "expected_red": [
+      "accepts input and later automatically reconnects after a recoverable ownership rejection and successful owner claim",
+      "bundled recovery fences input and automatically reattaches the same terminal only after synchronization",
+      "claude terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
+      "claude terminal lifecycle after refresh uses the runtime terminal identity instead of a stale payload identity",
+      "codex terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
+      "codex terminal lifecycle after refresh uses the runtime terminal identity instead of a stale payload identity",
+      "does not revive input after BadHandshake when a late owner notification arrives",
+      "does not revive input after BadSequence when a late owner notification arrives",
+      "does not revive input after SnapshotMissing when a late owner notification arrives",
+      "does not revive input after UnsupportedEncoding when a late owner notification arrives",
+      "does not revive input after UnsupportedVersion when a late owner notification arrives",
+      "does not revive input after closed when a late owner notification arrives",
+      "does not revive input after exited when a late owner notification arrives",
+      "retains process exit truth when REST still says running",
+      "shows a refused connection and reconnects the same terminal without creating a process",
+      "terminal terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
+      "terminal terminal lifecycle after refresh uses the runtime terminal identity instead of a stale payload identity"
+    ],
+    "selection_paths": [
+      "web/src/systems/cards/builtins/terminal-lifecycle.test.tsx",
+      "web/src/systems/cards/builtins/terminal-reconnect.browser.test.tsx"
+    ],
+    "why_more_than_one": "Every terminal-kind mount with runtime.status running and a null verdict grows an indicator: the three-kind lifecycle cases and the reconnect browser cases that connect a running terminal all assert its absence."
+  },
+  {
+    "mutation_id": "s2b-terminal-head-from-connection",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/systems/cards/builtins/terminal-card.tsx",
+    "patch": "diff --git a/web/src/systems/cards/builtins/terminal-card.tsx b/web/src/systems/cards/builtins/terminal-card.tsx\nindex d2ac69a7e..86763f519 100644\n--- a/web/src/systems/cards/builtins/terminal-card.tsx\n+++ b/web/src/systems/cards/builtins/terminal-card.tsx\n@@ -81,8 +81,9 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle\n            (the indicator) and the session / connection text. Neither stands\n            in for the other — a failed session can be red AND say `Session\n            failed.`, and a connected terminal with no verdict says nothing. */\n-        status={activity === null && statusText === null ? undefined : <>\n-          {activity !== null && <ActivityIndicator state={cardActivityState(activity)} />}\n+        status={activity === null && statusText === null && !(attached && !ended && status === 'connected') ? undefined : <>\n+          {/* MUT-1722-S2B-7: the head spins on this tab's connection again */}\n+          {(activity !== null || (attached && !ended && status === 'connected')) && <ActivityIndicator state={cardActivityState(activity ?? 'working')} />}\n           {statusText !== null && <span role=\"status\">{statusText}</span>}\n         </>}\n         onClose={onRemove}\n",
+    "expected_red": [
+      "accepts input and later automatically reconnects after a recoverable ownership rejection and successful owner claim",
+      "bundled recovery fences input and automatically reattaches the same terminal only after synchronization",
+      "shows a refused connection and reconnects the same terminal without creating a process"
+    ],
+    "selection_paths": [
+      "web/src/systems/cards/builtins/terminal-reconnect.browser.test.tsx"
+    ],
+    "why_more_than_one": "jsdom never connects, so only the browser cases that bring a socket up on a running terminal and then assert no indicator can see a connection-derived spinner; the lifecycle suite stays green, which is why those browser files are selection paths."
+  },
+  {
+    "mutation_id": "s2b-board-cell-drops-activity",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/systems/cards/ui/board-host.tsx",
+    "patch": "diff --git a/web/src/systems/cards/ui/board-host.tsx b/web/src/systems/cards/ui/board-host.tsx\nindex 6983dae46..94e0a0bd0 100644\n--- a/web/src/systems/cards/ui/board-host.tsx\n+++ b/web/src/systems/cards/ui/board-host.tsx\n@@ -280,5 +280,6 @@ function BoardCell({ host, item, focused, visible, onRemove }: {\n       </div>\n     );\n   }\n-  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} />;\n+  // MUT-1722-S2B-8: the cell drops the verdict on the floor\n+  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={null} />;\n }\n",
+    "expected_red": [
+      "claude terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
+      "codex terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
+      "terminal terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status"
+    ],
+    "selection_paths": [
+      "web/src/systems/cards/builtins/terminal-lifecycle.test.tsx"
+    ],
+    "why_more_than_one": "Only the lifecycle case that mounts a card with a working/failed verdict through the real BoardHost sees the cell drop it; every other board case mounts with a null verdict."
+  },
+  {
+    "mutation_id": "s2b-notifications-from-card-status",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/router/public.tsx",
+    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\nindex 6e7f38a76..9817fa516 100644\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -3076,10 +3076,17 @@ function TrackRouteBody({\n         activity: cardActivityOf(track, slot.card.id),\n       }));\n   }, [cardRegistry, cards, track]);\n-  const inputNotifications = useMemo(\n-    () => attentionNotifications(track.attentionItems, cards),\n-    [cards, track.attentionItems],\n-  );\n+  // MUT-1722-S2B-9: the aside reads the per-card `kernel/card/status` rows again\n+  const inputNotifications = useMemo((): readonly TrackInputNotification[] => overlays.flatMap((overlay) => {\n+    if (overlay.plugin_id !== 'kernel' || overlay.entity_kind !== 'card' || overlay.kind !== 'status') return [];\n+    const state = (overlay.payload as { state?: unknown } | null)?.state;\n+    if (state !== 'AwaitingInput' && state !== 'Errored') return [];\n+    const card = cards.find((candidate) => candidate.id === overlay.entity_id);\n+    if (card === undefined) return [];\n+    return [{ origin: 'card', id: card.id, cardId: card.id, source: notificationCardLabel(card),\n+      message: state === 'AwaitingInput' ? 'Requires input to continue.' : 'Stopped with an error and needs attention.',\n+      state: state === 'AwaitingInput' ? 'awaiting-input' : 'errored', updatedAt: overlay.updated_at }];\n+  }).toSorted((left, right) => right.updatedAt - left.updatedAt), [cards, overlays]);\n   /* Stable across renders that do not change the overlays, so a live table is\n      not handed a new resolver identity on every keystroke elsewhere. */\n   const resolveLiveTable = useCallback(\n",
+    "expected_red": [
+      "degraded workspace reads stay usable prefers track-detail overlays to the neutral workspace fallback",
+      "track conversations ignores a retired kernel/card/status row and a plugin-authored activity row",
+      "track conversations lists simultaneous Planner and Worker requests with a truthful count",
+      "track conversations notifications sidebar lists activity items from every source",
+      "track conversations opens an Assistant input notification in its conversation instead of treating it as a worker card",
+      "track conversations opens the planner conversation from the track input request",
+      "track conversations opens the requesting worker card instead of the Planner conversation"
+    ],
+    "selection_paths": [
+      "web/src/app/router/read-fallbacks.contract.test.tsx",
+      "web/src/app/router/track-conversation.test.tsx"
+    ],
+    "why_more_than_one": "Reading the retired per-card status rows again empties the aside for every fixture that carries its items in the activity overlay and fills it for the fixture that carries a retired status row: the four router Review cases, the every-source case, the retired-row case and the read-fallbacks detail case all move."
+  },
+  {
+    "mutation_id": "s2b-today-launchpad-cards-empty",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/router/public.tsx",
+    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\nindex 6e7f38a76..082668138 100644\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -2340,7 +2340,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort;\n     {\n       scopeId: conversationTrackId,\n       rows: launchpadRows,\n-      cards: launchpadActivity.cards,\n+      // MUT-1722-S2B-10: Today hands the panel no verdicts at all\n+      cards: {},\n       /*\n        * The launchpad is a real track and these rows are its own, so this route\n        * says so — the same statement `TrackRouteBody` makes about itself, and\n",
+    "expected_red": [
+      "#1341 Today lists the launchpad track’s conversations the launchpad summary row reads the launchpad activity overlay"
+    ],
+    "selection_paths": [
+      "web/src/app/router/today-conversation.test.tsx"
+    ],
+    "why_more_than_one": "Only Today's launchpad list is fed `{}`; the track route keeps its own verdicts, so exactly the launchpad summary-row case reddens."
+  },
+  {
+    "mutation_id": "s2b-mobile-painter-no-indicator",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/features/track/page/mobile-painter.tsx",
+    "patch": "diff --git a/web/src/features/track/page/mobile-painter.tsx b/web/src/features/track/page/mobile-painter.tsx\nindex c2d40b20a..0e26ea8d4 100644\n--- a/web/src/features/track/page/mobile-painter.tsx\n+++ b/web/src/features/track/page/mobile-painter.tsx\n@@ -235,7 +235,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {\n     /* The same indicator the desktop row paints beside its status word, from\n        the same `row.activity` (#1722 §5.3) — a declared same-set surface, not\n        a mobile omission. */\n-    ...(row.activity === null ? [] : [<ActivityIndicator key=\"activity\" state={row.activity} />]),\n+    // MUT-1722-S2B-11: the mobile task row paints no indicator\n     ...(row.status === null ? [] : [statusWord(\n       row.status,\n       row.status.token !== 'pending' || action === null || action.hint === null,\n@@ -294,7 +294,7 @@ function cardRow(row: PanelRow): ReactNode {\n       ? []\n       : [<span key=\"kind\" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),\n     ...row.badges.map(cardBadge),\n-    ...(row.activity === null ? [] : [<ActivityIndicator key=\"activity\" state={row.activity} />]),\n+    // MUT-1722-S2B-11: the mobile card row paints no indicator\n     ...(row.status === null ? [] : [statusWord(row.status, true)]),\n   ];\n   return (\n",
+    "expected_red": [
+      "mobile and desktop paint the same data-nc-activity set on the cards module",
+      "mobile and desktop paint the same data-nc-activity set on the tasks module"
+    ],
+    "selection_paths": [
+      "web/src/features/track/page/mobile-projection.test.tsx"
+    ],
+    "why_more_than_one": "The same-set comparison runs once per row module, and both modules lose their indicators on the mobile side at once."
   }
 ]

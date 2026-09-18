@@ -46,7 +46,7 @@ describe('a row clipped from a still-mounted group', () => {
   const later = [activity('later-1'), activity('later-2')];
 
   it.each(['mouse', 'keyboard'] as const)('restores a %s-opened failure detail after pagination clipped its row', async (input) => {
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[failed, ...later]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[failed, ...later]} />);
     const group = screen.getByRole('group', { name: '3 tool calls' });
     const header = group.querySelector<HTMLElement>('[aria-expanded]')!;
     if (input === 'mouse') {
@@ -58,12 +58,12 @@ describe('a row clipped from a still-mounted group', () => {
     }
     expect(visible(screen.getByText('failure evidence'))).toBe(true);
 
-    rerender(<ChatThread conversation={conversation()} turns={later} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={later} />);
     expect(screen.getByRole('group', { name: '2 tool calls' })).toBe(group);
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(screen.queryByText('failure evidence')).toBeNull();
 
-    rerender(<ChatThread conversation={conversation()} turns={[failed, ...later]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[failed, ...later]} />);
     expect(screen.getByRole('group', { name: '3 tool calls' })).toBe(group);
     expect(header.getAttribute('aria-expanded')).toBe('true');
     const detail = screen.getByText('failure evidence');
@@ -79,14 +79,14 @@ describe('a row clipped from a still-mounted group', () => {
   });
 
   it('lands focus on the group’s header when pagination clips the focused row', async () => {
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[failed, ...later]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[failed, ...later]} />);
     const group = screen.getByRole('group', { name: '3 tool calls' });
     const header = group.querySelector<HTMLElement>('[aria-expanded]')!;
     header.focus();
     await userEvent.keyboard('{Enter}{Tab}');
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /Ran npm test/ }));
 
-    rerender(<ChatThread conversation={conversation()} turns={later} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={later} />);
     expect(screen.getByRole('group', { name: '2 tool calls' })).toBe(group);
     expect(document.activeElement).toBe(header);
     /* From there the keyboard goes on as it did: Enter closes the group. */
@@ -97,7 +97,7 @@ describe('a row clipped from a still-mounted group', () => {
   it('does not take focus from where the reader moved it before the row went', async () => {
     const { rerender } = render(
       <>
-        <ChatThread conversation={conversation()} turns={[failed, ...later]} />
+        <ChatThread cards={{}} conversation={conversation()} turns={[failed, ...later]} />
         <textarea aria-label="Message" />
       </>,
     );
@@ -111,7 +111,7 @@ describe('a row clipped from a still-mounted group', () => {
     composer.focus();
     rerender(
       <>
-        <ChatThread conversation={conversation()} turns={later} />
+        <ChatThread cards={{}} conversation={conversation()} turns={later} />
         <textarea aria-label="Message" />
       </>,
     );
@@ -119,7 +119,7 @@ describe('a row clipped from a still-mounted group', () => {
     /* The row comes back: still nothing moves. */
     rerender(
       <>
-        <ChatThread conversation={conversation()} turns={[failed, ...later]} />
+        <ChatThread cards={{}} conversation={conversation()} turns={[failed, ...later]} />
         <textarea aria-label="Message" />
       </>,
     );
@@ -130,7 +130,7 @@ describe('a row clipped from a still-mounted group', () => {
   it('does not take focus a reader parked nowhere with the mouse', async () => {
     const { rerender } = render(
       <>
-        <ChatThread conversation={conversation()} turns={[failed, ...later]} />
+        <ChatThread cards={{}} conversation={conversation()} turns={[failed, ...later]} />
         <p data-nc-blank="" style={{ height: 80 }}>Elsewhere on the page</p>
       </>,
     );
@@ -143,7 +143,7 @@ describe('a row clipped from a still-mounted group', () => {
     expect(document.activeElement).toBe(document.body);
     rerender(
       <>
-        <ChatThread conversation={conversation()} turns={later} />
+        <ChatThread cards={{}} conversation={conversation()} turns={later} />
         <p data-nc-blank="" style={{ height: 80 }}>Elsewhere on the page</p>
       </>,
     );
@@ -167,7 +167,7 @@ describe('a row clipped from a still-mounted group', () => {
     const harness = (turns: readonly TranscriptEntry[], park: boolean) => (
       <>
         <Parker on={park} />
-        <ChatThread conversation={conversation()} turns={turns} />
+        <ChatThread cards={{}} conversation={conversation()} turns={turns} />
         <textarea aria-label="Message" />
       </>
     );
@@ -183,13 +183,13 @@ describe('a row clipped from a still-mounted group', () => {
   it('does not take focus from another group when a row of this one goes', async () => {
     const other = [activity('o1', { verb: 'Ran', target: 'other 1' }), activity('o2', { verb: 'Ran', target: 'other 2' })];
     const between: TranscriptEntry = { id: 'm', author: 'agent', text: 'Between', atMs: 2 };
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[failed, ...later, between, ...other]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[failed, ...later, between, ...other]} />);
     const [first, second] = screen.getAllByRole('group').map((group) => group.querySelector<HTMLElement>('[aria-expanded]')!);
     first.focus();
     await userEvent.keyboard('{Enter}{Tab}');
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /Ran npm test/ }));
     second.focus();
-    rerender(<ChatThread conversation={conversation()} turns={[...later, between, ...other]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[...later, between, ...other]} />);
     expect(document.activeElement).toBe(second);
   });
 
@@ -202,7 +202,7 @@ describe('a row clipped from a still-mounted group', () => {
    * there too, and no hidden element keeps focus.
    */
   it('lands focus on the header when the group closes under the focused row', async () => {
-    const { container } = render(<ChatThread conversation={conversation()} turns={[failed, ...later]} />);
+    const { container } = render(<ChatThread cards={{}} conversation={conversation()} turns={[failed, ...later]} />);
     const header = groupButton(container);
     header.focus();
     await userEvent.keyboard('{Enter}{Tab}');
@@ -260,10 +260,10 @@ describe('a run whose own element goes', () => {
   }
 
   it('keeps focus on the same call when its run shrinks to that call’s line, and Tabs on from there', async () => {
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     await focusFailedRow();
 
-    rerender(<ChatThread conversation={conversation()} turns={[failed, boundary, ...later]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[failed, boundary, ...later]} />);
     expect(screen.queryByRole('group', { name: '2 tool calls' })).not.toBeNull();
     const line = failedLine();
     expect(line.textContent).toContain('failure evidence');
@@ -275,21 +275,21 @@ describe('a run whose own element goes', () => {
   });
 
   it('lands a reader on the run’s header on the line of the one call it has left', () => {
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     headerOf(screen.getAllByRole('group')[0]).focus();
     expect(document.activeElement).toBe(headerOf(screen.getAllByRole('group')[0]));
 
-    rerender(<ChatThread conversation={conversation()} turns={[failed, boundary, ...later]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[failed, boundary, ...later]} />);
     expectLent(failedLine());
   });
 
   it('brings a reader on the line back to the call’s row when the rest of its run returns open', async () => {
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     await focusFailedRow();
-    rerender(<ChatThread conversation={conversation()} turns={[failed, boundary, ...later]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[failed, boundary, ...later]} />);
     expectLent(failedLine());
 
-    rerender(<ChatThread conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     const group = screen.getAllByRole('group')[0];
     expect(headerOf(group).getAttribute('aria-expanded')).toBe('true');
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /Ran npm test/ }));
@@ -297,10 +297,10 @@ describe('a run whose own element goes', () => {
   });
 
   it('moves focus to the next surviving run’s header when the focused run leaves whole', async () => {
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     await focusFailedRow();
 
-    rerender(<ChatThread conversation={conversation()} turns={[boundary, ...later]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[boundary, ...later]} />);
     expect(document.activeElement).toBe(headerOf(screen.getByRole('group', { name: '2 tool calls' })));
     expect(document.querySelector('[data-nc-landing]')).toBeNull();
   });
@@ -308,11 +308,11 @@ describe('a run whose own element goes', () => {
   it('moves focus to the last run before it when no run survives after', async () => {
     const earlier = [activity('e1', { verb: 'Ran', target: 'earlier 1' }), activity('e2', { verb: 'Ran', target: 'earlier 2' })];
     const { rerender } = render(
-      <ChatThread conversation={conversation()} turns={[...earlier, boundary, done, failed]} />,
+      <ChatThread cards={{}} conversation={conversation()} turns={[...earlier, boundary, done, failed]} />,
     );
     await focusFailedRow(1);
 
-    rerender(<ChatThread conversation={conversation()} turns={[...earlier, boundary]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[...earlier, boundary]} />);
     expect(document.activeElement).toBe(headerOf(screen.getByRole('group', { name: '2 tool calls' })));
   });
 
@@ -326,7 +326,7 @@ describe('a run whose own element goes', () => {
     const nearby = activity('nearby', { verb: 'Ran', target: 'nearby' });
     const harness = (turns: readonly TranscriptEntry[]) => (
       <>
-        <ChatThread conversation={conversation()} turns={turns} />
+        <ChatThread cards={{}} conversation={conversation()} turns={turns} />
         <textarea aria-label="Message" />
       </>
     );
@@ -344,10 +344,10 @@ describe('a run whose own element goes', () => {
 
   it('moves focus to the line of the last run of one before it when no run survives after', async () => {
     const earlier = activity('earlier', { verb: 'Ran', target: 'earlier' });
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[earlier, boundary, done, failed]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[earlier, boundary, done, failed]} />);
     await focusFailedRow();
 
-    rerender(<ChatThread conversation={conversation()} turns={[earlier, boundary]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[earlier, boundary]} />);
     const line = thread().querySelector<HTMLElement>('p[data-nc-state="done"]')!;
     expect(line.textContent).toContain('earlier');
     expectLent(line);
@@ -358,11 +358,11 @@ describe('a run whose own element goes', () => {
     const reply: TranscriptEntry = { id: 'reply-2', author: 'agent', text: 'And then', atMs: 3 };
     const nearby = activity('nearby', { verb: 'Ran', target: 'nearby' });
     const { rerender } = render(
-      <ChatThread conversation={conversation()} turns={[...earlier, boundary, done, failed, reply, nearby]} />,
+      <ChatThread cards={{}} conversation={conversation()} turns={[...earlier, boundary, done, failed, reply, nearby]} />,
     );
     await focusFailedRow(1);
 
-    rerender(<ChatThread conversation={conversation()} turns={[...earlier, boundary, reply, nearby]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[...earlier, boundary, reply, nearby]} />);
     const line = thread().querySelector<HTMLElement>('p[data-nc-state="done"]')!;
     expect(line.textContent).toContain('nearby');
     expectLent(line);
@@ -373,7 +373,7 @@ describe('a run whose own element goes', () => {
     const harness = (turns: readonly TranscriptEntry[]) => (
       <>
         <button type="button">Top of the page</button>
-        <ChatThread conversation={conversation()} turns={turns} />
+        <ChatThread cards={{}} conversation={conversation()} turns={turns} />
         <textarea aria-label="Message" />
       </>
     );
@@ -396,9 +396,9 @@ describe('a run whose own element goes', () => {
    * `:focus-visible` is genuinely engaged and the rule is genuinely applied.
    */
   it('draws no focus ring on a landing that is not a control', async () => {
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     await focusFailedRow();
-    rerender(<ChatThread conversation={conversation()} turns={[failed, boundary, ...later]} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={[failed, boundary, ...later]} />);
     const line = failedLine();
     expectLent(line);
     expect(line.matches(':focus-visible')).toBe(true);
@@ -413,7 +413,7 @@ describe('a run whose own element goes', () => {
   it('does not take focus from where the reader moved it before the run left whole', async () => {
     const harness = (turns: readonly TranscriptEntry[]) => (
       <>
-        <ChatThread conversation={conversation()} turns={turns} />
+        <ChatThread cards={{}} conversation={conversation()} turns={turns} />
         <textarea aria-label="Message" />
       </>
     );
@@ -439,7 +439,7 @@ describe('a run whose own element goes', () => {
     const harness = (turns: readonly TranscriptEntry[], park: boolean) => (
       <>
         <Parker on={park} />
-        <ChatThread conversation={conversation()} turns={turns} />
+        <ChatThread cards={{}} conversation={conversation()} turns={turns} />
         <textarea aria-label="Message" />
       </>
     );
@@ -452,7 +452,7 @@ describe('a run whose own element goes', () => {
   it('does not take focus a reader parked nowhere with the mouse, when the run leaves whole', async () => {
     const harness = (turns: readonly TranscriptEntry[]) => (
       <>
-        <ChatThread conversation={conversation()} turns={turns} />
+        <ChatThread cards={{}} conversation={conversation()} turns={turns} />
         <p data-nc-blank="" style={{ height: 80 }}>Elsewhere on the page</p>
       </>
     );
@@ -475,7 +475,7 @@ describe('a run whose own element goes', () => {
   it('leaves focus where the reader switched conversations from', async () => {
     const harness = (id: string, turns: readonly TranscriptEntry[]) => (
       <>
-        <ChatThread key={id} conversation={conversation({ id })} turns={turns} />
+        <ChatThread cards={{}} key={id} conversation={conversation({ id })} turns={turns} />
         <button type="button">Other conversation</button>
       </>
     );
@@ -529,9 +529,9 @@ describe('a window that shares nothing with the last', () => {
   }
   /** Focuses the failed row of `old`, then replaces the window with `next`. */
   async function replaceWindow(next: readonly TranscriptEntry[]) {
-    const { rerender } = render(<ChatThread conversation={conversation()} turns={old} />);
+    const { rerender } = render(<ChatThread cards={{}} conversation={conversation()} turns={old} />);
     await focusFailedRow();
-    rerender(<ChatThread conversation={conversation()} turns={next} />);
+    rerender(<ChatThread cards={{}} conversation={conversation()} turns={next} />);
   }
 
   it('lands on the first run of a window stamped wholly later — the newest page refetched past everything', async () => {
@@ -605,7 +605,7 @@ describe('a note whose focus another effect took', () => {
   const harness = (turns: readonly TranscriptEntry[], park = false) => (
     <>
       <Parker on={park} />
-      <ChatThread conversation={conversation()} turns={turns} />
+      <ChatThread cards={{}} conversation={conversation()} turns={turns} />
       <textarea aria-label="Message" />
       <p data-nc-blank="" style={{ height: 80 }}>Elsewhere on the page</p>
     </>
@@ -695,7 +695,7 @@ describe('a note whose focus another effect took', () => {
     const view = (turns: readonly TranscriptEntry[], park: boolean) => (
       <>
         <ParkOnLater on={park} />
-        <ChatThread conversation={conversation()} turns={turns} />
+        <ChatThread cards={{}} conversation={conversation()} turns={turns} />
         <p data-nc-blank="" style={{ height: 80 }}>Elsewhere on the page</p>
       </>
     );
@@ -742,7 +742,7 @@ describe('the loan a landing makes', () => {
   const harness = (turns: readonly TranscriptEntry[], park = false, id = 'c1') => (
     <>
       <Parker on={park} />
-      <ChatThread key={id} conversation={conversation({ id })} turns={turns} />
+      <ChatThread cards={{}} key={id} conversation={conversation({ id })} turns={turns} />
       <textarea aria-label="Message" />
     </>
   );

@@ -87,7 +87,7 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
 function draw(conversations: readonly Conversation[], width = COLUMN) {
   const { getByRole } = render(
     <div style={{ inlineSize: width }}>
-      <ChatList conversations={conversations} onOpen={() => undefined} />
+      <ChatList conversations={conversations} cards={{}} onOpen={() => undefined} />
     </div>,
   );
   const row = getByRole('button');

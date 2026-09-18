@@ -50,14 +50,33 @@ const ASSISTANT_CARD = { ...PLANNER_CARD, id: 'conv-assistant-1', title: null, p
 /* A worker card, so "the CARDS panel lists what has a surface" is asserted
    against a track that really has one thing to list. */
 const WORKER_CARD = { ...PLANNER_CARD, id: 'card-worker', title: 'Worker', payload: {}, sort: 3, updated_at: 4 };
+/*
+ * The kernel's `kernel/track/activity` overlay for `w1` (#1722 §4.1) — the ONE
+ * source every indicator and the Notifications aside read (INV-APP-118).
+ * `items` are what the aside lists; `cards` are the per-card verdicts the
+ * conversation rows, the CARDS/TASKS rows and the card heads read.
+ */
+type ActivityItemWire = {
+  kind: 'input' | 'failed'; source: 'card' | 'task' | 'session' | 'lifecycle';
+  id: string; card_id: string | null; at_ms: number;
+};
+type ActivityCardWire = { card_id: string; state: 'working' | 'input' | 'failed' };
+const trackActivityOverlay = (payload: Partial<{
+  working: boolean; attention: 'none' | 'input' | 'failed'; activity_at_ms: number | null;
+  items: ActivityItemWire[]; cards: ActivityCardWire[];
+}> = {}, trackId = 'w1') => ({
+  id: `activity-${trackId}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: trackId, kind: 'activity',
+  payload: { schemaVersion: 1, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
+  updated_at: 3,
+});
+/** A card's own input request, as the projector lists it: one item and one card verdict. */
+const cardInputItem = (cardId: string, kind: 'input' | 'failed', atMs: number): ActivityItemWire =>
+  ({ kind, source: 'card', id: cardId, card_id: cardId, at_ms: atMs });
+/** The retired per-card status row (`kernel/card/status`): nothing reads it any more. */
 const cardStatusOverlay = (cardId: string, state: 'AwaitingInput' | 'Errored', updatedAt: number) => ({
   id: `status-${cardId}`, plugin_id: 'kernel', entity_kind: 'card', entity_id: cardId,
   kind: 'status', payload: { state }, updated_at: updatedAt,
 });
-const trackNeedsInputOverlay = {
-  id: 'needs-input', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1',
-  kind: 'any_card_needs_input', payload: { value: true }, updated_at: 3,
-};
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
@@ -254,6 +273,11 @@ function drawerElement(): HTMLElement {
   return drawer as HTMLElement;
 }
 
+/* The drawer's working mark (`ui/activity-indicator`, decorative by contract —
+   #1722 §6): scoped to the drawer, because the list row behind it carries the
+   same marker for the same reason and the two are separate claims. */
+const drawerWorkingMark = () => drawerElement().querySelector('[data-nc-activity="working"]');
+
 async function openDraft() {
   fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
   /* The draft drawer's title, since #1191 renamed it off the action's label:
@@ -344,7 +368,8 @@ describe('track conversations', () => {
       ? ok({
           track: TRACK, can_resume: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
-          overlays: [trackNeedsInputOverlay, cardStatusOverlay(PLANNER_CARD.id, 'AwaitingInput', 4)],
+          overlays: [trackActivityOverlay({ attention: 'input', items: [cardInputItem(PLANNER_CARD.id, 'input', 4)],
+            cards: [{ card_id: PLANNER_CARD.id, state: 'input' }] })],
         })
       : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Review Planner notification' }));
@@ -360,7 +385,8 @@ describe('track conversations', () => {
       ? ok({
           track: TRACK, can_resume: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
-          overlays: [trackNeedsInputOverlay, cardStatusOverlay(WORKER_CARD.id, 'AwaitingInput', 4)],
+          overlays: [trackActivityOverlay({ attention: 'input', items: [cardInputItem(WORKER_CARD.id, 'input', 4)],
+            cards: [{ card_id: WORKER_CARD.id, state: 'input' }] })],
         })
       : undefined);
 
@@ -375,7 +401,8 @@ describe('track conversations', () => {
       ? ok({
           track: TRACK, can_resume: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
-          overlays: [trackNeedsInputOverlay, cardStatusOverlay(ASSISTANT_CARD.id, 'AwaitingInput', 4)],
+          overlays: [trackActivityOverlay({ attention: 'input', items: [cardInputItem(ASSISTANT_CARD.id, 'input', 4)],
+            cards: [{ card_id: ASSISTANT_CARD.id, state: 'input' }] })],
         })
       : undefined);
 
@@ -390,11 +417,9 @@ describe('track conversations', () => {
       ? ok({
           track: TRACK, can_resume: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
-          overlays: [
-            trackNeedsInputOverlay,
-            cardStatusOverlay(PLANNER_CARD.id, 'AwaitingInput', 4),
-            cardStatusOverlay(WORKER_CARD.id, 'Errored', 5),
-          ],
+          overlays: [trackActivityOverlay({ attention: 'failed',
+            items: [cardInputItem(PLANNER_CARD.id, 'input', 4), cardInputItem(WORKER_CARD.id, 'failed', 5)],
+            cards: [{ card_id: PLANNER_CARD.id, state: 'input' }, { card_id: WORKER_CARD.id, state: 'failed' }] })],
         })
       : undefined);
 
@@ -403,18 +428,59 @@ describe('track conversations', () => {
     expect(within(notice).getByText('Planner')).toBeTruthy();
     expect(within(notice).getByText('Worker')).toBeTruthy();
     expect(within(notice).getByText('Stopped with an error and needs attention.')).toBeTruthy();
+    /* Newest first (`at_ms` desc): the Worker's later failure above the Planner's request. */
+    expect(within(notice).getAllByRole('listitem').map((item) => item.getAttribute('data-nc-notification-state')))
+      .toEqual(['errored', 'awaiting-input']);
     fireEvent.click(within(notice).getByRole('button', { name: 'Collapse notifications' }));
     expect(await screen.findByRole('button', { name: 'Open 2 notifications' })).toBeTruthy();
   });
 
-  it('ignores plugin-authored overlays that imitate the kernel status kind', async () => {
+  /*
+   * #1722 §5.3 / INV-APP-118 — the aside is the overlay's `items`, every
+   * source included: a failed task and a dead worker session have no
+   * `kernel/card/status` row and used to be invisible here. The same card may
+   * carry two items (task + session, §4.1 C1); both are rows, keyed apart by
+   * origin. A task with no worker card reviews to the track itself — its
+   * planner conversation — rather than to a card that does not exist.
+   */
+  it('notifications sidebar lists activity items from every source', async () => {
+    setup((request) => request.path === '/api/tracks/w1'
+      ? ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
+          overlays: [trackActivityOverlay({ attention: 'failed', items: [
+            { kind: 'failed', source: 'task', id: 'impl', card_id: WORKER_CARD.id, at_ms: 7 },
+            { kind: 'failed', source: 'session', id: 'ws-worker', card_id: WORKER_CARD.id, at_ms: 6 },
+            { kind: 'failed', source: 'task', id: 'gate', card_id: null, at_ms: 5 },
+            { kind: 'input', source: 'lifecycle', id: 'w1', card_id: null, at_ms: 4 },
+          ], cards: [{ card_id: WORKER_CARD.id, state: 'failed' }] })],
+        })
+      : undefined);
+
+    const notice = await screen.findByRole('region', { name: 'Notifications' });
+    expect(within(notice).getByText('4 items need attention')).toBeTruthy();
+    const items = within(notice).getAllByRole('listitem');
+    expect(items).toHaveLength(4);
+    expect(items.map((item) => item.textContent)).toEqual([
+      'WorkerThe task failed and needs attention.Review',
+      'WorkerIts session failed and needs attention.Review',
+      'Task gateThe task failed and needs attention.Review',
+      'TrackThe track is waiting on you.Review',
+    ]);
+    fireEvent.click(within(notice).getByRole('button', { name: 'Review Task gate notification' }));
+    expect(await screen.findByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
+    expect(window.location.search).not.toContain('card=');
+  });
+
+  it('ignores a retired kernel/card/status row and a plugin-authored activity row', async () => {
     setup((request) => request.path === '/api/tracks/w1'
       ? ok({
           track: TRACK, can_resume: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [
-            trackNeedsInputOverlay,
-            { ...cardStatusOverlay(WORKER_CARD.id, 'AwaitingInput', 5), plugin_id: 'third-party' },
+            cardStatusOverlay(WORKER_CARD.id, 'AwaitingInput', 5),
+            { ...trackActivityOverlay({ attention: 'input', items: [cardInputItem(PLANNER_CARD.id, 'input', 4)] }),
+              plugin_id: 'third-party' },
           ],
         })
       : undefined);
@@ -1031,7 +1097,7 @@ describe('track conversations', () => {
     phase = 'wedged';
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });
     expect((await screen.findByRole('alert')).textContent).toContain('This conversation is stuck');
-    expect(screen.queryByLabelText('Working')).toBeNull();
+    expect(drawerWorkingMark()).toBeNull();
     expect(messageField().textContent).toBe('Draft written before the stall');
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
@@ -1074,14 +1140,14 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     await write('Keep the pending message');
-    expect(screen.getByLabelText('Working')).toBeTruthy();
+    expect(drawerWorkingMark()).not.toBeNull();
     phase = 'wedged';
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });
     expect((await screen.findByRole('alert')).textContent).toContain('This conversation is stuck');
-    expect(screen.queryByLabelText('Working')).toBeNull();
+    expect(drawerWorkingMark()).toBeNull();
     expect(within(drawerElement()).getByText('Keep the pending message')).toBeTruthy();
     await act(async () => { release(inputAccepted()); await held; });
-    expect(screen.queryByLabelText('Working')).toBeNull();
+    expect(drawerWorkingMark()).toBeNull();
   });
 
   /*
@@ -2067,9 +2133,21 @@ it('keeps first-message selection disabled on an older server that would ignore 
 it('uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading', async () => {
   /* Unread follows `lastTurnCompletedAt`, the kernel's completion time
      (#1722 §5.2) — `updatedAt` also moves when a message is queued, and a
-     queued question is not a finished answer. */
+     queued question is not a finished answer. Working follows the kernel's
+     per-card verdict in the track's activity overlay (#1722 §5.3), not the
+     row's session state. */
   let rows = [assistantRow({ lastTurnCompletedAt: 30 })];
-  const { client } = setup(request => request.method === 'GET' && request.path === CONVERSATIONS ? ok(rows) : undefined, receiptStorage());
+  let cards: ActivityCardWire[] = [];
+  const { client } = setup(request => {
+    if (request.method === 'GET' && request.path === CONVERSATIONS) return ok(rows);
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
+      cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [trackActivityOverlay({ working: cards.length > 0, cards })] });
+    return undefined;
+  }, receiptStorage());
+  const refetch = () => act(async () => {
+    await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] });
+    await client.invalidateQueries({ queryKey: ['track', 'w1'] });
+  });
   const indicator = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }).closest('li')?.querySelector('[data-nc-activity]');
   await screen.findByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
   expect(indicator()?.getAttribute('data-nc-activity')).toBe('unread');
@@ -2077,16 +2155,18 @@ it('uses a spinner while a closed conversation runs, a blue unread dot on comple
   await waitFor(() => expect(indicator()).toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
   rows = [{ ...assistantRow(), state: 'turn_pending', updatedAt: 40, lastTurnCompletedAt: 30 }];
-  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  cards = [{ card_id: ASSISTANT_CARD.id, state: 'working' }];
+  await refetch();
   await waitFor(() => expect(screen.getByRole('button', { name: /^Conversation Assistant/ }).closest('li')
     ?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('working'));
   // A newer `updatedAt` alone (the reader queued something) is not unread…
   rows = [{ ...assistantRow(), state: 'idle', updatedAt: 45, lastTurnCompletedAt: 30 }];
-  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  cards = [];
+  await refetch();
   await waitFor(() => expect(indicator()).toBeNull());
   // …a newer completion is.
   rows = [{ ...assistantRow(), state: 'idle', updatedAt: 50, lastTurnCompletedAt: 50 }];
-  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  await refetch();
   await waitFor(() => expect(indicator()?.getAttribute('data-nc-activity')).toBe('unread'));
   fireEvent.click(screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }));
   await waitFor(() => expect(indicator()).toBeNull());
@@ -2172,13 +2252,18 @@ it('keeps a nonempty conversation read after closing when activity is newer than
 it('shows a closed Planner working and preserves unread completion until its history is read', async () => {
   let status = 'turn_pending';
   let activityAt = 50;
+  /* Working is the kernel's verdict for the planner card in the activity
+     overlay (#1722 §5.3); `status` above is the session reading the drawer
+     keeps as its baseline and no indicator reads. */
+  let cards: ActivityCardWire[] = [{ card_id: PLANNER_CARD.id, state: 'working' }];
   /* The injected planner row's completion time is `CardRuntimeView.last_turn_completed_ms`
      (#1722 §4.7): absent while the first turn is still running. */
   let lastTurnCompletedMs: number | undefined;
   const { client } = setup(request => {
     if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
       cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'shared-spec', status, updated_at_ms: activityAt,
-        ...(lastTurnCompletedMs === undefined ? {} : { last_turn_completed_ms: lastTurnCompletedMs }) } }], overlays: [] });
+        ...(lastTurnCompletedMs === undefined ? {} : { last_turn_completed_ms: lastTurnCompletedMs }) } }],
+      overlays: [trackActivityOverlay({ working: cards.length > 0, activity_at_ms: lastTurnCompletedMs ?? null, cards })] });
     if (request.path.startsWith('/api/cards/card-planner/harness/items')) return ok([
       harnessMessage(40, 'agentMessage', { type: 'agentMessage', text: 'Completed planner answer.' }),
     ]);
@@ -2188,7 +2273,7 @@ it('shows a closed Planner working and preserves unread completion until its his
   const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
   await screen.findByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
   expect(indicator()).toBe('working');
-  status = 'idle'; activityAt = 60; lastTurnCompletedMs = 60;
+  status = 'idle'; activityAt = 60; lastTurnCompletedMs = 60; cards = [];
   await act(() => {
     const plan = invalidationPlanFor({ ev: 'harness.phase.changed', data: {
       worker_session_id: 'planner-live', card_id: 'card-planner', track_id: 'w1',
@@ -2223,6 +2308,104 @@ it('shows a closed Planner working and preserves unread completion until its his
   activityAt = 80; lastTurnCompletedMs = 80;
   await completed();
   await waitFor(() => expect(indicator()).toBe('unread'));
+});
+
+/*
+ * ── #1722 §5.3 / INV-APP-118 — the rows read the kernel, not the session ────
+ *
+ * Both kinds of row the list holds — the server-listed assistant row and the
+ * planner row this route injects from its card — take their dot from the
+ * track's `activity.cards` verdict. `state` / `runtime.status` is the session
+ * reading the harness leaves at `turn_pending` long after a turn ended: the
+ * spinner that never stopped (#1722 §1). The accessible name and description
+ * come from the same fold: a failed card is "Needs attention", not "Needs
+ * input", and only a working row says ", working".
+ */
+it('conversation rows read activity.cards, not session state', async () => {
+  let cards: ActivityCardWire[] = [];
+  const { client } = setup(request => {
+    if (request.method === 'GET' && request.path === CONVERSATIONS) return ok([assistantRow({ state: 'turn_pending' })]);
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
+      cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [trackActivityOverlay({ cards })] });
+    return undefined;
+  }, receiptStorage());
+  const row = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
+  const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
+  await screen.findByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
+  expect(indicator()).toBeUndefined();
+  expect(row().getAttribute('aria-label')).toBe('Conversation Assistant');
+  expect(row().hasAttribute('aria-describedby')).toBe(false);
+
+  cards = [{ card_id: ASSISTANT_CARD.id, state: 'working' }];
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track', 'w1'] }); });
+  await waitFor(() => expect(indicator()).toBe('working'));
+  expect(row().getAttribute('aria-label')).toBe('Conversation Assistant, working');
+  expect(row().hasAttribute('aria-describedby')).toBe(false);
+
+  cards = [{ card_id: ASSISTANT_CARD.id, state: 'failed' }];
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track', 'w1'] }); });
+  await waitFor(() => expect(indicator()).toBe('failed'));
+  expect(row().getAttribute('aria-label')).toBe('Conversation Assistant');
+  expect(document.getElementById(row().getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs attention');
+
+  cards = [{ card_id: ASSISTANT_CARD.id, state: 'input' }];
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track', 'w1'] }); });
+  await waitFor(() => expect(indicator()).toBe('attention'));
+  expect(document.getElementById(row().getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs input');
+});
+
+it('the injected planner row reads activity.cards and last_turn_completed_ms', async () => {
+  let cards: ActivityCardWire[] = [];
+  let updatedAtMs = 50;
+  let lastTurnCompletedMs: number | undefined;
+  const { client } = setup(request => {
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
+      cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'codex', status: 'turn_pending',
+        updated_at_ms: updatedAtMs, ...(lastTurnCompletedMs === undefined ? {} : { last_turn_completed_ms: lastTurnCompletedMs }) } }],
+      overlays: [trackActivityOverlay({ cards })] });
+    if (request.path.startsWith('/api/cards/card-planner/harness/items')) return ok([
+      harnessMessage(40, 'agentMessage', { type: 'agentMessage', text: 'Completed planner answer.' }),
+    ]);
+    return undefined;
+  }, receiptStorage());
+  const row = () => screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
+  const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
+  const refetch = () => act(async () => { await client.invalidateQueries({ queryKey: ['track', 'w1'] }); });
+  await screen.findByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
+  // `runtime.status: 'turn_pending'` with no verdict is not working.
+  expect(indicator()).toBeUndefined();
+  expect(row().getAttribute('aria-label')).toBe('Conversation Planner chat');
+
+  cards = [{ card_id: PLANNER_CARD.id, state: 'working' }];
+  await refetch();
+  await waitFor(() => expect(indicator()).toBe('working'));
+  expect(row().getAttribute('aria-label')).toBe('Conversation Planner chat, working');
+
+  // Read it once, so the receipt has a point to compare against…
+  cards = [];
+  lastTurnCompletedMs = 50;
+  await refetch();
+  await waitFor(() => expect(indicator()).toBe('unread'));
+  fireEvent.click(row());
+  await screen.findByText('Completed planner answer.');
+  await waitFor(() => expect(indicator()).toBeUndefined());
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  // …then `updated_at_ms` moving on its own is not unread…
+  updatedAtMs = 70;
+  await refetch();
+  await waitFor(() => expect(client.getQueryData<{ cards: { runtime?: { updated_at_ms?: number } }[] }>(['track', 'w1'])
+    ?.cards[0]?.runtime?.updated_at_ms).toBe(70));
+  expect(indicator()).toBeUndefined();
+  // …and a newer completion is.
+  lastTurnCompletedMs = 80;
+  await refetch();
+  await waitFor(() => expect(indicator()).toBe('unread'));
+
+  cards = [{ card_id: PLANNER_CARD.id, state: 'failed' }];
+  await refetch();
+  await waitFor(() => expect(indicator()).toBe('failed'));
+  expect(row().getAttribute('aria-label')).toBe('Conversation Planner chat');
+  expect(document.getElementById(row().getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs attention');
 });
 
 it('an edited conversation retry cannot cross recovery after its reconciliation read completed', async () => {

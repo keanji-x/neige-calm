@@ -153,12 +153,6 @@
     margin-inline-end: var(--space-1);
   }
 
-  @keyframes chat-pulse {
-    50% {
-      opacity: 0.35;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
 
     .row {

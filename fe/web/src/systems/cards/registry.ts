@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react';
 import type { CardRuntimeView } from '../../../../core/api/schemas.js';
+import type { CardActivity } from '../../../../core/domain/activity.js';
 import type { CardHostCapabilities } from './contracts.js';
 
 export interface CardDataMap {
@@ -46,6 +47,17 @@ export interface CardComponentProps<Card extends { readonly id: string; readonly
    * itself, which is why there is no `deletable` alongside it to re-derive.
    */
   readonly onRemove?: () => void;
+  /**
+   * The kernel's activity verdict for this card (`TrackActivity.cards`,
+   * #1722 §4.1), or `null` when it listed none — arriving the same way
+   * `onRemove` does: already resolved by the surface that read the overlay.
+   *
+   * It is a prop and not a capability because it changes on every tick and
+   * `host` is frozen at mount; and it is not re-derived from
+   * `KernelCardInput.runtime.status` because that is the session reading a
+   * card head used to spin on for days (#1722 §1, INV-APP-118).
+   */
+  readonly activity: CardActivity | null;
 }
 
 /**

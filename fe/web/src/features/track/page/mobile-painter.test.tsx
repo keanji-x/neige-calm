@@ -37,6 +37,7 @@ const titled: PanelRow = {
   kind: 'terminal',
   badges: [],
   status: null,
+  activity: null,
   actions: [
     { kind: 'open-card', cardId: 'card-1', label: null, hint: null, description: null },
     {
@@ -54,6 +55,7 @@ const untitled: PanelRow = {
   kind: null,
   badges: [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
   status: null,
+  activity: null,
   actions: [{ kind: 'open-card', cardId: 'card-2', label: null, hint: null, description: null }],
 };
 
@@ -80,6 +82,7 @@ const ready: PanelRow = {
   kind: 'codex',
   badges: [],
   status: null,
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-1', label: null, hint: null, description: null,
   }],
@@ -93,6 +96,7 @@ const dispatched: PanelRow = {
   kind: 'terminal',
   badges: [],
   status: { token: 'failed', phrase: 'failed — track /tmp/alpha is not a git repository' },
+  activity: null,
   actions: [
     {
       kind: 'reveal-block', blockId: 'block-2', label: null,
@@ -114,6 +118,7 @@ const withdrawn: PanelRow = {
   kind: null,
   badges: [{ id: 'declaration', text: 'Withdrawn', struck: true }],
   status: null,
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-3', label: null, hint: null, description: null,
   }],
@@ -126,6 +131,7 @@ const unreadable: PanelRow = {
   kind: null,
   badges: [{ id: 'declaration', text: 'Unreadable', struck: false }],
   status: null,
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-4', label: null, hint: null, description: null,
   }],
@@ -142,6 +148,7 @@ const notReady: PanelRow = {
   kind: 'codex',
   badges: [{ id: 'declaration', text: 'Not ready', struck: false }],
   status: null,
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-5', label: null, hint: null, description: null,
   }],
@@ -164,6 +171,7 @@ const namedReveal: PanelRow = {
   kind: null,
   badges: [],
   status: null,
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-6', label: 'Reveal zeta-audit', hint: null,
     description: null,
@@ -210,6 +218,7 @@ const bareStatus: PanelRow = {
   kind: 'terminal',
   badges: [],
   status: { token: 'running', phrase: 'running' },
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-7', label: null,
     hint: 'Show eta-run in the report', description: 'running',
@@ -227,6 +236,7 @@ const declaredAndRunning: PanelRow = {
   kind: null,
   badges: [{ id: 'declaration', text: 'Not ready', struck: false }],
   status: { token: 'failed', phrase: 'failed — the worker exited before it reported' },
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-8', label: null,
     hint: 'Show theta-check in the report',
@@ -247,6 +257,7 @@ const emptyToken: PanelRow = {
   kind: 'claude',
   badges: [],
   status: { token: '', phrase: 'the kernel has not named this state' },
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-9', label: null,
     hint: 'Show iota-probe in the report', description: 'the kernel has not named this state',
@@ -261,6 +272,7 @@ const pendingReason: PanelRow = {
   kind: 'codex',
   badges: [],
   status: { token: 'pending', phrase: 'pending' },
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-10', label: null,
     hint: 'Queued 1/1', description: 'pending — Queued 1/1',
@@ -273,6 +285,7 @@ const notAdmittedReason: PanelRow = {
   kind: 'codex',
   badges: [],
   status: null,
+  activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-11', label: null,
     hint: 'Not admitted · raise planner ceiling',

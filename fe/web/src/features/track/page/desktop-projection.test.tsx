@@ -46,7 +46,7 @@ import { cleanup, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
-import type { CardWire } from '../../../../../core/domain/track.ts';
+import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
 import { MARKER } from '../../../../../core/view/panel.ts';
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
@@ -112,8 +112,8 @@ function desktopPanel(container: Element): Element {
 // ── The fixture shape guard ──────────────────────────────────────────────────
 
 const ALL_MODULES: readonly RowModuleView[] = [
-  ...deriveTrackPageView({ cards: CARDS, tasks: TASKS }).rowModules,
-  ...deriveTrackPageView({ cards: [], tasks: [] }).rowModules,
+  ...deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY }).rowModules,
+  ...deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY }).rowModules,
 ];
 const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module.rows]);
 
@@ -176,13 +176,13 @@ describe('fixture shape guard', () => {
 describe('the rendered desktop panel projects its view model faithfully', () => {
   it('with cards and tasks, a delete handler, and every row shape above', () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
-    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS });
+    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY });
     expect(checkProjectionIn(painter(), view.rowModules, desktopPanel(container))).toEqual([]);
   });
 
   it('with both modules empty', () => {
     const { container } = renderPage({ cards: [], tasks: [] });
-    const view = deriveTrackPageView({ cards: [], tasks: [] });
+    const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY });
     expect(checkProjectionIn(painter(), view.rowModules, desktopPanel(container))).toEqual([]);
   });
 
@@ -195,7 +195,7 @@ describe('the rendered desktop panel projects its view model faithfully', () => 
    */
   it('with no delete handler, so no row carries a delete action', () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS });
-    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS });
+    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY });
     const noDelete = makeDesktopPainter({ onOpenCard: vi.fn(), onOpenTask: vi.fn() });
     expect(checkProjectionIn(noDelete, view.rowModules, desktopPanel(container))).toEqual([]);
     /* Not vacuous: the derivation really did offer a `delete-card` that the

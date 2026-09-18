@@ -54,14 +54,36 @@
 //
 // **Signature note.** The design writes `deriveTrackPageView(track, cards, tasks)`
 // because a later slice adds the report outline, which needs the track. Neither
-// module here reads it, and an unused parameter is a `tsc` error under
-// `noUnusedParameters`, so the track is left out until S2 introduces the outline
-// and gives it work to do.
+// module here reads the track itself; what they do read off it since #1722 is
+// its `activity.cards` — passed as `activity`, typed to that one field, so the
+// rows can carry the kernel's per-card verdict and nothing else of the track.
 
 import { groupPanelRows } from './panel-groups.js';
+import { cardActivityOf, cardActivityState, type CardActivity } from '../domain/activity.js';
 import { boundedStatusDetail, type ReportTaskRow } from '../domain/report.js';
 import type { CardWire } from '../domain/track.js';
 import type { PanelRow, RowAction, RowBadge, RowModuleView, RowStatus, TrackPageView } from './panel.js';
+
+/**
+ * The track's per-card verdicts (`TrackActivity.cards`, #1722 §4.1) — the
+ * only input a row's `activity` is derived from. Typed as the field alone
+ * rather than the whole `Track` so a caller cannot hand this derivation a
+ * lifecycle to read by accident.
+ */
+export type TrackPageActivity = Readonly<{ cards: Readonly<Record<string, CardActivity>> }>;
+
+/**
+ * A row's indicator state for one card, or `null` when the kernel said
+ * nothing about it (INV-APP-118). The card-level fold has no `unread`
+ * (cards carry no read receipt, §9 G4) and reads nothing off a runtime
+ * status or a task token — those are the phase words the rows keep printing
+ * beside it, and they are the second derivation the design retires.
+ */
+function rowActivity(activity: TrackPageActivity, cardId: string | null) {
+  if (cardId === null) return null;
+  const verdict = cardActivityOf(activity, cardId);
+  return verdict === null ? null : cardActivityState(verdict);
+}
 
 /**
  * What the status carrier says: the status, then the kernel's reason when one
@@ -135,7 +157,7 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
  * second `title ?? card.kind`: a re-computation is one more copy that can
  * drift from the name actually printed.
  */
-function cardRow(card: CardWire, taskStatus: RowStatus | null): PanelRow {
+function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPageActivity): PanelRow {
   const title = card.title;
   const name = title ?? card.kind;
   const actions: RowAction[] = [
@@ -158,6 +180,7 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null): PanelRow {
     /* A card row reports no run. */
     status: taskStatus ?? (card.runtime === undefined ? null
       : { token: card.runtime.status, phrase: card.runtime.status }),
+    activity: rowActivity(activity, card.id),
     actions,
   };
 }
@@ -210,7 +233,7 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null): PanelRow {
  * Cards row's `open-card` has no wording at all, which is why `RowAction`
  * carries its sentences per row rather than per `kind`.
  */
-function taskRow(task: ReportTaskRow): PanelRow {
+function taskRow(task: ReportTaskRow, activity: TrackPageActivity): PanelRow {
   const workerCardId = task.execution === undefined ? task.workerCardId : task.execution.workerCardId;
   const currentStatus = task.execution?.status ?? task.status;
   const badges: RowBadge[] = task.execution === undefined && task.declaration !== null
@@ -246,6 +269,10 @@ function taskRow(task: ReportTaskRow): PanelRow {
     kind: task.kind,
     badges,
     status,
+    /* By the worker card, which is how the kernel keys a dispatched task's
+       verdict (§4.2 W); a task with no worker card yet has no indicator, and
+       `execution.status === 'running'` does not put one there. */
+    activity: rowActivity(activity, workerCardId),
     actions,
   };
 }
@@ -259,8 +286,11 @@ function taskRow(task: ReportTaskRow): PanelRow {
 export function deriveTrackPageView(input: Readonly<{
   cards: readonly CardWire[];
   tasks: readonly ReportTaskRow[];
+  /** See `TrackPageActivity`; a `Track` satisfies it, and so does `NEUTRAL_ACTIVITY`. */
+  activity: TrackPageActivity;
 }>): TrackPageView {
-  const taskRows = groupPanelRows(input.tasks.map(taskRow), 'tasks').flatMap(group => group.rows);
+  const taskRows = groupPanelRows(input.tasks.map((task) => taskRow(task, input.activity)), 'tasks')
+    .flatMap(group => group.rows);
   // A worker process can stay alive after its task ends. Its task's current
   // execution is the work status; the session is only a fallback for standalone cards.
   const taskStatusByCard = new Map<string, RowStatus>();
@@ -273,7 +303,8 @@ export function deriveTrackPageView(input: Readonly<{
   const cards: RowModuleView = {
     key: 'cards',
     title: 'Cards',
-    rows: groupPanelRows(input.cards.map(card => cardRow(card, taskStatusByCard.get(card.id) ?? null)), 'cards').flatMap(group => group.rows),
+    rows: groupPanelRows(input.cards.map(card => cardRow(card, taskStatusByCard.get(card.id) ?? null, input.activity)), 'cards')
+      .flatMap(group => group.rows),
     empty: 'No cards yet.',
   };
   const tasks: RowModuleView = {

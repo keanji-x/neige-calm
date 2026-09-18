@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ReportTaskRow } from '../domain/report.js';
-import type { CardWire } from '../domain/track.js';
+import { NEUTRAL_ACTIVITY, type CardWire } from '../domain/track.js';
 import { deriveTrackPageView, taskStatusPhrase } from './track-page.js';
 
 function card(overrides: Partial<CardWire> = {}): CardWire {
@@ -35,16 +35,16 @@ function task(overrides: Partial<ReportTaskRow> = {}): ReportTaskRow {
 }
 
 function cardsModule(cards: readonly CardWire[]) {
-  return deriveTrackPageView({ cards, tasks: [] }).rowModules[0];
+  return deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY }).rowModules[0];
 }
 
 function tasksModule(tasks: readonly ReportTaskRow[]) {
-  return deriveTrackPageView({ cards: [], tasks }).rowModules[1];
+  return deriveTrackPageView({ cards: [], tasks, activity: NEUTRAL_ACTIVITY }).rowModules[1];
 }
 
 describe('deriveTrackPageView modules', () => {
   it('derives the two row modules in the panel’s order, with their empty texts', () => {
-    const view = deriveTrackPageView({ cards: [], tasks: [] });
+    const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY });
 
     expect(view.rowModules.map((module) => module.key)).toEqual(['cards', 'tasks']);
     expect(view.rowModules.map((module) => module.title)).toEqual(['Cards', 'Tasks']);
@@ -355,7 +355,7 @@ describe('taskStatusPhrase', () => {
 it('groups a completed task’s card as completed even while its worker process remains alive', () => {
   const view = deriveTrackPageView({
     cards: [card({ id: 'finished-worker', runtime: { worker_session_id: 'runtime', kind: 'codex', status: 'running' } })],
-    tasks: [task({ status: 'done', kind: 'codex', workerCardId: 'finished-worker' })],
+    tasks: [task({ status: 'done', kind: 'codex', workerCardId: 'finished-worker' })], activity: NEUTRAL_ACTIVITY,
   });
   expect(view.rowModules[0].rows[0].status?.token).toBe('done');
 });

@@ -209,7 +209,7 @@
    * Sent while a turn was running, so the kernel put it on the harness pending
    * queue and will issue it as the next turn. Without a word for it, a queued
    * message is pixel-identical to one being answered — same fill, same side,
-   * and the live dot pulsing a line below it belongs to the *previous* turn,
+   * and the working mark turning a line below it belongs to the *previous* turn,
    * which makes the wrong reading the easy one.
    *
    * It rides under the turn on the turn's own edge (`margin-inline-start:
@@ -549,18 +549,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  /* The same 6px accent dot and the same pulse a running track takes. */
-  .live {
-    display: inline-block;
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
-    border-radius: var(--radius-pill);
-    background: var(--accent);
-    animation: thread-pulse var(--motion-pulse) ease-in-out infinite;
-  }
-
-
 
   .empty {
     display: flex;
@@ -986,45 +974,6 @@
     white-space: nowrap;
   }
 
-  @keyframes thread-pulse {
-    50% {
-      opacity: 0.35;
-    }
-  }
-
-  /*
-   * ── Reduced motion takes the transition and keeps the sizes ───────────────
-   *
-   * The pulse goes, unconditionally: it is a loop that runs on its own with
-   * nothing driving it, which is the plain case the preference is about.
-   *
-   * **The envelope is the harder call, and it is deliberately not switched
-   * off.** The temptation is to read "the dots swell as the pointer moves" as
-   * decoration and delete it here. The reason not to is that the swell is the
-   * aiming aid for a 4px dot: a reduced-motion mouse user who lost it would be
-   * left with 4px of ink in a 24px row and nothing telling them which row they
-   * are on until they are on it, i.e. a motion preference answered with a
-   * targeting failure. That is a worse trade than the one being avoided.
-   *
-   * So what is dropped is the part that is genuinely animation rather than
-   * feedback: the transition. With it gone each dot is simply whatever size the
-   * pointer's current position makes it — a hover state that changes when the
-   * hover changes, and, crucially, one that **stops the instant the pointer
-   * does**. The 0.06s settle and the ease-out release, which are the parts that
-   * keep moving after the input has stopped, are what the preference removes.
-   *
-   * This block sits after `@media (pointer: fine)` on purpose: the two
-   * conditions are independent, both can match at once, and equal specificity
-   * means source order is what decides. Move it above and the transition comes
-   * back — so the browser tier asserts the ordinal as well as the declaration,
-   * by the same walk it uses on the coarse block.
-   */
-  @media (prefers-reduced-motion: reduce) {
-    .live {
-      animation: none;
-    }
-
-  }
   /* #1505 S6 — images attached to something you said. Aligned to the same
      inline-end edge as the words above them, because side is what carries
      "who" on this surface. */

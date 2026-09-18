@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
+import { NEUTRAL_ACTIVITY } from '../../../../../core/domain/track.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { useState } from '../../../ui/state/public.ts';
 import { Dialog } from '../../../ui/dialog/public.tsx';
@@ -147,8 +148,8 @@ describe('TrackPage header', () => {
     const onOpenInputNotification = vi.fn();
     renderPage({
       inputNotifications: [{
-        cardId: 'planner', source: 'Planner', message: 'Requires input to continue.',
-        state: 'awaiting-input', updatedAt: 1,
+        origin: 'card', id: 'planner', cardId: 'planner', source: 'Planner',
+        message: 'Requires input to continue.', state: 'awaiting-input', updatedAt: 1,
       }],
       onOpenInputNotification,
     });
@@ -171,12 +172,12 @@ describe('TrackPage header', () => {
 
   it('reopens a collapsed center when another card requests attention', async () => {
     const planner: TrackInputNotification = {
-      cardId: 'planner', source: 'Planner', message: 'Requires input to continue.',
-      state: 'awaiting-input', updatedAt: 1,
+      origin: 'card', id: 'planner', cardId: 'planner', source: 'Planner',
+      message: 'Requires input to continue.', state: 'awaiting-input', updatedAt: 1,
     };
     const worker: TrackInputNotification = {
-      cardId: 'worker', source: 'Worker', message: 'Stopped with an error and needs attention.',
-      state: 'errored', updatedAt: 2,
+      origin: 'card', id: 'worker', cardId: 'worker', source: 'Worker',
+      message: 'Stopped with an error and needs attention.', state: 'errored', updatedAt: 2,
     };
     function NotificationHarness() {
       const [notifications, setNotifications] = useState<readonly TrackInputNotification[]>([planner]);
@@ -246,6 +247,57 @@ describe('TrackPage task inventory', () => {
   ): ReportTaskRow => ({
     blockId: `b-${key}`, key, state: 'ready', workerCardId, status, statusDetail, kind, declaration: null,
     pendingReason: null,
+  });
+
+  /*
+   * #1722 §5.3 / INV-APP-118 — a row's indicator is the kernel's per-card
+   * verdict (`Track.cards`) and nothing else. The phase word stays: a card
+   * whose runtime says `running` and a task whose execution says `running`
+   * both print the word, and neither gets a spinner unless the kernel listed
+   * the card. A task is keyed by its worker card, so a task with none has no
+   * indicator whatever its status.
+   */
+  it('card and task rows paint activity.cards, not runtime status', () => {
+    const cards = [
+      card({ id: 'busy', title: 'Busy worker', kind: 'codex',
+        runtime: { worker_session_id: 'ws-busy', kind: 'codex', status: 'running' } }),
+      card({ id: 'stale', title: 'Stale worker', kind: 'codex',
+        runtime: { worker_session_id: 'ws-stale', kind: 'codex', status: 'running' } }),
+      card({ id: 'asking', title: 'Asking worker', kind: 'claude',
+        runtime: { worker_session_id: 'ws-asking', kind: 'claude', status: 'running' } }),
+    ];
+    const tasks = [
+      running('impl', 'running', 'busy'),
+      running('gate', 'running', null),
+      { ...running('doc', 'dispatched', 'stale'), execution: {
+        attemptId: 'a1', generation: 1, status: 'running', label: 'Running', statusDetail: null,
+        workerCardId: 'stale', blockingReason: null,
+      } },
+    ];
+    const { container } = renderPage({
+      cards, tasks,
+      track: track({ cards: { busy: 'working', asking: 'input' } }),
+    });
+    const desktop = container.querySelector('[data-nc-desktop-panel]')!;
+    /* Static selectors (`no-class-dom-query`): one map over every marked row. */
+    const rows = [...desktop.querySelectorAll('[data-nc-row]')];
+    const indicators = Object.fromEntries(rows.map((row): [string, string | null] => [
+      row.getAttribute('data-nc-row') ?? '', row.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null,
+    ]));
+    const statuses = Object.fromEntries(rows.map((row): [string, string | null] => [
+      row.getAttribute('data-nc-row') ?? '', row.querySelector('[data-nc-status]')?.getAttribute('data-nc-status') ?? null,
+    ]));
+    expect(indicators).toEqual({
+      busy: 'working', asking: 'attention',
+      /* `runtime.status: 'running'` with no verdict: the word, no spinner. */
+      stale: null,
+      /* Tasks: by worker card — none for a task without one, none for a
+         running execution whose card the kernel did not list. */
+      'b-impl': 'working', 'b-doc': null, 'b-gate': null,
+    });
+    expect(statuses).toEqual({
+      busy: 'running', asking: 'running', stale: 'running', 'b-impl': 'running', 'b-doc': 'running', 'b-gate': 'running',
+    });
   });
 
   /* FOLDER used to hold this slot and was removed, not moved: `area/new-track`
@@ -581,7 +633,7 @@ describe('TrackPage card inventory', () => {
       tasks: MENU_TASKS,
       outlineItems: [{ blockId: 'section-1', label: 'What changed', number: 1, children: [] }],
     });
-    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS }).rowModules;
+    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY }).rowModules;
     /* Not vacuous: a one-module derivation would make "the order matches" an
        assertion about nothing. */
     expect(modules.length).toBeGreaterThan(1);
@@ -596,7 +648,7 @@ describe('TrackPage card inventory', () => {
   });
 
   it('and each of those entries opens the module it names', async () => {
-    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS }).rowModules;
+    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY }).rowModules;
     for (const [index, module] of modules.entries()) {
       /* No `outlineItems`, so the derived entries start the list and their menu
          position is their index in `rowModules`. */

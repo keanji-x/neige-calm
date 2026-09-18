@@ -29,6 +29,7 @@ function draw() {
       blockId: `task-${i}`, key, state: 'ready', declaration: null, status: 'running', statusDetail: null,
       kind: 'codex', workerCardId: null, pendingReason: null,
     })),
+    activity: NEUTRAL_ACTIVITY,
   });
   render(<div style={{ display: 'flex', gap: 32 }}>
     <div style={{ inlineSize: 240 }}><Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])}
@@ -36,7 +37,7 @@ function draw() {
       onDeleteArea={vi.fn()} onNewTrack={vi.fn()} onSetPinned={vi.fn()} onDeleteTrack={vi.fn()}
       onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} collapsed={false} onToggleCollapsed={vi.fn()} /></div>
     <div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '2' }), view)}
-      <PanelModule title="Conversations"><ChatList showTrack={false} onOpen={vi.fn()}
+      <PanelModule title="Conversations"><ChatList showTrack={false} onOpen={vi.fn()} cards={{}}
         conversations={['Chat first', 'Chat second'].map((title, i) => ({ id: `chat-${i}`, trackId: 'track-0', title,
           kind: 'track-assistant', state: 'idle', updatedAt: 1 }))} /></PanelModule>
     </PanelCard></div>

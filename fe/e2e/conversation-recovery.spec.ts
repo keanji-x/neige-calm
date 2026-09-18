@@ -82,7 +82,7 @@ test('explains a wedged conversation and carries its draft into recovery', async
     phase = 'wedged';
     await page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
     await expect(page.getByRole('alert')).toContainText('This conversation is stuck');
-    await expect(page.getByLabel('Working', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('complementary').locator('[data-nc-activity="working"]')).toHaveCount(0);
     await composer.press('Enter');
     await expect(composer).toHaveText('Keep this unsent draft');
     await page.screenshot({ path: testInfo.outputPath('stalled-desktop.png'), fullPage: true, animations: 'disabled' });

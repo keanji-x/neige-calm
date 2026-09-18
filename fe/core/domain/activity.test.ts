@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  activityStateOf, attentionKindOf, cardActivityOf, type ActivityState, type AttentionKind,
+  activityStateOf, attentionKindOf, attentionOfCard, cardActivityOf, cardActivityState,
+  type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 
 const ATTENTION: readonly AttentionKind[] = ['none', 'input', 'failed'];
@@ -62,5 +63,20 @@ describe('cardActivityOf', () => {
     expect(cardActivityOf(activity, 'b')).toBe('failed');
     expect(cardActivityOf(activity, 'c')).toBeNull();
     expect(cardActivityOf({ cards: {} }, 'a')).toBeNull();
+  });
+});
+
+describe('card verdicts as indicator states', () => {
+  it('maps each per-card verdict onto the attention axis, and nothing else', () => {
+    expect(attentionOfCard(null)).toBe('none');
+    expect(attentionOfCard('working')).toBe('none');
+    expect(attentionOfCard('input')).toBe('input');
+    expect(attentionOfCard('failed')).toBe('failed');
+  });
+
+  it.each<[CardActivity, ActivityState]>([
+    ['working', 'working'], ['input', 'attention'], ['failed', 'failed'],
+  ])('shows a %s card as %s, never as unread', (card, expected) => {
+    expect(cardActivityState(card)).toBe(expected);
   });
 });

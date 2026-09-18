@@ -38,7 +38,7 @@ it.each(['exit', 'fatal-protocol'] as const)('retains %s truth after a recovery 
     runtime: { worker_session_id: 'run-1', kind: 'terminal', status: 'running', terminal_id: 'pty-1' } });
   if (!card) throw new Error('Fixture terminal missing');
   render(<div style={{ width: 390 }}><BoardHost host={createCardHost(registry, { recovery: access })}
-    items={[{ card, title: 'Terminal', originalIndex: 0, deletable: true }]}
+    items={[{ card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null }]}
     visible activeCardId="card-1" onRemoveCard={() => {}} /></div>);
   await waitFor(() => expect(sockets).toHaveLength(1));
   act(() => {

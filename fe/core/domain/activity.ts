@@ -64,3 +64,18 @@ export function cardActivityOf(
 ): CardActivity | null {
   return activity.cards[cardId] ?? null;
 }
+
+/** A card verdict as the attention axis reads it; `null` (no verdict) and `working` are `none`. */
+export function attentionOfCard(card: CardActivity | null): AttentionKind {
+  return card === 'input' ? 'input' : card === 'failed' ? 'failed' : 'none';
+}
+
+/**
+ * A card verdict as an indicator shows it. Cards have no read receipt (§9 G4),
+ * so `unread` is never part of a card-level state; the fold goes through
+ * `activityStateOf` all the same, so a card and a track can never rank the
+ * same two facts differently.
+ */
+export function cardActivityState(card: CardActivity): ActivityState {
+  return activityStateOf({ working: card === 'working', attention: attentionOfCard(card), unread: false });
+}

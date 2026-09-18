@@ -3,7 +3,7 @@ import type { PanelRow } from './panel.js';
 import { groupPanelRows } from './panel-groups.js';
 
 function row(id: string, status: string | null): PanelRow {
-  return { id, title: id, kind: null, badges: [], status: status === null ? null : { token: status, phrase: status }, actions: [] };
+  return { id, title: id, kind: null, badges: [], status: status === null ? null : { token: status, phrase: status }, activity: null, actions: [] };
 }
 
 describe('inventory status groups', () => {

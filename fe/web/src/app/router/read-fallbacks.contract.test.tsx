@@ -350,12 +350,14 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     await within(await screen.findByRole('navigation', { name: 'Workspace' })).findByText('Reliable');
+    /* The Notifications aside reads the track's own `kernel/track/activity`
+       overlay (#1722 §5.3), which arrives with the detail — the workspace-wide
+       overlays read being down changes nothing on this page. */
     resolveDetail(ok({ track, can_resume: false, cards: [plannerCard], overlays: [{
-      id: 'o1', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1',
-      kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
-    }, {
-      id: 'o2', plugin_id: 'kernel', entity_kind: 'card', entity_id: plannerCard.id,
-      kind: 'status', payload: { state: 'AwaitingInput' }, updated_at: 2,
+      id: 'o1', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity', updated_at: 2,
+      payload: { schemaVersion: 1, working: false, attention: 'input', activity_at_ms: 2,
+        items: [{ kind: 'input', source: 'card', id: plannerCard.id, card_id: plannerCard.id, at_ms: 2 }],
+        cards: [{ card_id: plannerCard.id, state: 'input' }] },
     }] }));
     expect(await screen.findByRole('region', { name: 'Notifications' })).toBeTruthy();
   });

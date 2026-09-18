@@ -3,6 +3,7 @@ import { page } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
+import { NEUTRAL_ACTIVITY } from '../../../../../core/domain/track.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { PanelCard } from '../../../ui/panel-card/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
@@ -19,7 +20,7 @@ it('clips long status tokens before the worker-type column while keeping their f
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}),
     deriveTrackPageView({ cards: [card({ id: 'pending-card', title: 'Long card title', kind: 'codex',
       runtime: { worker_session_id: 'one', kind: 'codex', status: 'running' } })],
-      tasks: [{ ...task('Long task title', 'awaiting_projection', 'codex'), workerCardId: 'pending-card' }] }))}</PanelCard></div>);
+      tasks: [{ ...task('Long task title', 'awaiting_projection', 'codex'), workerCardId: 'pending-card' }], activity: NEUTRAL_ACTIVITY }))}</PanelCard></div>);
   for (const summary of document.querySelectorAll<HTMLElement>('details:not([open]) > summary')) summary.click();
   const statuses = document.querySelectorAll<HTMLElement>('[data-nc-status]');
   expect(statuses).toHaveLength(2);
@@ -38,7 +39,7 @@ it('aligns module titles, status groups and row names, with stable secondary col
   await page.viewport(1200, 900);
   const view = deriveTrackPageView({
     cards: [card({ title: 'Review workspace', runtime: { worker_session_id: 'one', kind: 'terminal', status: 'running' } })],
-    tasks: [task('Check layout', 'running', 'codex'), task('A longer task name', 'verifying', 'terminal'), task('Finished review', 'done', 'claude')],
+    tasks: [task('Check layout', 'running', 'codex'), task('A longer task name', 'verifying', 'terminal'), task('Finished review', 'done', 'claude')], activity: NEUTRAL_ACTIVITY,
   });
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '12' }), view)}</PanelCard></div>);
   for (const module of document.querySelectorAll<HTMLElement>('[data-nc-module]')) {
@@ -66,7 +67,7 @@ it('aligns module titles, status groups and row names, with stable secondary col
 it('keeps completed work folded until requested and preserves its click destination', async () => {
   const openTask = vi.fn();
   render(<div style={{ inlineSize: 260 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenTask: openTask }),
-    deriveTrackPageView({ cards: [], tasks: [task('A long completed task name', 'done', 'codex')] }))}</PanelCard></div>);
+    deriveTrackPageView({ cards: [], tasks: [task('A long completed task name', 'done', 'codex')], activity: NEUTRAL_ACTIVITY }))}</PanelCard></div>);
   const row = page.getByRole('button', { name: 'A long completed task name' });
   expect(document.querySelector<HTMLElement>('[data-nc-row="A long completed task name"]')!.checkVisibility()).toBe(false);
   await page.getByText('Completed', { exact: true }).click();
@@ -79,7 +80,7 @@ it('bounds a long expanded group and scrolls its rows without pushing the next m
   await page.viewport(1200, 800);
   const openTask = vi.fn();
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenTask: openTask }),
-    deriveTrackPageView({ cards: [], tasks: Array.from({ length: 40 }, (_, index) => task(`Task ${index + 1}`, 'running', 'codex')) }))}
+    deriveTrackPageView({ cards: [], tasks: Array.from({ length: 40 }, (_, index) => task(`Task ${index + 1}`, 'running', 'codex')), activity: NEUTRAL_ACTIVITY }))}
     <div data-testid="next-module">Conversations</div></PanelCard></div>);
   const group = document.querySelector<HTMLElement>('[data-nc-inventory-group="working"]')!;
   const scrollport = group.querySelector<HTMLElement>('summary + div')!;
@@ -95,7 +96,7 @@ it('shares the module height across several expanded groups', async () => {
   await page.viewport(1200, 800);
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}),
     deriveTrackPageView({ cards: [], tasks: ['running', 'failed', 'done'].flatMap(status =>
-      Array.from({ length: 30 }, (_, index) => task(`${status} ${index}`, status, 'codex'))) }))}
+      Array.from({ length: 30 }, (_, index) => task(`${status} ${index}`, status, 'codex'))), activity: NEUTRAL_ACTIVITY }))}
     <div data-testid="next-module">Conversations</div></PanelCard></div>);
   for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="tasks"] details:not([open]) > summary')) summary.click();
   await expect.poll(() => document.querySelector('[data-testid="next-module"]')!.getBoundingClientRect().top).toBeLessThan(440);
@@ -111,7 +112,7 @@ it('shares the module height across several expanded groups', async () => {
 it('keeps the heading stationary and uses 4px content spacing with an 8px group footer', async () => {
   await page.viewport(1200, 800);
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}),
-    deriveTrackPageView({ cards: [], tasks: [task('Waiting task', 'pending', 'codex'), task('Completed task', 'done', 'codex')] }))}</PanelCard></div>);
+    deriveTrackPageView({ cards: [], tasks: [task('Waiting task', 'pending', 'codex'), task('Completed task', 'done', 'codex')], activity: NEUTRAL_ACTIVITY }))}</PanelCard></div>);
   const waiting = document.querySelector<HTMLElement>('[data-nc-inventory-group="waiting"] summary')!;
   const completed = document.querySelector<HTMLElement>('[data-nc-inventory-group="done"] summary')!;
   expect(completed.getBoundingClientRect().top - waiting.getBoundingClientRect().top).toBeCloseTo(28, 0);

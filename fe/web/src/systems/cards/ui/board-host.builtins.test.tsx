@@ -52,12 +52,14 @@ function boardOfBuiltins(onRemoveCard: (cardId: string) => void) {
       title: 'Build log',
       originalIndex: 0,
       deletable: true,
+      activity: null,
     }),
     Object.freeze({
       card: resolve({ id: 'card-file', kind: 'file-viewer', payload: { path: '/repo/notes.md' } }),
       title: 'Notes',
       originalIndex: 1,
       deletable: true,
+      activity: null,
     }),
   ];
   return render(

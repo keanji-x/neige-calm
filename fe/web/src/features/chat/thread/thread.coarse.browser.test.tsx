@@ -137,7 +137,7 @@ function RailPane({ turns, paneHeight = 400 }: {
           style={{ blockSize: paneHeight, flex: 'none' }}
         >
           <div className={drawerStyles.bodyInner} data-nc-rail-pane-inner="">
-            <ChatThread conversation={railConversation()} turns={turns} />
+            <ChatThread cards={{}} conversation={railConversation()} turns={turns} />
           </div>
         </div>
       </div>

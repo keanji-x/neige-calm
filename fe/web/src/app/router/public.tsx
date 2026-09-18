@@ -26,8 +26,9 @@ import {
 import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
   liveTableOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
-  type Track, type TrackDetailWire,
+  type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
+import { cardActivityOf, type CardActivity } from '../../../../core/domain/activity.ts';
 import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
 } from '../../systems/cards/public.js';
@@ -95,7 +96,7 @@ import {
   useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
   useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
-  trackTaskVerdictsQueryOptions,
+  trackOverlaysQueryOptions, trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { NewTrackRoute } from './new-track-route.tsx';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
@@ -1113,6 +1114,16 @@ type ConversationPanelSource = Readonly<{
     /** The Track this draft belongs to. */
     scopeId: string;
     rows: readonly Conversation[];
+    /**
+     * The kernel's per-card verdicts for the track these rows are on
+     * (`TrackActivity.cards`, #1722 §4.1) — what every row's dot and the open
+     * drawer's live mark are read from (INV-APP-118). Required and without a
+     * default: a caller that passes no overlay has a list on which nothing
+     * can ever be working, and the Today route is exactly the caller that
+     * would forget (its launchpad track is on no workspace list, so it reads
+     * the overlays query itself).
+     */
+    cards: Readonly<Record<string, CardActivity>>;
     /** See `ConversationRouteIntent`: the Track these rows may be sent to. */
     rememberOn: string;
     scopeOf: (conversationId: string) => PlannerConversationScope | null;
@@ -1852,8 +1863,14 @@ function useConversationPanel(
     list: (
       <ChatList
         conversations={store.conversations}
+        cards={source.cards}
         unreadIds={new Set(rows.filter(row => preferences.isUnread('conversation', row.id, row.lastTurnCompletedAt ?? 0)).map(row => row.id))}
         activeId={open?.id ?? null}
+        /* The two declared local echoes (#1722 §5.3), for the open row only:
+           the sender's own in-flight turn, and the drawer's wedge detection.
+           Handed over as facts, not folded into `state` — the list reads
+           nothing off `Conversation.state`. */
+        local={open === null ? null : { id: open.id, working: store.working, stalled: store.stalled }}
         showTrack={options?.showTrack ?? true}
         onOpen={(conversation) => {
           setOpenTarget({ kind: 'row', id: conversation.id });
@@ -2183,6 +2200,7 @@ function useConversationPanel(
                 turns={store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
                   || composerDraft === '' || turn.id !== store.failedSend.echo.id)}
                 pending={store.pending.has(open.id)}
+                cards={source.cards}
               />
             )}
             {/*
@@ -2299,12 +2317,30 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       .map((row) => nameTodaySummaryConversation(conversationTrackId, row)),
     [conversationTrackId, launchpadConversationsQuery.data],
   );
+  /*
+   * The launchpad's activity overlay (#1722 §5.3, third site). The launchpad
+   * is in the system area, which `GET /api/areas` filters out, so it is on no
+   * `useWorkspace().tracks` row and this page has no `detailActivity` of its
+   * own — the only way its rows can ever show `working` is to read the
+   * workspace-wide overlays query directly. Same key as `useWorkspace`'s, so
+   * the cache is shared and the kernel's tick invalidates both at once; the
+   * server applies no area filter to it, so the launchpad's row is there.
+   */
+  const launchpadOverlaysQuery = useQuery({
+    ...trackOverlaysQueryOptions(transport, unauthorized),
+    enabled: conversationTrackId !== '',
+  });
+  const launchpadActivity = useMemo<TrackActivity>(
+    () => trackActivityFrom(conversationTrackId, launchpadOverlaysQuery.data ?? []),
+    [conversationTrackId, launchpadOverlaysQuery.data],
+  );
   const chat = useConversationPanel(
     transport,
     unauthorized,
     {
       scopeId: conversationTrackId,
       rows: launchpadRows,
+      cards: launchpadActivity.cards,
       /*
        * The launchpad is a real track and these rows are its own, so this route
        * says so — the same statement `TrackRouteBody` makes about itself, and
@@ -2646,6 +2682,14 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
     ...trackDetailQueryOptions(transport, trackId ?? '', unauthorized),
     enabled: trackId !== undefined,
   });
+  /* One `Track` per detail read, not per render: the body memoises the board
+     items and the panel source on it (#1722 §5.3), and a value rebuilt every
+     render would make those memos rebuild with it. */
+  const detailData = detail.data;
+  const track = useMemo(
+    () => detailData === undefined ? null : toTrack(detailData.track, trackActivityFrom(detailData.track.id, detailData.overlays)),
+    [detailData],
+  );
   /*
    * The card Today asked for, if this track has it and it is a conversation card
    * at all. **Both** conversation markers, not just the planner one (#1189 §5.2):
@@ -2680,7 +2724,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
     if (!detailMatchesRoute || requestedCard === undefined) registry.clearOpenRequest();
   }, [detail.isFetching, detail.isLoading, detailMatchesRoute, registry, requestedCard]);
 
-  if (!detail.data) {
+  if (!detail.data || track === null) {
     if (detail.isLoading || detail.isFetching) return null;
     if (detail.error instanceof Error) return <ErrorBox message={detail.error.message} onRetry={() => { void detail.refetch(); }} />;
     return <PendingRoute label="Track" owner="features/track" missing />;
@@ -2688,9 +2732,6 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
   // `detail.data` can still be the previously-viewed track while this one
   // fetches; rendering it under this URL would show the wrong track.
   if (trackId !== undefined && detail.data.track.id !== trackId) return null;
-
-  const detailActivity = trackActivityFrom(detail.data.track.id, detail.data.overlays);
-  const track = toTrack(detail.data.track, detailActivity);
 
   return (
     <TrackRouteBody
@@ -2707,35 +2748,49 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
   );
 }
 
-function cardInputNotifications(
-  cards: TrackDetailWire['cards'], overlays: TrackDetailWire['overlays'],
+/** How a card is named in the Notifications aside: the planner by role, the rest by title, then kind. */
+function notificationCardLabel(card: TrackDetailWire['cards'][number]): string {
+  return card.kind === 'codex' && isPlannerHarnessPayload(card.payload)
+    ? 'Planner'
+    : card.kind === 'codex' && isAssistantHarnessPayload(card.payload)
+      ? card.title ?? 'Assistant'
+      : card.title ?? card.kind;
+}
+
+/**
+ * The Notifications aside, from the kernel's `activity.items` (#1722 §4.1,
+ * §5.3) — every thing on the track that needs a person, not only the cards
+ * with a `kernel/card/status` row: a failed task, a wedged or dead session and
+ * a blocked lifecycle have no such row and used to be invisible here. One
+ * item per overlay entry, keyed by `(origin, id)`, newest first; the same
+ * card may carry two (the reaper-killed worker is a `task` item and a
+ * `session` item, §4.1 C1) and both are listed.
+ */
+function attentionNotifications(
+  items: TrackActivity['attentionItems'], cards: TrackDetailWire['cards'],
 ): readonly TrackInputNotification[] {
-  const statusByCard = new Map<string, TrackInputNotification>();
-  for (const overlay of overlays) {
-    if (overlay.plugin_id !== 'kernel' || overlay.entity_kind !== 'card' || overlay.kind !== 'status') continue;
-    if (typeof overlay.payload !== 'object' || overlay.payload === null) continue;
-    const state = (overlay.payload as Record<string, unknown>).state;
-    if (state !== 'AwaitingInput' && state !== 'Errored') continue;
-    const card = cards.find((candidate) => candidate.id === overlay.entity_id);
-    if (card === undefined) continue;
-    const source = card.kind === 'codex' && isPlannerHarnessPayload(card.payload)
-      ? 'Planner'
-      : card.kind === 'codex' && isAssistantHarnessPayload(card.payload)
-        ? card.title ?? 'Assistant'
-        : card.title ?? card.kind;
-    const current = statusByCard.get(card.id);
-    if (current !== undefined && current.updatedAt >= overlay.updated_at) continue;
-    statusByCard.set(card.id, {
-      cardId: card.id,
+  return items.map((item): TrackInputNotification => {
+    const card = item.cardId === null ? undefined : cards.find((candidate) => candidate.id === item.cardId);
+    const source = card !== undefined ? notificationCardLabel(card)
+      : item.origin === 'task' ? `Task ${item.id}`
+        : item.origin === 'lifecycle' ? 'Track' : 'Card';
+    const message = item.origin === 'card'
+      ? (item.kind === 'input' ? 'Requires input to continue.' : 'Stopped with an error and needs attention.')
+      : item.origin === 'session'
+        ? (item.kind === 'input' ? 'Its session is waiting for input.' : 'Its session failed and needs attention.')
+        : item.origin === 'task'
+          ? (item.kind === 'input' ? 'The task is waiting for input.' : 'The task failed and needs attention.')
+          : (item.kind === 'input' ? 'The track is waiting on you.' : 'The track failed and needs attention.');
+    return {
+      origin: item.origin,
+      id: item.id,
+      cardId: card === undefined ? null : card.id,
       source,
-      message: state === 'AwaitingInput'
-        ? 'Requires input to continue.'
-        : 'Stopped with an error and needs attention.',
-      state: state === 'AwaitingInput' ? 'awaiting-input' : 'errored',
-      updatedAt: overlay.updated_at,
-    });
-  }
-  return [...statusByCard.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+      message,
+      state: item.kind === 'input' ? 'awaiting-input' : 'errored',
+      updatedAt: item.atMs,
+    };
+  }).toSorted((left, right) => right.updatedAt - left.updatedAt);
 }
 
 function TrackRouteBody({
@@ -2822,9 +2877,11 @@ function TrackRouteBody({
   const assistantRows = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
   const trackTitle = trackDisplayTitle(track.title);
   // Planner is the one conversation projected from a card rather than the
-  // assistant list. Its runtime owns live state and activity, just as the
-  // server's assistant summaries do. Legacy snapshots retain card time until
-  // a current runtime projection supplies the session watermark.
+  // assistant list. Its `state` is the runtime's session reading, carried the
+  // way the server's assistant summaries carry theirs — the drawer's baseline,
+  // not an indicator (#1722 §5.3): the row's dot reads `activity.cards` by
+  // this same id. Legacy snapshots retain card time until a current runtime
+  // projection supplies the session watermark.
   const plannerRow = useMemo<Conversation | null>(() => plannerCard === undefined ? null : {
     id: plannerCard.id,
     trackId: track.id,
@@ -2899,6 +2956,8 @@ function TrackRouteBody({
     {
       scopeId: track.id,
       rows,
+      /* The track's own overlay-derived verdicts (`toTrack(detail, detailActivity)`). */
+      cards: track.cards,
       /* Unlike an area's, these rows are on a track the reader can be sent to —
          this very route — so Today may hold and open them. The store checks
          each row's `trackId` against this, so a row from anywhere else is not
@@ -3010,11 +3069,16 @@ function TrackRouteBody({
            the same wire row, so the two surfaces cannot disagree about which
            cards are the kernel's. */
         deletable: slot.wire.deletable,
+        /* The kernel's verdict for the card, from the same overlay the CARDS
+           row reads (#1722 §5.3): the head's indicator arrives resolved, the
+           way `onRemove` does, and the card re-derives nothing from its
+           runtime status. */
+        activity: cardActivityOf(track, slot.card.id),
       }));
-  }, [cardRegistry, cards]);
+  }, [cardRegistry, cards, track]);
   const inputNotifications = useMemo(
-    () => cardInputNotifications(cards, overlays),
-    [cards, overlays],
+    () => attentionNotifications(track.attentionItems, cards),
+    [cards, track.attentionItems],
   );
   /* Stable across renders that do not change the overlays, so a live table is
      not handed a new resolver identity on every keystroke elsewhere. */
@@ -3449,6 +3513,14 @@ function TrackRouteBody({
       conversationOpen={chat.isOpen}
       inputNotifications={inputNotifications}
       onOpenInputNotification={(cardId) => {
+        /* No card to open (a lifecycle item, a task with no worker card yet):
+           the track itself is the destination — its planner conversation when
+           it has one, else the page as it stands (#1722 §5.3). */
+        if (cardId === null) {
+          if (plannerCard !== undefined) registry.requestOpen(plannerCard.id, { focusComposer: true });
+          else go({ name: 'track', trackId: track.id, from: routeFrom });
+          return;
+        }
         if (conversationNotificationCardIds.has(cardId)) {
           registry.requestOpen(cardId, { focusComposer: true });
           return;
