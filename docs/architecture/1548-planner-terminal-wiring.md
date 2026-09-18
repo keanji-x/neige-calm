@@ -430,8 +430,11 @@ emits rules, not outcomes. One spelling is added (#1729): a `git <rest>`
 prefix in `bash`, in the floor or in `deny` is rendered twice, as
 `Bash(git <rest> *)` and as `Bash(git -C /<cwd> <rest> *)` for the terminal's
 own absolute cwd (the form Claude Code runs; a bare `git`, any other command
-and a `-C` to any other directory get no variant), so the `-C <cwd>` spelling
-is never wider than the bare one. The rendered block is the one value written into the settings
+and a `-C` to any other directory get no variant), and only for a cwd without
+whitespace or quote characters — a space in the path shifts the token
+boundaries, so such a cwd keeps the bare rules alone and prompts for `-C`
+spellings; within one cwd the variant is in exactly the lists its bare rule
+is in. The rendered block is the one value written into the settings
 file next to `hooks` (nothing else: no `defaultMode`, `bypassPermissions`,
 `additionalDirectories` or `Read` rule), stamped on the card as
 `Card.payload.claude_permissions` in the same transaction, persisted in the

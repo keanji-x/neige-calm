@@ -135,10 +135,88 @@ fn cwd_with_glob_or_rule_characters_is_refused() {
             "{cwd:?}: {err:?}"
         );
     }
+    // Parentheses and a space are rendered into the `Edit` rules; the space
+    // suppresses the `-C` spellings (#1729, see the next test).
     let block = render_claude_permissions("/a b/(c)", &round19()).unwrap();
     assert_eq!(block.allow[0], "Edit(//a b/(c)/**)");
-    assert_eq!(block.allow[3], "Bash(git -C /a b/(c) status *)");
-    assert_eq!(block.ask[9], "Edit(//a b/(c)/.git/**)");
+    assert_eq!(block.allow[3], "Bash(git diff *)");
+    assert_eq!(block.ask[7], "Edit(//a b/(c)/.git/**)");
+    assert!(
+        block
+            .allow
+            .iter()
+            .chain(&block.ask)
+            .chain(&block.deny)
+            .all(|rule| !rule.contains(" -C ")),
+        "{block:?}"
+    );
+}
+
+/// #1729 — a cwd with whitespace or a quote character gets NO `-C` variant
+/// in any list: `Bash(git -C /w x status *)` would tokenise as `-C /w`, then
+/// `x status`, and an `allow` variant of `git status` under `/w push` would
+/// admit `git -C /w push status …` — a push the `deny` variant never
+/// matches. The bare rules stay; the `Edit` rules still carry the cwd.
+#[test]
+fn a_cwd_with_whitespace_or_a_quote_gets_no_git_c_spelling_in_any_list() {
+    let scope = ClaudePermissionsScope {
+        bash: strings(&["git status", "python3 -m unittest"]),
+        deny: strings(&["git push"]),
+        ..Default::default()
+    };
+    for cwd in ["/w x", "/w push", "/w'x", "/w\"x", "/w\u{a0}x", "/w x/"] {
+        let block = render_claude_permissions(cwd, &scope).unwrap();
+        let root = cwd.trim_matches('/');
+        assert_eq!(
+            block.allow,
+            vec![
+                "Bash(git status *)".to_owned(),
+                "Bash(python3 -m unittest *)".into()
+            ],
+            "{cwd:?}"
+        );
+        assert_eq!(
+            block.ask,
+            vec![
+                "Bash(git push *)".to_owned(),
+                "Bash(git reset --hard *)".into(),
+                "Bash(rm -rf *)".into(),
+                "Bash(curl *)".into(),
+                "Bash(wget *)".into(),
+                "Bash(pip install *)".into(),
+                "Bash(npm install *)".into(),
+                format!("Edit(//{root}/.git/**)"),
+            ],
+            "{cwd:?}"
+        );
+        assert_eq!(block.deny, vec!["Bash(git push *)".to_owned()], "{cwd:?}");
+    }
+    // The same scope in a one-token cwd renders every variant.
+    let block = render_claude_permissions("/w/x", &scope).unwrap();
+    assert_eq!(block.allow.len(), 3);
+    assert_eq!(block.ask.len(), 10);
+    assert_eq!(block.deny.len(), 2);
+}
+
+/// #1729 — only the literal ASCII `git ` prefix is doubled: a prefix whose
+/// first token is `git` joined by a non-breaking space is ONE shell token,
+/// passes validation and renders one rule.
+#[test]
+fn a_git_prefix_joined_by_a_non_breaking_space_renders_one_rule() {
+    let scope = ClaudePermissionsScope {
+        bash: strings(&["git\u{a0}status"]),
+        deny: strings(&["git\u{a0}push"]),
+        ..Default::default()
+    };
+    assert_eq!(validate_scope(&scope).unwrap(), scope);
+    let block = render_claude_permissions("/w/x", &scope).unwrap();
+    assert_eq!(block.allow, vec!["Bash(git\u{a0}status *)".to_owned()]);
+    assert_eq!(block.deny, vec!["Bash(git\u{a0}push *)".to_owned()]);
+    assert_eq!(
+        block.ask.len(),
+        10,
+        "the floor's `git ` prefixes are doubled"
+    );
 }
 
 /// #1729 — (a) a `git <rest>` prefix renders its bare rule and, right after

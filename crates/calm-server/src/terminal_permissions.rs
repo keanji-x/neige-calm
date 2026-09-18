@@ -18,8 +18,11 @@
 //! usual permission behaviour. One exception (#1729): a `git <rest>` prefix
 //! in any of the three lists is rendered twice, as `Bash(git <rest> *)` and
 //! as `Bash(git -C /<cwd> <rest> *)` for the terminal's own absolute cwd,
-//! the spelling Claude Code actually runs; no other prefix, no other
-//! directory and not a bare `git`. `Edit(...)` rules are
+//! the spelling Claude Code actually runs — only when that cwd carries no
+//! whitespace and no quote character (a space in the path shifts the token
+//! boundaries and would let an `allow` variant admit a denied subcommand;
+//! such a cwd keeps the bare rule alone and prompts for `-C` spellings); no
+//! other prefix, no other directory and not a bare `git`. `Edit(...)` rules are
 //! anchored with `//` (an absolute path) because a single leading slash
 //! anchors at the settings file's own directory. No `defaultMode`,
 //! `bypassPermissions`, `additionalDirectories` or `Read(...)` rule is ever
@@ -293,17 +296,27 @@ pub fn render_claude_permissions(
 }
 
 /// The `Bash(...)` rules of one validated prefix: `Bash(<prefix> *)`, and
-/// for a `git <rest>` prefix (first token exactly `git`, a non-empty rest)
-/// also `Bash(git -C /<root> <rest> *)` right after it (#1729) — the
-/// spelling Claude Code runs from a terminal whose cwd is `/<root>`. A bare
-/// `git` gets no variant (`Bash(git *)` admits every spelling); a `-C` to
-/// any other directory matches no rule. Used for `allow`, the floor's `ask`
-/// and `deny` alike, so the `-C <cwd>` spelling is never wider than the bare
-/// one.
+/// for a `git <rest>` prefix (the literal ASCII `git ` followed by a
+/// non-empty rest; a `git\u{a0}status` prefix is one shell token and gets
+/// nothing) also `Bash(git -C /<root> <rest> *)` right after it (#1729) —
+/// the spelling Claude Code runs from a terminal whose cwd is `/<root>`. The
+/// variant is emitted only when `root` carries no whitespace and none of
+/// `'`, `"`, `\`: with a space in the path (`/w push`) the tokens shift and
+/// the `allow` variant of `git status` would read as `git -C /w push status`,
+/// admitting a push the `deny` variant does not match; such a root keeps
+/// the bare rule alone (no error, no quoting) and Claude prompts for `-C`
+/// spellings there. A bare `git` gets no variant (`Bash(git *)` admits every
+/// spelling); a `-C` to any other directory matches no rule. Used for
+/// `allow`, the floor's `ask` and `deny` alike, so within one cwd the
+/// variant is in exactly the lists its bare rule is in.
 fn bash_rules(prefix: &str, root: &str) -> Vec<String> {
     let mut rules = vec![format!("Bash({prefix} *)")];
-    if let Some(("git", rest)) = prefix.split_once(char::is_whitespace)
-        && !rest.trim().is_empty()
+    let root_is_one_token = !root
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\'));
+    if let Some(rest) = prefix.strip_prefix("git ")
+        && !rest.is_empty()
+        && root_is_one_token
     {
         rules.push(format!("Bash(git -C /{root} {rest} *)"));
     }
