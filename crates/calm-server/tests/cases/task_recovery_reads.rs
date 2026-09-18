@@ -422,3 +422,125 @@ async fn task_recovery_blocker_uses_live_configured_budget_like_report_read() {
         reason
     );
 }
+
+async fn list_entry(boot: &crate::mcp_track_report::Boot, args: Value) -> Value {
+    let list = call_tool(boot, "calm.plan.list", planner_identity(boot), args)
+        .await
+        .unwrap();
+    list["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["key"] == "b")
+        .cloned()
+        .expect("task b is listed")
+}
+
+/// #1727 S1 (fix round 1, F1) — `workspace.leased` / `worktree.committed` no
+/// longer wake the planner, so the facts they carried are read back through
+/// `calm.plan.list` as `worktree`: the lease path and state, the slice branch,
+/// and the kernel-made commit sha a Codex worker cannot self-report (it
+/// reports BEFORE the kernel commits). No lease → no key at all; a lease
+/// without a commit names the branch from the lease's own naming; a commit
+/// event supplies both `branch` and `last_commit`; `detail:"summary"` keeps
+/// all four fields.
+#[tokio::test]
+async fn task_recovery_list_carries_the_worker_worktree_facts() {
+    let boot = boot().await;
+    declare(&boot, declaration("b", &[])).await;
+    let b = current(&boot, "b").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE id=?2")
+        .bind(boot.worker_card_id.as_str())
+        .bind(&b.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let track = boot.track_id.as_str().to_string();
+    let card = boot.worker_card_id.as_str().to_string();
+
+    // No lease row → no `worktree` key (not a null, not an empty object).
+    let entry = list_entry(&boot, json!({})).await;
+    assert!(
+        entry.get("worktree").is_none(),
+        "no lease must render no worktree key: {entry}"
+    );
+
+    // A lease at the canonical `<repo>/.claude/worktrees/<track>/<card>`
+    // path, through the production acquisition; no commit yet.
+    let repo_root = tempfile::tempdir().expect("tempdir");
+    let lease_path = repo_root
+        .path()
+        .join(".claude")
+        .join("worktrees")
+        .join(&track)
+        .join(&card);
+    calm_server::test_seams::acquire_workspace_lease_for_test(
+        &pool,
+        &card,
+        &track,
+        "test-owner",
+        &lease_path,
+    )
+    .await
+    .unwrap();
+    let entry = list_entry(&boot, json!({})).await;
+    assert_eq!(
+        entry["worktree"],
+        json!({
+            "path": lease_path.to_string_lossy(),
+            "state": "held",
+            "branch": format!("neige/{track}/{card}"),
+        }),
+        "lease without a commit: branch from the lease naming, no last_commit: {entry}"
+    );
+
+    // The kernel's auto commit lands a `worktree.committed` event scoped to
+    // the worker card (the forge adapter's scope for `worktree.*`); the
+    // read now names its sha and branch.
+    let sha = "0123456789abcdef0123456789abcdef01234567".to_string();
+    let event_branch = format!("neige/{track}/{card}-from-event");
+    let event = calm_server::event::Event::WorktreeCommitted {
+        track_id: boot.track_id.clone(),
+        card_id: boot.worker_card_id.clone(),
+        commit_sha: sha.clone(),
+        branch: event_branch.clone(),
+    };
+    let scope = calm_server::event::EventScope::Card {
+        card: boot.worker_card_id.clone(),
+        track: boot.track_id.clone(),
+        area: boot.area_id.clone(),
+    };
+    calm_server::db::write_with_actor_events_typed(
+        boot.repo.as_ref(),
+        None,
+        &boot.ctx.events,
+        &boot.ctx.write,
+        move |_| Box::pin(async move { Ok(((), vec![(ActorId::KernelDispatcher, scope, event)])) }),
+    )
+    .await
+    .unwrap();
+    let entry = list_entry(&boot, json!({})).await;
+    assert_eq!(
+        entry["worktree"],
+        json!({
+            "path": lease_path.to_string_lossy(),
+            "state": "held",
+            "branch": event_branch,
+            "last_commit": sha,
+        }),
+        "{entry}"
+    );
+
+    // The compact projection keeps every worktree fact.
+    let compact = list_entry(&boot, json!({"detail":"summary","key":"b"})).await;
+    assert_eq!(compact["worktree"], entry["worktree"], "{compact}");
+    assert!(
+        !compact["omitted_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path.as_str().unwrap().starts_with("/worktree")),
+        "{compact}"
+    );
+}

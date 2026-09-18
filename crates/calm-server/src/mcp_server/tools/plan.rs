@@ -833,6 +833,21 @@ async fn plan_list(
                     entry["status"] = json!(current.status);
                     entry["blocking_reason"] = json!(current.blocking_reason);
                     entry["recovery"] = serde_json::to_value(view.recovery)?;
+                    // #1727 S1 — the worker's lease path / slice branch /
+                    // kernel-made commit sha, now that `workspace.leased`
+                    // and `worktree.committed` no longer wake the planner.
+                    // Absent (no key) when the attempt never held a lease.
+                    if let Some(worker_card_id) =
+                        task.as_ref().and_then(|task| task.worker_card_id.as_deref())
+                        && let Some(facts) =
+                            crate::operation::workspace_lease::facts::worker_worktree_facts_tx(
+                                tx,
+                                worker_card_id,
+                            )
+                            .await?
+                    {
+                        entry["worktree"] = serde_json::to_value(facts)?;
+                    }
                     tasks_json.push(if args.summary { list::summary(&entry) } else { entry });
                     after_key = Some(allocation.key);
                 }
