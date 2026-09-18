@@ -13,6 +13,8 @@
 //! Both columns gate `Reaper::sweep_all` (`reaper/mod.rs`): stop stamping them
 //! and a live but quiet codex session ages past the deadline and is reapable.
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -25,9 +27,12 @@ use crate::model::now_ms;
 /// Map a `thread/status/changed` raw `status` JSON (`{ "type": "active",
 /// "activeFlags": [...] }`, design §1.3) to the short string persisted in
 /// `last_thread_status`. Pure + total: any shape that fails to parse degrades
-/// to `"active"` (conservative — recent traffic implies the thread is busy,
-/// and the next clean `ThreadStatusChanged` / the authoritative live
-/// `thread_read` pull corrects it).
+/// to `"unknown"` (#1722 §4.2.1 — fail-closed: `active` is the track
+/// activity projector's `working` evidence, so a status shape this binary
+/// does not know must not light an idle interactive card; `"unknown"` is
+/// outside every projector predicate and, for the reaper, gets the same
+/// 900 s time pre-gate as `idle` because the stamp still writes
+/// `last_activity_ms`).
 ///
 /// The mapping:
 /// * `active` + `waitingOnUserInput` ⇒ `"waitingOnUserInput"`
@@ -35,12 +40,11 @@ use crate::model::now_ms;
 ///   (user-input wins if BOTH are set — the stronger human-block signal)
 /// * `active` (no flag)              ⇒ `"active"`
 /// * `idle` / `systemError` / `notLoaded` ⇒ that `type`
+/// * anything else                   ⇒ `"unknown"`
 pub fn status_str_from_value(status: &Value) -> &'static str {
     match serde_json::from_value::<ThreadStatus>(status.clone()) {
         Ok(parsed) => status_str_from_thread_status(&parsed),
-        // Unknown / malformed status shape: treat as active (recent traffic),
-        // never drop the activity stamp.
-        Err(_) => "active",
+        Err(_) => "unknown",
     }
 }
 
@@ -67,9 +71,13 @@ fn status_str_from_thread_status(status: &ThreadStatus) -> &'static str {
 ///
 /// Stamped ONLY on TURN-BOUNDARY + STATUS events:
 /// * `ThreadStatusChanged` ⇒ the precise mapped status;
-/// * `TurnStarted` / `TurnCompleted` ⇒ `"active"` (recent traffic; the next
-///   `ThreadStatusChanged` / the reaper's authoritative live `thread_read`
-///   corrects the status).
+/// * `TurnStarted` ⇒ `"active"`;
+/// * `TurnCompleted` ⇒ by the turn's `status` ([`turn_completed_status`]):
+///   `failed` ⇒ `"systemError"`, otherwise `"idle"`. This makes
+///   `turn/completed` the LAST stamp of a turn (#1722 §4.2.1): on the
+///   installed codex the value a finished shared-daemon thread rests at
+///   used to be `active` (F2.29), which the activity projector would read
+///   as still working.
 ///
 /// Everything else is DROPPED (`None`): per-token `item/*` deltas
 /// (`item/agentMessage/delta`, …), `thread/started`, and any `Other` method.
@@ -79,11 +87,34 @@ fn status_str_from_thread_status(status: &ThreadStatus) -> &'static str {
 fn stamp_status_for(notification: &Notification) -> Option<&'static str> {
     match notification {
         Notification::ThreadStatusChanged { status, .. } => Some(status_str_from_value(status)),
-        Notification::TurnStarted { .. } | Notification::TurnCompleted { .. } => Some("active"),
+        Notification::TurnStarted { .. } => Some("active"),
+        Notification::TurnCompleted { turn, .. } => Some(turn_completed_status(turn)),
         Notification::Item { .. }
         | Notification::ThreadStarted { .. }
         | Notification::Other { .. } => None,
     }
+}
+
+/// The stamp for a `turn/completed` `turn` object by its `status`
+/// (`completed` / `failed` / `interrupted`, F2.7). `failed` keeps the
+/// `systemError` codex sends just BEFORE the failed `turn/completed`
+/// (`harness/run_loop.rs`, the systemError branch) instead of overwriting it
+/// with `idle`; `completed`, `interrupted`, and any shape without a
+/// recognisable status all rest at `idle` — the turn is over either way.
+fn turn_completed_status(turn: &Value) -> &'static str {
+    match turn.get("status").and_then(Value::as_str) {
+        Some("failed") => "systemError",
+        _ => "idle",
+    }
+}
+
+/// A stamp whose durable write failed once, kept for ONE replay on the same
+/// thread's next notification (#1722 §4.2.1 — no timer, no queue: one slot
+/// per thread, at most two attempts per stamp).
+#[derive(Debug, Clone, Copy)]
+struct PendingStamp {
+    at_ms: i64,
+    status: &'static str,
 }
 
 /// Run the durable liveness feeder loop until the notification channel closes.
@@ -92,8 +123,37 @@ fn stamp_status_for(notification: &Notification) -> Option<&'static str> {
 /// `thread_id`, the rest are dropped (no write).
 pub async fn run_liveness_feeder(
     repo: Arc<dyn Repo>,
-    mut rx: tokio::sync::broadcast::Receiver<Notification>,
+    rx: tokio::sync::broadcast::Receiver<Notification>,
 ) {
+    run_feeder_loop(rx, |thread_id, at_ms, status| {
+        let repo = repo.clone();
+        async move {
+            repo.session_record_activity_by_thread(&thread_id, at_ms, status)
+                .await
+        }
+    })
+    .await
+}
+
+/// The feeder loop over an injectable durable writer (`(thread_id, at_ms,
+/// status) → Result`), so the replay policy can be driven by tests without a
+/// repo that fails on demand. Production passes
+/// `SessionRepo::session_record_activity_by_thread`.
+///
+/// Write-failure policy: a failed write is remembered per thread and replayed
+/// FIRST when that thread's next stampable notification arrives (with its
+/// original timestamp, so ordering is preserved); a replay that fails again
+/// is dropped with a warning. The new stamp is then written as usual and, if
+/// it fails, takes the slot. No timers, no queues.
+async fn run_feeder_loop<W, Fut, E>(
+    mut rx: tokio::sync::broadcast::Receiver<Notification>,
+    mut write: W,
+) where
+    W: FnMut(String, i64, &'static str) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
+{
+    let mut pending: HashMap<String, PendingStamp> = HashMap::new();
     loop {
         match rx.recv().await {
             Ok(notification) => {
@@ -103,15 +163,32 @@ pub async fn run_liveness_feeder(
                 let Some(thread_id) = notification.thread_id() else {
                     continue;
                 };
-                if let Err(e) = repo
-                    .session_record_activity_by_thread(thread_id, now_ms(), status_str)
-                    .await
+                if let Some(prev) = pending.remove(thread_id)
+                    && let Err(e) = write(thread_id.to_string(), prev.at_ms, prev.status).await
                 {
                     tracing::warn!(
                         target = "liveness_feeder",
                         %thread_id,
+                        status = prev.status,
                         error = %e,
-                        "durable liveness write failed (observational; ignored)"
+                        "durable liveness replay failed (second consecutive failure); stamp dropped"
+                    );
+                }
+                let at_ms = now_ms();
+                if let Err(e) = write(thread_id.to_string(), at_ms, status_str).await {
+                    tracing::warn!(
+                        target = "liveness_feeder",
+                        %thread_id,
+                        status = status_str,
+                        error = %e,
+                        "durable liveness write failed; will replay on this thread's next notification"
+                    );
+                    pending.insert(
+                        thread_id.to_string(),
+                        PendingStamp {
+                            at_ms,
+                            status: status_str,
+                        },
                     );
                 }
             }
@@ -195,12 +272,22 @@ mod tests {
         assert_eq!(status_str_from_value(&v), "notLoaded");
     }
 
+    /// #1722 §4.2.1 — an unparsable status shape is `"unknown"`, never
+    /// `"active"` (which the activity projector reads as working).
     #[test]
-    fn malformed_status_degrades_to_active() {
-        // Unknown `type` / missing fields ⇒ conservative "active".
-        assert_eq!(status_str_from_value(&json!({ "type": "wat" })), "active");
-        assert_eq!(status_str_from_value(&Value::Null), "active");
-        assert_eq!(status_str_from_value(&json!({ "no": "type" })), "active");
+    fn unknown_status_shape_stamps_unknown() {
+        assert_eq!(
+            status_str_from_value(&json!({ "type": "somethingNew" })),
+            "unknown"
+        );
+        assert_eq!(status_str_from_value(&json!({ "type": "wat" })), "unknown");
+        assert_eq!(status_str_from_value(&Value::Null), "unknown");
+        assert_eq!(status_str_from_value(&json!({ "no": "type" })), "unknown");
+        let n = Notification::ThreadStatusChanged {
+            thread_id: "t1".into(),
+            status: json!({ "type": "somethingNew" }),
+        };
+        assert_eq!(stamp_status_for(&n), Some("unknown"));
     }
 
     // ===================================================================
@@ -217,18 +304,200 @@ mod tests {
         assert_eq!(stamp_status_for(&n), Some("waitingOnApproval"));
     }
 
-    #[test]
-    fn stamps_turn_started_and_completed_active() {
+    // ===================================================================
+    // #1722 §4.2.1 — turn boundaries. Each sequence test drives the real
+    // feeder loop through a recording writer and asserts the LAST value the
+    // thread rests at, so a `turn/completed` that stamped `active` again
+    // (the pre-#1722 shape) reddens the test rather than a helper.
+    // ===================================================================
+
+    /// One successful durable write as the recording writer saw it.
+    type Write = (String, i64, &'static str);
+
+    /// Run `notifications` through [`run_feeder_loop`] with a writer that
+    /// records `(thread_id, at_ms, status)` for every successful write and
+    /// fails whenever `fail(thread_id, status)` says so (a failed attempt is
+    /// NOT recorded). Returns the recorded writes in order.
+    async fn drive(
+        notifications: Vec<Notification>,
+        mut fail: impl FnMut(&str, &'static str) -> bool + Send + 'static,
+    ) -> Vec<Write> {
+        use std::sync::{Arc, Mutex};
+        let writes: Arc<Mutex<Vec<Write>>> = Arc::default();
+        let (tx, rx) = tokio::sync::broadcast::channel(64);
+        for n in notifications {
+            tx.send(n).unwrap();
+        }
+        drop(tx); // the loop exits on `Closed` once the backlog is drained
+        let sink = writes.clone();
+        run_feeder_loop(rx, move |thread_id, at_ms, status| {
+            let failed = fail(&thread_id, status);
+            if !failed {
+                sink.lock().unwrap().push((thread_id, at_ms, status));
+            }
+            async move {
+                if failed {
+                    Err(std::io::Error::other("injected write failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+        writes.lock().unwrap().clone()
+    }
+
+    fn status_changed(thread_id: &str, status: Value) -> Notification {
+        Notification::ThreadStatusChanged {
+            thread_id: thread_id.into(),
+            status,
+        }
+    }
+
+    fn turn_completed(thread_id: &str, status: &str) -> Notification {
+        Notification::TurnCompleted {
+            thread_id: thread_id.into(),
+            turn: json!({ "id": "turn-1", "status": status, "items": [] }),
+        }
+    }
+
+    fn statuses(writes: &[Write]) -> Vec<&'static str> {
+        writes.iter().map(|(_, _, s)| *s).collect()
+    }
+
+    /// `[status idle, turn/completed{completed}] → idle`.
+    #[tokio::test]
+    async fn turn_completed_stamps_idle() {
+        let writes = drive(
+            vec![
+                status_changed("t1", json!({ "type": "idle" })),
+                turn_completed("t1", "completed"),
+            ],
+            |_, _| false,
+        )
+        .await;
+        assert_eq!(statuses(&writes), ["idle", "idle"]);
+        assert_eq!(writes.last().map(|w| w.2), Some("idle"));
+        // `interrupted` rests at idle too; a missing status still means the
+        // turn is over.
+        let writes = drive(
+            vec![
+                turn_completed("t1", "interrupted"),
+                Notification::TurnCompleted {
+                    thread_id: "t1".into(),
+                    turn: json!({ "id": "turn-2" }),
+                },
+            ],
+            |_, _| false,
+        )
+        .await;
+        assert_eq!(statuses(&writes), ["idle", "idle"]);
+    }
+
+    /// `[status systemError, turn/completed{failed}] → systemError`.
+    #[tokio::test]
+    async fn failed_turn_keeps_system_error() {
+        let writes = drive(
+            vec![
+                status_changed("t1", json!({ "type": "systemError" })),
+                turn_completed("t1", "failed"),
+            ],
+            |_, _| false,
+        )
+        .await;
+        assert_eq!(statuses(&writes), ["systemError", "systemError"]);
+        assert_eq!(writes.last().map(|w| w.2), Some("systemError"));
+    }
+
+    /// `[turn/started] → active`.
+    #[tokio::test]
+    async fn turn_started_stamps_active() {
+        let writes = drive(
+            vec![Notification::TurnStarted {
+                thread_id: "t1".into(),
+                turn: json!({ "id": "turn-1" }),
+            }],
+            |_, _| false,
+        )
+        .await;
+        assert_eq!(statuses(&writes), ["active"]);
         let started = Notification::TurnStarted {
             thread_id: "t1".into(),
             turn: json!({ "id": "turn-1" }),
         };
-        let completed = Notification::TurnCompleted {
-            thread_id: "t1".into(),
-            turn: json!({ "id": "turn-1" }),
-        };
         assert_eq!(stamp_status_for(&started), Some("active"));
-        assert_eq!(stamp_status_for(&completed), Some("active"));
+    }
+
+    // ===================================================================
+    // #1722 §4.2.1 (3) — failed-write replay: one slot per thread, replayed
+    // before that thread's next stamp, dropped after a second failure.
+    // ===================================================================
+
+    #[tokio::test]
+    async fn failed_write_is_replayed_before_the_threads_next_stamp() {
+        let mut attempts = 0usize;
+        let writes = drive(
+            vec![
+                turn_completed("t1", "completed"), // fails once
+                // other thread: no replay
+                status_changed("t2", json!({ "type": "active", "activeFlags": [] })),
+                Notification::TurnStarted {
+                    thread_id: "t1".into(),
+                    turn: json!({ "id": "turn-2" }),
+                }, // replays t1's idle first, then stamps active
+            ],
+            move |thread_id, _| {
+                attempts += 1;
+                thread_id == "t1" && attempts == 1
+            },
+        )
+        .await;
+        let order: Vec<(&str, &str)> = writes.iter().map(|(t, _, s)| (t.as_str(), *s)).collect();
+        assert_eq!(
+            order,
+            [("t2", "active"), ("t1", "idle"), ("t1", "active")],
+            "the failed idle stamp is replayed on t1's next notification, before the new stamp"
+        );
+        // The replay carries the ORIGINAL timestamp, never a fresher one.
+        let t1: Vec<i64> = writes
+            .iter()
+            .filter(|(t, _, _)| t == "t1")
+            .map(|(_, at, _)| *at)
+            .collect();
+        assert!(
+            t1[0] <= t1[1],
+            "replayed at_ms {} > new at_ms {}",
+            t1[0],
+            t1[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn stamp_is_dropped_after_two_consecutive_failures() {
+        let mut t1_attempts = 0usize;
+        let writes = drive(
+            vec![
+                turn_completed("t1", "completed"), // fails
+                Notification::TurnStarted {
+                    thread_id: "t1".into(),
+                    turn: json!({ "id": "turn-2" }),
+                }, // replay fails again → dropped; new stamp succeeds
+                turn_completed("t1", "completed"), // no replay pending any more
+            ],
+            move |thread_id, _| {
+                if thread_id != "t1" {
+                    return false;
+                }
+                t1_attempts += 1;
+                t1_attempts <= 2
+            },
+        )
+        .await;
+        assert_eq!(
+            statuses(&writes),
+            ["active", "idle"],
+            "the twice-failed idle stamp is gone; nothing is retried a third time"
+        );
     }
 
     #[test]

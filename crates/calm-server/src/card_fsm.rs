@@ -66,7 +66,7 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::db::sqlite::overlay_upsert_tx;
 use crate::db::{RepoEventWrite, write_with_event_typed};
-use crate::event::{Event, EventBus, EventScope};
+use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::NewOverlay;
 use crate::state::WriteContext;
@@ -142,54 +142,48 @@ pub(crate) struct CodexWorkerHook {
     /// PascalCase event name, used verbatim as the key in
     /// docker/codex-requirements.toml.
     pub event_name: &'static str,
-    /// Worker FSM state this hook projects the card onto.
-    pub state: State,
+    /// Worker FSM state this hook projects the card onto. `None` keeps the
+    /// row in the table as event-name vocabulary only (#1722): the hook is
+    /// still registered and recognised, but the FSM leaves the card alone.
+    pub state: Option<State>,
 }
 
 pub(crate) const CODEX_WORKER_HOOKS: &[CodexWorkerHook] = &[
     CodexWorkerHook {
         event_name: "SessionStart",
-        state: State::Starting,
+        state: Some(State::Starting),
     },
     CodexWorkerHook {
         event_name: "UserPromptSubmit",
-        state: State::Working,
+        state: Some(State::Working),
     },
     CodexWorkerHook {
         event_name: "PreToolUse",
-        state: State::Working,
+        state: Some(State::Working),
     },
     CodexWorkerHook {
         event_name: "PostToolUse",
-        state: State::Working,
+        state: Some(State::Working),
     },
     CodexWorkerHook {
         event_name: "PermissionRequest",
-        state: State::AwaitingInput,
+        state: Some(State::AwaitingInput),
     },
     CodexWorkerHook {
         event_name: "Stop",
-        state: State::AwaitingInput,
+        state: Some(State::Idle),
     },
 ];
 
 /// Project a codex hook `kind` (e.g. `hook.codex.pre_tool_use`) onto the FSM
 /// transition target. Returns `None` for hooks we don't model — the FSM
 /// leaves the card's state alone in that case.
-///
-/// `Stop` → `AwaitingInput` (not `Idle`): when codex's agent loop stops it
-/// is genuinely waiting for the next user prompt, so the user is the
-/// bottleneck and the track-union should surface that. `PostToolUse` →
-/// `Working` (not `Idle`): the agent is still active between tool calls
-/// (reasoning about the next step), and only `stop` truly ends the turn.
-/// Previously this was `Idle` with a 750ms debounce, which leaked through
-/// whenever inter-tool reasoning took longer than the quiet window.
 fn codex_kind_to_state(kind: &str) -> Option<State> {
     let bare = kind.strip_prefix("hook.codex.")?;
     CODEX_WORKER_HOOKS
         .iter()
         .find(|h| crate::routes::codex::to_snake_case(h.event_name) == bare)
-        .map(|h| h.state)
+        .and_then(|h| h.state)
 }
 
 // ---------------------------------------------------------------------------
@@ -223,89 +217,98 @@ pub(crate) struct ClaudeWorkerHook {
     /// occurrence) — so this flag only keeps us faithful to how the existing
     /// settings were written; it never filters anything out.
     pub matcher: bool,
-    /// Worker FSM state this hook projects the card onto.
-    pub state: State,
+    /// Worker FSM state this hook projects the card onto. `None` keeps the
+    /// row in the table as event-name vocabulary only (#1722): it is still
+    /// registered in the generated settings, still a legal terminal signal
+    /// (`terminal_hooks::parse_terminal_signal`), but the FSM leaves the card
+    /// alone. `Notification` additionally gates on the payload, see
+    /// [`notification_needs_input`].
+    pub state: Option<State>,
 }
 
 pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
     ClaudeWorkerHook {
         event_name: "SessionStart",
         matcher: false,
-        state: State::Starting,
+        state: Some(State::Starting),
     },
     ClaudeWorkerHook {
         event_name: "UserPromptSubmit",
         matcher: false,
-        state: State::Working,
+        state: Some(State::Working),
     },
     ClaudeWorkerHook {
         event_name: "PreToolUse",
         matcher: true,
-        state: State::Working,
+        state: Some(State::Working),
     },
     ClaudeWorkerHook {
         event_name: "PostToolUse",
         matcher: true,
-        state: State::Working,
+        state: Some(State::Working),
     },
     ClaudeWorkerHook {
         event_name: "PostToolUseFailure",
         matcher: true,
-        state: State::Working,
+        state: Some(State::Working),
     },
+    // #1722 — the four sub-agent / task hooks are vocabulary only: a
+    // `SubagentStop` or `TaskCompleted` after `Stop` used to lift the card
+    // back to `Working` until the next hook, so they no longer move the FSM.
+    // They stay in the table because the settings file registers every row
+    // and `terminal_hooks` names `SubagentStop` as a Planner terminal signal.
     ClaudeWorkerHook {
         event_name: "SubagentStart",
         matcher: false,
-        state: State::Working,
+        state: None,
     },
     ClaudeWorkerHook {
         event_name: "SubagentStop",
         matcher: false,
-        state: State::Working,
+        state: None,
     },
     ClaudeWorkerHook {
         event_name: "TaskCreated",
         matcher: false,
-        state: State::Working,
+        state: None,
     },
     ClaudeWorkerHook {
         event_name: "TaskCompleted",
         matcher: false,
-        state: State::Working,
+        state: None,
     },
     ClaudeWorkerHook {
         event_name: "PermissionRequest",
         matcher: true,
-        state: State::AwaitingInput,
+        state: Some(State::AwaitingInput),
     },
     ClaudeWorkerHook {
         event_name: "PermissionDenied",
         matcher: true,
-        state: State::AwaitingInput,
+        state: Some(State::AwaitingInput),
     },
+    // Projects only when the payload's `notification_type` is in
+    // `NOTIFICATION_NEEDS_INPUT_TYPES` (`claude_kind_to_state`); every other
+    // subtype — `idle_prompt` above all — is a no-op.
     ClaudeWorkerHook {
         event_name: "Notification",
         matcher: false,
-        state: State::AwaitingInput,
+        state: Some(State::AwaitingInput),
     },
     ClaudeWorkerHook {
         event_name: "Elicitation",
         matcher: false,
-        state: State::AwaitingInput,
+        state: Some(State::AwaitingInput),
     },
-    // Interactive Claude workers follow the same turn-boundary semantics as
-    // codex foreground agents: `stop` means the worker is waiting for the
-    // user's next prompt, so the track surfaces "waiting on you" (#358/#367) —
-    // not `Idle`.
     ClaudeWorkerHook {
         event_name: "Stop",
         matcher: false,
-        state: State::AwaitingInput,
+        state: Some(State::Idle),
     },
     ClaudeWorkerHook {
         event_name: "StopFailure",
         matcher: false,
-        state: State::Errored,
+        state: Some(State::Errored),
     },
     // Documented `SessionEnd.reason` values are `clear`, `resume`, `logout`,
     // `prompt_input_exit`, `bypass_permissions_disabled`, and `other`; none
@@ -314,24 +317,50 @@ pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
     ClaudeWorkerHook {
         event_name: "SessionEnd",
         matcher: false,
-        state: State::Done,
+        state: Some(State::Done),
     },
 ];
 
+/// The `Notification.notification_type` values that mean the worker is
+/// blocked on a human (#1722 §4.6, Claude Code hooks reference read
+/// 2026-09-18). Every other documented subtype — `idle_prompt`,
+/// `auth_success`, `elicitation_complete`, `elicitation_response`,
+/// `agent_completed`, `quota_auto_resume_*` — and any undocumented or
+/// missing value is NOT attention: `idle_prompt` in particular arrives
+/// ~60 s after every `Stop`, and projecting it would undo `Stop → Idle`
+/// for every Claude worker.
+const NOTIFICATION_NEEDS_INPUT_TYPES: &[&str] = &[
+    "permission_prompt",
+    "elicitation_dialog",
+    "elicitation_url_dialog",
+    "agent_needs_input",
+];
+
+/// Whether a `Notification` hook payload names a subtype in
+/// [`NOTIFICATION_NEEDS_INPUT_TYPES`]. The key is the hook body's top-level
+/// `notification_type` — the same field `terminal_hooks::parse_terminal_signal`
+/// reads. Absent or non-string ⇒ `false`.
+fn notification_needs_input(payload: &serde_json::Value) -> bool {
+    payload
+        .get("notification_type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|t| NOTIFICATION_NEEDS_INPUT_TYPES.contains(&t))
+}
+
 /// Project a Claude hook `kind` (e.g. `hook.claude.pre_tool_use`) onto the
 /// worker-card FSM. This intentionally stays separate from
-/// `codex_kind_to_state`, but interactive Claude workers follow the same
-/// turn-boundary semantics as codex foreground agents: `stop` means the
-/// worker is waiting for the user's next input, so the UI should surface it
-/// as `AwaitingInput`.
+/// `codex_kind_to_state`.
 ///
 /// Claude Code hook names verified against https://code.claude.com/docs/en/hooks.
-fn claude_kind_to_state(kind: &str, _payload: &serde_json::Value) -> Option<State> {
+fn claude_kind_to_state(kind: &str, payload: &serde_json::Value) -> Option<State> {
     let bare = kind.strip_prefix("hook.claude.")?;
-    CLAUDE_WORKER_HOOKS
+    let hook = CLAUDE_WORKER_HOOKS
         .iter()
-        .find(|h| crate::routes::codex::to_snake_case(h.event_name) == bare)
-        .map(|h| h.state)
+        .find(|h| crate::routes::codex::to_snake_case(h.event_name) == bare)?;
+    if hook.event_name == "Notification" && !notification_needs_input(payload) {
+        return None;
+    }
+    hook.state
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +383,7 @@ pub fn spawn(repo: Arc<dyn RepoEventWrite>, bus: EventBus, write: WriteContext) 
         let inner = Arc::new(Inner::new(repo, bus_clone, write));
         loop {
             match rx.recv().await {
-                Ok(env) => inner.handle(env.event).await,
+                Ok(env) => inner.handle(env).await,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "card_fsm event subscriber lagged");
                 }
@@ -404,12 +433,16 @@ impl Inner {
         }
     }
 
-    async fn handle(self: &Arc<Self>, ev: Event) {
-        match ev {
+    async fn handle(self: &Arc<Self>, env: BroadcastEnvelope) {
+        let BroadcastEnvelope { actor, event, .. } = env;
+        match event {
             Event::CodexHook { card_id, kind, .. } => {
                 let Some(target) = codex_kind_to_state(&kind) else {
                     return;
                 };
+                if self.hook_is_provably_stale(&card_id, &actor).await {
+                    return;
+                }
                 self.observe(card_id, target).await;
             }
             Event::ClaudeHook {
@@ -421,9 +454,63 @@ impl Inner {
                 let Some(target) = claude_kind_to_state(&kind, &payload) else {
                     return;
                 };
+                if self.hook_is_provably_stale(&card_id, &actor).await {
+                    return;
+                }
                 self.observe(card_id, target).await;
             }
             _ => {}
+        }
+    }
+
+    /// #1722 §4.6 fix 3 — the narrow stale-session fence.
+    ///
+    /// The hook ingest route resolves the payload's `session_id` against the
+    /// ACTIVE worker sessions and, when it finds one, stamps the envelope with
+    /// a session actor (`AiCodexSession(ws)` / `AiClaudeSession(ws)`). If that
+    /// session is not the card's current one (`cards.session_id`), the hook
+    /// came from a session the card has already moved off — provably stale —
+    /// and must not move the FSM.
+    ///
+    /// Card-level actors (`AiCodex(card)` / `AiClaude(card)`) are the route's
+    /// fallback when the payload has no `session_id` or it resolves to no
+    /// active session, and they are deliberately NOT treated as stale: a
+    /// Claude `/clear` ends the current native session and starts a new one
+    /// under a new session id, after which every hook from the still-running
+    /// worker degrades to the card-level actor. Dropping those would make
+    /// every later permission prompt invisible. They project exactly as they
+    /// did before this fence existed.
+    ///
+    /// A lookup error is not proof of anything, so it also projects.
+    async fn hook_is_provably_stale(&self, card_id: &CardId, actor: &ActorId) -> bool {
+        let session_id = match actor {
+            ActorId::AiCodexSession(ws) | ActorId::AiClaudeSession(ws) => ws,
+            _ => return false,
+        };
+        match self
+            .repo
+            .card_identity_get_by_session(session_id.as_str())
+            .await
+        {
+            Ok(Some(identity)) if identity.card_id == *card_id => false,
+            Ok(current) => {
+                tracing::debug!(
+                    card_id = %card_id,
+                    session_id = %session_id,
+                    current_card = ?current.map(|c| c.card_id),
+                    "card_fsm: hook from a session that is not the card's current one; dropped as stale"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    card_id = %card_id,
+                    session_id = %session_id,
+                    error = %e,
+                    "card_fsm: card_identity_get_by_session failed; projecting the hook unfenced"
+                );
+                false
+            }
         }
     }
 
@@ -720,7 +807,9 @@ mod tests {
             codex_kind_to_state("hook.codex.post_tool_use"),
             Some(State::Working)
         );
-        assert_eq!(
+        // #1722: a finished turn is quiet, not "waiting on you".
+        assert_eq!(codex_kind_to_state("hook.codex.stop"), Some(State::Idle));
+        assert_ne!(
             codex_kind_to_state("hook.codex.stop"),
             Some(State::AwaitingInput)
         );
@@ -729,6 +818,91 @@ mod tests {
             Some(State::AwaitingInput)
         );
         assert_eq!(codex_kind_to_state("hook.codex.something_else"), None);
+    }
+
+    /// #1722 §6 — `Stop` is `Idle` in BOTH tables; only the permission /
+    /// elicitation hooks (and whitelisted notifications) are attention.
+    #[test]
+    fn claude_stop_is_idle_not_attention() {
+        assert_eq!(
+            claude_kind_to_state("hook.claude.stop", &Value::Null),
+            Some(State::Idle)
+        );
+        assert_ne!(
+            claude_kind_to_state("hook.claude.stop", &Value::Null),
+            Some(State::AwaitingInput)
+        );
+        assert_eq!(codex_kind_to_state("hook.codex.stop"), Some(State::Idle));
+        let stop = CLAUDE_WORKER_HOOKS
+            .iter()
+            .find(|h| h.event_name == "Stop")
+            .expect("Stop row");
+        assert_eq!(stop.state, Some(State::Idle));
+        let codex_stop = CODEX_WORKER_HOOKS
+            .iter()
+            .find(|h| h.event_name == "Stop")
+            .expect("codex Stop row");
+        assert_eq!(codex_stop.state, Some(State::Idle));
+    }
+
+    /// #1722 §6 — positive twin of the `Notification` whitelist: the four
+    /// human-blocking subtypes project `AwaitingInput`; everything else, and
+    /// a missing / non-string subtype, is a no-op.
+    #[test]
+    fn notification_permission_prompt_is_awaiting_input() {
+        for t in [
+            "permission_prompt",
+            "elicitation_dialog",
+            "elicitation_url_dialog",
+            "agent_needs_input",
+        ] {
+            assert_eq!(
+                claude_kind_to_state(
+                    "hook.claude.notification",
+                    &json!({ "hook_event_name": "Notification", "notification_type": t })
+                ),
+                Some(State::AwaitingInput),
+                "notification_type={t}"
+            );
+        }
+        for t in [
+            "idle_prompt",
+            "auth_success",
+            "elicitation_complete",
+            "elicitation_response",
+            "agent_completed",
+            "quota_auto_resume_fired",
+            "quota_auto_resume_stale",
+            "quota_auto_resume_disabled",
+            "something_new",
+        ] {
+            assert_eq!(
+                claude_kind_to_state(
+                    "hook.claude.notification",
+                    &json!({ "hook_event_name": "Notification", "notification_type": t })
+                ),
+                None,
+                "notification_type={t} must not project"
+            );
+        }
+        assert_eq!(
+            claude_kind_to_state("hook.claude.notification", &Value::Null),
+            None,
+            "absent payload"
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.notification", &json!({ "message": "x" })),
+            None,
+            "absent notification_type"
+        );
+        assert_eq!(
+            claude_kind_to_state(
+                "hook.claude.notification",
+                &json!({ "notification_type": ["permission_prompt"] })
+            ),
+            None,
+            "non-string notification_type"
+        );
     }
 
     #[test]
@@ -757,15 +931,24 @@ mod tests {
         );
         assert_eq!(
             claude_kind_to_state("hook.claude.subagent_start", &Value::Null),
-            Some(State::Working)
+            None,
+            "#1722: sub-agent / task hooks are vocabulary only"
         );
         assert_eq!(
             claude_kind_to_state("hook.claude.permission_request", &Value::Null),
             Some(State::AwaitingInput)
         );
         assert_eq!(
-            claude_kind_to_state("hook.claude.notification", &Value::Null),
+            claude_kind_to_state(
+                "hook.claude.notification",
+                &json!({ "notification_type": "permission_prompt" })
+            ),
             Some(State::AwaitingInput)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.notification", &Value::Null),
+            None,
+            "#1722: a Notification without a whitelisted subtype is a no-op"
         );
         assert_eq!(
             claude_kind_to_state("hook.claude.permission_denied", &Value::Null),
@@ -781,12 +964,9 @@ mod tests {
         );
         assert_eq!(
             claude_kind_to_state("hook.claude.stop", &Value::Null),
-            Some(State::AwaitingInput)
+            Some(State::Idle)
         );
-        assert_eq!(
-            codex_kind_to_state("hook.codex.stop"),
-            Some(State::AwaitingInput)
-        );
+        assert_eq!(codex_kind_to_state("hook.codex.stop"), Some(State::Idle));
         assert_eq!(
             claude_kind_to_state("hook.claude.stop_failure", &Value::Null),
             Some(State::Errored)
@@ -814,34 +994,57 @@ mod tests {
         );
     }
 
+    /// Every table row projects exactly its `state` (with a whitelisted
+    /// payload for `Notification`, the one payload-gated row), and exactly
+    /// the four sub-agent / task rows are `None` (#1722 §4.6 fix 1).
     #[test]
     fn every_registered_hook_projects_to_its_table_state() {
+        let mut none_rows: Vec<&str> = Vec::new();
         for h in CLAUDE_WORKER_HOOKS {
             let kind = format!(
                 "hook.claude.{}",
                 crate::routes::codex::to_snake_case(h.event_name)
             );
+            let payload = if h.event_name == "Notification" {
+                json!({ "notification_type": "permission_prompt" })
+            } else {
+                Value::Null
+            };
             assert_eq!(
-                claude_kind_to_state(&kind, &serde_json::Value::Null),
-                Some(h.state),
+                claude_kind_to_state(&kind, &payload),
+                h.state,
                 "hook {} (kind {kind}) must project to {:?}",
                 h.event_name,
                 h.state
             );
+            if h.state.is_none() {
+                none_rows.push(h.event_name);
+            }
         }
-        // The six hooks #364 added must specifically be projected now.
-        for (name, want) in [
-            ("SubagentStart", State::Working),
-            ("SubagentStop", State::Working),
-            ("TaskCreated", State::Working),
-            ("TaskCompleted", State::Working),
-            ("PermissionDenied", State::AwaitingInput),
-            ("Elicitation", State::AwaitingInput),
-        ] {
+        assert_eq!(
+            none_rows,
+            [
+                "SubagentStart",
+                "SubagentStop",
+                "TaskCreated",
+                "TaskCompleted"
+            ],
+            "exactly the four sub-agent / task rows are vocabulary-only"
+        );
+        for h in CODEX_WORKER_HOOKS {
+            let kind = format!(
+                "hook.codex.{}",
+                crate::routes::codex::to_snake_case(h.event_name)
+            );
+            assert_eq!(codex_kind_to_state(&kind), h.state);
+            assert!(h.state.is_some(), "codex row {} projects", h.event_name);
+        }
+        // The two #364 attention hooks are still projected.
+        for name in ["PermissionDenied", "Elicitation"] {
             let kind = format!("hook.claude.{}", crate::routes::codex::to_snake_case(name));
             assert_eq!(
                 claude_kind_to_state(&kind, &serde_json::Value::Null),
-                Some(want)
+                Some(State::AwaitingInput)
             );
         }
     }
@@ -1162,7 +1365,8 @@ mod tests {
         tokio::time::sleep(StdDuration::from_millis(900)).await;
         wait_for_card_status(&repo, &card_id, "Working").await;
 
-        // stop → AwaitingInput commits the turn boundary.
+        // stop → Idle commits the turn boundary (a downgrade from Working,
+        // held DOWNGRADE_QUIET_MS; the poll ceiling covers it).
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1172,7 +1376,7 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        wait_for_card_status(&repo, &card_id, "AwaitingInput").await;
+        wait_for_card_status(&repo, &card_id, "Idle").await;
     }
 
     // ----- #254 track-scoped `any_card_needs_input` aggregator ----------------
@@ -1494,5 +1698,308 @@ mod tests {
             },
         );
         wait_for_track_needs_input(&repo, &track.id, false).await;
+    }
+
+    // ----- #1722 §4.6 — Stop → Idle, Notification whitelist, stale fence ------
+
+    fn spawn_fsm(repo: &Arc<dyn Repo>, bus: &EventBus) {
+        spawn(
+            repo.clone(),
+            bus.clone(),
+            WriteContext::new(
+                crate::card_role_cache::CardRoleCache::new(),
+                crate::track_area_cache::TrackAreaCache::new(),
+            ),
+        );
+    }
+
+    fn claude_hook(card_id: &CardId, bare: &str, payload: Value) -> Event {
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: format!("hook.claude.{bare}"),
+            hook_idempotency_key: format!("hook-key-{bare}"),
+            payload,
+        }
+    }
+
+    /// Read card-`status` overlay states for `card_id` off `rx`, in order,
+    /// until `until` is observed (bounded by a 15 s outer timeout, matching
+    /// the repo's other wait-for ceilings). Returns every state seen for the
+    /// card, `until` included.
+    async fn card_status_sequence_until(
+        rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
+        card_id: &CardId,
+        until: &str,
+    ) -> Vec<String> {
+        tokio::time::timeout(StdDuration::from_secs(15), async {
+            let mut seen = Vec::new();
+            loop {
+                let env = match rx.recv().await {
+                    Ok(env) => env,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        panic!("overlay event receiver lagged ({n} frames)");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("bus closed before `{until}` was observed");
+                    }
+                };
+                if let Event::OverlaySet(o) = &env.event
+                    && o.kind == "status"
+                    && o.entity_kind == "card"
+                    && o.entity_id == card_id.to_string()
+                {
+                    let state = o.payload["state"].as_str().unwrap_or("?").to_string();
+                    seen.push(state.clone());
+                    if state == until {
+                        return seen;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for card status `{until}`"))
+    }
+
+    /// §6 S1a row 1: `user_prompt_submit → stop → notification{idle_prompt}
+    /// → subagent_stop` ends `Idle` once the 750 ms downgrade window has
+    /// elapsed, and the card is never lifted back to `Working` nor to
+    /// `AwaitingInput` along the way. Reddened by `SubagentStop` projecting
+    /// `Working` again (the same-state re-observation clears the pending
+    /// `Idle` downgrade, F2.9) or by the `Notification` whitelist going
+    /// away (`idle_prompt` would commit `AwaitingInput`).
+    #[tokio::test]
+    async fn stop_then_idle_prompt_then_subagent_stop_ends_idle() {
+        let (repo, bus, _track_id, card_id) = setup().await;
+        let mut rx = bus.subscribe();
+        spawn_fsm(&repo, &bus);
+        tokio::task::yield_now().await;
+
+        let actor = ActorId::AiClaude(card_id.clone());
+        bus.emit(
+            actor.clone(),
+            claude_hook(&card_id, "user_prompt_submit", Value::Null),
+        );
+        bus.emit(actor.clone(), claude_hook(&card_id, "stop", Value::Null));
+        bus.emit(
+            actor.clone(),
+            claude_hook(
+                &card_id,
+                "notification",
+                json!({ "hook_event_name": "Notification", "notification_type": "idle_prompt" }),
+            ),
+        );
+        bus.emit(actor, claude_hook(&card_id, "subagent_stop", Value::Null));
+
+        // `Idle` is a downgrade from `Working`, so it can only land after
+        // DOWNGRADE_QUIET_MS; the sequence read is what proves nothing else
+        // was committed in between.
+        let seen = card_status_sequence_until(&mut rx, &card_id, "Idle").await;
+        assert_eq!(seen, ["Working", "Idle"], "card status sequence");
+        wait_for_card_status(&repo, &card_id, "Idle").await;
+    }
+
+    // ----- fence fixtures: real `worker_sessions` rows + `cards.session_id` --
+
+    fn claude_session(
+        id: &str,
+        track_id: &TrackId,
+        card_id: &CardId,
+        state: calm_types::worker::WorkerSessionState,
+    ) -> calm_types::worker::WorkerSession {
+        use calm_types::worker::{
+            LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
+            WorkerSessionId,
+        };
+        WorkerSession {
+            id: WorkerSessionId::from(id),
+            track_id: track_id.clone(),
+            provider: WorkerProviderKind::Claude,
+            mode: SessionMode::Ephemeral,
+            contract: WorkerContract::Executor,
+            parent_session_id: None,
+            requester_session_id: None,
+            state,
+            mcp_token_hash: None,
+            thread_id: None,
+            agent_session_id: Some(format!("native-{id}")),
+            active_turn_id: None,
+            terminal_run_id: None,
+            card_id: Some(card_id.clone()),
+            handle_state_json: None,
+            liveness: LivenessTag::Unknown,
+            liveness_probed_at_ms: None,
+            exit_code: None,
+            exit_interpretation: None,
+            spawn_op_id: None,
+            last_activity_ms: None,
+            last_thread_status: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            completed_at_ms: None,
+        }
+    }
+
+    /// Insert `session` and, when `link` is set, point `cards.session_id`
+    /// at it (the production `card_session_link_tx` shape, F2.6).
+    async fn insert_session(
+        repo: &SqlxRepo,
+        session: calm_types::worker::WorkerSession,
+        link: bool,
+    ) {
+        use crate::db::sqlite::{begin_immediate_tx, session_insert_tx};
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let session_id = session.id.clone();
+        let card_id = session.card_id.clone().expect("fixture session has a card");
+        session_insert_tx(&mut tx, session).await.unwrap();
+        if link {
+            sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                .bind(session_id.as_str())
+                .bind(card_id.as_str())
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+
+    /// Two claude worker cards under one track. The card under test has
+    /// `cards.session_id = s2` (active) and an exited predecessor `s0`; the
+    /// sibling card owns the other active session `s1`.
+    struct FenceFixture {
+        repo: Arc<dyn Repo>,
+        bus: EventBus,
+        card: CardId,
+    }
+
+    async fn fence_fixture() -> FenceFixture {
+        use calm_types::worker::WorkerSessionState;
+        let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let repo: Arc<dyn Repo> = sqlx_repo.clone();
+        let bus = EventBus::new();
+        let area = repo
+            .area_create(NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id.clone(),
+                title: "w".into(),
+                sort: None,
+                cwd: String::new(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let new_claude_card = || NewCard {
+            track_id: track.id.clone(),
+            title: None,
+            kind: "claude".into(),
+            sort: None,
+            payload: Value::Null,
+        };
+        let card = repo.card_create(new_claude_card()).await.unwrap();
+        let sibling = repo.card_create(new_claude_card()).await.unwrap();
+        // s0: the card's exited predecessor (restart shape, F2.26).
+        insert_session(
+            &sqlx_repo,
+            claude_session("s0", &track.id, &card.id, WorkerSessionState::Exited),
+            false,
+        )
+        .await;
+        // s2: the card's current active session.
+        insert_session(
+            &sqlx_repo,
+            claude_session("s2", &track.id, &card.id, WorkerSessionState::Running),
+            true,
+        )
+        .await;
+        // s1: the sibling card's active session.
+        insert_session(
+            &sqlx_repo,
+            claude_session("s1", &track.id, &sibling.id, WorkerSessionState::Running),
+            true,
+        )
+        .await;
+        FenceFixture {
+            repo,
+            bus,
+            card: card.id,
+        }
+    }
+
+    /// §6 S1a row 3: a hook whose envelope actor names an active session
+    /// that is NOT the card's current one (`s1 ≠ cards.session_id = s2`) is
+    /// provably stale and produces no overlay; so is one from the card's
+    /// exited predecessor. The card-level `stop` sentinel emitted afterwards
+    /// must therefore be the FIRST status overlay the card ever gets.
+    #[tokio::test]
+    async fn hook_from_other_active_session_is_ignored() {
+        use calm_types::worker::WorkerSessionId;
+        let f = fence_fixture().await;
+        let mut rx = f.bus.subscribe();
+        spawn_fsm(&f.repo, &f.bus);
+        tokio::task::yield_now().await;
+
+        f.bus.emit(
+            ActorId::AiClaudeSession(WorkerSessionId::from("s1")),
+            claude_hook(&f.card, "pre_tool_use", Value::Null),
+        );
+        f.bus.emit(
+            ActorId::AiClaudeSession(WorkerSessionId::from("s0")),
+            claude_hook(&f.card, "permission_request", Value::Null),
+        );
+        // Sentinel: card-level actor, first observation ⇒ commits inline.
+        f.bus.emit(
+            ActorId::AiClaude(f.card.clone()),
+            claude_hook(&f.card, "stop", Value::Null),
+        );
+
+        let seen = card_status_sequence_until(&mut rx, &f.card, "Idle").await;
+        assert_eq!(
+            seen,
+            ["Idle"],
+            "stale-session hooks must not have written a status overlay before the sentinel"
+        );
+    }
+
+    /// Twin of the fence: the card-level fallback actor (`AiClaude(card)`,
+    /// what the ingest route stamps when the payload has no resolvable
+    /// `session_id`) still projects — dropping it would hide permission
+    /// prompts after a `/clear` rotates the native session id.
+    #[tokio::test]
+    async fn card_level_hook_still_projects() {
+        let f = fence_fixture().await;
+        spawn_fsm(&f.repo, &f.bus);
+        tokio::task::yield_now().await;
+
+        f.bus.emit(
+            ActorId::AiClaude(f.card.clone()),
+            claude_hook(&f.card, "permission_request", Value::Null),
+        );
+        wait_for_card_status(&f.repo, &f.card, "AwaitingInput").await;
+    }
+
+    /// The card's CURRENT session (`s2 == cards.session_id`) passes the
+    /// fence: the positive shape of `hook_from_other_active_session_is_ignored`.
+    #[tokio::test]
+    async fn hook_from_current_session_projects() {
+        use calm_types::worker::WorkerSessionId;
+        let f = fence_fixture().await;
+        spawn_fsm(&f.repo, &f.bus);
+        tokio::task::yield_now().await;
+
+        f.bus.emit(
+            ActorId::AiClaudeSession(WorkerSessionId::from("s2")),
+            claude_hook(&f.card, "permission_request", Value::Null),
+        );
+        wait_for_card_status(&f.repo, &f.card, "AwaitingInput").await;
     }
 }

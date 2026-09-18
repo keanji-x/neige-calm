@@ -2265,7 +2265,7 @@ async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
         1,
         "persisted, not ring-only"
     );
-    await_card_state(&h, &card_id, "AwaitingInput").await;
+    await_card_state(&h, &card_id, "Idle").await;
     // The same body again is deduped by the worker cache, not appended twice.
     assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
     assert_eq!(h.persisted_hook_events().await, 1);
@@ -2275,7 +2275,7 @@ async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
 /// #1620 R3 regression (b) — a Claude Worker card created through the
 /// production path (`card_with_claude_create_tx`, terminal row included)
 /// keeps its hook contract: a Claude `Stop` hook is persisted as a
-/// `claude.hook` event and projected onto the card FSM (`AwaitingInput`).
+/// `claude.hook` event and projected onto the card FSM (`Idle`, #1722).
 #[tokio::test]
 #[allow(deprecated)] // the state's role cache is the one `enforce_role` reads
 async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
@@ -2345,7 +2345,7 @@ async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
         1,
         "persisted, not ring-only"
     );
-    await_card_state(&h, &card_id, "AwaitingInput").await;
+    await_card_state(&h, &card_id, "Idle").await;
     h.stop(&term.id).await;
 }
 

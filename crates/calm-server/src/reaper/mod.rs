@@ -209,6 +209,9 @@ impl Reaper {
                         // would make a never-active session look perpetually
                         // fresh).
                         let last = session.last_activity_ms.unwrap_or(session.created_at_ms);
+                        // `idle` / `systemError` / `notLoaded` / `unknown` (the feeder's
+                        // stamp for an unparsable status, #1722) are NOT busy: they rely
+                        // on the time pre-gate below, which the same stamp refreshes.
                         let busy = matches!(
                             session.last_thread_status.as_deref(),
                             Some("active" | "waitingOnUserInput" | "waitingOnApproval")

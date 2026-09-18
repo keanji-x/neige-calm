@@ -456,7 +456,7 @@ async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not()
         "Claude hook should be accepted without a session cookie"
     );
     assert_hook_event(&boot.repo, &boot.claude_card_id, "hook.claude.stop").await;
-    await_card_state(&boot.repo, &boot.claude_card_id, "AwaitingInput").await;
+    await_card_state(&boot.repo, &boot.claude_card_id, "Idle").await;
 
     let codex_resp = boot
         .app
@@ -482,7 +482,7 @@ async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not()
         "Codex hook should keep its existing 204 success semantics without a session cookie"
     );
     assert_hook_event(&boot.repo, &boot.codex_card_id, "hook.codex.stop").await;
-    await_card_state(&boot.repo, &boot.codex_card_id, "AwaitingInput").await;
+    await_card_state(&boot.repo, &boot.codex_card_id, "Idle").await;
 }
 
 #[tokio::test]
