@@ -48,8 +48,70 @@ sends a partial create over the real app socket, lets cancellation overtake it,
 then finishes the original request against the production Go control server
 with only node/API I/O faked. No cloud POST is allowed in that sequence.
 
-Final round-2 gates and mutation results are recorded below after completion.
-Fresh full A and CLI B review of the updated source remains required.
+Round-2 source checkpoint:
+`a0066ea13e5a7a2a930154bcd91747eb0691b5b9`. The final report commit changes only
+this document. Fresh full A and CLI B review of the updated source remains
+required; the initial review reports are not approvals of this checkpoint.
+
+### Round-2 Verification
+
+All final Rust commands retained `NEIGE_CODEX_BIN` unset, `RUSTC_WRAPPER=` and
+`CARGO_BUILD_JOBS=4`, with `CARGO_TARGET_DIR=/tmp/neige-1712-s5-target`. Parent
+explicitly confirmed CLI B had finished and released that target before work
+resumed. Go used `GOMAXPROCS=2 GOCACHE=/tmp/neige-1712-s5-go-cache` and `-p 2`.
+
+| Executed check | Result | Log under `/tmp/` |
+| --- | --- | --- |
+| `cargo nextest run --locked -p neige-app -p calm-tailnet-control -E 'test(tailnet)' --test-threads 2 --no-fail-fast` | 15 passed, including actual helper/status and app-to-Go reorder | `neige-1712-s5-r2-host-green.log` |
+| Same 48-test focused server selection as the initial round below | 48 passed on restored round-2 source | `neige-1712-s5-r2-server.log` |
+| `scripts/local-rust-gates.sh --quick` | all five checks green; broad nextest skipped | `neige-1712-s5-r2-quick.log` |
+| `go test -race -p 2 -count=1 -json ./...` | 28 top-level passed, 1 subprocess-only fixture skipped | `neige-1712-s5-r2-go-default.jsonl` |
+| Same Go command with `-tags ts_omit_logtail` | 29 top-level passed, 1 subprocess-only fixture skipped | `neige-1712-s5-r2-go-tagged.jsonl` |
+| `npm run gen:api` | 89 export tests passed, OpenAPI emitted, no public generated-file drift | `neige-1712-s5-r2-generator.log` |
+| `npm run lint` and `npm run build` | green, existing large-chunk warning only | `neige-1712-s5-r2-fe-lint.log`, `neige-1712-s5-r2-fe-build.log` |
+| `npm test -- --maxWorkers=2` | 3292 passed, 1 skipped | `neige-1712-s5-r2-fe-test.log` |
+| `npx vitest run --project browser web/src/app/shell/enrollment-revocation.browser.test.tsx web/src/features/settings/tailnet.browser.test.tsx --maxWorkers=2` | 8 passed | `neige-1712-s5-r2-browser.log` |
+
+The skipped Go fixture is intentionally started as the real helper subprocess
+by `tailnet_app_cancel_overtakes_partial_create_without_cloud_post`; it is not
+an untested production path. Its fake node/API are confined to `_test.go` and
+the production issuer, ledger, control protocol and Rust manager are exercised.
+The stopped-host test builds the actual production Go executable, verifies the
+real v2 status response/expiry, checks that status leaves ledger bytes intact,
+and checks that corrupt data produces an error rather than zero pending keys.
+
+Nine single-factor production mutations completed on the clean checkpoint.
+Every full observed red set matched its prediction, original byte hashes were
+restored, and all selected tests were green after each restoration. Exact
+plans, red/green logs and results:
+`/tmp/neige-1712-s5-r2-mutations/{plan,evidence}.json` and its adjacent logs.
+
+| Mutation | Exact failing set |
+| --- | --- |
+| disable expiry retirement | expiry-capacity test plus clock test and its four named subtests |
+| remove elapsed boot-time requirement | clock test and only its `wall-forward` subtest |
+| bypass configuration binding | original binding test plus retained-record test and its `binding` subtest |
+| bypass cleanup-state guard | retained-record test and only its `unknown` subtest |
+| bypass durable cancellation fence | two Go control replay tests; independently, only the real Rust app-handler reorder test |
+| reject stopped status again | actual disabled-host status and cleanup-process-failure tests |
+| stop disabled polling | only the disabled cleanup/actual-expiry UI test |
+| keep QR object on invalidation | external disable/re-enable, origin-change and node-change UI tests |
+| keep old UI generation | only the delayed-create-after-re-enable UI test |
+
+The complete named sets are in `plan.json`; no aggregate red count substitutes
+for them. Temporary mutation work is finished and the author tree was clean
+before this report update. No independent reviewer observed transient mutations.
+
+Exact tagged helper: `/tmp/neige-1712-s5-r2-helper`, built in clean standalone
+clone `/tmp/neige-1712-s5-r2-artifact-source`. The real artifact verifier passed;
+`go version -m` reports the exact checkpoint above, `vcs.modified=false`, and
+`ts_omit_logtail`. Build info: `/tmp/neige-1712-s5-r2-helper-buildinfo.txt`.
+SHA-256: `51b60e8133d51a7696e7a5e53266c60b10a6ea5634dbc48cc12fd7375fa8f77d`.
+
+No actual credentials, account/API keys, devices, system Tailscale, ACLs or
+other worktrees were operated on. Real cloud expiry and phone acceptance
+remain unverified release blockers. This round changes no public DTO, so it
+adds no ownership trailers beyond the three initial trailers listed below.
 
 Implementation base: `3757477219263c3e9b887077473c384762545336`.
 Worktree: `.claude/worktrees/tailnet-enrollment`, sole writer. No rebase onto
@@ -132,9 +194,9 @@ requires administrator reconciliation against the original account. Do not
 delete or rewrite it simply to enable another attempt. Lost key IDs cannot be
 recovered by blindly repeating the create request.
 
-## Verification Record
+## Initial Verification Record
 
-Final implementation/test source is
+Initial implementation/test source was
 `ee6c43934382bce56f0dc00462a2ee840c39af44` (2026-09-18). The subsequent report-only
 commit does not change executable source. All Rust commands used
 `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=4
