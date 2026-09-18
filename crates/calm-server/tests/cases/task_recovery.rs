@@ -819,6 +819,13 @@ fn ordinary_codex_declaration(key: &str) -> Value {
 /// `fail_task_liveness_timeout` issues), which releases the lease but keeps
 /// the directory. Returns the failed row and the lease path; the returned
 /// directory keeps the path alive.
+///
+/// The lease path has the production shape
+/// `<repo>/.claude/worktrees/<track>/<card>` (`workspace_lease_path_for`,
+/// the only path `acquire_workspace_lease_tx` writes outside fixtures): the
+/// slice branch `retained` names when no commit was recorded is derived
+/// from that shape (`workspace_lease_target_from_lease`), so a lease at an
+/// arbitrary path would read as a lease with no branch to name.
 async fn time_out_prepared_ordinary_worker(
     boot: &Boot,
     key: &str,
@@ -831,7 +838,14 @@ async fn time_out_prepared_ordinary_worker(
         .prefix("neige-1727-lease-")
         .tempdir()
         .unwrap();
-    let lease_path = lease_dir.path().display().to_string();
+    let lease_dir_path = lease_dir
+        .path()
+        .join(".claude")
+        .join("worktrees")
+        .join(&track_id)
+        .join(&card_id);
+    std::fs::create_dir_all(&lease_dir_path).unwrap();
+    let lease_path = lease_dir_path.display().to_string();
     let now = calm_server::model::now_ms();
     let lease_id = format!("lease-1727-{}", task.id);
     sqlx::query(
