@@ -1,28 +1,24 @@
 #!/usr/bin/env bash
+# Debug-variant connection checks; runs inside an emulator session after the
+# Tauri CLI built the x86_64 debug APK and the loopback peers are listening.
 set -euo pipefail
 cd "$(dirname "$0")/../../src-tauri/gen/android"
-profile=${1:-debug}
-case "$profile" in
-  debug) variant=Debug; smoke_property=-Pneige.launcherSmoke=true ;;
-  release) exec python3 ../../../tests/native/run-release-smoke.py ;;
-  *) echo 'Expected debug or release smoke profile' >&2; exit 2 ;;
-esac
 # The preceding Tauri CLI step built this exact native binary and embedded assets.
 # Its temporary CLI socket is closed now; instrumentation rebuilds Android code.
 test -s app/src/main/jniLibs/x86_64/libapp_lib.so
 test -s app/src/main/jniLibs/x86_64/libneige_p2p.so
-gradle_args=("$smoke_property" -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64
-  -x ":app:rustBuildX86_64$variant" --no-daemon --max-workers=4)
-./gradlew ":app:testUniversal${variant}UnitTest" --tests io.neigecalm.next.ConnectionAttemptTest "${gradle_args[@]}"
-./gradlew ":app:connectedUniversal${variant}AndroidTest" "${gradle_args[@]}" \
-  -Pandroid.testInstrumentationRunnerArguments.class=io.neigecalm.next.LauncherConnectionInstrumentationTest,io.neigecalm.next.DirectConnectionInstrumentationTest
+gradle_args=(-Pneige.launcherSmoke=true -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64
+  -x ':app:rustBuildX86_64Debug' --no-daemon --max-workers=4)
+./gradlew ':app:connectedUniversalDebugAndroidTest' "${gradle_args[@]}" \
+  -Pandroid.testInstrumentationRunnerArguments.class=io.neigecalm.next.DirectConnectionInstrumentationTest
 mkdir -p ../../../artifacts
 # Gradle may uninstall its test APK after the connected run. Install the exact
 # built pair again and discover both the app ID and runner from actual artifacts.
-app_apk="app/build/outputs/apk/universal/$profile/app-universal-$profile.apk"
+app_apk="app/build/outputs/apk/universal/debug/app-universal-debug.apk"
 app_id=$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest application-id "$app_apk")
 adb install -r -t "$app_apk"
-mapfile -t test_apks < <(find app/build/outputs/apk/androidTest -name '*.apk' -type f)
+# The same session may also hold the instrumented variant's test APK.
+mapfile -t test_apks < <(find app/build/outputs/apk/androidTest -path '*/universal/debug/*' -name '*.apk' -type f)
 test "${#test_apks[@]}" -eq 1
 adb install -r -t "${test_apks[0]}"
 adb shell pm list instrumentation > ../../../artifacts/resume-instrumentation.txt

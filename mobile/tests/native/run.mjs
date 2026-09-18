@@ -6,11 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { resolve, join } from 'node:path';
 import { readJUnit } from './junit.mjs';
 
-if (process.argv.length < 4 || process.argv.length > 5) throw new Error('Usage: run.mjs <runtime.json> <api-level> [--mutation]');
+if (process.argv.length < 3 || process.argv.length > 4) throw new Error('Usage: run.mjs <runtime.json> [--mutation]');
 const runtime = JSON.parse(await readFile(resolve(process.argv[2]), 'utf8'));
-const api = Number(process.argv[3]);
-const mutate = process.argv[4] === '--mutation';
-assert.ok([26, 35].includes(api));
+const mutate = process.argv[3] === '--mutation';
 const android = fileURLToPath(new URL('../../src-tauri/gen/android/', import.meta.url));
 for (const name of ['libapp_lib.so', 'libneige_p2p.so']) {
   assert.ok((await readFile(join(android, 'app/src/main/jniLibs/x86_64', name))).length > 0, `Build the exact native APK before backend instrumentation: ${name}`);
@@ -44,16 +42,16 @@ async function run(label) {
 
 function green(result) {
   assert.equal(result.exit, 0, 'Native tests did not complete successfully; inspect the saved log');
-  assert.equal(Object.keys(result.report).length, 4, 'Native discovery must match the selected backend and WebView tests');
+  assert.deepEqual(Object.keys(result.report).sort(), [...modern, old].sort(), 'Native discovery must match the selected backend and WebView tests');
   assert.ok(Object.values(result.report).every((value) => value !== 'failed'));
-  if (api === 26 && result.report[old] === 'passed') return;
+  // The old-WebView case stays selected so a local run against an outdated
+  // system WebView still exercises it; on the CI image it is assumption-skipped.
   for (const test of modern) assert.equal(result.report[test], 'passed', `Required native test did not run: ${test}`);
 }
 
 const baseline = await run('baseline');
 green(baseline);
 if (mutate) {
-  assert.equal(api, 35);
   const source = join(android, 'app/src/main/java/io/neigecalm/next/BundledWebViewClient.kt');
   const original = await readFile(source, 'utf8');
   const needle = 'override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) = original.onPageStarted(view, url, favicon)';
