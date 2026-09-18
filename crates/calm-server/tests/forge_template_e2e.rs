@@ -1304,8 +1304,14 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         .expect("stop git-forge plugin");
 }
 
+/// #1727 S1 — `review.round` no longer wakes the planner
+/// (`dispatcher::event_warrants_planner_push_with_role` returns false for it)
+/// and boot catch-up (`harness::catch_up::observations_since`) filters with
+/// the same predicate, so it must not replay either. The two ratify rows are
+/// the positive control: the same recovered queue that holds them holds no
+/// `ReviewRound`.
 #[tokio::test]
-async fn review_round_recovers_into_pending_queue() {
+async fn review_round_does_not_recover_into_pending_queue_but_ratify_events_do() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1360,20 +1366,10 @@ async fn review_round_recovers_into_pending_queue() {
 
     let pending = wait_for_recovered_pending(&handle).await;
     assert!(
-        pending.iter().any(|obs| matches!(
-            obs,
-            Observation::ReviewRound {
-                phase,
-                slice_id,
-                pr_number: Some(760),
-                head_sha: Some(head_sha),
-                n: 1,
-                cap: 1,
-                converged: false,
-                ..
-            } if phase == "impl" && slice_id == "760" && head_sha == "head-sha-recovery"
-        )),
-        "review.round must recover into pending queue: {pending:?}"
+        !pending
+            .iter()
+            .any(|obs| matches!(obs, Observation::ReviewRound { .. })),
+        "review.round must not recover into the pending queue (#1727 S1): {pending:?}"
     );
     assert!(
         pending.iter().any(|obs| matches!(
@@ -2538,10 +2534,7 @@ async fn wait_for_recovered_pending(
         let pending = handle.pending_queue_for_test().await;
         if pending
             .iter()
-            .any(|obs| matches!(obs, Observation::ReviewRound { .. }))
-            && pending
-                .iter()
-                .any(|obs| matches!(obs, Observation::RatifyRequested { .. }))
+            .any(|obs| matches!(obs, Observation::RatifyRequested { .. }))
             && pending
                 .iter()
                 .any(|obs| matches!(obs, Observation::RatifyResolved { .. }))
