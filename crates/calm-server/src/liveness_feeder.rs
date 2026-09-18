@@ -6,8 +6,10 @@
 //! `worker_sessions.{last_activity_ms,last_thread_status}` columns keyed by
 //! codex `thread_id`.
 //!
-//! It writes ONLY those two columns via
-//! [`SessionRepo::session_record_activity_by_thread`] — not `updated_at_ms`,
+//! It writes ONLY those two columns — plus, on a `turn/completed` whose
+//! `turn.status` is `completed`, the monotone
+//! `worker_sessions.last_turn_completed_ms` (#1722 §4.2.1) — via
+//! [`SessionRepo::session_record_activity_by_thread`]; never `updated_at_ms`,
 //! which orders projection reads.
 //!
 //! Both columns gate `Reaper::sweep_all` (`reaper/mod.rs`): stop stamping them
@@ -108,6 +110,18 @@ fn turn_completed_status(turn: &Value) -> &'static str {
     }
 }
 
+/// Is this a `turn/completed` whose turn actually COMPLETED (`status =
+/// completed`)? Only then does the stamp also raise
+/// `last_turn_completed_ms` (#1722 §4.2.1 (2)); an interrupted or failed
+/// turn stamps its status but leaves the completion column alone.
+fn completed_turn(notification: &Notification) -> bool {
+    matches!(
+        notification,
+        Notification::TurnCompleted { turn, .. }
+            if turn.get("status").and_then(Value::as_str) == Some("completed")
+    )
+}
+
 /// A stamp whose durable write failed once, kept for ONE replay on the same
 /// thread's next notification (#1722 §4.2.1 — no timer, no queue: one slot
 /// per thread, at most two attempts per stamp).
@@ -115,6 +129,10 @@ fn turn_completed_status(turn: &Value) -> &'static str {
 struct PendingStamp {
     at_ms: i64,
     status: &'static str,
+    /// `Some(at_ms)` when the stamp came from a completed turn — the replay
+    /// must raise `last_turn_completed_ms` exactly as the first attempt
+    /// would have.
+    turn_completed_ms: Option<i64>,
 }
 
 /// Run the durable liveness feeder loop until the notification channel closes.
@@ -125,10 +143,10 @@ pub async fn run_liveness_feeder(
     repo: Arc<dyn Repo>,
     rx: tokio::sync::broadcast::Receiver<Notification>,
 ) {
-    run_feeder_loop(rx, |thread_id, at_ms, status| {
+    run_feeder_loop(rx, |thread_id, at_ms, status, turn_completed_ms| {
         let repo = repo.clone();
         async move {
-            repo.session_record_activity_by_thread(&thread_id, at_ms, status)
+            repo.session_record_activity_by_thread(&thread_id, at_ms, status, turn_completed_ms)
                 .await
         }
     })
@@ -136,9 +154,10 @@ pub async fn run_liveness_feeder(
 }
 
 /// The feeder loop over an injectable durable writer (`(thread_id, at_ms,
-/// status) → Result`), so the replay policy can be driven by tests without a
-/// repo that fails on demand. Production passes
-/// `SessionRepo::session_record_activity_by_thread`.
+/// status, turn_completed_ms) → Result`), so the replay policy can be driven
+/// by tests without a repo that fails on demand. Production passes
+/// `SessionRepo::session_record_activity_by_thread`. `turn_completed_ms` is
+/// `Some(at_ms)` for a completed turn's stamp and `None` otherwise.
 ///
 /// Write-failure policy: a failed write is remembered per thread and replayed
 /// FIRST when that thread's next stampable notification arrives (with its
@@ -149,7 +168,7 @@ async fn run_feeder_loop<W, Fut, E>(
     mut rx: tokio::sync::broadcast::Receiver<Notification>,
     mut write: W,
 ) where
-    W: FnMut(String, i64, &'static str) -> Fut,
+    W: FnMut(String, i64, &'static str, Option<i64>) -> Fut,
     Fut: Future<Output = Result<(), E>>,
     E: std::fmt::Display,
 {
@@ -164,7 +183,13 @@ async fn run_feeder_loop<W, Fut, E>(
                     continue;
                 };
                 if let Some(prev) = pending.remove(thread_id)
-                    && let Err(e) = write(thread_id.to_string(), prev.at_ms, prev.status).await
+                    && let Err(e) = write(
+                        thread_id.to_string(),
+                        prev.at_ms,
+                        prev.status,
+                        prev.turn_completed_ms,
+                    )
+                    .await
                 {
                     tracing::warn!(
                         target = "liveness_feeder",
@@ -175,7 +200,10 @@ async fn run_feeder_loop<W, Fut, E>(
                     );
                 }
                 let at_ms = now_ms();
-                if let Err(e) = write(thread_id.to_string(), at_ms, status_str).await {
+                let turn_completed_ms = completed_turn(&notification).then_some(at_ms);
+                if let Err(e) =
+                    write(thread_id.to_string(), at_ms, status_str, turn_completed_ms).await
+                {
                     tracing::warn!(
                         target = "liveness_feeder",
                         %thread_id,
@@ -188,6 +216,7 @@ async fn run_feeder_loop<W, Fut, E>(
                         PendingStamp {
                             at_ms,
                             status: status_str,
+                            turn_completed_ms,
                         },
                     );
                 }
@@ -311,8 +340,9 @@ mod tests {
     // (the pre-#1722 shape) reddens the test rather than a helper.
     // ===================================================================
 
-    /// One successful durable write as the recording writer saw it.
-    type Write = (String, i64, &'static str);
+    /// One successful durable write as the recording writer saw it:
+    /// `(thread_id, at_ms, status, turn_completed_ms)`.
+    type Write = (String, i64, &'static str, Option<i64>);
 
     /// Run `notifications` through [`run_feeder_loop`] with a writer that
     /// records `(thread_id, at_ms, status)` for every successful write and
@@ -330,10 +360,12 @@ mod tests {
         }
         drop(tx); // the loop exits on `Closed` once the backlog is drained
         let sink = writes.clone();
-        run_feeder_loop(rx, move |thread_id, at_ms, status| {
+        run_feeder_loop(rx, move |thread_id, at_ms, status, turn_completed_ms| {
             let failed = fail(&thread_id, status);
             if !failed {
-                sink.lock().unwrap().push((thread_id, at_ms, status));
+                sink.lock()
+                    .unwrap()
+                    .push((thread_id, at_ms, status, turn_completed_ms));
             }
             async move {
                 if failed {
@@ -362,7 +394,7 @@ mod tests {
     }
 
     fn statuses(writes: &[Write]) -> Vec<&'static str> {
-        writes.iter().map(|(_, _, s)| *s).collect()
+        writes.iter().map(|(_, _, s, _)| *s).collect()
     }
 
     /// `[status idle, turn/completed{completed}] → idle`.
@@ -378,6 +410,13 @@ mod tests {
         .await;
         assert_eq!(statuses(&writes), ["idle", "idle"]);
         assert_eq!(writes.last().map(|w| w.2), Some("idle"));
+        // Only the COMPLETED turn's stamp carries the completion instant.
+        assert_eq!(writes[0].3, None, "a status stamp never completes a turn");
+        assert_eq!(
+            writes[1].3,
+            Some(writes[1].1),
+            "turn/completed{{completed}} carries its own at_ms as the completion"
+        );
         // `interrupted` rests at idle too; a missing status still means the
         // turn is over.
         let writes = drive(
@@ -392,6 +431,10 @@ mod tests {
         )
         .await;
         assert_eq!(statuses(&writes), ["idle", "idle"]);
+        assert!(
+            writes.iter().all(|w| w.3.is_none()),
+            "an interrupted or status-less turn never completes: {writes:?}"
+        );
     }
 
     /// `[status systemError, turn/completed{failed}] → systemError`.
@@ -407,6 +450,10 @@ mod tests {
         .await;
         assert_eq!(statuses(&writes), ["systemError", "systemError"]);
         assert_eq!(writes.last().map(|w| w.2), Some("systemError"));
+        assert!(
+            writes.iter().all(|w| w.3.is_none()),
+            "a failed turn never writes last_turn_completed_ms"
+        );
     }
 
     /// `[turn/started] → active`.
@@ -452,24 +499,28 @@ mod tests {
             },
         )
         .await;
-        let order: Vec<(&str, &str)> = writes.iter().map(|(t, _, s)| (t.as_str(), *s)).collect();
+        let order: Vec<(&str, &str)> = writes.iter().map(|(t, _, s, _)| (t.as_str(), *s)).collect();
         assert_eq!(
             order,
             [("t2", "active"), ("t1", "idle"), ("t1", "active")],
             "the failed idle stamp is replayed on t1's next notification, before the new stamp"
         );
         // The replay carries the ORIGINAL timestamp, never a fresher one.
-        let t1: Vec<i64> = writes
+        let t1: Vec<(i64, Option<i64>)> = writes
             .iter()
-            .filter(|(t, _, _)| t == "t1")
-            .map(|(_, at, _)| *at)
+            .filter(|(t, _, _, _)| t == "t1")
+            .map(|(_, at, _, done)| (*at, *done))
             .collect();
         assert!(
-            t1[0] <= t1[1],
+            t1[0].0 <= t1[1].0,
             "replayed at_ms {} > new at_ms {}",
-            t1[0],
-            t1[1]
+            t1[0].0,
+            t1[1].0
         );
+        // The replayed completed-turn stamp still carries its ORIGINAL
+        // completion instant; the fresh `turn/started` stamp carries none.
+        assert_eq!(t1[0].1, Some(t1[0].0));
+        assert_eq!(t1[1].1, None);
     }
 
     #[tokio::test]
@@ -522,5 +573,179 @@ mod tests {
         };
         assert_eq!(stamp_status_for(&started), None);
         assert_eq!(stamp_status_for(&other), None);
+    }
+
+    // ===================================================================
+    // #1722 §4.2.1 (2) — `last_turn_completed_ms`, through the REAL repo
+    // writer: written only for a completed turn, raised monotonically.
+    // ===================================================================
+
+    /// Mint area → track → codex card → running session through the
+    /// production creation helpers (`session_start_runtime_tx` links
+    /// `cards.session_id`); returns `(repo, session id)`.
+    async fn seed_codex_session(thread_id: &str) -> (Arc<crate::db::sqlite::SqlxRepo>, String) {
+        use crate::db::sqlite::{
+            SqlxRepo, area_create_tx, card_create_with_id_tx, session_start_runtime_tx,
+            track_create_tx,
+        };
+        use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme};
+        use crate::session_projection_repo::{
+            AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+        };
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let mut tx = repo.pool().begin().await.unwrap();
+        let area = area_create_tx(
+            &mut tx,
+            NewArea {
+                name: "a".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let track = track_create_tx(
+            &mut tx,
+            NewTrack {
+                template_input: None,
+                area_id: area.id.clone(),
+                title: "t".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            None,
+            &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+            None,
+            repo.track_area_cache(),
+        )
+        .await
+        .unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            "card-feeder".to_string(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({}),
+            },
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        let session_id = "ws-feeder".to_string();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: session_id.clone(),
+                card_id: card.id.as_str().to_string(),
+                kind: WorkerSessionKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Running,
+                terminal_run_id: None,
+                thread_id: Some(thread_id.to_string()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        (repo, session_id)
+    }
+
+    async fn last_turn_completed_ms(
+        repo: &crate::db::sqlite::SqlxRepo,
+        session_id: &str,
+    ) -> Option<i64> {
+        sqlx::query_scalar("SELECT last_turn_completed_ms FROM worker_sessions WHERE id = ?1")
+            .bind(session_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn last_activity(repo: &crate::db::sqlite::SqlxRepo, session_id: &str) -> (i64, String) {
+        let row: (i64, String) = sqlx::query_as(
+            "SELECT last_activity_ms, last_thread_status FROM worker_sessions WHERE id = ?1",
+        )
+        .bind(session_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        row
+    }
+
+    /// `completed@t2` then `completed@t1 < t2` does not lower the column;
+    /// `interrupted@t3` and `failed@t4` stamp their status but do not write
+    /// it — both through the storage writer with pinned instants and through
+    /// the real feeder loop over the same repo.
+    #[tokio::test]
+    async fn last_turn_completed_only_on_completed_and_monotone() {
+        let (repo, ws) = seed_codex_session("th-done").await;
+        assert_eq!(last_turn_completed_ms(&repo, &ws).await, None);
+
+        // Storage layer, pinned instants.
+        repo.session_record_activity_by_thread("th-done", 2_000, "idle", Some(2_000))
+            .await
+            .unwrap();
+        assert_eq!(last_turn_completed_ms(&repo, &ws).await, Some(2_000));
+        // A late replay of an OLDER completion never lowers it.
+        repo.session_record_activity_by_thread("th-done", 1_000, "idle", Some(1_000))
+            .await
+            .unwrap();
+        assert_eq!(last_turn_completed_ms(&repo, &ws).await, Some(2_000));
+        assert_eq!(last_activity(&repo, &ws).await, (1_000, "idle".into()));
+        // A stamp without a completion (interrupted turn → idle, failed turn
+        // → systemError, plain status) leaves the column alone.
+        repo.session_record_activity_by_thread("th-done", 3_000, "idle", None)
+            .await
+            .unwrap();
+        repo.session_record_activity_by_thread("th-done", 4_000, "systemError", None)
+            .await
+            .unwrap();
+        assert_eq!(last_turn_completed_ms(&repo, &ws).await, Some(2_000));
+        assert_eq!(
+            last_activity(&repo, &ws).await,
+            (4_000, "systemError".into())
+        );
+
+        // The real loop over the real writer: only `turn/completed{completed}`
+        // moves the column, and it moves it forward.
+        let (tx, rx) = tokio::sync::broadcast::channel(16);
+        tx.send(turn_completed("th-done", "completed")).unwrap();
+        tx.send(turn_completed("th-done", "interrupted")).unwrap();
+        tx.send(turn_completed("th-done", "failed")).unwrap();
+        tx.send(status_changed(
+            "th-done",
+            json!({ "type": "active", "activeFlags": [] }),
+        ))
+        .unwrap();
+        drop(tx);
+        let repo_dyn: Arc<dyn crate::db::Repo> = repo.clone();
+        run_liveness_feeder(repo_dyn, rx).await;
+        let completed_at = last_turn_completed_ms(&repo, &ws)
+            .await
+            .expect("the completed turn wrote the column");
+        assert!(
+            completed_at > 2_000,
+            "moved forward past the pinned value: {completed_at}"
+        );
+        let (activity_ms, status) = last_activity(&repo, &ws).await;
+        assert_eq!(status, "active", "the later stamps still landed");
+        assert!(activity_ms >= completed_at);
+        // The three later notifications did not move the completion column.
+        let again = last_turn_completed_ms(&repo, &ws).await.unwrap();
+        assert_eq!(again, completed_at);
     }
 }

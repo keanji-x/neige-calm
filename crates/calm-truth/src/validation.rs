@@ -23,6 +23,7 @@
 //! | `Overlay.payload` | `"now"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"layout"`    | `{ positions: { <card_id>: { x,y,w,h: u32 }, … } }` |
 //! | `Overlay.payload` | `"any_card_needs_input"` | `{ value: bool }` (track-scoped — see issue #254) |
+//! | `Overlay.payload` | `"activity"` | `{ working, attention, activity_at_ms, items[], cards[] }` (track-scoped — #1722 §4.1) |
 //!
 //! Anything else (`ui://*` cards, plugin-defined overlay kinds) is accepted
 //! unchanged — the validator returns `Ok(())` without inspecting the payload.
@@ -189,6 +190,10 @@ pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "any_card_needs_input"`
 /// — the track-scoped boolean aggregate written by `card_fsm` (issue #254).
 pub const OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "activity"` — the
+/// track-scoped `kernel/track/activity` projection (#1722 §4.1): `working`,
+/// `attention`, the monotone `activity_at_ms`, `items[]` and `cards[]`.
+pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy)]
 pub struct OverlayKindEntry {
@@ -327,6 +332,97 @@ fn validate_any_card_needs_input_overlay_payload(payload: &Value) -> Result<()> 
     )
 }
 
+/// #1722 §4.1 — the `kernel/track/activity` payload. Mirrors
+/// `calm_server::track_activity::ActivityPayload` field for field; every
+/// enum is closed and every struct is `deny_unknown_fields`, so a row a
+/// newer binary shaped differently is refused at the external write gates
+/// (the kernel's own `overlay_upsert_tx` does not validate, F2.16).
+fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
+    /// A nullable field that must still be PRESENT: serde treats a missing
+    /// `Option` as `None`, and §4.1 makes `activity_at_ms` / `card_id`
+    /// required-nullable, not optional.
+    fn present<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        Option::<T>::deserialize(d)
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(rename_all = "lowercase")]
+    enum Attention {
+        None,
+        Input,
+        Failed,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(rename_all = "lowercase")]
+    enum ItemKind {
+        Input,
+        Failed,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(rename_all = "lowercase")]
+    enum ItemSource {
+        Card,
+        Task,
+        Session,
+        Lifecycle,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(deny_unknown_fields)]
+    struct Item {
+        kind: ItemKind,
+        source: ItemSource,
+        id: String,
+        #[serde(deserialize_with = "present")]
+        card_id: Option<String>,
+        at_ms: i64,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(rename_all = "lowercase")]
+    enum CardState {
+        Working,
+        Input,
+        Failed,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(deny_unknown_fields)]
+    struct CardEntry {
+        card_id: String,
+        state: CardState,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(deny_unknown_fields)]
+    struct ActivityPayload {
+        #[serde(default)]
+        #[serde(rename = "schemaVersion")]
+        schema_version: Option<u32>,
+        working: bool,
+        attention: Attention,
+        #[serde(deserialize_with = "present")]
+        activity_at_ms: Option<i64>,
+        items: Vec<Item>,
+        cards: Vec<CardEntry>,
+    }
+
+    validate_as::<ActivityPayload>("activity", OVERLAY_ACTIVITY_SCHEMA_VERSION, payload)
+}
+
 pub static OVERLAY_KIND_REGISTRY: OverlayKindRegistry = OverlayKindRegistry::new(&[
     OverlayKindEntry {
         kind: "status",
@@ -362,6 +458,11 @@ pub static OVERLAY_KIND_REGISTRY: OverlayKindRegistry = OverlayKindRegistry::new
         kind: "any_card_needs_input",
         validate: validate_any_card_needs_input_overlay_payload,
         max_schema_version: OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
+    },
+    OverlayKindEntry {
+        kind: "activity",
+        validate: validate_activity_overlay_payload,
+        max_schema_version: OVERLAY_ACTIVITY_SCHEMA_VERSION,
     },
 ]);
 
@@ -872,6 +973,7 @@ mod tests {
                 "any_card_needs_input",
                 OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
             ),
+            ("activity", OVERLAY_ACTIVITY_SCHEMA_VERSION),
         ];
 
         for (kind, max_schema_version) in expected {
@@ -943,6 +1045,17 @@ mod tests {
                 json!({ "value": true }),
                 json!({ "value": "yes" }),
             ),
+            (
+                "activity",
+                activity_payload_fixture(),
+                json!({
+                    "working": true,
+                    "attention": "urgent",
+                    "activity_at_ms": null,
+                    "items": [],
+                    "cards": []
+                }),
+            ),
         ];
 
         for (kind, valid, invalid) in cases {
@@ -979,11 +1092,128 @@ mod tests {
                 "any_card_needs_input",
                 json!({ "schemaVersion": 99, "value": true }),
             ),
+            ("activity", {
+                let mut payload = activity_payload_fixture();
+                payload["schemaVersion"] = json!(99);
+                payload
+            }),
         ];
 
         for (kind, payload) in cases {
             let err = OVERLAY_KIND_REGISTRY.validate(kind, &payload).unwrap_err();
             assert!(is_bad_request(&err), "kind={kind}");
+        }
+    }
+
+    /// A complete, valid `kernel/track/activity` payload (#1722 §4.1).
+    fn activity_payload_fixture() -> Value {
+        json!({
+            "schemaVersion": OVERLAY_ACTIVITY_SCHEMA_VERSION,
+            "working": true,
+            "attention": "input",
+            "activity_at_ms": 1789460968837_i64,
+            "items": [
+                { "kind": "input", "source": "card", "id": "card-1",
+                  "card_id": "card-1", "at_ms": 1789460968837_i64 },
+                { "kind": "failed", "source": "task", "id": "build",
+                  "card_id": null, "at_ms": 1789460968000_i64 },
+                { "kind": "failed", "source": "lifecycle", "id": "track-1",
+                  "card_id": null, "at_ms": 1789460960000_i64 }
+            ],
+            "cards": [
+                { "card_id": "card-1", "state": "input" },
+                { "card_id": "card-2", "state": "working" }
+            ]
+        })
+    }
+
+    // ---------------- Overlay: activity (#1722) ----------------
+
+    /// The `activity` registry entry is closed: every field of §4.1 is
+    /// required, every enum value is one of the design's, and an unknown
+    /// field anywhere — top level, an item, a card — is a `BadRequest`.
+    #[test]
+    fn activity_overlay_payload_is_closed_to_the_design_shape() {
+        OVERLAY_KIND_REGISTRY
+            .validate("activity", &activity_payload_fixture())
+            .unwrap();
+        // `activity_at_ms: null` is the Draft → quiet seed; `items`/`cards`
+        // may be empty.
+        OVERLAY_KIND_REGISTRY
+            .validate(
+                "activity",
+                &json!({
+                    "working": false, "attention": "none",
+                    "activity_at_ms": null, "items": [], "cards": []
+                }),
+            )
+            .unwrap();
+
+        let rejected = [
+            // missing required (nullable) field
+            json!({ "working": false, "attention": "none", "items": [], "cards": [] }),
+            // an item without its (nullable) card_id
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0].as_object_mut().unwrap().remove("card_id");
+                p
+            },
+            // unknown top-level field
+            {
+                let mut p = activity_payload_fixture();
+                p["unread"] = json!(true);
+                p
+            },
+            // unknown item field
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0]["severity"] = json!(3);
+                p
+            },
+            // unknown card field
+            {
+                let mut p = activity_payload_fixture();
+                p["cards"][0]["reason"] = json!("x");
+                p
+            },
+            // enum values outside the design vocabulary
+            {
+                let mut p = activity_payload_fixture();
+                p["attention"] = json!("working");
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0]["kind"] = json!("working");
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0]["source"] = json!("overlay");
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["cards"][0]["state"] = json!("unread");
+                p
+            },
+            // wrong types
+            {
+                let mut p = activity_payload_fixture();
+                p["working"] = json!("yes");
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0]["at_ms"] = json!("now");
+                p
+            },
+        ];
+        for (i, payload) in rejected.iter().enumerate() {
+            let Err(err) = OVERLAY_KIND_REGISTRY.validate("activity", payload) else {
+                panic!("case {i} must fail: {payload}");
+            };
+            assert!(is_bad_request(&err), "case {i}: {err}");
         }
     }
 

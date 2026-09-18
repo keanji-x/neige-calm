@@ -1531,6 +1531,11 @@ impl AppState {
             ))
             .map_err(|_| anyhow::anyhow!("terminal interaction already initialized"))?;
         let harness = HarnessRegistry::new();
+        // #1722 — the `kernel/track/activity` projector: bus wake-ups + a
+        // 30 s reconcile over every unarchived track, recomputed from
+        // durable rows. Spawned here, right after the registry it consults
+        // for backend (i), so it does not wait for `AppState` assembly.
+        crate::track_activity::spawn(repo.clone(), events.clone(), write.clone(), harness.clone());
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
             events.clone(),

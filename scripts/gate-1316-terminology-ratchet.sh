@@ -569,6 +569,34 @@
 #   `last_turn_completed_*` / `databaseId` / `nowMs`. If a later commit needs
 #   any of these cells higher, that is a NEW raise needing its own argument.
 #
+#   A raise of exactly +2, taken ONCE by #1722 S1c (the `kernel/track/activity`
+#   projector). Same shape: PER-FILE COUNTS, a closed list, not a criterion.
+#   The "before" column is measured against `6e79ab8e5` (S1b, the base the
+#   slice was cut on):
+#
+#     crates/calm-server/src/track_activity/sql.rs                    0 ->   1
+#     crates/calm-server/src/track_activity.rs                        0 ->   1
+#                                                          net      288 -> 290
+#
+#   Both are spellings the projector cannot avoid:
+#     * `sql.rs`: the real SQLite table name in the ONE new statement, the
+#       E2 evidence (`calm.user.notify` = an `item/completed` transcript row
+#       with `item_type = 'mcpToolCall'`, design §4.3). E1 costs zero: it
+#       wraps S1b's `LAST_TURN_COMPLETED_MS_SUBQUERY` in `MAX(...) FROM cards`
+#       instead of respelling the table;
+#     * `track_activity.rs`: the existing event variant `Event::HarnessItemAdded`
+#       in the wake-up table (design §4.3 names `harness.item.added` as E2's
+#       wake-up). Matching a variant is spelling its name; the variant is one
+#       of the four contracts the #1718 paragraph above leaves to the separate
+#       event/API/table retirement.
+#   Everything else the slice named is in the target vocabulary and cost
+#   zero: the module `track_activity`, every `Evidence` field
+#   (`e1_harness_turn_completed`, `e2_user_notify`, …), every tracing key,
+#   every sentence of prose says "transcript row" / "transcript table". The
+#   test file `tests/cases/track_activity_projection.rs` reads no transcript
+#   row and costs zero. If a later commit needs any of these cells higher,
+#   that is a NEW raise needing its own argument.
+#
 # WHAT A TEXT COUNT CANNOT SEE — #1445, AND WHY THE ANSWER IS A RAISE
 #
 #   This gate counts TEXT. It therefore cannot see a retiring word that is

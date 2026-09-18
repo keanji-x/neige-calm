@@ -658,6 +658,7 @@ pub mod terminal_permissions;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod test_seams;
+pub mod track_activity;
 pub mod track_area_cache;
 pub mod validation;
 // #1147 S2 — managed workspace root derivation + materialization (D2/D3).

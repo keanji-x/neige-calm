@@ -393,16 +393,29 @@ pub async fn session_record_activity_tx(
 /// an observation-only bump could reorder which session wins. The match is also
 /// pinned to `provider='codex'` (thread ids are codex-scoped). 0 rows affected
 /// is benign — no active codex session owns the thread — and returns `Ok(())`.
+///
+/// `turn_completed_ms` (#1722 §4.2.1 (2)) is `Some(at)` ONLY for a
+/// `turn/completed` whose `turn.status` is `completed`; the same UPDATE then
+/// raises `last_turn_completed_ms` to `MAX(COALESCE(last_turn_completed_ms, 0),
+/// at)` — monotone, never lowered by a late replay. `None` (a status stamp, a
+/// `turn/started`, an interrupted or failed turn) leaves the column alone.
+/// The feeder is the column's only writer; the track activity projector reads
+/// it as completion evidence E6 for interactive shared-daemon cards.
 pub async fn session_record_activity_by_thread_tx(
     tx: &mut SessionTx<'_>,
     thread_id: &str,
     last_activity_ms: i64,
     last_thread_status: &str,
+    turn_completed_ms: Option<i64>,
 ) -> Result<()> {
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET last_activity_ms = ?1,
-                  last_thread_status = ?2
+                  last_thread_status = ?2,
+                  last_turn_completed_ms = CASE
+                      WHEN ?4 IS NULL THEN last_turn_completed_ms
+                      ELSE MAX(COALESCE(last_turn_completed_ms, 0), ?4)
+                  END
             WHERE thread_id = ?3
               AND provider = 'codex'
               AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
@@ -410,6 +423,7 @@ pub async fn session_record_activity_by_thread_tx(
     .bind(last_activity_ms)
     .bind(last_thread_status)
     .bind(thread_id)
+    .bind(turn_completed_ms)
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() == 0 {

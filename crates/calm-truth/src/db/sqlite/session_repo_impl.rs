@@ -99,6 +99,7 @@ impl SessionRepo for SqlxRepo {
         thread_id: &str,
         last_activity_ms: i64,
         last_thread_status: &str,
+        turn_completed_ms: Option<i64>,
     ) -> Result<()> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         session_record_activity_by_thread_tx(
@@ -106,6 +107,7 @@ impl SessionRepo for SqlxRepo {
             thread_id,
             last_activity_ms,
             last_thread_status,
+            turn_completed_ms,
         )
         .await?;
         tx.commit().await?;
