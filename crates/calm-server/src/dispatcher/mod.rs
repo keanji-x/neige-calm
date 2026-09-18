@@ -103,6 +103,36 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "claude.hook",
 ];
 
+/// The kinds the dispatcher subscribes to that never enter the push branch:
+/// they only poke the plan scheduler or the task-context monitor
+/// (`Inner::handle_envelope`'s scheduler-only arms — Issue #644 PR-B §5.1
+/// triggers 1 + 4, round-2 review F4 for `track.updated`, and the deletion
+/// sweeps). Disjoint from `PLANNER_CATCH_UP_KINDS` by construction: a kind
+/// in both would be a push-capable kind the catch-up list already owns.
+/// `dispatcher::tests::dispatcher_subscription_is_push_kinds_plus_scheduler_kinds`
+/// pins the union against the live subscription and the handler arms.
+pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
+    "plan.updated",
+    "track.lifecycle_changed",
+    "track.updated",
+    "track.deleted",
+    "area.deleted",
+];
+
+/// The ONE kind list the dispatcher's `SubscribeFilter` is built from:
+/// `PLANNER_CATCH_UP_KINDS ⊕ SCHEDULER_TRIGGER_KINDS`, in that order. The
+/// spawn site (`Dispatcher::spawn`) and the filter test read this same
+/// function, so a kind dropped from either const disappears from the live
+/// subscription and from the test in the same edit — there is no second
+/// hand-written copy to go stale (#1727 S1 fix H4).
+pub(crate) fn dispatcher_subscription_kinds() -> Vec<String> {
+    PLANNER_CATCH_UP_KINDS
+        .iter()
+        .chain(SCHEDULER_TRIGGER_KINDS.iter())
+        .map(|kind| (*kind).to_string())
+        .collect()
+}
+
 pub(crate) fn event_warrants_planner_push(
     event: &Event,
     actor: &ActorId,
@@ -922,47 +952,18 @@ impl Dispatcher {
         // scheduler trigger events poke the plan scheduler. Hook events
         // are coarse-filtered by `kind_tag()` here; the exact turn-ending
         // hook discriminators are checked synchronously in the push branch
-        // below.
-        let kinds: Vec<String> = vec![
-            "task.completed".into(),
-            "task.failed".into(),
-            "task.execution_settled".into(),
-            "task.file_publication_settled".into(),
-            "task.candidate_verification_settled".into(),
-            // Issue #644 PR-C — the gate runner's verdict: pushed to
-            // the planner (hard-fire) and a scheduler trigger (a gate
-            // verdict terminalizes the task — budget freed / deps
-            // satisfiable).
-            "task.gate_result".into(),
-            "track.report_edited".into(),
-            "track.deleted".into(),
-            "area.deleted".into(),
-            // #1727 S1 — `workspace.leased/released`,
-            // `worktree.provisioned/committed` and `review.round` are not
-            // subscribed: the push predicate is a constant `false` for
-            // them and they poke nothing else (`PLANNER_CATCH_UP_KINDS`).
-            "forge.scan.completed".into(),
-            "forge.pr.opened".into(),
-            "forge.pr.checks".into(),
-            "forge.issue.closed".into(),
-            "forge.pr.merged".into(),
-            "ratify.requested".into(),
-            "ratify.resolved".into(),
-            "codex.hook".into(),
-            "claude.hook".into(),
-            // Issue #644 PR-B — scheduler triggers (§5.1). These
-            // only poke the scheduler; they never enter the push branch.
-            // `track.updated` (round-2 review
-            // F4) covers budget-changing PATCHes, which emit no
-            // lifecycle event when the lifecycle is unchanged.
-            "plan.updated".into(),
-            "track.lifecycle_changed".into(),
-            "track.updated".into(),
-        ];
+        // below. The kind list is `PLANNER_CATCH_UP_KINDS` (every
+        // push-capable kind — Issue #644 PR-C's `task.gate_result` is both
+        // a push and a scheduler trigger and lives there) plus
+        // `SCHEDULER_TRIGGER_KINDS` (Issue #644 PR-B §5.1 scheduler pokes
+        // and the deletion sweeps); nothing is listed here by hand. #1727
+        // S1 — `workspace.leased/released`, `worktree.provisioned/committed`
+        // and `review.round` are in neither: the push predicate is a
+        // constant `false` for them and they poke nothing else.
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
             include_descendants: true,
-            kinds: Some(kinds),
+            kinds: Some(dispatcher_subscription_kinds()),
         };
         let mut rx = events.subscribe_filtered();
 

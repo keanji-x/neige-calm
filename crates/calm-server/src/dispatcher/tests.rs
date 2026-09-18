@@ -74,33 +74,18 @@ fn track_scope(track: &TrackId, area: &AreaId) -> EventScope {
 }
 
 /// The dispatcher's `SubscribeFilter` must match only the push and
-/// scheduler trigger kinds. We reconstruct the exact filter the spawn
-/// site builds and assert `matches()` for each kind, plus retired
-/// request kinds and a non-matching kind to prove the list is still a
+/// scheduler trigger kinds. The filter under test is built from the SAME
+/// `dispatcher_subscription_kinds()` the spawn site reads (#1727 S1 fix
+/// H4 — the previous hand-copied list had silently fallen behind the
+/// production one), and `matches()` is asserted per kind, plus retired
+/// request kinds and non-matching kinds to prove the list is still a
 /// closed allowlist (not "match everything").
 #[test]
 fn dispatcher_filter_matches_push_kinds() {
     let filter = SubscribeFilter {
         scope: SubscribeScope::Any,
         include_descendants: true,
-        kinds: Some(vec![
-            "task.completed".into(),
-            "task.failed".into(),
-            "task.gate_result".into(),
-            "track.report_edited".into(),
-            "forge.scan.completed".into(),
-            "forge.pr.opened".into(),
-            "forge.pr.checks".into(),
-            "forge.issue.closed".into(),
-            "forge.pr.merged".into(),
-            "ratify.requested".into(),
-            "ratify.resolved".into(),
-            "codex.hook".into(),
-            "claude.hook".into(),
-            "plan.updated".into(),
-            "track.lifecycle_changed".into(),
-            "track.updated".into(),
-        ]),
+        kinds: Some(dispatcher_subscription_kinds()),
     };
     let track = TrackId::from("w");
     let area = AreaId::from("c");
@@ -141,6 +126,21 @@ fn dispatcher_filter_matches_push_kinds() {
         details: None,
         agent_message: None,
     })));
+    // The three settlement kinds share the task-terminal arm.
+    assert!(filter.matches(&env(Event::TaskExecutionSettled {
+        task_id: "w:k".into(),
+        operation_id: "op-exec".into(),
+    })));
+    assert!(filter.matches(&env(Event::TaskFilePublicationSettled {
+        task_id: "w:k".into(),
+        operation_id: "op-pub".into(),
+    })));
+    assert!(
+        filter.matches(&env(Event::TaskCandidateVerificationSettled {
+            task_id: "w:k".into(),
+            operation_id: "op-cand".into(),
+        }))
+    );
     // Issue #644 PR-C — gate verdicts route to the push branch
     // (and poke the scheduler).
     assert!(filter.matches(&env(Event::TaskGateResult {
@@ -315,6 +315,13 @@ fn dispatcher_filter_matches_push_kinds() {
             None,
         )
     ))));
+    // The deletion sweeps (`track.deleted` / `area.deleted`) are
+    // subscribed too: the task-context monitor sweep runs off them.
+    assert!(filter.matches(&env(Event::TrackDeleted {
+        id: track.clone(),
+        area_id: area.clone(),
+    })));
+    assert!(filter.matches(&env(Event::AreaDeleted { id: area.clone() })));
     // `task.dispatched` is emitted BY the scheduler inside its claim
     // tx and deliberately NOT subscribed (§5.1).
     assert!(!filter.matches(&env(Event::TaskDispatched {
@@ -324,10 +331,164 @@ fn dispatcher_filter_matches_push_kinds() {
     })));
     // A kind NOT in the list must not match — the filter is still a
     // closed allowlist.
-    assert!(!filter.matches(&env(Event::TrackDeleted {
-        id: track.clone(),
-        area_id: area.clone(),
+    assert!(!filter.matches(&env(Event::CardDeleted {
+        id: CardId::from("card"),
+        track_id: track.clone(),
     })));
+    assert!(!filter.matches(&env(Event::TerminalDeleted {
+        id: "t".into(),
+        card_id: CardId::from("card"),
+    })));
+}
+
+/// #1727 S1 fix H4 — the live subscription is exactly "every kind the push
+/// predicate can answer `true` for" (the `expect_push = true` rows of the
+/// shared wiring table, i.e. `PLANNER_CATCH_UP_KINDS`) ∪
+/// `SCHEDULER_TRIGGER_KINDS`, the two parts disjoint, and every subscribed
+/// kind lands in a real `handle_envelope` arm rather than the trailing
+/// "no handler; filter widened unexpectedly" warn arm — while every kind in
+/// that warn arm is NOT subscribed. Deleting a kind from either const now
+/// fails here (and, for a push kind, in the filter test above), instead of
+/// leaving every test green while live pushes for it silently stop.
+#[tokio::test]
+async fn dispatcher_subscription_is_push_kinds_plus_scheduler_kinds() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let table = planner_push_wiring_table().await;
+    let all = all_event_kind_tags();
+
+    // (1) subscription set == push-capable set ∪ scheduler set, disjoint.
+    let push_capable: BTreeSet<String> = table
+        .rows
+        .iter()
+        .filter(|row| row.expect_push)
+        .map(|row| row.event.kind_tag().to_string())
+        .collect();
+    let scheduler: BTreeSet<String> = SCHEDULER_TRIGGER_KINDS
+        .iter()
+        .map(|kind| kind.to_string())
+        .collect();
+    assert_eq!(
+        scheduler.len(),
+        SCHEDULER_TRIGGER_KINDS.len(),
+        "SCHEDULER_TRIGGER_KINDS lists a kind twice"
+    );
+    assert!(
+        scheduler.is_subset(&all),
+        "SCHEDULER_TRIGGER_KINDS names kinds outside the serde census: {:?}",
+        scheduler.difference(&all).collect::<Vec<_>>()
+    );
+    let overlap: Vec<_> = scheduler.intersection(&push_capable).collect();
+    assert!(
+        overlap.is_empty(),
+        "a push-capable kind belongs in PLANNER_CATCH_UP_KINDS, not SCHEDULER_TRIGGER_KINDS: {overlap:?}"
+    );
+    let subscribed_list = dispatcher_subscription_kinds();
+    let subscribed: BTreeSet<String> = subscribed_list.iter().cloned().collect();
+    assert_eq!(
+        subscribed.len(),
+        subscribed_list.len(),
+        "the subscription lists a kind twice: {subscribed_list:?}"
+    );
+    let expected: BTreeSet<String> = push_capable.union(&scheduler).cloned().collect();
+    assert_eq!(
+        subscribed,
+        expected,
+        "dispatcher subscription must be exactly push-capable ∪ scheduler kinds \
+         (missing: {:?}, extra: {:?})",
+        expected.difference(&subscribed).collect::<Vec<_>>(),
+        subscribed.difference(&expected).collect::<Vec<_>>()
+    );
+
+    // (2) every subscribed kind has a non-warn arm in `handle_envelope`, and
+    // every kind in the warn arm is unsubscribed. The wiring table holds one
+    // sample `Event` per census kind, so its `Debug` rendering gives the
+    // variant name each kind tag maps to; the warn arm's pattern is read
+    // from the source (same anchoring as
+    // `periodic_reconcile_sweeps_context_before_scheduler`).
+    let variant_of: BTreeMap<String, String> = table
+        .rows
+        .iter()
+        .map(|row| {
+            let debug = format!("{:?}", row.event);
+            let variant = debug
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .next()
+                .expect("Debug rendering starts with the variant name")
+                .to_string();
+            (row.event.kind_tag().to_string(), variant)
+        })
+        .collect();
+    assert_eq!(
+        variant_of.keys().cloned().collect::<BTreeSet<_>>(),
+        all,
+        "the wiring table must hold a sample event for every census kind"
+    );
+    let source = include_str!("mod.rs");
+    let body = &source[source
+        .find("async fn handle_envelope(self: Arc<Self>, envelope: BroadcastEnvelope)")
+        .expect("handle_envelope in dispatcher/mod.rs")..];
+    let warn_at = body
+        .find("dispatcher received event with no handler; filter widened unexpectedly")
+        .expect("the trailing warn arm of handle_envelope");
+    let arm_open = body[..warn_at]
+        .rfind("=> {")
+        .expect("the warn arm's `=> {`");
+    // The warn arm's pattern: the run of `Event::… |` / comment lines that
+    // immediately precedes its `=> {`.
+    let mut pattern_lines: Vec<&str> = Vec::new();
+    for line in body[..arm_open].lines().rev() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("Event::") || trimmed.starts_with('|') || trimmed.starts_with("//") {
+            pattern_lines.push(trimmed);
+        } else {
+            break;
+        }
+    }
+    let warn_variants: BTreeSet<String> = pattern_lines
+        .iter()
+        .filter(|line| !line.starts_with("//"))
+        .flat_map(|line| {
+            line.split("Event::").skip(1).map(|rest| {
+                rest.trim_start()
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+        })
+        .filter(|variant| !variant.is_empty())
+        .collect();
+    assert!(
+        warn_variants.len() >= 20,
+        "warn-arm pattern parse degenerate: {warn_variants:?}"
+    );
+    let all_variants: BTreeSet<String> = variant_of.values().cloned().collect();
+    assert!(
+        warn_variants.is_subset(&all_variants),
+        "warn arm names variants the census does not know: {:?}",
+        warn_variants.difference(&all_variants).collect::<Vec<_>>()
+    );
+    let subscribed_variants: BTreeSet<String> = subscribed
+        .iter()
+        .map(|kind| variant_of[kind].clone())
+        .collect();
+    let subscribed_but_warn: Vec<_> = subscribed_variants.intersection(&warn_variants).collect();
+    assert!(
+        subscribed_but_warn.is_empty(),
+        "subscribed kinds that fall into handle_envelope's warn arm (no handler): {subscribed_but_warn:?}"
+    );
+    // The handled set is exactly the subscription: everything not
+    // subscribed is in the warn arm, so no arm does work for an
+    // unsubscribed kind and no subscribed kind is left unhandled.
+    let handled: BTreeSet<String> = all_variants.difference(&warn_variants).cloned().collect();
+    assert_eq!(
+        handled,
+        subscribed_variants,
+        "handle_envelope's non-warn arms must be exactly the subscribed kinds \
+         (handled but unsubscribed: {:?}, subscribed but unhandled: {:?})",
+        handled.difference(&subscribed_variants).collect::<Vec<_>>(),
+        subscribed_variants.difference(&handled).collect::<Vec<_>>()
+    );
 }
 
 /// The push branch in `handle_envelope` acts on a User-authored
