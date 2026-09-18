@@ -33,15 +33,23 @@ fn round19_scope_renders_the_documented_block() {
                 "Edit(//workspaces/ledger/**)".into(),
                 "Bash(python3 -m unittest *)".into(),
                 "Bash(git status *)".into(),
+                "Bash(git -C /workspaces/ledger status *)".into(),
                 "Bash(git diff *)".into(),
+                "Bash(git -C /workspaces/ledger diff *)".into(),
                 "Bash(git log *)".into(),
+                "Bash(git -C /workspaces/ledger log *)".into(),
                 "Bash(git show *)".into(),
+                "Bash(git -C /workspaces/ledger show *)".into(),
                 "Bash(git add *)".into(),
+                "Bash(git -C /workspaces/ledger add *)".into(),
                 "Bash(git commit *)".into(),
+                "Bash(git -C /workspaces/ledger commit *)".into(),
             ],
             ask: vec![
                 "Bash(git push *)".into(),
+                "Bash(git -C /workspaces/ledger push *)".into(),
                 "Bash(git reset --hard *)".into(),
+                "Bash(git -C /workspaces/ledger reset --hard *)".into(),
                 "Bash(rm -rf *)".into(),
                 "Bash(curl *)".into(),
                 "Bash(wget *)".into(),
@@ -49,7 +57,10 @@ fn round19_scope_renders_the_documented_block() {
                 "Bash(npm install *)".into(),
                 "Edit(//workspaces/ledger/.git/**)".into(),
             ],
-            deny: vec!["Bash(git push *)".into()],
+            deny: vec![
+                "Bash(git push *)".into(),
+                "Bash(git -C /workspaces/ledger push *)".into(),
+            ],
         }
     );
     // The wire shape is exactly Claude Code's `permissions` block.
@@ -77,12 +88,21 @@ fn floor_is_ask_and_a_planner_deny_on_the_same_rule_keeps_both() {
     let block = render_claude_permissions("/w", &scope).unwrap();
     assert_eq!(
         block.deny,
-        vec!["Bash(git push *)".to_owned(), "Bash(rm -rf *)".into()]
+        vec![
+            "Bash(git push *)".to_owned(),
+            "Bash(git -C /w push *)".into(),
+            "Bash(rm -rf *)".into(),
+        ]
     );
-    for rule in ["Bash(git push *)", "Bash(rm -rf *)"] {
+    for rule in [
+        "Bash(git push *)",
+        "Bash(git -C /w push *)",
+        "Bash(rm -rf *)",
+    ] {
         assert!(block.ask.iter().any(|r| r == rule), "{rule} stays asked");
     }
-    assert_eq!(block.ask.len(), CLAUDE_PERMISSIONS_FLOOR_BASH.len() + 1);
+    // Seven floor prefixes, two of them `git <rest>` (#1729), plus `.git`.
+    assert_eq!(block.ask.len(), CLAUDE_PERMISSIONS_FLOOR_BASH.len() + 3);
     assert_eq!(block.allow, Vec::<String>::new());
     // Nothing from the floor ever lands in deny, whatever the scope.
     let block = render_claude_permissions("/w", &round19()).unwrap();
@@ -117,7 +137,100 @@ fn cwd_with_glob_or_rule_characters_is_refused() {
     }
     let block = render_claude_permissions("/a b/(c)", &round19()).unwrap();
     assert_eq!(block.allow[0], "Edit(//a b/(c)/**)");
-    assert_eq!(block.ask[7], "Edit(//a b/(c)/.git/**)");
+    assert_eq!(block.allow[3], "Bash(git -C /a b/(c) status *)");
+    assert_eq!(block.ask[9], "Edit(//a b/(c)/.git/**)");
+}
+
+/// #1729 — (a) a `git <rest>` prefix renders its bare rule and, right after
+/// it, the `git -C <cwd> <rest>` spelling; (b) a bare `git` and (c) a
+/// non-git prefix render one rule each.
+#[test]
+fn a_git_prefix_also_renders_its_git_c_cwd_spelling_right_after_the_bare_rule() {
+    let scope = ClaudePermissionsScope {
+        bash: strings(&["git status"]),
+        ..Default::default()
+    };
+    let block = render_claude_permissions("/w/x", &scope).unwrap();
+    assert_eq!(
+        block.allow,
+        vec![
+            "Bash(git status *)".to_owned(),
+            "Bash(git -C /w/x status *)".into()
+        ]
+    );
+    for (prefix, cwd) in [
+        ("git", "/w/x"),
+        ("python3 -m unittest", "/w/x"),
+        ("gitk", "/w/x"),
+        ("cargo test", "/w/x"),
+    ] {
+        let scope = ClaudePermissionsScope {
+            bash: strings(&[prefix]),
+            ..Default::default()
+        };
+        let block = render_claude_permissions(cwd, &scope).unwrap();
+        assert_eq!(block.allow, vec![format!("Bash({prefix} *)")], "{prefix}");
+    }
+}
+
+/// #1729 — (d) the floor's `git push` / `git reset --hard` get their
+/// `-C <cwd>` ask rules; (e) a declared deny `git push` is doubled in deny;
+/// the non-git floor prefixes stay single.
+#[test]
+fn floor_and_deny_git_prefixes_get_the_git_c_cwd_spelling_too() {
+    let scope = ClaudePermissionsScope {
+        deny: strings(&["git push", "curl"]),
+        ..Default::default()
+    };
+    let block = render_claude_permissions("/w/x", &scope).unwrap();
+    assert_eq!(
+        block.ask,
+        vec![
+            "Bash(git push *)".to_owned(),
+            "Bash(git -C /w/x push *)".into(),
+            "Bash(git reset --hard *)".into(),
+            "Bash(git -C /w/x reset --hard *)".into(),
+            "Bash(rm -rf *)".into(),
+            "Bash(curl *)".into(),
+            "Bash(wget *)".into(),
+            "Bash(pip install *)".into(),
+            "Bash(npm install *)".into(),
+            "Edit(//w/x/.git/**)".into(),
+        ]
+    );
+    assert_eq!(
+        block.deny,
+        vec![
+            "Bash(git push *)".to_owned(),
+            "Bash(git -C /w/x push *)".into(),
+            "Bash(curl *)".into(),
+        ]
+    );
+    assert_eq!(block.allow, Vec::<String>::new());
+}
+
+/// #1729 — (f) the `-C` spelling carries the rule root: a trailing slash on
+/// the cwd is dropped, the path stays absolute and single-slashed.
+#[test]
+fn the_git_c_spelling_uses_the_cwd_without_a_trailing_slash() {
+    let scope = ClaudePermissionsScope {
+        bash: strings(&["git log"]),
+        deny: strings(&["git push"]),
+        ..Default::default()
+    };
+    let block = render_claude_permissions("/w/x/", &scope).unwrap();
+    assert_eq!(block.allow[1], "Bash(git -C /w/x log *)");
+    assert_eq!(block.ask[1], "Bash(git -C /w/x push *)");
+    assert_eq!(block.deny[1], "Bash(git -C /w/x push *)");
+    assert!(
+        block
+            .allow
+            .iter()
+            .chain(&block.ask)
+            .chain(&block.deny)
+            .all(|rule| !rule.contains("/w/x/ ") && !rule.contains("//w/x/ ")),
+        "{block:?}"
+    );
 }
 
 #[test]

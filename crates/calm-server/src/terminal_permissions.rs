@@ -15,7 +15,11 @@
 //! therefore never widens a scope; a Planner `deny` on the same rule still
 //! wins. Every rule matches its usual spelling only (`git -C . push` is not
 //! `Bash(git push *)`), and an action no rule matches keeps Claude Code's
-//! usual permission behaviour. `Edit(...)` rules are
+//! usual permission behaviour. One exception (#1729): a `git <rest>` prefix
+//! in any of the three lists is rendered twice, as `Bash(git <rest> *)` and
+//! as `Bash(git -C /<cwd> <rest> *)` for the terminal's own absolute cwd,
+//! the spelling Claude Code actually runs; no other prefix, no other
+//! directory and not a bare `git`. `Edit(...)` rules are
 //! anchored with `//` (an absolute path) because a single leading slash
 //! anchors at the settings file's own directory. No `defaultMode`,
 //! `bypassPermissions`, `additionalDirectories` or `Read(...)` rule is ever
@@ -272,20 +276,38 @@ pub fn render_claude_permissions(
         allow.push(format!("Edit(//{root}/{glob})"));
     }
     for prefix in scope.bash.iter().flatten() {
-        allow.push(format!("Bash({prefix} *)"));
+        allow.extend(bash_rules(prefix, &root));
     }
     let ask = CLAUDE_PERMISSIONS_FLOOR_BASH
         .iter()
-        .map(|prefix| format!("Bash({prefix} *)"))
+        .flat_map(|prefix| bash_rules(prefix, &root))
         .chain(std::iter::once(format!("Edit(//{root}/.git/**)")))
         .collect();
     let deny = scope
         .deny
         .iter()
         .flatten()
-        .map(|prefix| format!("Bash({prefix} *)"))
+        .flat_map(|prefix| bash_rules(prefix, &root))
         .collect();
     Ok(EffectiveClaudePermissions { allow, ask, deny })
+}
+
+/// The `Bash(...)` rules of one validated prefix: `Bash(<prefix> *)`, and
+/// for a `git <rest>` prefix (first token exactly `git`, a non-empty rest)
+/// also `Bash(git -C /<root> <rest> *)` right after it (#1729) — the
+/// spelling Claude Code runs from a terminal whose cwd is `/<root>`. A bare
+/// `git` gets no variant (`Bash(git *)` admits every spelling); a `-C` to
+/// any other directory matches no rule. Used for `allow`, the floor's `ask`
+/// and `deny` alike, so the `-C <cwd>` spelling is never wider than the bare
+/// one.
+fn bash_rules(prefix: &str, root: &str) -> Vec<String> {
+    let mut rules = vec![format!("Bash({prefix} *)")];
+    if let Some(("git", rest)) = prefix.split_once(char::is_whitespace)
+        && !rest.trim().is_empty()
+    {
+        rules.push(format!("Bash(git -C /{root} {rest} *)"));
+    }
+    rules
 }
 
 /// `/workspaces/ledger/` → `workspaces/ledger`, the text after `//` in an

@@ -1220,21 +1220,29 @@ fn round19_scope() -> Value {
         "deny": ["git push"]
     })
 }
-/// The effective block the kernel renders for [`round19_scope`] in `cwd`.
+/// The effective block the kernel renders for [`round19_scope`] in `cwd`:
+/// every `git <rest>` prefix — declared, floor or denied — is followed by
+/// its `git -C /<cwd> <rest>` spelling (#1729); `python3 -m unittest` and
+/// the non-git floor prefixes are not.
 fn round19_block(cwd: &str) -> Value {
     let root = cwd.trim_matches('/');
     json!({
         "allow": [
             format!("Edit(//{root}/**)"), "Bash(python3 -m unittest *)",
-            "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)",
-            "Bash(git show *)", "Bash(git add *)", "Bash(git commit *)"
+            "Bash(git status *)", format!("Bash(git -C /{root} status *)"),
+            "Bash(git diff *)", format!("Bash(git -C /{root} diff *)"),
+            "Bash(git log *)", format!("Bash(git -C /{root} log *)"),
+            "Bash(git show *)", format!("Bash(git -C /{root} show *)"),
+            "Bash(git add *)", format!("Bash(git -C /{root} add *)"),
+            "Bash(git commit *)", format!("Bash(git -C /{root} commit *)")
         ],
         "ask": [
-            "Bash(git push *)", "Bash(git reset --hard *)", "Bash(rm -rf *)",
-            "Bash(curl *)", "Bash(wget *)", "Bash(pip install *)",
+            "Bash(git push *)", format!("Bash(git -C /{root} push *)"),
+            "Bash(git reset --hard *)", format!("Bash(git -C /{root} reset --hard *)"),
+            "Bash(rm -rf *)", "Bash(curl *)", "Bash(wget *)", "Bash(pip install *)",
             "Bash(npm install *)", format!("Edit(//{root}/.git/**)")
         ],
-        "deny": ["Bash(git push *)"]
+        "deny": ["Bash(git push *)", format!("Bash(git -C /{root} push *)")]
     })
 }
 
@@ -1373,7 +1381,7 @@ async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block
     assert_eq!(opened["claude_permissions_source"], "declared", "{opened}");
     assert!(
         summary.ends_with(
-            " wait elapsed permissions allow 8 ask 8 deny 1 source declared; \
+            " wait elapsed permissions allow 14 ask 10 deny 2 source declared; \
              full state in structuredContent"
         ),
         "{summary}"

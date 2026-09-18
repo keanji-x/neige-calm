@@ -426,7 +426,12 @@ Planner as a `permission_request` signal; a Planner `deny` on the same rule
 still wins. Every rule matches its usual spelling only (`git -C . push`,
 `rm -fr` and `pip3 install` are not caught by the floor), and an action no
 rule matches keeps Claude Code's usual permission behaviour — the kernel
-emits rules, not outcomes. The rendered block is the one value written into the settings
+emits rules, not outcomes. One spelling is added (#1729): a `git <rest>`
+prefix in `bash`, in the floor or in `deny` is rendered twice, as
+`Bash(git <rest> *)` and as `Bash(git -C /<cwd> <rest> *)` for the terminal's
+own absolute cwd (the form Claude Code runs; a bare `git`, any other command
+and a `-C` to any other directory get no variant), so the `-C <cwd>` spelling
+is never wider than the bare one. The rendered block is the one value written into the settings
 file next to `hooks` (nothing else: no `defaultMode`, `bypassPermissions`,
 `additionalDirectories` or `Read` rule), stamped on the card as
 `Card.payload.claude_permissions` in the same transaction, persisted in the
