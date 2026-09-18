@@ -432,9 +432,10 @@ prefix in `bash`, in the floor or in `deny` is rendered twice, as
 own absolute cwd (the form Claude Code runs; a bare `git`, any other command
 and a `-C` to any other directory get no variant), and only for a cwd without
 whitespace or quote characters — a space in the path shifts the token
-boundaries, so such a cwd keeps the bare rules alone and prompts for `-C`
-spellings; within one cwd the variant is in exactly the lists its bare rule
-is in. The rendered block is the one value written into the settings
+boundaries, so such a cwd keeps exactly main's rules (bare spellings only); a
+bare `git` allow admits `-C` spellings there as it does anywhere (S1 known
+gap); within one cwd the variant is in exactly the lists its bare rule is
+in. The rendered block is the one value written into the settings
 file next to `hooks` (nothing else: no `defaultMode`, `bypassPermissions`,
 `additionalDirectories` or `Read` rule), stamped on the card as
 `Card.payload.claude_permissions` in the same transaction, persisted in the

@@ -21,8 +21,10 @@
 //! the spelling Claude Code actually runs — only when that cwd carries no
 //! whitespace and no quote character (a space in the path shifts the token
 //! boundaries and would let an `allow` variant admit a denied subcommand;
-//! such a cwd keeps the bare rule alone and prompts for `-C` spellings); no
-//! other prefix, no other directory and not a bare `git`. `Edit(...)` rules are
+//! such a cwd keeps exactly main's rules, bare spellings only, and a bare
+//! `git` allow admits `-C` spellings there as it does anywhere — S1 known
+//! gap); no other prefix, no other directory and not a bare `git`.
+//! `Edit(...)` rules are
 //! anchored with `//` (an absolute path) because a single leading slash
 //! anchors at the settings file's own directory. No `defaultMode`,
 //! `bypassPermissions`, `additionalDirectories` or `Read(...)` rule is ever
@@ -304,8 +306,9 @@ pub fn render_claude_permissions(
 /// `'`, `"`, `\`: with a space in the path (`/w push`) the tokens shift and
 /// the `allow` variant of `git status` would read as `git -C /w push status`,
 /// admitting a push the `deny` variant does not match; such a root keeps
-/// the bare rule alone (no error, no quoting) and Claude prompts for `-C`
-/// spellings there. A bare `git` gets no variant (`Bash(git *)` admits every
+/// exactly main's rules (bare spellings only; no error, no quoting), and a
+/// bare `git` allow admits `-C` spellings there as it does anywhere (S1
+/// known gap). A bare `git` gets no variant (`Bash(git *)` admits every
 /// spelling); a `-C` to any other directory matches no rule. Used for
 /// `allow`, the floor's `ask` and `deny` alike, so within one cwd the
 /// variant is in exactly the lists its bare rule is in.
