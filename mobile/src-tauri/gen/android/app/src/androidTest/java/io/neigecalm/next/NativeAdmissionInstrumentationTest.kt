@@ -55,10 +55,19 @@ class NativeAdmissionInstrumentationTest {
     lateinit var plugin: BundledFrontendPlugin
     lateinit var originalNetwork: ExecutorService
     lateinit var originalDeadlines: ScheduledExecutorService
+    lateinit var originalView: android.webkit.WebView
     try {
       helper.await(scenario, "location.host==='tauri.localhost' && !document.querySelector('#connection-mode').disabled", "Launcher unavailable")
-      scenario.onActivity {
+      scenario.onActivity { host ->
+        // The fixture temporarily enables a saved profile to exercise bind
+        // commands; unrelated platform callbacks must not wake a real node.
+        val manager = field(host,"networks").get(host) as? android.net.ConnectivityManager
+        val callback = field(host,"networkCallback").get(host) as android.net.ConnectivityManager.NetworkCallback
+        manager?.unregisterNetworkCallback(callback)
+        field(host,"networks").set(host,null)
+        P2PConnection.pause()
         plugin = plugin()
+        originalView = field(plugin,"view").get(plugin) as android.webkit.WebView
         originalNetwork = field(plugin,"network").get(plugin) as ExecutorService
         originalDeadlines = field(plugin,"deadlines").get(plugin) as ScheduledExecutorService
         field(plugin,"network").set(plugin,parked)
@@ -109,11 +118,13 @@ class NativeAdmissionInstrumentationTest {
         if (path!="destroy") helper.evaluate(scenario,"window.__TAURI__.core.invoke('plugin:bundled-frontend|cancel_enrollment').catch(()=>{}); true")
       }
     } finally {
-      scenario.onActivity {
+      scenario.onActivity { host ->
         // Disable wake before lifecycle cleanup; this test never starts tsnet.
         ConnectionProfiles(context).disableTailnet()
         field(plugin,"network").set(plugin,originalNetwork)
         field(plugin,"deadlines").set(plugin,originalDeadlines)
+        NativeP2P.cancelEnrollment()
+        BundledFrontendPlugin.attachActivity(host,originalView)
       }
       parked.shutdownNow(); deadlines.shutdownNow()
       scenario.moveToState(Lifecycle.State.CREATED)
