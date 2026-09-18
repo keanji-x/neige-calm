@@ -55,6 +55,8 @@ class ScanWorkspaceInstrumentationTest {
   @Test fun scanWorkspaceInstallsAttachmentChooserWithoutNativeBridge() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     check(context.packageName.endsWith(".instrumented"))
+    assertTrue(context.getSharedPreferences("connection-profiles",0).edit().clear().commit())
+    assertTrue(context.getSharedPreferences("workspace-resume",0).edit().clear().commit())
     val scenario = ScanFixtureActivity.acquire("scan-handler")
     try {
       scenario.onActivity { host ->
