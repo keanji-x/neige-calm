@@ -15,34 +15,12 @@ pub(crate) async fn observations_since(
     watermark: i64,
     through: Option<i64>,
 ) -> Result<Vec<(i64, Observation)>> {
+    // The kind list is the dispatcher's, not a mirror of it: exactly the
+    // kinds the push predicate below can answer `true` for.
     let rows = repo
         .events_for_track(
             track_id.as_str(),
-            &[
-                "task.completed",
-                "task.failed",
-                "task.execution_settled",
-                "task.file_publication_settled",
-                "task.candidate_verification_settled",
-                // Issue #644 PR-C (§6.5/§8) — gate verdicts that
-                // landed while the kernel was down replay like live
-                // pushes.
-                "task.gate_result",
-                "track.report_edited",
-                // #1727 S1 — `workspace.leased/released`,
-                // `worktree.provisioned/committed` and `review.round` are
-                // no longer wakes (`event_warrants_planner_push_with_role`
-                // returns false for them), so they are not read here either.
-                "forge.scan.completed",
-                "forge.pr.opened",
-                "forge.pr.checks",
-                "forge.issue.closed",
-                "forge.pr.merged",
-                "ratify.requested",
-                "ratify.resolved",
-                "codex.hook",
-                "claude.hook",
-            ],
+            dispatcher::PLANNER_CATCH_UP_KINDS,
             Some(watermark),
         )
         .await?;

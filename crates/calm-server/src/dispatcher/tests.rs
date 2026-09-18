@@ -88,16 +88,11 @@ fn dispatcher_filter_matches_push_kinds() {
             "task.failed".into(),
             "task.gate_result".into(),
             "track.report_edited".into(),
-            "workspace.leased".into(),
-            "workspace.released".into(),
             "forge.scan.completed".into(),
             "forge.pr.opened".into(),
             "forge.pr.checks".into(),
             "forge.issue.closed".into(),
-            "worktree.provisioned".into(),
-            "worktree.committed".into(),
             "forge.pr.merged".into(),
-            "review.round".into(),
             "ratify.requested".into(),
             "ratify.resolved".into(),
             "codex.hook".into(),
@@ -171,13 +166,16 @@ fn dispatcher_filter_matches_push_kinds() {
         body_after: String::new(),
         agent_message: None,
     })));
-    assert!(filter.matches(&env(Event::WorkspaceLeased {
+    // #1727 S1 — the five quiet kinds are not subscribed at all: the push
+    // predicate is a constant `false` for them and nothing else in the
+    // dispatcher reacts to them.
+    assert!(!filter.matches(&env(Event::WorkspaceLeased {
         track_id: track.clone(),
         card_id: CardId::from("worker"),
         lease_id: "lease-1".into(),
         path: "/tmp/workspace".into(),
     })));
-    assert!(filter.matches(&env(Event::WorkspaceReleased {
+    assert!(!filter.matches(&env(Event::WorkspaceReleased {
         track_id: track.clone(),
         card_id: CardId::from("worker"),
         lease_id: "lease-1".into(),
@@ -200,12 +198,12 @@ fn dispatcher_filter_matches_push_kinds() {
         track_id: track.clone(),
         issue_number: 1,
     })));
-    assert!(filter.matches(&env(Event::WorktreeProvisioned {
+    assert!(!filter.matches(&env(Event::WorktreeProvisioned {
         track_id: track.clone(),
         card_id: CardId::from("worker"),
         path: "/tmp/worktree".into(),
     })));
-    assert!(filter.matches(&env(Event::WorktreeCommitted {
+    assert!(!filter.matches(&env(Event::WorktreeCommitted {
         track_id: track.clone(),
         card_id: CardId::from("worker"),
         commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
@@ -221,7 +219,7 @@ fn dispatcher_filter_matches_push_kinds() {
         head_sha: "head-sha".into(),
         merge_sha: "merge-sha".into(),
     })));
-    assert!(filter.matches(&env(Event::ReviewRound {
+    assert!(!filter.matches(&env(Event::ReviewRound {
         track_id: track.clone(),
         subject: ReviewSubject {
             phase: "impl".into(),
@@ -1686,30 +1684,21 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
     tags
 }
 
-/// #828 slice 1 — predicate⇒mapping consistency table over EVERY
-/// event kind. Each row checks the push predicate
-/// (`event_warrants_planner_push`) and the harness-observation mapping
-/// (`harness_observation_from_event`, or the actual repo-enriched resolver for
-/// file publication settlement) jointly, and the
-/// `all_event_kind_tags` census asserts the table covers every kind:
-/// a new `Event` variant breaks compilation at the two exhaustive
-/// seams AND fails this test until a row records its expected wiring
-/// — so a variant wired predicate=true / mapping=None while fixing
-/// the seam compile errors can no longer slip through by convention.
-///
-/// The invariant is one-directional (predicate ⇒ mapping), enforced
-/// structurally on the expectations themselves: a row that expects
-/// push without an observation is rejected before the seams are even
-/// consulted. Conditional kinds carry false-side rows (planner-actor
-/// task terminals, planner-authored report edit, stop hooks on
-/// planner/unknown-role cards, non-stop hooks for both providers) whose
-/// observation column shows the mapping staying `Some` where it is
-/// kind-scoped. The exhaustive actor/author/role matrices remain
-/// pinned in `event_warrants_planner_push_covers_push_allowlist` and
-/// `event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin`;
-/// this table owns per-kind coverage and cross-seam agreement.
-#[tokio::test]
-async fn planner_push_predicate_and_observation_mapping_agree() {
+/// The per-kind push/observation expectation table
+/// `planner_push_predicate_and_observation_mapping_agree` evaluates, plus
+/// the contexts its rows are evaluated against. Shared with
+/// `planner_catch_up_kinds_equal_the_push_capable_kinds` so the catch-up
+/// kind list is pinned against the SAME rows, not a second hand-written
+/// mirror of them.
+struct PlannerPushWiringTable {
+    write: WriteContext,
+    track: TrackId,
+    rows: Vec<PlannerPushWiringRow>,
+    publication_repo: crate::db::sqlite::SqlxRepo,
+    candidate_repo: crate::db::sqlite::SqlxRepo,
+}
+
+async fn planner_push_wiring_table() -> PlannerPushWiringTable {
     let cache = CardRoleCache::new();
     let track = TrackId::from("w");
     let area = AreaId::from("c");
@@ -2444,6 +2433,46 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
     ] {
         rows.push(row(candidate_event.clone(), actor, expect_push, true));
     }
+    PlannerPushWiringTable {
+        write,
+        track,
+        rows,
+        publication_repo,
+        candidate_repo,
+    }
+}
+
+/// #828 slice 1 — predicate⇒mapping consistency table over EVERY
+/// event kind. Each row checks the push predicate
+/// (`event_warrants_planner_push`) and the harness-observation mapping
+/// (`harness_observation_from_event`, or the actual repo-enriched resolver for
+/// file publication settlement) jointly, and the
+/// `all_event_kind_tags` census asserts the table covers every kind:
+/// a new `Event` variant breaks compilation at the two exhaustive
+/// seams AND fails this test until a row records its expected wiring
+/// — so a variant wired predicate=true / mapping=None while fixing
+/// the seam compile errors can no longer slip through by convention.
+///
+/// The invariant is one-directional (predicate ⇒ mapping), enforced
+/// structurally on the expectations themselves: a row that expects
+/// push without an observation is rejected before the seams are even
+/// consulted. Conditional kinds carry false-side rows (planner-actor
+/// task terminals, planner-authored report edit, stop hooks on
+/// planner/unknown-role cards, non-stop hooks for both providers) whose
+/// observation column shows the mapping staying `Some` where it is
+/// kind-scoped. The exhaustive actor/author/role matrices remain
+/// pinned in `event_warrants_planner_push_covers_push_allowlist` and
+/// `event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin`;
+/// this table owns per-kind coverage and cross-seam agreement.
+#[tokio::test]
+async fn planner_push_predicate_and_observation_mapping_agree() {
+    let PlannerPushWiringTable {
+        write,
+        track,
+        rows,
+        publication_repo,
+        candidate_repo,
+    } = planner_push_wiring_table().await;
     let mut covered = std::collections::BTreeSet::new();
     for row in &rows {
         let kind = row.event.kind_tag();
@@ -2515,6 +2544,50 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
         unknown_tags.is_empty(),
         "row kind_tag() values missing from the serde census: {unknown_tags:?}"
     );
+}
+
+/// #1727 S1 (fix round 1, F7) — `PLANNER_CATCH_UP_KINDS` (what boot
+/// catch-up reads back from the events table) must be EXACTLY the kinds the
+/// push predicate can answer `true` for under some actor / author / role:
+/// the set of kinds with any `expect_push = true` row in the shared wiring
+/// table. A kind in the const the predicate never pushes is wasted boot
+/// I/O and a live/catch-up divergence in waiting; a push-capable kind
+/// missing from the const is a wake that live dispatch delivers and a
+/// crash-restart silently drops. Every kind in the census is classified.
+#[tokio::test]
+async fn planner_catch_up_kinds_equal_the_push_capable_kinds() {
+    let table = planner_push_wiring_table().await;
+    let all = all_event_kind_tags();
+    let push_capable: std::collections::BTreeSet<String> = table
+        .rows
+        .iter()
+        .filter(|row| row.expect_push)
+        .map(|row| row.event.kind_tag().to_string())
+        .collect();
+    let catch_up: std::collections::BTreeSet<String> = PLANNER_CATCH_UP_KINDS
+        .iter()
+        .map(|kind| kind.to_string())
+        .collect();
+    assert_eq!(
+        catch_up.len(),
+        PLANNER_CATCH_UP_KINDS.len(),
+        "PLANNER_CATCH_UP_KINDS lists a kind twice"
+    );
+    for kind in &all {
+        assert_eq!(
+            catch_up.contains(kind),
+            push_capable.contains(kind),
+            "{kind}: catch-up list membership must match \"the push predicate can \
+             return true for this kind\" (push-capable rows: {push_capable:?}, \
+             PLANNER_CATCH_UP_KINDS: {catch_up:?})"
+        );
+    }
+    let unknown: Vec<_> = catch_up.difference(&all).collect();
+    assert!(
+        unknown.is_empty(),
+        "PLANNER_CATCH_UP_KINDS names kinds outside the serde census: {unknown:?}"
+    );
+    assert_eq!(catch_up, push_capable);
 }
 
 /// #313 round-2 (B3) — the per-track push lock map must serialize

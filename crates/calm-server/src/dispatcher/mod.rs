@@ -71,6 +71,38 @@ fn supervisor_sock_for_provider_registry(daemon: &DaemonClient) -> PathBuf {
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock"))
 }
+/// The event kinds `event_warrants_planner_push_with_role` can answer `true`
+/// for under SOME actor / author / role — exactly the rows the boot catch-up
+/// (`harness::catch_up::observations_since`) reads back from the events
+/// table. Any kind outside this list is a constant `false` in the predicate,
+/// so reading it at boot would be wasted I/O; any kind inside it that the
+/// predicate could never push would be a silent catch-up/live divergence.
+/// `dispatcher::tests::planner_catch_up_kinds_equal_the_push_capable_kinds`
+/// pins the equivalence against the per-kind predicate table.
+pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
+    "task.completed",
+    "task.failed",
+    "task.execution_settled",
+    "task.file_publication_settled",
+    "task.candidate_verification_settled",
+    // Issue #644 PR-C (§6.5/§8) — gate verdicts that landed while the
+    // kernel was down replay like live pushes.
+    "task.gate_result",
+    "track.report_edited",
+    // #1727 S1 — `workspace.leased/released`, `worktree.provisioned/committed`
+    // and `review.round` are no longer wakes (the predicate returns false
+    // for them), so they are absent here and from the live subscription.
+    "forge.scan.completed",
+    "forge.pr.opened",
+    "forge.pr.checks",
+    "forge.issue.closed",
+    "forge.pr.merged",
+    "ratify.requested",
+    "ratify.resolved",
+    "codex.hook",
+    "claude.hook",
+];
+
 pub(crate) fn event_warrants_planner_push(
     event: &Event,
     actor: &ActorId,
@@ -905,16 +937,15 @@ impl Dispatcher {
             "track.report_edited".into(),
             "track.deleted".into(),
             "area.deleted".into(),
-            "workspace.leased".into(),
-            "workspace.released".into(),
+            // #1727 S1 — `workspace.leased/released`,
+            // `worktree.provisioned/committed` and `review.round` are not
+            // subscribed: the push predicate is a constant `false` for
+            // them and they poke nothing else (`PLANNER_CATCH_UP_KINDS`).
             "forge.scan.completed".into(),
             "forge.pr.opened".into(),
             "forge.pr.checks".into(),
             "forge.issue.closed".into(),
-            "worktree.provisioned".into(),
-            "worktree.committed".into(),
             "forge.pr.merged".into(),
-            "review.round".into(),
             "ratify.requested".into(),
             "ratify.resolved".into(),
             "codex.hook".into(),
@@ -1236,22 +1267,13 @@ impl Inner {
                     }
                 });
             }
-            Event::WorkspaceLeased { track_id, .. } | Event::WorkspaceReleased { track_id, .. } => {
-                if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write) {
-                    self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
-                        .await;
-                }
-            }
             Event::ForgePrMerged { track_id, .. }
-            | Event::ReviewRound { track_id, .. }
             | Event::RatifyRequested { track_id, .. }
             | Event::RatifyResolved { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
             | Event::ForgePrOpened { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
-            | Event::ForgeIssueClosed { track_id, .. }
-            | Event::WorktreeProvisioned { track_id, .. }
-            | Event::WorktreeCommitted { track_id, .. } => {
+            | Event::ForgeIssueClosed { track_id, .. } => {
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
                         .await;
@@ -1327,6 +1349,13 @@ impl Inner {
             // not in the dispatcher's kind filter.
             | Event::ProposalSubmitted { .. }
             | Event::ProposalResolved { .. }
+            // #1727 S1 — the five quiet kinds: not subscribed, never
+            // pushed (`PLANNER_CATCH_UP_KINDS`), nothing else to do.
+            | Event::WorkspaceLeased { .. }
+            | Event::WorkspaceReleased { .. }
+            | Event::WorktreeProvisioned { .. }
+            | Event::WorktreeCommitted { .. }
+            | Event::ReviewRound { .. }
             | Event::WorktreeRemoved { .. } => {
                 tracing::warn!(
                     kind = envelope.event.kind_tag(),
