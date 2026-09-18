@@ -269,3 +269,5 @@ async fn recover_with_binding(
 
 #[cfg(test)]
 pub(crate) mod launch_test_support;
+#[cfg(test)]
+mod tests;

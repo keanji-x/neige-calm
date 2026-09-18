@@ -25,6 +25,19 @@ impl RecoveryFixture {
     pub async fn withdraw(&self) {
         let mut payload = self.declaration.clone();
         payload["ready"] = Value::Bool(false);
+        self.replace_declaration(payload).await;
+    }
+
+    pub fn declaration(&self) -> Value {
+        self.declaration.clone()
+    }
+
+    pub fn block_id(&self) -> &str {
+        &self.block_id
+    }
+
+    /// Replace the declaration block through the production REST door.
+    pub async fn replace_declaration(&self, payload: Value) {
         let target = ReportEditTarget::resolve(self.repo.as_ref(), &self.task.track_id)
             .await
             .unwrap();
