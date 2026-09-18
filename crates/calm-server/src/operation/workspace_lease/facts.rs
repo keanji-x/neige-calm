@@ -128,8 +128,9 @@ pub(crate) async fn worker_worktree_facts_tx(
 }
 
 /// `worktree.removed` newer than the card's latest `worktree.provisioned`
-/// (both card-scoped by every emitter: the two release-with-removal paths,
-/// the track sweep, and the codex / claude adapters' provisioning). A card
+/// (every `worktree.*` event is scoped to the card that owns the lease —
+/// `forge_action_adapter::event_scope_for` for the plugin-emitted ones,
+/// `EventScope::Card` on the lease's card for the kernel's own). A card
 /// with no provisioned event at all is removed iff a removed event exists;
 /// a re-provision after a removal (a newer provisioned id) puts the path
 /// back.
