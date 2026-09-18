@@ -1086,6 +1086,7 @@ mod tests {
         let stored: HarnessSnapshot =
             serde_json::from_value(runtime.handle_state_json.clone().unwrap()).unwrap();
         assert_eq!(stored.pending_entries(), snapshot.pending_entries());
+        assert_eq!(stored.push_watermark, last_id);
 
         let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
         let registry = HarnessRegistry::new();
@@ -1140,6 +1141,10 @@ mod tests {
         let after_issue = handle.snapshot().await;
         assert!(after_issue.pending_entries().is_empty());
         assert_eq!(after_issue.push_watermark, last_id);
+        assert_eq!(
+            after_issue.last_thread_id.as_deref(),
+            Some(thread_id.as_str())
+        );
         handle.shutdown().await.unwrap();
     }
 }
