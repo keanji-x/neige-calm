@@ -40,6 +40,56 @@ class ConnectionProfilesRepairTest {
   private val oldOrigin = "https://old.tail.example"
   private val nextOrigin = "https://next.tail.example"
   private val direct = "https://direct.example"
+  private fun binding(origin: String, address: String = "192.168.1.8") = """{"schemaVersion":1,"origin":"$origin","addresses":["$address"]}"""
+  @Test fun confirmedDirectBindingPersistsWithoutBeingReplacedByPassiveSaves() {
+    val store = Store(); val profiles = ConnectionProfiles(store.preferences)
+    profiles.save("ip", direct, false)
+    val before = profiles.revision()
+    profiles.confirmDirectBinding(direct, binding(direct))
+    assertTrue(profiles.revision() > before)
+    val confirmed = profiles.revision()
+    profiles.save("tailscale", direct, false)
+    assertEquals(binding(direct), ConnectionProfiles(store.preferences).directBinding(direct))
+    profiles.selectTailnet(nextOrigin)
+    assertEquals(binding(direct), profiles.directBinding(direct))
+    profiles.confirmDirectBinding(direct, binding(direct, "192.168.1.9"))
+    assertTrue(profiles.revision() > confirmed)
+    assertEquals(binding(direct, "192.168.1.9"), profiles.directBinding(direct))
+    profiles.save("ip", "https://different.example", true)
+    assertEquals("", profiles.directBinding(direct))
+    assertEquals("", profiles.directBinding("https://different.example"))
+  }
+  @Test fun staleOrFailedDirectConfirmationCannotWriteAnotherProfile() {
+    val store = Store(); val profiles = ConnectionProfiles(store.preferences)
+    profiles.save("ip", direct, false)
+    val before = store.values.toMap()
+    assertTrue(runCatching { profiles.confirmDirectBinding(nextOrigin, binding(nextOrigin)) }.isFailure)
+    assertEquals(before, store.values)
+    store.writable = false
+    assertTrue(runCatching { profiles.confirmDirectBinding(direct, binding(direct)) }.isFailure)
+    assertEquals(before, store.values)
+  }
+  @Test fun corruptedDirectBindingDoesNotBlockLocalConfigurationAndExplicitConfirmationRepairsIt() {
+    val store = Store(); val profiles = ConnectionProfiles(store.preferences)
+    profiles.save("ip", direct, false)
+    store.values["direct-binding"] = 7
+    assertEquals(direct, profiles.read().ipOrigin)
+    assertEquals("", profiles.directBinding(direct))
+    profiles.confirmDirectBinding(direct, binding(direct))
+    assertEquals(binding(direct), profiles.directBinding(direct))
+  }
+  @Test fun savedTailnetChoicePreservesDirectConfigurationButPinsItsAttempt() {
+    val profiles = ConnectionProfiles(Store().preferences)
+    profiles.selectTailnet(oldOrigin); profiles.selectTailnet(nextOrigin)
+    profiles.save("ip", direct, true)
+    val selected = profiles.selectSavedTailnet(nextOrigin)
+    assertEquals(direct, selected.ipOrigin)
+    val attempted = mutableListOf<ConnectionRoute>()
+    val outcome = ConnectionAttempt.firstAvailable(selected, nextOrigin) { attempted.add(it) }
+    assertEquals(listOf(ConnectionRoute("tailscale", nextOrigin)), attempted)
+    assertEquals(nextOrigin, outcome.route?.origin)
+    assertEquals("ip", ConnectionAttempt.firstAvailable(profiles.read()) {}.route?.mode)
+  }
   private fun corruptions(): List<Pair<String, Any>> = listOf(
     "tailnet-origin" to 7, "tailnet-origin" to "http://untrusted.example",
     "tailnet-origins" to true, "tailnet-origins" to "{broken",

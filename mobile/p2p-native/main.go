@@ -304,7 +304,18 @@ func p2pTailnet(origin *C.char) *C.char {
 }
 
 //export p2pDirect
-func p2pDirect(origin *C.char) *C.char { return C.CString(configureDirect(C.GoString(origin))) }
+func p2pDirect(origin, binding *C.char) *C.char {
+	return C.CString(configureDirect(C.GoString(origin), C.GoString(binding)))
+}
+
+//export p2pCheckDirect
+func p2pCheckDirect(token, origin, binding *C.char, confirm C.int) *C.char {
+	permit, err := nativeOperations.claim(C.GoString(token))
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	return C.CString(checkDirectWithPermit(C.GoString(origin), C.GoString(binding), confirm != 0, permit))
+}
 
 //export p2pStopDirect
 func p2pStopDirect() { stopDirect() }

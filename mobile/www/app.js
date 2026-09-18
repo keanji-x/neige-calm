@@ -47,20 +47,23 @@ async function save(attempt, useDraft = mode.value === 'ip') {
   return config;
 }
 
-async function connect(manual = false) {
+async function connect(manual = false, tailnetOrigin = null, confirmDirect = false) {
   const attempt = ++generation;
   login.disabled = true;
   scan.disabled = true;
   loginLabel.textContent = '连接中…';
   error.textContent = '';
   status.dataset.state = 'waiting';
-  text.textContent = '正在连接，优先尝试 IP…';
+  text.textContent = tailnetOrigin === null ? '正在连接，优先尝试 IP…' : '正在连接所选工作区…';
   try {
-    const result = await invoke('attempt_connection');
+    const result = await invoke('attempt_connection', tailnetOrigin !== null ? { tailnetOrigin } : confirmDirect ? { confirmDirect: true } : undefined);
     if (attempt !== generation) return;
     if (!result.connected) {
       const failures = result.failures.map(item => `${item.mode === 'ip' ? 'IP' : 'Tailscale'}：${item.message}`).join('；');
       throw new Error(failures ? `连接超时或不可用，请重新配置。${failures}` : '扫描电脑上的添加手机二维码，即可加入网络并配对。');
+    }
+    if (tailnetOrigin !== null && (result.mode !== 'tailscale' || result.origin !== tailnetOrigin)) {
+      throw new Error('连接结果不是所选工作区，请重新选择。');
     }
     status.dataset.state = 'ready';
     text.textContent = result.mode === 'ip' ? 'IP 已连接' : 'Tailscale 已连接';
@@ -91,7 +94,8 @@ resetNetwork.addEventListener('click', async () => {
 
 tailnetTarget.addEventListener('change', async () => {
   const attempt = ++generation;
-  try { const saved = await invoke('select_saved_tailnet', { origin: tailnetTarget.value }); if (attempt === generation) { config = saved; idle(); await connect(true); } }
+  const origin = tailnetTarget.value;
+  try { const saved = await invoke('select_saved_tailnet', { origin }); if (attempt === generation) { config = saved; idle(); await connect(true, origin); } }
   catch (cause) { if (attempt === generation) { error.textContent = message(cause); idle(); } }
 });
 
@@ -117,7 +121,7 @@ login.addEventListener('click', async () => {
   try {
     await save(attempt);
     if (attempt !== generation) return;
-    if (mode.value === 'ip') { await connect(true); return; }
+    if (mode.value === 'ip') { await connect(true, null, true); return; }
     if (config.tailscaleEnabled) {
       if (config.legacyTailnet) {
         config = await invoke('confirm_legacy_tailnet', { origin: config.tailnetOrigin });

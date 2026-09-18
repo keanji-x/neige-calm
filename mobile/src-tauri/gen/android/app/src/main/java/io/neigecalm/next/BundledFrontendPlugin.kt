@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 @InvokeArg class EnrollFromScanArgs { lateinit var payload: String }
 @InvokeArg class BindFrontendArgs { lateinit var origin: String }
+@InvokeArg class AttemptConnectionArgs { var tailnetOrigin: String? = null; var confirmDirect: Boolean = false }
 @InvokeArg class SaveConnectionArgs { lateinit var mode: String; lateinit var ipOrigin: String; var tailscaleEnabled: Boolean by kotlin.properties.Delegates.notNull() }
 
 @TauriPlugin
@@ -175,26 +176,42 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
     }
   }
 
-  private fun checkRoute(route: ConnectionRoute, cancellation: ConnectionAttempt.Cancellation) {
+  private fun checkRoute(route: ConnectionRoute, cancellation: ConnectionAttempt.Cancellation, operation: NativeOperation?, binding: String, confirmDirect: Boolean = false): String? {
     cancellation.check()
-    if (route.mode == "ip") ConnectionAttempt.checkDirect(route.origin, cancellation)
-    else { P2PConnection.start(host.applicationContext); P2PConnection.awaitReadyAndReachable(route.origin, cancellation) }
+    if (route.mode == "ip") {
+      val verified = checkNotNull(operation).run({}) { token -> P2PConnection.checked(NativeP2P.checkDirect(token, route.origin, binding, confirmDirect)) }
+      cancellation.check()
+      return verified.getJSONObject("binding").toString()
+    }
+    P2PConnection.start(host.applicationContext); P2PConnection.awaitReadyAndReachable(route.origin, cancellation)
+    return null
   }
 
   @Command fun attemptConnection(invoke: Invoke) = host.runOnUiThread {
     try {
       launcher()
+      val args = invoke.parseArgs(AttemptConnectionArgs::class.java)
+      require(!args.confirmDirect || args.tailnetOrigin == null) { "不能同时确认不同的连接目标" }
       closeScanWorkspace()
       val attempt = ++generation
       val settings = profiles.read()
+      val binding = profiles.directBinding(settings.ipOrigin)
       candidate = null
-      val job = startPending(invoke)
+      val job = startPending(invoke, native = args.tailnetOrigin == null && settings.ipOrigin.isNotEmpty())
       job.future = network.submit {
-        val checked = runCatching { ConnectionAttempt.firstAvailable(settings) { checkRoute(it, job.cancellation) } }
+        val checked = runCatching {
+          var verifiedBinding: String? = null
+          val outcome = ConnectionAttempt.firstAvailable(settings, args.tailnetOrigin) {
+            val verified = checkRoute(it, job.cancellation, job.nativeOperation, binding, args.confirmDirect)
+            if (it.mode == "ip") verifiedBinding = verified
+          }
+          Pair(outcome, verifiedBinding)
+        }
         host.runOnUiThread { finish(job) {
           try {
-            val outcome = checked.getOrThrow()
+            val (outcome, verifiedBinding) = checked.getOrThrow()
             launcher(); check(attempt == generation) { "配置已更改，已取消旧连接" }
+            if (args.confirmDirect && outcome.route?.mode == "ip") profiles.confirmDirectBinding(outcome.route.origin, checkNotNull(verifiedBinding))
             candidate = outcome.route; checkedAt = android.os.SystemClock.elapsedRealtime()
             val response = JSObject()
             response.put("connected", outcome.route != null)
@@ -331,11 +348,12 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
         val attempt = generation
         val localResume = !resumeConsumed && resume.read(profiles)?.origin == route.origin
         val fresh = candidate == route && android.os.SystemClock.elapsedRealtime() - checkedAt < 10000
-        val job = startPending(invoke)
+        val binding = profiles.directBinding(route.origin)
+        val job = startPending(invoke, native = route.mode == "ip" && !fresh && !localResume)
         job.future = network.submit {
           val checked = runCatching {
             job.cancellation.check()
-            if (!fresh && !localResume) checkRoute(route, job.cancellation)
+            if (!fresh && !localResume) checkRoute(route, job.cancellation, job.nativeOperation, binding)
             // Binding the loopback proxy does not wait for DNS or Tailnet readiness.
             if (route.mode == "tailscale") P2PConnection.prepare(host.applicationContext)
           }
@@ -416,7 +434,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
       } catch (error: Throwable) { invoke.reject(error.message ?: "无法打开工作区") }
     } }
     check(attempt == generation && !job.settled.get()) { "旧连接已取消" }
-    val proxy = if (route.mode == "ip") P2PConnection.checked(NativeP2P.direct(route.origin)).getString("proxy")
+    val proxy = if (route.mode == "ip") P2PConnection.checked(NativeP2P.direct(route.origin, profiles.directBinding(route.origin))).getString("proxy")
       else { NativeP2P.stopDirect(); P2PConnection.checked(NativeP2P.tailnet(route.origin)).getString("proxy") }
     check(proxy.startsWith("http://127.0.0.1:")) { "连接尚未准备好" }
     val config = ProxyConfig.Builder().addProxyRule(proxy).removeImplicitRules().addBypassRule("http://tauri.localhost:80").addBypassRule("https://tauri.localhost:443").build()

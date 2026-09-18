@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,13 +22,19 @@ var directState struct {
 }
 
 type directProxy struct {
-	target   *url.URL
-	server   *http.Server
-	listener net.Listener
-	reverse  *httputil.ReverseProxy
-	mu       sync.Mutex
-	closed   bool
-	clients  map[net.Conn]bool
+	target     *url.URL
+	server     *http.Server
+	listener   net.Listener
+	reverse    *httputil.ReverseProxy
+	mu         sync.Mutex
+	closed     bool
+	clients    map[net.Conn]bool
+	ctx        context.Context
+	cancel     context.CancelFunc
+	binding    directBinding
+	bindingRaw string
+	bindingErr error
+	network    directNetwork
 }
 type trackedListener struct {
 	net.Listener
@@ -69,16 +78,17 @@ func directOrigin(raw string) (*url.URL, error) {
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.Contains(host, "%") {
 		return nil, fmt.Errorf("不能连接 App 自身或本机保留地址")
 	}
-	ip := net.ParseIP(host)
-	if u.Scheme == "http" && ip == nil {
+	ip, ipErr := netip.ParseAddr(host)
+	if u.Scheme == "http" && ipErr != nil {
 		return nil, fmt.Errorf("HTTP 连接需要填写明确的 IP 地址")
 	}
-	if ip != nil {
-		if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
-			return nil, fmt.Errorf("不能连接保留地址")
-		}
-		if v4 := ip.To4(); v4 != nil && (v4[0] == 0 || v4[0] >= 224) {
-			return nil, fmt.Errorf("不能连接保留地址")
+	if ipErr == nil && !allowedDirectAddress(ip) {
+		return nil, fmt.Errorf("不能连接保留地址")
+	}
+	if u.Port() != "" {
+		port, err := strconv.ParseUint(u.Port(), 10, 16)
+		if err != nil || port == 0 {
+			return nil, fmt.Errorf("无效的服务器端口")
 		}
 	}
 	return u, nil
@@ -86,13 +96,18 @@ func directOrigin(raw string) (*url.URL, error) {
 func (p *directProxy) close() {
 	p.mu.Lock()
 	p.closed = true
+	p.cancel()
 	clients := make([]net.Conn, 0, len(p.clients))
 	for c := range p.clients {
 		clients = append(clients, c)
 	}
 	p.mu.Unlock()
-	p.listener.Close()
-	p.server.Close()
+	if p.listener != nil {
+		p.listener.Close()
+	}
+	if p.server != nil {
+		p.server.Close()
+	}
 	for _, c := range clients {
 		c.Close()
 	}
@@ -120,7 +135,20 @@ func directForwarder(target *url.URL) *httputil.ReverseProxy {
 	}}
 }
 
-func configureDirect(raw string) string {
+func newDirectProxy(target *url.URL, binding string, network directNetwork) *directProxy {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &directProxy{target: target, clients: make(map[net.Conn]bool), ctx: ctx, cancel: cancel, bindingRaw: binding, network: network}
+	p.binding, p.bindingErr = parseDirectBinding(target, binding)
+	p.reverse = directForwarder(target)
+	p.reverse.Transport = &http.Transport{Proxy: nil, DialContext: p.dial,
+		TLSClientConfig:       &tls.Config{ServerName: target.Hostname(), RootCAs: network.roots, MinVersion: tls.VersionTLS12},
+		ResponseHeaderTimeout: 15 * time.Second, ForceAttemptHTTP2: true}
+	return p
+}
+
+// Installation never resolves DNS: cold bundled assets paint before requests
+// validate the persisted binding. A missing hostname binding denies networking.
+func configureDirect(raw, binding string) string {
 	target, err := directOrigin(raw)
 	if err != nil {
 		return failure(err)
@@ -128,7 +156,7 @@ func configureDirect(raw string) string {
 	directState.Lock()
 	defer directState.Unlock()
 	if old := directState.current; old != nil {
-		if old.target.String() == target.String() {
+		if old.target.String() == target.String() && old.bindingRaw == binding {
 			return encoded(map[string]any{"ok": true, "proxy": "http://" + old.listener.Addr().String()})
 		}
 		old.close()
@@ -138,13 +166,55 @@ func configureDirect(raw string) string {
 	if err != nil {
 		return failure(err)
 	}
-	p := &directProxy{target: target, listener: listener, clients: make(map[net.Conn]bool)}
-	p.reverse = directForwarder(target)
-	p.reverse.Transport = &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 15 * time.Second, ForceAttemptHTTP2: true}
+	p := newDirectProxy(target, binding, systemDirectNetwork())
+	p.listener = listener
 	p.server = &http.Server{Handler: p, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 65536}
 	directState.current = p
 	go p.server.Serve(trackedListener{Listener: listener, owner: p})
 	return encoded(map[string]any{"ok": true, "proxy": "http://" + listener.Addr().String()})
+}
+
+type directDestinationKey struct{}
+type directDestination struct {
+	owner   *directProxy
+	address string
+}
+
+func (p *directProxy) authorize(ctx context.Context) (context.Context, error) {
+	if err := p.ctx.Err(); err != nil {
+		return ctx, err
+	}
+	if p.bindingErr != nil {
+		return ctx, p.bindingErr
+	}
+	lookupContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	address, err := validateDirectBinding(lookupContext, p.target, p.binding, p.network)
+	if err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, directDestinationKey{}, directDestination{p, address}), nil
+}
+
+func (p *directProxy) dial(ctx context.Context, network, requested string) (net.Conn, error) {
+	destination, ok := ctx.Value(directDestinationKey{}).(directDestination)
+	if !ok || destination.owner != p || network != "tcp" || requested != authority(p.target) || p.ctx.Err() != nil {
+		return nil, fmt.Errorf("Unconfigured target")
+	}
+	// Numeric-only dial of this request's validated answer. Never resolve again.
+	connection, err := p.network.dial(ctx, network, destination.address)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || ctx.Err() != nil {
+		connection.Close()
+		return nil, net.ErrClosed
+	}
+	tracked := &trackedConnection{Conn: connection, owner: p}
+	p.clients[tracked] = true
+	return tracked, nil
 }
 func authority(u *url.URL) string {
 	port := u.Port()
@@ -165,7 +235,14 @@ func (p *directProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		upstream, err := (&net.Dialer{}).DialContext(ctx, "tcp", authority(p.target))
+		stop := context.AfterFunc(p.ctx, cancel)
+		defer stop()
+		ctx, err := p.authorize(ctx)
+		if err != nil {
+			http.Error(w, "Connection unavailable", 502)
+			return
+		}
+		upstream, err := p.dial(ctx, "tcp", authority(p.target))
 		if err != nil {
 			http.Error(w, "Connection unavailable", 502)
 			return
@@ -194,5 +271,14 @@ func (p *directProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unconfigured target", 403)
 		return
 	}
-	p.reverse.ServeHTTP(w, r)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	stop := context.AfterFunc(p.ctx, cancel)
+	defer stop()
+	ctx, err := p.authorize(ctx)
+	if err != nil {
+		http.Error(w, "Connection unavailable", 502)
+		return
+	}
+	p.reverse.ServeHTTP(w, r.WithContext(ctx))
 }

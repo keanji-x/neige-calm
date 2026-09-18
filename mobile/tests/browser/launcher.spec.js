@@ -133,6 +133,23 @@ test('returning from an IP workspace stays on the configuration homepage', async
   await expect(page).toHaveURL(`${direct}/next/`);
 });
 
+test('only explicit save-and-connect IP grants direct address confirmation', async ({ page }) => {
+  await page.addInitScript(server => {
+    window.settings = { mode: 'ip', ipOrigin: server, tailscaleEnabled: false };
+    window.attemptArguments = [];
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = (command, args) => {
+      if (command.endsWith('|attempt_connection')) window.attemptArguments.push(args ?? {});
+      return original(command, args);
+    };
+  }, 'https://direct.example');
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '保存并连接 IP' })).toBeEnabled();
+  expect(await page.evaluate(() => window.attemptArguments)).toEqual([{}]);
+  await page.getByRole('button', { name: '保存并连接 IP' }).click();
+  await expect.poll(() => page.evaluate(() => window.attemptArguments)).toEqual([{}, { confirmDirect: true }]);
+});
+
 test('an unfinished IP draft does not block Tailscale scanning', async ({ page }) => {
   await page.addInitScript(() => {
     const original = window.__TAURI__.core.invoke;

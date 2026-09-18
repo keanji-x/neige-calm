@@ -68,25 +68,38 @@ internal class ConnectionProfiles(private val preferences: android.content.Share
     val old = read()
     return saveSelected("tailscale", old.ipOrigin, true, origin, tailnetOrigins())
   }
+  fun directBinding(origin: String): String = runCatching {
+    val raw = preferences.getString("direct-binding", "")!!
+    require(raw.length <= 8192 && org.json.JSONObject(raw).getString("origin") == origin)
+    raw
+  }.getOrDefault("")
+  fun confirmDirectBinding(origin: String, binding: String) {
+    val old = read()
+    require(old.ipOrigin == origin && binding.length <= 8192 && org.json.JSONObject(binding).getString("origin") == origin) { "连接配置已改变" }
+    saveSelected(old.mode, old.ipOrigin, old.tailscaleEnabled, old.tailnetOrigin, tailnetOrigins(), binding)
+  }
   fun save(mode: String, ipOrigin: String, tailscaleEnabled: Boolean): ConnectionSettings {
     val selected = runCatching { selectedTailnet() }.getOrDefault("")
     val known = runCatching { tailnetOrigins() }.getOrDefault(emptyList())
     return saveSelected(mode, ipOrigin, tailscaleEnabled && selected.isNotEmpty(), selected, known)
   }
-  private fun saveSelected(mode: String, ipOrigin: String, tailscaleEnabled: Boolean, tailnetOrigin: String, known: List<String>): ConnectionSettings {
+  private fun saveSelected(mode: String, ipOrigin: String, tailscaleEnabled: Boolean, tailnetOrigin: String, known: List<String>, confirmedDirectBinding: String? = null): ConnectionSettings {
     require(mode in listOf("ip", "tailscale")) { "请选择 IP 或 Tailscale" }
     val origin = if (ipOrigin.isBlank()) "" else parseDirect(ipOrigin.trim()).value
     val settings = ConnectionSettings(mode, origin, tailscaleEnabled, tailnetOrigin)
     // Read untrusted metadata once. An explicit save repairs invalid identity
     // atomically with the settings, so an old ResumeEntry cannot become valid.
     val previous = runCatching { identity() }.getOrNull()
-    val changed = runCatching { read() }.getOrNull() != settings
+    val retainedBinding = if (runCatching { readSettings().ipOrigin }.getOrNull() == origin) directBinding(origin) else ""
+    val binding = confirmedDirectBinding ?: retainedBinding
+    val changed = runCatching { read() }.getOrNull() != settings || binding != retainedBinding
     val next = if (previous == null || (changed && previous.revision == Long.MAX_VALUE))
       Identity(java.util.UUID.randomUUID().toString(), 1)
     else Identity(previous.id, previous.revision + if (changed) 1 else 0)
     check(preferences.edit().putInt("schema-version", 1)
       .putString("profile-id", next.id).putLong("config-revision", next.revision)
       .putString("mode", mode).putString("ip-origin", origin)
+      .putString("direct-binding", binding)
       .putBoolean("tailscale-enabled", tailscaleEnabled).putString("tailnet-origin", tailnetOrigin)
       .putString("tailnet-origins", org.json.JSONArray(known).toString()).commit()) { "保存连接配置失败，请重试" }
     return settings

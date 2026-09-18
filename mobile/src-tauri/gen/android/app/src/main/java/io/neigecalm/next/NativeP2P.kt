@@ -5,7 +5,8 @@ internal object NativeP2P {
   external fun configure(snapshot: String): String
   external fun start(directory: String): String
   external fun status(): String
-  external fun direct(origin: String): String
+  external fun direct(origin: String, binding: String): String
+  external fun checkDirect(token: String, origin: String, binding: String, confirm: Boolean): String
   external fun stopDirect()
   external fun check(origin: String): String
   external fun reserveOperation(): String
