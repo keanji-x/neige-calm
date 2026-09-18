@@ -27,7 +27,12 @@
 //! * `kernel/card/status`: the real `card_fsm` task fed a `claude.hook`
 //!   through `log_pure_event` (the ingest route's emit);
 //! * `operations` (isolated marker): one hand-inserted row, as
-//!   `task_recovery_preparation.rs` does — the driver is the only writer.
+//!   `task_recovery_preparation.rs` does — the driver is the only writer;
+//! * transcript rows (E1/E2): the outcome writer `harness_turn_outcome_put`
+//!   (`turn/completed`) and the item writer the run loop's `insert_item_row`
+//!   calls (the only `item/*` writer); both stamp the clock, so a fixture
+//!   UPDATE pins each row to a known instant afterwards (S1b's
+//!   `track_conversations.rs` does the same).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,14 +46,17 @@ use calm_server::db::sqlite::{
     task_recovery_allocate_tx,
 };
 use calm_server::db::write_with_event_typed;
-use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
+use calm_server::event::{
+    BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SYNC_EVENT_VERSION,
+    TrackUpdatedPayload,
+};
 use calm_server::harness::{
     HarnessConfig, HarnessRegistry, HarnessSnapshot, PlannerHarness, PlannerHarnessParams,
 };
-use calm_server::ids::{ActorId, CardId, TrackId};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewOverlay, NewTrack, RequestTheme, TrackLifecycle, TrackPatch,
-    now_ms,
+    CardRole, NewArea, NewCard, NewOverlay, NewTrack, Overlay, RequestTheme, TrackLifecycle,
+    TrackPatch, now_ms,
 };
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo,
@@ -61,10 +69,12 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{DaemonClient, WriteContext};
 use calm_server::task_context::TaskContextMonitor;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::track_activity::sql::SessionRow;
+use calm_server::track_activity::sql::{
+    E1_HARNESS_TURN_COMPLETED_SQL, E2_USER_NOTIFY_SQL, SessionRow,
+};
 use calm_server::track_activity::{
     ActivityPayload, Attention, CardActivity, CardState, ItemKind, ItemSource, Recompute,
-    TrackActivityProjector, fold,
+    TrackActivityProjector, WriteOutcome, fold,
 };
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_lifecycle::{
@@ -72,6 +82,7 @@ use calm_server::track_lifecycle::{
 };
 use calm_server::track_report::{persist_report, resolve_report_for_track, tasks_rebuild_tx};
 use calm_truth::validation::OVERLAY_KIND_REGISTRY;
+use calm_types::harness::HarnessPhaseTag;
 use calm_types::report_blocks::render_fence;
 use calm_types::task_recovery::{
     TASK_CHILD_TRACK_ROUTE, TASK_IN_TRACK_ROUTE, TaskRecoveryConstraint, TaskRecoveryRequest,
@@ -630,6 +641,118 @@ impl Fx {
             .into_iter()
             .find(|o| o.kind == "activity" && o.plugin_id == "kernel")
             .map(|o| serde_json::from_value(o.payload).unwrap())
+    }
+
+    /// Bounded wait for the stored row to satisfy `pred` (the loop test's
+    /// only clock: 3 s, far inside the 30 s tick).
+    async fn await_stored(
+        &self,
+        track_id: &str,
+        what: &str,
+        pred: impl Fn(&ActivityPayload) -> bool,
+    ) -> ActivityPayload {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let stored = self.stored(track_id).await;
+            if let Some(p) = stored.as_ref().filter(|p| pred(p)) {
+                return p.clone();
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {what} on {track_id}: {stored:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// One `turn/completed` transcript row through the outcome writer
+    /// (`harness::turn_outcome::record` → `harness_turn_outcome_put`);
+    /// `turn` is the turn object, `status` at its root. Returns the row id.
+    async fn turn_outcome(
+        &self,
+        ws: &str,
+        card: &str,
+        track: &str,
+        turn_id: &str,
+        turn: Value,
+    ) -> i64 {
+        self.repo_dyn
+            .harness_turn_outcome_put(ws, card, track, "th-fixture", turn_id, &turn.to_string())
+            .await
+            .unwrap()
+    }
+
+    /// One `item/*` transcript row through the item writer (the run loop's
+    /// `insert_item_row`). Returns the row id.
+    #[allow(clippy::too_many_arguments)]
+    async fn transcript_item(
+        &self,
+        ws: &str,
+        card: &str,
+        track: &str,
+        item_uuid: &str,
+        item_type: &str,
+        method: &str,
+        params: Value,
+    ) -> i64 {
+        self.repo_dyn
+            .harness_item_insert(
+                ws,
+                card,
+                track,
+                "th-fixture",
+                Some("turn-fixture"),
+                Some(item_uuid),
+                Some(item_type),
+                method,
+                &params.to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Pin a transcript row to a known instant AFTER the production writer
+    /// stamped the clock (the writers take no time argument).
+    async fn pin_transcript_row(&self, id: i64, at_ms: i64) {
+        sqlx::query("UPDATE harness_items SET created_at_ms = ?1 WHERE id = ?2")
+            .bind(at_ms)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+
+    /// A `harness.item.added` event as the run loop's `emit_item_added`
+    /// shapes it.
+    fn item_added(track: &str, card: &str, method: &str, item_type: Option<&str>) -> Event {
+        Event::HarnessItemAdded {
+            worker_session_id: "ws-fixture".into(),
+            card_id: CardId::from(card.to_string()),
+            track_id: TrackId::from(track.to_string()),
+            item_db_id: 1,
+            item_uuid: None,
+            item_type: item_type.map(str::to_string),
+            turn_id: None,
+            method: method.into(),
+        }
+    }
+
+    fn track_scope(&self, track_id: &str) -> EventScope {
+        EventScope::Track {
+            track: TrackId::from(track_id.to_string()),
+            area: AreaId::from(self.area_id.clone()),
+        }
+    }
+
+    fn envelope(scope: EventScope, event: Event) -> BroadcastEnvelope {
+        BroadcastEnvelope {
+            id: 0,
+            event_version: SYNC_EVENT_VERSION,
+            actor: ActorId::Kernel,
+            scope,
+            event,
+        }
     }
 }
 
@@ -1637,6 +1760,164 @@ async fn interactive_card_turn_end_lights_unread() {
     assert!(at > t2);
 }
 
+/// E1, row-level: the `turn/completed` transcript row whose `status` is
+/// `completed` is the activity instant (its `created_at_ms`); an
+/// `interrupted` twin written LATER does not move it; a `failed` turn is an
+/// ending (S1b's predicate excludes only `interrupted`).
+#[tokio::test]
+async fn e1_turn_completed_row_is_the_activity_instant() {
+    let f = fx().await;
+    let (t, planner, ws) = harness_track(&f, WorkerSessionState::Idle).await;
+    assert_eq!(f.recompute(&t).await.activity_at_ms, None, "no row yet");
+
+    let t1 = 1_700_000_000_000_i64;
+    let done = f
+        .turn_outcome(
+            &ws,
+            &planner,
+            &t,
+            "turn-1",
+            json!({"id": "turn-1", "status": "completed"}),
+        )
+        .await;
+    f.pin_transcript_row(done, t1).await;
+    assert_eq!(
+        f.recompute(&t).await.activity_at_ms,
+        Some(t1),
+        "E1 = the completed row's created_at_ms"
+    );
+
+    let interrupted = f
+        .turn_outcome(
+            &ws,
+            &planner,
+            &t,
+            "turn-2",
+            json!({"id": "turn-2", "status": "interrupted"}),
+        )
+        .await;
+    f.pin_transcript_row(interrupted, t1 + 5_000).await;
+    assert_eq!(
+        f.recompute(&t).await.activity_at_ms,
+        Some(t1),
+        "a later interrupted turn is not an ending"
+    );
+
+    let failed = f
+        .turn_outcome(
+            &ws,
+            &planner,
+            &t,
+            "turn-3",
+            json!({"id": "turn-3", "status": "failed"}),
+        )
+        .await;
+    f.pin_transcript_row(failed, t1 + 7_000).await;
+    assert_eq!(
+        f.recompute(&t).await.activity_at_ms,
+        Some(t1 + 7_000),
+        "a failed turn is an ending"
+    );
+}
+
+/// E2, row-level: the `item/completed` `mcpToolCall` row of a successful
+/// `calm.user.notify` is the activity instant; twins with `item.error`
+/// set, `item.status = 'failed'`, the `item/started` half of the same call,
+/// or another tool do not move it.
+#[tokio::test]
+async fn e2_user_notify_completed_row_is_the_activity_instant() {
+    let f = fx().await;
+    let (t, planner, ws) = harness_track(&f, WorkerSessionState::Idle).await;
+    let notify = |status: &str, error: Option<&str>| {
+        let mut item = json!({
+            "id": "call-1", "type": "mcpToolCall", "server": "calm",
+            "tool": "calm.user.notify", "status": status,
+        });
+        if let Some(e) = error {
+            item["error"] = json!({"message": e});
+        }
+        json!({"threadId": "th-fixture", "turnId": "turn-fixture", "item": item})
+    };
+
+    let t2 = 1_700_000_100_000_i64;
+    let ok = f
+        .transcript_item(
+            &ws,
+            &planner,
+            &t,
+            "call-1",
+            "mcpToolCall",
+            "item/completed",
+            notify("completed", None),
+        )
+        .await;
+    f.pin_transcript_row(ok, t2).await;
+    assert_eq!(
+        f.recompute(&t).await.activity_at_ms,
+        Some(t2),
+        "E2 = the completed notify row's created_at_ms"
+    );
+
+    let twins: [(&str, &str, Value); 4] = [
+        (
+            "call-err",
+            "item/completed",
+            notify("completed", Some("boom")),
+        ),
+        ("call-failed", "item/completed", notify("failed", None)),
+        ("call-started", "item/started", notify("inProgress", None)),
+        (
+            "call-other",
+            "item/completed",
+            json!({"item": {"id": "call-other", "type": "mcpToolCall", "server": "calm",
+                            "tool": "calm.task.complete", "status": "completed"}}),
+        ),
+    ];
+    for (i, (uuid, method, params)) in twins.into_iter().enumerate() {
+        let id = f
+            .transcript_item(&ws, &planner, &t, uuid, "mcpToolCall", method, params)
+            .await;
+        f.pin_transcript_row(id, t2 + 5_000 * (i as i64 + 1)).await;
+        assert_eq!(
+            f.recompute(&t).await.activity_at_ms,
+            Some(t2),
+            "{uuid} ({method}) is not evidence"
+        );
+    }
+}
+
+/// The production E1/E2 statements (the `pub const`s the projector runs)
+/// enter the transcript table through `idx_transcript_card_method_created_at`
+/// — one index range per card, no scan (design §4.3, F2.35). S1b's plan
+/// test in `calm-truth` pins an E1-SHAPED statement; this one pins the
+/// text the projector actually executes.
+#[tokio::test]
+async fn e1_e2_query_plans_use_the_transcript_index() {
+    let f = fx().await;
+    const INDEX: &str = "USING INDEX idx_transcript_card_method_created_at";
+    for (label, sql) in [
+        ("E1", E1_HARNESS_TURN_COMPLETED_SQL),
+        ("E2", E2_USER_NOTIFY_SQL),
+    ] {
+        let details: Vec<String> = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .bind("track-1")
+            .fetch_all(&f.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| sqlx::Row::get::<String, _>(&row, "detail"))
+            .collect();
+        assert!(
+            details.iter().any(|d| d.contains(INDEX)),
+            "{label} must be an index range per card, got plan {details:?}"
+        );
+        assert!(
+            !details.iter().any(|d| d.starts_with("SCAN")),
+            "{label} must not scan any table, got plan {details:?}"
+        );
+    }
+}
+
 /// E4's actor filter: the user's own `draft → planning` does not move the
 /// high-water mark.
 #[tokio::test]
@@ -1861,6 +2142,48 @@ async fn activity_at_is_monotone() {
     assert_eq!(f.stored(&t).await.unwrap().activity_at_ms, Some(big));
 }
 
+/// M10 across versions: a stored payload THIS binary cannot parse (an
+/// `attention` value it does not know, plus a key it does not know — what a
+/// newer binary leaves behind) still keeps its high-water mark; the
+/// conclusions are recomputed and the row is rewritten in this shape. The
+/// mark is read from the raw JSON, not from the parsed struct — otherwise a
+/// downgrade would re-seed it and light a spurious unread.
+#[tokio::test]
+async fn high_water_mark_survives_an_unparseable_stored_payload() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    let big = 4_000_000_000_000_i64;
+    f.seed_activity_overlay(
+        &t,
+        json!({
+            "schemaVersion": 1, "working": true, "attention": "review",
+            "activity_at_ms": big, "items": [], "cards": [], "reviewers": ["someone"]
+        }),
+    )
+    .await;
+    assert!(
+        serde_json::from_value::<ActivityPayload>(
+            f.repo_dyn.overlays_for("track", &t).await.unwrap()[0]
+                .payload
+                .clone()
+        )
+        .is_err(),
+        "the seeded row must NOT parse, or this test proves nothing"
+    );
+    let p = match f.projector.recompute_track(&t).await.unwrap() {
+        Recompute::Written(p) => p,
+        other => panic!("an unparseable row is rewritten in this binary's shape: {other:?}"),
+    };
+    assert_eq!(p.activity_at_ms, Some(big), "{p:?}");
+    let stored = f.stored(&t).await.unwrap();
+    assert_eq!(stored.activity_at_ms, Some(big));
+    assert!(
+        !stored.working,
+        "the conclusions come from the rows, not the old row"
+    );
+    assert_eq!(stored.attention, Attention::None);
+}
+
 // ---------------------------------------------------------------------------
 // Write discipline and the registry
 // ---------------------------------------------------------------------------
@@ -1902,6 +2225,64 @@ async fn unchanged_recompute_emits_no_event() {
         f.projector.recompute_track("no-such-track").await.unwrap(),
         Recompute::NoTrack
     ));
+}
+
+/// Review r1 (Codex P2): the reads and the write share no snapshot. A track
+/// deleted between them has already lost every overlay row in its delete
+/// transaction (`routes/tracks.rs` / `Repo::track_delete`); the late write
+/// must not put an orphan `activity` row back (no FK; the reconcile
+/// enumerates live tracks only, so it would be permanent) and must emit
+/// nothing. The write half runs with the payload the read half computed
+/// BEFORE the delete — the exact race.
+#[tokio::test]
+async fn deleted_track_is_not_resurrected_by_a_late_write() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    let _worker = f.card(&t, "card-w", "codex", CardRole::Worker).await;
+    f.plan_tasks(&t, &[("build", "codex", TASK_IN_TRACK_ROUTE, None)])
+        .await;
+    f.claim(&t, "build", 2_000).await;
+    // The read half, before the delete.
+    let rows = f
+        .projector
+        .read_rows(&t)
+        .await
+        .unwrap()
+        .expect("the track exists at read time");
+    let folded = fold(&t, &rows);
+    let late = ActivityPayload {
+        schema_version: 1,
+        working: folded.working,
+        attention: folded.attention(),
+        activity_at_ms: None,
+        items: folded.items,
+        cards: folded.cards,
+    };
+    assert!(late.working, "the late write would say working: {late:?}");
+    // The delete lands: card overlays, track overlays, sessions, tasks,
+    // the track row — one transaction.
+    f.repo_dyn.track_delete(&t).await.unwrap();
+    let mut rx = f.events.subscribe();
+    // The write half, with the pre-delete payload.
+    assert_eq!(
+        f.projector.write_overlay(&t, &late).await.unwrap(),
+        WriteOutcome::TrackGone
+    );
+    let orphans: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM overlays WHERE entity_kind = 'track' AND entity_id = ?1",
+    )
+    .bind(&t)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(orphans, 0, "no overlay row for a deleted track");
+    assert!(rx.try_recv().is_err(), "no overlay.set was broadcast");
+    // A full recomputation of the deleted track is a no-op as well.
+    assert!(matches!(
+        f.projector.recompute_track(&t).await.unwrap(),
+        Recompute::NoTrack
+    ));
+    assert!(rx.try_recv().is_err());
 }
 
 /// Every payload the projector writes passes the `activity` entry of the
@@ -2034,4 +2415,316 @@ async fn wakeup_events_resolve_to_their_track() {
         }),
     };
     assert_eq!(f.projector.track_for_event(&own).await, None);
+}
+
+/// The wake-up table (design §4.3), every row, table-driven: which events
+/// resolve to which track, and the ones that must not wake anything
+/// (`track.deleted`; the projector's own row; the `item/started` half of a
+/// tool call, review r1 A-MIN4; a card no row knows).
+#[tokio::test]
+async fn wakeup_table_resolves_every_row_of_the_design() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    let card = f.card(&t, "card-w", "codex", CardRole::Worker).await;
+    let track = f.repo_dyn.track_get(&t).await.unwrap().unwrap();
+    let tid = TrackId::from(t.clone());
+    let cid = CardId::from(card.clone());
+    let area = AreaId::from(f.area_id.clone());
+    let overlay = |plugin_id: &str, entity_kind: &str, entity_id: &str, kind: &str| {
+        Event::OverlaySet(Overlay {
+            id: "o".into(),
+            plugin_id: plugin_id.into(),
+            entity_kind: entity_kind.into(),
+            entity_id: entity_id.into(),
+            kind: kind.into(),
+            payload: json!({}),
+            updated_at: 0,
+        })
+    };
+    let task_events = [
+        (
+            "task.dispatched",
+            Event::TaskDispatched {
+                idempotency_key: format!("{t}:build"),
+                kind: "codex".into(),
+                agent_message: None,
+            },
+        ),
+        (
+            "task.completed",
+            Event::TaskCompleted {
+                idempotency_key: format!("{t}:build"),
+                result: json!({}),
+                artifacts: vec![],
+                agent_message: None,
+            },
+        ),
+        (
+            "task.failed",
+            Event::TaskFailed {
+                idempotency_key: format!("{t}:build"),
+                reason: "fixture".into(),
+                details: None,
+                agent_message: None,
+            },
+        ),
+        (
+            "task.execution_settled",
+            Event::TaskExecutionSettled {
+                task_id: format!("{t}:build"),
+                operation_id: "op".into(),
+            },
+        ),
+        (
+            "task.gate_result",
+            Event::TaskGateResult {
+                task_id: format!("{t}:build"),
+                idempotency_key: format!("{t}:build#g1"),
+                passed: true,
+                failing_step: None,
+                exit_code: Some(0),
+                log_tail: String::new(),
+                log_path: String::new(),
+                attempt: 1,
+                agent_message: None,
+            },
+        ),
+    ];
+    let session_events = [
+        (
+            "worker_session.started",
+            Event::WorkerSessionStarted {
+                worker_session_id: "ws-w".into(),
+                card_id: card.clone(),
+                kind: WorkerSessionKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+            },
+        ),
+        (
+            "worker_session.status_changed",
+            Event::WorkerSessionStatusChanged {
+                worker_session_id: "ws-w".into(),
+                card_id: card.clone(),
+                old_status: WorkerSessionState::Starting,
+                new_status: WorkerSessionState::Running,
+            },
+        ),
+        (
+            "worker_session.superseded",
+            Event::WorkerSessionSuperseded {
+                old_worker_session_id: "ws-w".into(),
+                new_worker_session_id: "ws-w2".into(),
+                card_id: card.clone(),
+            },
+        ),
+    ];
+
+    let mut rows: Vec<(String, EventScope, Event, Option<&str>)> = vec![
+        (
+            "overlay.set kernel/card/status, track scope".into(),
+            f.track_scope(&t),
+            overlay("kernel", "card", &card, "status"),
+            Some(t.as_str()),
+        ),
+        (
+            "overlay.set kernel/card/status, System scope → card_get".into(),
+            EventScope::System,
+            overlay("kernel", "card", &card, "status"),
+            Some(t.as_str()),
+        ),
+        (
+            "overlay.set kernel/card/status of a card no row knows".into(),
+            EventScope::System,
+            overlay("kernel", "card", "no-such-card", "status"),
+            None,
+        ),
+        (
+            "overlay.set kernel/track/activity — the projector's own row".into(),
+            f.track_scope(&t),
+            overlay("kernel", "track", &t, "activity"),
+            None,
+        ),
+        (
+            "overlay.set of a plugin, card/status".into(),
+            f.track_scope(&t),
+            overlay("plugin-x", "card", &card, "status"),
+            None,
+        ),
+        (
+            "harness.phase.changed".into(),
+            EventScope::System,
+            Event::HarnessPhaseChanged {
+                worker_session_id: "ws-w".into(),
+                card_id: cid.clone(),
+                track_id: tid.clone(),
+                old_phase: HarnessPhaseTag::TurnRunning,
+                new_phase: HarnessPhaseTag::Idle,
+            },
+            Some(t.as_str()),
+        ),
+        (
+            "harness.item.added mcpToolCall item/completed".into(),
+            EventScope::System,
+            Fx::item_added(&t, &card, "item/completed", Some("mcpToolCall")),
+            Some(t.as_str()),
+        ),
+        (
+            "harness.item.added mcpToolCall item/started (not a completion)".into(),
+            EventScope::System,
+            Fx::item_added(&t, &card, "item/started", Some("mcpToolCall")),
+            None,
+        ),
+        (
+            "harness.item.added agentMessage item/completed".into(),
+            EventScope::System,
+            Fx::item_added(&t, &card, "item/completed", Some("agentMessage")),
+            None,
+        ),
+        (
+            "harness.item.added without an item type".into(),
+            EventScope::System,
+            Fx::item_added(&t, &card, "item/completed", None),
+            None,
+        ),
+        (
+            "track.lifecycle_changed".into(),
+            EventScope::System,
+            Event::TrackLifecycleChanged {
+                id: tid.clone(),
+                area_id: area.clone(),
+                from: TrackLifecycle::Draft,
+                to: TrackLifecycle::Planning,
+                agent_message: None,
+            },
+            Some(t.as_str()),
+        ),
+        (
+            "track.report_edited".into(),
+            EventScope::System,
+            Event::TrackReportEdited {
+                track_id: tid.clone(),
+                card_id: cid.clone(),
+                author: EditAuthor::Planner,
+                author_plugin_id: None,
+                edit_id: "e1".into(),
+                summary_before: String::new(),
+                summary_after: String::new(),
+                body_before: String::new(),
+                body_after: String::new(),
+                agent_message: None,
+            },
+            Some(t.as_str()),
+        ),
+        (
+            "track.updated".into(),
+            EventScope::System,
+            Event::TrackUpdated(TrackUpdatedPayload::new(track, None)),
+            Some(t.as_str()),
+        ),
+        (
+            "track.deleted".into(),
+            f.track_scope(&t),
+            Event::TrackDeleted {
+                id: tid.clone(),
+                area_id: area.clone(),
+            },
+            None,
+        ),
+    ];
+    for (label, event) in session_events {
+        rows.push((
+            label.into(),
+            EventScope::System,
+            event.clone(),
+            Some(t.as_str()),
+        ));
+        let Event::WorkerSessionStarted { .. } = &event else {
+            continue;
+        };
+        rows.push((
+            format!("{label} of a card no row knows"),
+            EventScope::System,
+            Event::WorkerSessionStarted {
+                worker_session_id: "ws-x".into(),
+                card_id: "no-such-card".into(),
+                kind: WorkerSessionKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+            },
+            None,
+        ));
+    }
+    for (label, event) in task_events {
+        rows.push((
+            format!("{label}, track scope"),
+            f.track_scope(&t),
+            event.clone(),
+            Some(t.as_str()),
+        ));
+        rows.push((
+            format!("{label}, System scope (no track to wake)"),
+            EventScope::System,
+            event,
+            None,
+        ));
+    }
+    assert!(
+        rows.len() >= 27,
+        "every §4.3 row plus its negatives: {}",
+        rows.len()
+    );
+    for (label, scope, event, expected) in rows {
+        let env = Fx::envelope(scope, event);
+        assert_eq!(
+            f.projector.track_for_event(&env).await.as_deref(),
+            expected,
+            "{label}"
+        );
+    }
+}
+
+/// The loop end to end: `run()` (boot sweep + bus wake-ups + tick) is
+/// spawned, a `task.dispatched` envelope arrives on the bus, and the
+/// overlay flips to `working` within a bounded wait — far inside the 30 s
+/// tick, so only the event path can have done it.
+#[tokio::test]
+async fn projector_loop_recomputes_on_task_dispatched() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.plan_tasks(&t, &[("build", "codex", TASK_IN_TRACK_ROUTE, None)])
+        .await;
+    let looped = TrackActivityProjector::new(
+        f.repo_dyn.clone(),
+        f.events.clone(),
+        f.write.clone(),
+        f.harness.clone(),
+    )
+    .expect("sqlite-backed repo");
+    let loop_task = tokio::spawn(looped.run());
+    // The boot sweep (the interval's first tick completes immediately)
+    // seeds a quiet row.
+    let seeded = f.await_stored(&t, "the boot sweep's row", |_| true).await;
+    assert!(quiet(&seeded), "{seeded:?}");
+
+    // A silent claim (the fixture's claim appends no event), then the
+    // wake-up the scheduler's claim transaction would have carried.
+    f.claim(&t, "build", 2_000).await;
+    assert!(
+        !f.stored(&t).await.unwrap().working,
+        "nothing woke the loop yet"
+    );
+    f.events.emit_envelope_for_test(Fx::envelope(
+        f.track_scope(&t),
+        Event::TaskDispatched {
+            idempotency_key: format!("{t}:build"),
+            kind: "codex".into(),
+            agent_message: None,
+        },
+    ));
+    let p = f
+        .await_stored(&t, "working after task.dispatched", |p| p.working)
+        .await;
+    assert_eq!(p.attention, Attention::None);
+    loop_task.abort();
 }

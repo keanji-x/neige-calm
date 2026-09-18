@@ -592,10 +592,47 @@
 #   Everything else the slice named is in the target vocabulary and cost
 #   zero: the module `track_activity`, every `Evidence` field
 #   (`e1_harness_turn_completed`, `e2_user_notify`, …), every tracing key,
-#   every sentence of prose says "transcript row" / "transcript table". The
-#   test file `tests/cases/track_activity_projection.rs` reads no transcript
-#   row and costs zero. If a later commit needs any of these cells higher,
-#   that is a NEW raise needing its own argument.
+#   every sentence of prose says "transcript row" / "transcript table". At
+#   the slice's first commit the test file
+#   `tests/cases/track_activity_projection.rs` read no transcript row and
+#   cost zero; its review round 1 changed that (next paragraph).
+#
+#   A raise of exactly +3, taken ONCE by #1722 S1c review round 1 (the
+#   review asked for row-level E1/E2 tests and a table-driven wake-up test,
+#   which the first commit lacked). Same shape: PER-FILE COUNTS, a closed
+#   list, not a criterion. The "before" column is the S1c commit above
+#   (`85ebe04b8`); the numbers are
+#   `git grep -P -o -h '(?i)harness_item|HarnessItem' -- <file> | wc -l`:
+#
+#     crates/calm-server/tests/cases/track_activity_projection.rs   0 ->   3
+#                                                          net      290 -> 293
+#
+#   All three are in ONE test file, each spelled ONCE in a fixture helper
+#   that every test calls (so the count cannot grow with the tests):
+#     * `.harness_item_insert(` — the ONLY production writer of `item/*`
+#       transcript rows (`run_loop::insert_item_row`); the E2 row-level test
+#       inserts the `calm.user.notify` row and its four non-evidence twins
+#       through it. E1's rows cost zero: they go through
+#       `harness_turn_outcome_put`, which does not match this pattern;
+#     * one fixture `UPDATE harness_items SET created_at_ms ...` that pins
+#       each row to a known instant after the writer stamped the clock —
+#       the same fixture shape S1b's `track_conversations.rs` took, and the
+#       only way to make "a twin written LATER does not move the mark"
+#       decisive (the writers take no time argument);
+#     * `Event::HarnessItemAdded` — the wake-up table test constructs the
+#       `harness.item.added` envelope (three rows: `item/completed`
+#       `mcpToolCall` wakes; `item/started` and a non-tool item do not).
+#       Constructing a variant is spelling its name (see `track_activity.rs`
+#       above).
+#   The production files did not move: `sql.rs` stays at 1 (E2's table
+#   name, now in a `pub const`; E1 became a `pub const` by inlining S1b's
+#   `last_turn_completed_ms_subquery!` macro, exported for that purpose,
+#   and still costs zero) and `track_activity.rs` stays at 1 (the same
+#   variant, now also matched on `method`). The new plan test in the same
+#   file names the index (`idx_transcript_card_method_created_at`) and the
+#   two constants (`E1_HARNESS_TURN_COMPLETED_SQL`, `E2_USER_NOTIFY_SQL`),
+#   all target vocabulary. If a later commit needs any of these cells
+#   higher, that is a NEW raise needing its own argument.
 #
 # WHAT A TEXT COUNT CANNOT SEE — #1445, AND WHY THE ANSWER IS A RAISE
 #

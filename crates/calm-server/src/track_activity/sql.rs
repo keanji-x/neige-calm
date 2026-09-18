@@ -13,7 +13,32 @@ use sqlx::{Row, SqlitePool};
 
 use crate::error::Result;
 use crate::isolated_codex::lookup::isolated_card_exists_sql;
-use calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY;
+
+/// E1 — harness turn end (design §4.3). The newest non-interrupted
+/// `turn/completed` transcript row per card is S1b's
+/// `LAST_TURN_COMPLETED_MS_SUBQUERY` (correlated on `c.id`, inlined here by
+/// its exported macro so the two spellings cannot drift); the track value
+/// is the max over its cards, so the statement enters the transcript table
+/// through the `(card_id, method, created_at_ms)` index once per card
+/// (F2.35). A `const` so the plan test runs THIS text
+/// (`e1_e2_query_plans_use_the_transcript_index`).
+pub const E1_HARNESS_TURN_COMPLETED_SQL: &str = concat!(
+    "SELECT MAX(",
+    calm_truth::last_turn_completed_ms_subquery!(),
+    ") FROM cards c WHERE c.track_id = ?1"
+);
+
+/// E2 — a successful `calm.user.notify` (F2.28): the transcript row of the
+/// completed MCP tool call (`item/completed` only — the `item/started` twin
+/// of the same call is not a completion), entered through the same index.
+/// A row whose `item.error` is set or whose `item.status` is `failed` is
+/// not evidence.
+pub const E2_USER_NOTIFY_SQL: &str = "SELECT MAX(h.created_at_ms) FROM harness_items h \
+     WHERE h.card_id IN (SELECT id FROM cards WHERE track_id = ?1) \
+       AND h.method = 'item/completed' AND h.item_type = 'mcpToolCall' \
+       AND json_extract(h.params, '$.item.tool') = 'calm.user.notify' \
+       AND json_extract(h.params, '$.item.error') IS NULL \
+       AND COALESCE(json_extract(h.params, '$.item.status'), '') <> 'failed'";
 
 /// `tracks` row slice the fold needs (design §4.2, lifecycle line).
 #[derive(Debug, Clone)]
@@ -245,21 +270,8 @@ async fn max_ms(pool: &SqlitePool, sql: &str, track_id: &str) -> Result<Option<i
 /// E1, E2, E4–E7 — six autocommit `MAX` statements (design §4.3). E3 is
 /// computed from the W rows by the caller.
 pub(crate) async fn evidence(pool: &SqlitePool, track_id: &str) -> Result<Evidence> {
-    // E1 — harness turn end. The newest non-interrupted `turn/completed`
-    // transcript row per card is S1b's `LAST_TURN_COMPLETED_MS_SUBQUERY`
-    // (correlated on `c.id`); the track value is the max over its cards, so
-    // the statement enters the transcript table through the
-    // `(card_id, method, created_at_ms)` index once per card (F2.35).
-    let e1 =
-        format!("SELECT MAX({LAST_TURN_COMPLETED_MS_SUBQUERY}) FROM cards c WHERE c.track_id = ?1");
-    // E2 — a successful `calm.user.notify` (F2.28): the transcript row of the
-    // completed MCP tool call, entered through the same index.
-    let e2 = "SELECT MAX(h.created_at_ms) FROM harness_items h \
-               WHERE h.card_id IN (SELECT id FROM cards WHERE track_id = ?1) \
-                 AND h.method = 'item/completed' AND h.item_type = 'mcpToolCall' \
-                 AND json_extract(h.params, '$.item.tool') = 'calm.user.notify' \
-                 AND json_extract(h.params, '$.item.error') IS NULL \
-                 AND COALESCE(json_extract(h.params, '$.item.status'), '') <> 'failed'";
+    // E1 / E2 — the two transcript-table statements are the `pub const`s
+    // above (the plan test pins their index use).
     // E4 — a lifecycle edge NOT driven by the user (`track.*` is never
     // pruned; `events.actor` is the `ActorId` JSON, F2.18/F2.20).
     let e4 = "SELECT MAX(at) FROM events \
@@ -291,8 +303,8 @@ pub(crate) async fn evidence(pool: &SqlitePool, track_id: &str) -> Result<Eviden
                WHERE scope_track = ?1 AND kind = 'track.report_edited' \
                  AND json_extract(payload, '$.author') <> 'user'";
     Ok(Evidence {
-        e1_harness_turn_completed: max_ms(pool, &e1, track_id).await?,
-        e2_user_notify: max_ms(pool, e2, track_id).await?,
+        e1_harness_turn_completed: max_ms(pool, E1_HARNESS_TURN_COMPLETED_SQL, track_id).await?,
+        e2_user_notify: max_ms(pool, E2_USER_NOTIFY_SQL, track_id).await?,
         e4_agent_lifecycle_edge: max_ms(pool, e4, track_id).await?,
         e5_interactive_stop_hook: max_ms(pool, &e5, track_id).await?,
         e6_interactive_turn_completed: max_ms(pool, &e6, track_id).await?,

@@ -25,25 +25,35 @@
 //! Transaction shape (design §4.4, `deferred_write_tx_invariant`): every
 //! read is an autocommit single statement (`track_activity::sql`); the
 //! computed payload is compared with the stored one and only a CHANGE is
-//! written, through `write_with_event_typed` (one IMMEDIATE transaction,
-//! `Event::OverlaySet`).
+//! written, through `write_with_events_typed` (one IMMEDIATE transaction,
+//! `Event::OverlaySet`). The reads share no snapshot with the write, so the
+//! track row is re-checked INSIDE the write transaction: a track deleted
+//! between the reads and the write (its delete transaction already dropped
+//! every overlay of the track, `routes/tracks.rs`) must not get an orphan
+//! `activity` row back — the table has no FK and the reconcile enumerates
+//! live tracks only, so such a row would be permanent. The write aborts
+//! with no event instead (`WriteOutcome::TrackGone`).
 
 pub mod sql;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::db::sqlite::overlay_upsert_tx;
-use crate::db::{Repo, write_with_event_typed};
+use crate::db::{Repo, write_with_events_typed};
+use crate::error::CalmError;
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use crate::harness::HarnessRegistry;
 use crate::ids::{ActorId, TrackId};
 use crate::model::NewOverlay;
 use crate::state::WriteContext;
+use crate::track_lifecycle::track_get_tx;
 use calm_truth::validation::{KERNEL_OVERLAY_PLUGIN_ID, OVERLAY_ACTIVITY_SCHEMA_VERSION};
 use sql::{CardStatusRow, SessionRow, TaskRow, TrackRow};
 
@@ -414,7 +424,9 @@ pub struct TrackActivityProjector {
 /// What one recomputation did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recompute {
-    /// The track row is gone (deleted); nothing to project.
+    /// The track row is gone (deleted) — either before the reads or between
+    /// the reads and the write (`WriteOutcome::TrackGone`); nothing to
+    /// project, nothing written, nothing emitted.
     NoTrack,
     /// The stored payload already said this; no write, no event.
     Unchanged(ActivityPayload),
@@ -429,6 +441,15 @@ impl Recompute {
             Recompute::Unchanged(p) | Recompute::Written(p) => Some(p),
         }
     }
+}
+
+/// What the write transaction found (the caller can tell "row written and
+/// `overlay.set` emitted" from "the track was deleted since the reads;
+/// nothing written, nothing emitted" — two outcomes, two variants).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Written,
+    TrackGone,
 }
 
 impl TrackActivityProjector {
@@ -484,22 +505,39 @@ impl TrackActivityProjector {
         };
         let folded = fold(track_id, &rows);
         let evidence = sql::evidence(&self.pool, track_id).await?;
-        let existing: Option<ActivityPayload> =
-            sql::existing_activity_payload(&self.pool, track_id)
-                .await?
-                .and_then(|v| serde_json::from_value(v).ok());
+        let stored = sql::existing_activity_payload(&self.pool, track_id).await?;
+        // The high-water mark is read from the raw JSON, independently of
+        // the struct parse below: a stored payload another version of this
+        // binary wrote (an enum value this one does not know, a reshaped
+        // item) must not re-seed the mark and light a spurious unread. The
+        // conclusions are recomputed from rows either way.
+        let stored_mark = stored
+            .as_ref()
+            .and_then(|v| v.get("activity_at_ms"))
+            .and_then(Value::as_i64);
+        let existing: Option<ActivityPayload> = match stored {
+            None => None,
+            Some(v) => match serde_json::from_value(v) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    tracing::warn!(
+                        track_id = %track_id,
+                        error = %e,
+                        "track_activity: stored payload does not parse; conclusions \
+                         recomputed, high-water mark kept from the raw row"
+                    );
+                    None
+                }
+            },
+        };
 
         // `activity_at_ms` is a monotone high-water mark (M10): max of the
         // stored value and every persisted completion-class witness; seeded
         // on the first row, never lowered by a reconcile.
-        let activity_at_ms = [
-            existing.as_ref().and_then(|e| e.activity_at_ms),
-            evidence.max(),
-            folded.e3_task_settled,
-        ]
-        .into_iter()
-        .flatten()
-        .max();
+        let activity_at_ms = [stored_mark, evidence.max(), folded.e3_task_settled]
+            .into_iter()
+            .flatten()
+            .max();
 
         let next = ActivityPayload {
             schema_version: OVERLAY_ACTIVITY_SCHEMA_VERSION,
@@ -516,25 +554,28 @@ impl TrackActivityProjector {
         {
             return Ok(Recompute::Unchanged(next));
         }
-        self.write_overlay(track_id, &next).await?;
-        Ok(Recompute::Written(next))
+        match self.write_overlay(track_id, &next).await? {
+            WriteOutcome::Written => Ok(Recompute::Written(next)),
+            WriteOutcome::TrackGone => Ok(Recompute::NoTrack),
+        }
     }
 
-    async fn write_overlay(
+    /// The write half of a recomputation: ONE IMMEDIATE transaction that
+    /// re-reads the track row, upserts the overlay and appends the
+    /// `overlay.set` event (track scope from that same row). `pub` so a test
+    /// can run it with a payload computed BEFORE the track was deleted —
+    /// the race the in-transaction check exists for.
+    ///
+    /// A track deleted since the reads aborts the transaction with no row
+    /// and no event: the closure returns `Err` (the only way out of
+    /// `write_with_events` without an event batch, F2.19) after setting
+    /// `track_gone`, and only THAT error is turned into
+    /// `WriteOutcome::TrackGone` — every other error stays an error.
+    pub async fn write_overlay(
         &self,
         track_id: &str,
         payload: &ActivityPayload,
-    ) -> crate::error::Result<()> {
-        // Resolve the area for the event scope; on lookup failure fall back
-        // to `System` rather than refuse the write (same posture as
-        // `card_fsm`).
-        let scope = match self.repo.track_get(track_id).await {
-            Ok(Some(t)) => EventScope::Track {
-                track: t.id,
-                area: t.area_id,
-            },
-            _ => EventScope::System,
-        };
+    ) -> crate::error::Result<WriteOutcome> {
         let new_overlay = NewOverlay {
             plugin_id: KERNEL_OVERLAY_PLUGIN_ID.to_string(),
             entity_kind: "track".to_string(),
@@ -542,22 +583,47 @@ impl TrackActivityProjector {
             kind: ACTIVITY_OVERLAY_KIND.to_string(),
             payload: serde_json::to_value(payload)?,
         };
-        write_with_event_typed(
+        let track_gone = Arc::new(AtomicBool::new(false));
+        let gone_in_tx = Arc::clone(&track_gone);
+        let track = TrackId::from(track_id.to_string());
+        let result = write_with_events_typed(
             self.repo.as_ref(),
             ActorId::Kernel,
-            scope,
             None,
             &self.bus,
             &self.write,
             move |tx| {
                 Box::pin(async move {
+                    let row = match track_get_tx(tx, &track).await {
+                        Ok(row) => row,
+                        Err(CalmError::NotFound(m)) => {
+                            gone_in_tx.store(true, Ordering::SeqCst);
+                            return Err(CalmError::NotFound(m));
+                        }
+                        Err(e) => return Err(e),
+                    };
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
-                    Ok(((), Event::OverlaySet(o)))
+                    let scope = EventScope::Track {
+                        track: row.id,
+                        area: row.area_id,
+                    };
+                    Ok(((), vec![(scope, Event::OverlaySet(o))]))
                 })
             },
         )
-        .await?;
-        Ok(())
+        .await;
+        match result {
+            Ok(_) => Ok(WriteOutcome::Written),
+            Err(_) if track_gone.load(Ordering::SeqCst) => {
+                tracing::debug!(
+                    track_id = %track_id,
+                    "track_activity: track deleted between the reads and the write; \
+                     overlay not written"
+                );
+                Ok(WriteOutcome::TrackGone)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// The boot sweep and the 30 s tick: every unarchived track, serially.
@@ -592,11 +658,17 @@ impl TrackActivityProjector {
                 self.card_track(&o.entity_id).await
             }
             Event::HarnessPhaseChanged { track_id, .. } => Some(track_id.as_str().to_string()),
+            // E2's wake-up: the COMPLETED tool-call row (E2 reads only
+            // `item/completed`; the `item/started` twin of the same call
+            // would be a second recompute that finds nothing new).
             Event::HarnessItemAdded {
                 track_id,
                 item_type,
+                method,
                 ..
-            } if item_type.as_deref() == Some("mcpToolCall") => Some(track_id.as_str().to_string()),
+            } if item_type.as_deref() == Some("mcpToolCall") && method == "item/completed" => {
+                Some(track_id.as_str().to_string())
+            }
             Event::WorkerSessionStarted { card_id, .. }
             | Event::WorkerSessionStatusChanged { card_id, .. }
             | Event::WorkerSessionSuperseded { card_id, .. } => self.card_track(card_id).await,
