@@ -2014,7 +2014,9 @@ it('does not fetch a stored conversation absent from the current Track rows', as
   expect(requests.some((request) => request.path.includes('foreign-or-deleted-card'))).toBe(false);
 });
 
-it('selects a model before the first conversation message and sends it atomically', async () => {
+it.each([false, true])('selects a model before the first conversation message and sends it atomically (bundled=%s)', async bundled => {
+  vi.stubGlobal('__NC_BUNDLED__', bundled);
+  const access = new RecoveryAccess(); access.change('connected');
   const { requests } = setup(request => {
     if (request.path === '/api/version') return ok({ webCompatVersion: 28, minWebCompatVersion: 28,
       syncEventVersion: 20, dbInstanceId: 'test', conversationCreateModel: true });
@@ -2025,7 +2027,7 @@ it('selects a model before the first conversation message and sends it atomicall
     });
     if (request.method === 'POST' && request.path === CONVERSATIONS) return created(derivedRow('w1', request));
     return undefined;
-  });
+  }, undefined, bundled ? access : undefined);
   await openDraft();
   fireEvent.click(await screen.findByRole('button', { name: /^Model:/ }));
   fireEvent.click(await screen.findByRole('menuitem', { name: /^GPT-5/ }));

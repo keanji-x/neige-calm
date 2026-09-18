@@ -131,3 +131,20 @@ it('isolates remembered conversation selection by verified recovery scope', () =
   const resumed = createUiPreferences(storage); resumed.setRecoveryScope('origin/owner/db-b');
   expect(resumed.conversation('track')).toBe('conversation-b');
 });
+
+it('preserves newer cross-tab read receipts within the same recovery scope only', () => {
+  const storage = memoryStorage();
+  const first = createUiPreferences(storage);
+  const second = createUiPreferences(storage);
+  for (const preferences of [first, second]) {
+    preferences.setRecoveryScope('origin/owner/db-a'); preferences.setReadScope('db-a');
+  }
+  first.markRead('conversation', 'visible', 20);
+  second.markRead('conversation', 'visible', 10);
+  const restored = createUiPreferences(storage);
+  restored.setReadScope('db-a'); restored.setRecoveryScope('origin/owner/db-a');
+  expect(restored.isUnread('conversation', 'visible', 20)).toBe(false);
+  expect(restored.isUnread('conversation', 'visible', 21)).toBe(true);
+  restored.setRecoveryScope('origin/another-owner/db-a');
+  expect(restored.isUnread('conversation', 'visible', 20)).toBe(true);
+});
