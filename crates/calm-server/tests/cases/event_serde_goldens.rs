@@ -328,6 +328,7 @@ golden_test!(
             session_id: Some("sess-01".into()),
             source: Some("spawn".into()),
             thread_status: Some("active".into()),
+            last_turn_completed_ms: None, // #1722 S1b: optional, skipped when None.
         }),
         deletable: false,
         ..card_min()
@@ -358,6 +359,7 @@ golden_test!(
             session_id: None,
             source: None,
             thread_status: None,
+            last_turn_completed_ms: None, // #1722 S1b: optional, skipped when None.
         }),
         ..card_min()
     })

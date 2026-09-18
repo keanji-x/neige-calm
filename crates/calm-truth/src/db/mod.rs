@@ -102,6 +102,7 @@ use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 use futures::future::BoxFuture;
 use sqlx::{Sqlite, SqlitePool, Transaction};
+use std::sync::Arc;
 
 pub mod rows;
 pub mod sqlite;
@@ -1304,6 +1305,14 @@ pub trait Repo: RouteRepo + RepoSyncDomainRaw + WorkerSessionProjectionRepo + Se
     fn sqlite_pool(&self) -> Option<SqlitePool> {
         None
     }
+
+    /// #1722 S1b — the stable identity of the database behind this repo:
+    /// minted into the one-row `database_identity` table on the first open
+    /// after migration 0110 and read back by every later open, so two boots
+    /// on the same file answer the same id. `AppState` carries it as
+    /// `database_id`, next to the per-boot `db_instance_id`. Required, not
+    /// defaulted: a repo without one has no database to name.
+    fn database_id(&self) -> Arc<String>;
 }
 
 // ---------------------------------------------------------------------------

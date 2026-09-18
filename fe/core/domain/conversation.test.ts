@@ -238,7 +238,7 @@ describe('conversationNameFrom', () => {
 describe('track conversations', () => {
   const row = {
     id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant',
-    state: 'starting' as const, updatedAt: 7,
+    state: 'starting' as const, updatedAt: 7, lastTurnCompletedAt: null,
   };
 
   it('decodes a list row into the app\'s own shape', () => {
@@ -249,6 +249,22 @@ describe('track conversations', () => {
       id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant',
       state: 'starting', updatedAt: 7,
     }]);
+  });
+
+  /*
+   * #1722 S1b — `lastTurnCompletedAt` is required (API v9): a row without it
+   * is an older kernel's row and is rejected, while `null` (no turn has
+   * completed) and a number both decode. The domain row does not carry it yet;
+   * the field and its reader land together.
+   */
+  it('requires lastTurnCompletedAt on a list row, null or a number', () => {
+    const schema = trackConversationsOperation('w').responseSchema;
+    const withoutField: Partial<typeof row> = { ...row };
+    delete withoutField.lastTurnCompletedAt;
+    expect(schema.safeParse([withoutField]).success).toBe(false);
+    expect(schema.safeParse([{ ...row, lastTurnCompletedAt: null }]).success).toBe(true);
+    expect(schema.safeParse([{ ...row, lastTurnCompletedAt: 1000 }]).success).toBe(true);
+    expect(schema.safeParse([{ ...row, lastTurnCompletedAt: '1000' }]).success).toBe(false);
   });
 
   /*

@@ -767,6 +767,7 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
             completed_at_ms: None,
+            last_turn_completed_ms: None,
         };
         let mut runtime_alive = CreateTranscriptOnTerminal {
             path: path.clone(),

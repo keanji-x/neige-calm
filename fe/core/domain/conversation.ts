@@ -1033,6 +1033,12 @@ const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.ob
   kind: z.string(),
   state: conversationStateSchema.nullable(),
   updatedAt: z.number(),
+  // #1722 S1b — required and nullable, as the kernel sends it (API v9): the
+  // instant the last non-interrupted turn ended, `null` before any has. An
+  // older kernel's rows lack it and are rejected, which is what the WEB 29
+  // curtain exists for. Decoded here; `toTrackConversation` does not carry it
+  // yet — the domain field and its reader (read receipts) land together.
+  lastTurnCompletedAt: z.number().nullable(),
 });
 
 /**

@@ -537,6 +537,15 @@ pub struct CardRuntimeView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub thread_status: Option<String>,
+    /// #1722 S1b — when the card's last non-interrupted turn ended (the newest
+    /// `turn/completed` transcript row whose status is not `interrupted`), or
+    /// absent when it has none. Optional like `updated_at_ms`: this view is
+    /// persisted inside `card.added` / `card.updated` events, and a required
+    /// field would invalidate every stored snapshot. A reader treats absence
+    /// as "never completed" (never unread), which is the safe direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_turn_completed_ms: Option<i64>,
 }
 
 #[cfg(test)]
@@ -567,6 +576,12 @@ pub struct TrackConversationSummary {
     pub state: Option<WorkerSessionState>,
     /// The session's last update, falling back to the card's own.
     pub updated_at: i64,
+    /// #1722 S1b — when the conversation's last non-interrupted turn ended:
+    /// the newest `turn/completed` transcript row whose status is not
+    /// `interrupted`, or `null` when there is none. `updated_at` keeps its
+    /// meaning (it drives the ordering); this is the instant a read receipt
+    /// compares against. Required and nullable on the wire.
+    pub last_turn_completed_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]

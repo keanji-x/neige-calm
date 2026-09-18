@@ -45,13 +45,15 @@ fn receipt(id: &str) -> Value {
     }}})
 }
 
-async fn all_rows(db: &mut SqliteConnection, table: &str) -> Vec<String> {
+/// The table's column list as a quoted `SELECT` fragment, read from the
+/// schema the connection currently holds.
+async fn columns_of(db: &mut SqliteConnection, table: &str) -> String {
     assert!(matches!(table, "operations" | "worker_sessions"));
     let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
         .fetch_all(&mut *db)
         .await
         .unwrap();
-    let columns = columns
+    columns
         .iter()
         .map(|row| {
             let name: String = row.get("name");
@@ -59,7 +61,16 @@ async fn all_rows(db: &mut SqliteConnection, table: &str) -> Vec<String> {
             format!("\"{name}\"")
         })
         .collect::<Vec<_>>()
-        .join(",");
+        .join(",")
+}
+
+/// Every row of `table` over exactly `columns`. The upgrade test reads the
+/// column list ONCE, on the pre-upgrade schema, and re-uses it after the
+/// upgrade: the claim is that the released columns keep their values, and a
+/// later migration that adds a column (0110's
+/// `worker_sessions.last_turn_completed_ms`) is not a change to any of them.
+async fn all_rows(db: &mut SqliteConnection, table: &str, columns: &str) -> Vec<String> {
+    assert!(matches!(table, "operations" | "worker_sessions"));
     sqlx::query_scalar(&format!(
         "SELECT json_array({columns}) FROM {table} ORDER BY id"
     ))
@@ -118,8 +129,10 @@ async fn isolated_parked_upgrade_preserves_rows_references_and_keyed_fence() {
         references,
         vec![("worker_sessions".into(), "spawn_op_id".into())]
     );
-    let old_operations = all_rows(&mut db, "operations").await;
-    let old_sessions = all_rows(&mut db, "worker_sessions").await;
+    let operation_columns = columns_of(&mut db, "operations").await;
+    let session_columns = columns_of(&mut db, "worker_sessions").await;
+    let old_operations = all_rows(&mut db, "operations", &operation_columns).await;
+    let old_sessions = all_rows(&mut db, "worker_sessions", &session_columns).await;
     // Reproduce the released constraint against a correctly selected owned operation.
     assert!(
         sqlx::query("UPDATE operations SET phase='parked' WHERE id='isolated'")
@@ -128,8 +141,14 @@ async fn isolated_parked_upgrade_preserves_rows_references_and_keyed_fence() {
             .is_err()
     );
     MIGRATOR.run(&mut db).await.unwrap();
-    assert_eq!(all_rows(&mut db, "operations").await, old_operations);
-    assert_eq!(all_rows(&mut db, "worker_sessions").await, old_sessions);
+    assert_eq!(
+        all_rows(&mut db, "operations", &operation_columns).await,
+        old_operations
+    );
+    assert_eq!(
+        all_rows(&mut db, "worker_sessions", &session_columns).await,
+        old_sessions
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
             .fetch_one(&mut db)

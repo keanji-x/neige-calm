@@ -23,7 +23,13 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 async fn fresh_state() -> AppState {
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    state_on("sqlite::memory:").await
+}
+
+/// One simulated boot on the database at `url` — the same `from_parts` path
+/// as `fresh_state`, so two calls on one file are two boots of one database.
+async fn state_on(url: &str) -> AppState {
+    let repo = Arc::new(SqlxRepo::open(url).await.unwrap());
     AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -81,6 +87,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         "supervisorControlVersion",
         "buildSha",
         "dbInstanceId",
+        "databaseId",
+        "nowMs",
     ] {
         assert!(obj.contains_key(key), "missing field: {key}");
     }
@@ -103,6 +111,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert!(v["supervisorControlVersion"].is_number());
     assert!(v["buildSha"].is_null() || v["buildSha"].is_string());
     assert!(v["dbInstanceId"].is_string());
+    assert!(v["databaseId"].is_string());
+    assert!(v["nowMs"].is_i64());
 
     // `dbInstanceId` is a UUID v4 (the 13th hex char is `4`, the 17th
     // is one of `8/9/a/b`). Cheap shape check — the per-process
@@ -131,8 +141,9 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "8",
-        "#1625 P3's steer endpoint needs a new API capability revision"
+        "9",
+        "#1722 S1b: conversation rows gained the required `lastTurnCompletedAt` \
+         and this response gained `databaseId` / `nowMs`"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -163,12 +174,15 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // #1625 P3: 27 -> 28 so a cached bundle whose event union does not know
     // `harness.queue.changed` / `restored` gets the refresh curtain instead of
     // skipping the frame and showing a restored entry as sent.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 28);
+    // #1722 S1b: 28 -> 29 so a bundle whose conversation-row parser requires
+    // `lastTurnCompletedAt` is held behind the curtain until its kernel
+    // sends it, and a v28 bundle keying receipts on `dbInstanceId` refreshes.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 29);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 28);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 29);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -334,5 +348,105 @@ async fn web_compat_floor_excludes_bundles_that_cannot_decode_a_restored_queue_e
     assert!(
         floor > LAST_FLOOR_WITHOUT_RESTORED,
         "minWebCompatVersion must exclude bundles that reject `restored`, got {floor}"
+    );
+}
+
+/// #1722 S1b — the last floor whose bundles did not require
+/// `lastTurnCompletedAt` on a conversation row and keyed read receipts on the
+/// per-boot `dbInstanceId`. Historical literal, same discipline as the three
+/// above: do not move it with `WEB_COMPAT_VERSION`.
+#[tokio::test]
+async fn web_compat_floor_excludes_bundles_without_last_turn_completed_at() {
+    const LAST_FLOOR_WITHOUT_LAST_TURN_COMPLETED_AT: u64 = 28;
+
+    let state = fresh_state().await;
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    let floor = v["minWebCompatVersion"]
+        .as_u64()
+        .expect("minWebCompatVersion is a number");
+    assert!(
+        floor > LAST_FLOOR_WITHOUT_LAST_TURN_COMPLETED_AT,
+        "minWebCompatVersion must exclude bundles without `lastTurnCompletedAt`, got {floor}"
+    );
+}
+
+async fn version_body(state: AppState) -> serde_json::Value {
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// #1722 S1b — `databaseId` names the database and `dbInstanceId` names the
+/// boot: two boots of one sqlite file agree on the first and differ on the
+/// second. A mint-per-boot identity (`INSERT OR REPLACE`, or a uuid drawn in
+/// `AppState` instead of read from the repo) turns this red.
+#[tokio::test]
+async fn database_id_survives_reboot() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("reboot.db").display()
+    );
+
+    let before = calm_server::model::now_ms();
+    let boot_a = version_body(state_on(&url).await).await;
+    let boot_b = version_body(state_on(&url).await).await;
+    let after = calm_server::model::now_ms();
+
+    let database_a = boot_a["databaseId"].as_str().unwrap();
+    let database_b = boot_b["databaseId"].as_str().unwrap();
+    uuid::Uuid::parse_str(database_a).expect("databaseId is a uuid");
+    assert_eq!(
+        database_a, database_b,
+        "databaseId must survive a reboot of the same database"
+    );
+    assert_ne!(
+        boot_a["dbInstanceId"], boot_b["dbInstanceId"],
+        "dbInstanceId must still change per boot"
+    );
+    assert_ne!(
+        database_a,
+        boot_a["dbInstanceId"].as_str().unwrap(),
+        "the two ids are different facts and must not be the same value"
+    );
+
+    // Another database is another identity.
+    let other = version_body(fresh_state().await).await;
+    assert_ne!(other["databaseId"].as_str().unwrap(), database_a);
+
+    // `nowMs` is the server clock at response time.
+    let now = boot_a["nowMs"].as_i64().unwrap();
+    assert!(
+        (before..=after).contains(&now),
+        "nowMs {now} outside [{before}, {after}]"
     );
 }

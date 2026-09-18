@@ -105,6 +105,8 @@ pub struct RouteState {
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
+    /// See [`AppState::database_id`].
+    pub database_id: Arc<String>,
     pub write: WriteContext,
     pub operation_runtime: Arc<OperationRuntime>,
     pub harness: HarnessRegistry,
@@ -272,6 +274,8 @@ pub struct BootState {
     pub plugin: Arc<PluginHost>,
     pub codex: Arc<CodexClient>,
     pub db_instance_id: Arc<String>,
+    /// See [`AppState::database_id`].
+    pub database_id: Arc<String>,
     /// #1635 S4 — see [`RouteState::templates`].
     pub templates: &'static crate::templates::TemplateRoster,
     pub card_role_cache: CardRoleCache,
@@ -308,6 +312,7 @@ impl BootState {
             events: self.events.clone(),
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
+            database_id: self.database_id.clone(),
             write: write.clone(),
             operation_runtime: self.operation_runtime.clone(),
             harness: self.harness.clone(),
@@ -353,6 +358,7 @@ impl BootState {
             plugin: self.plugin,
             codex: self.codex,
             db_instance_id: self.db_instance_id,
+            database_id: self.database_id,
             ws_replay_cap: crate::ws::events::ws_replay_max_events_from_env(),
             card_role_cache: self.card_role_cache,
             track_area_cache: self.track_area_cache,
@@ -428,6 +434,17 @@ pub struct AppState {
     /// process = a new instance id, full stop. `Arc<String>` so the value
     /// is cheap to clone across handler dispatches.
     pub db_instance_id: Arc<String>,
+    /// #1722 S1b — the stable identity of the database itself, served by
+    /// `/api/version` as `databaseId` next to `dbInstanceId`.
+    ///
+    /// The complement of the field above: `db_instance_id` names the *boot*
+    /// (fresh per process, so a client can discard state that belongs to a
+    /// replaced database), this names the *database* (minted once into the
+    /// one-row `database_identity` table by migration 0110's first open and
+    /// read back by every later open, so a client can keep per-database state
+    /// — read receipts, baselines — across restarts). Read from the repo,
+    /// which minted or read it in `SqlxRepo::open`; never generated here.
+    pub database_id: Arc<String>,
     /// #854 slice 1 — ceiling on the number of rows a single WS replay may
     /// stream (see `ws::events::run_replay` for the over-cap routing).
     /// Resolved ONCE at construction from `NEIGE_WS_REPLAY_MAX_EVENTS`
@@ -1039,6 +1056,7 @@ impl AppState {
             shared_codex_appserver.clone(),
             events.clone(),
         );
+        let database_id = repo.database_id();
         BootState {
             repo,
             // #1147 S2 — `from_parts` is the test / replay hatch. A per-instance
@@ -1059,6 +1077,9 @@ impl AppState {
             // which is the right behavior: two tests sharing one binary
             // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
+            // ... while the database identity is the repo's: two states over
+            // one sqlite file share it, exactly like two real boots would.
+            database_id,
             templates: crate::templates::TemplateRoster::builtin(),
             card_role_cache,
             track_area_cache,
@@ -1654,6 +1675,7 @@ impl AppState {
             shared_codex_appserver.clone(),
             events.clone(),
         );
+        let database_id = repo.database_id();
         let state = BootState {
             repo,
             workspace_root,
@@ -1670,6 +1692,9 @@ impl AppState {
             // (from `AppState::boot`), so this is the boot-scoped id the rest
             // of the server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
+            // #1722 S1b — the database's own id, minted or read back by
+            // `SqlxRepo::open`; see the `database_id` field doc.
+            database_id,
             // #1635 S4/S5 — the `templates` parameter, built by `Self::boot`.
             templates,
             card_role_cache,

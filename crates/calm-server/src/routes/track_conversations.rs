@@ -52,6 +52,7 @@ use crate::routes::terminal_cards::{
 };
 use crate::session_projection_repo::WorkerSessionState;
 use crate::state::{AppState, RouteState, WorkerState};
+use calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY;
 
 /// The `kind` every row of this list carries.
 const TRACK_CONVERSATION_KIND: &str = "track-assistant";
@@ -362,12 +363,19 @@ async fn load_track_conversation_summaries(
     let pool = w.repo.sqlite_pool().ok_or_else(|| {
         CalmError::Internal("track conversations require a sqlite-backed repo".into())
     })?;
-    let rows = sqlx::query_as::<_, TrackConversationRow>(
+    // #1722 S1b — `last_turn_completed_at` is the same correlated subquery the
+    // card-runtime projection evaluates for `CardRuntimeView.last_turn_completed_ms`
+    // (`LAST_TURN_COMPLETED_MS_SUBQUERY`, bound to this statement's `c`), so the
+    // planner row the client injects from the card and the assistant rows this
+    // list serves read one definition of "the last turn ended". It is a new
+    // column, not a new meaning for `updated_at`: that one still orders the list.
+    let sql = format!(
         r#"SELECT c.id                                   AS id,
                   c.track_id                              AS track_id,
                   c.title                                AS title,
                   ws.state                               AS state,
-                  COALESCE(ws.updated_at_ms, c.updated_at) AS updated_at
+                  COALESCE(ws.updated_at_ms, c.updated_at) AS updated_at,
+                  {LAST_TURN_COMPLETED_MS_SUBQUERY}       AS last_turn_completed_at
              FROM cards c
              LEFT JOIN worker_sessions ws
                     ON ws.id = (SELECT inner_ws.id
@@ -383,14 +391,15 @@ async fn load_track_conversation_summaries(
               AND c.kind = 'codex'
               AND json_extract(c.payload, '$.harness_profile') = ?3
               AND (?4 IS NULL OR c.id = ?4)
-            ORDER BY updated_at DESC, c.id"#,
-    )
-    .bind(track_id)
-    .bind(CardRole::Assistant.as_db_str())
-    .bind(ASSISTANT_HARNESS_PROFILE_MARKER)
-    .bind(card_id)
-    .fetch_all(&pool)
-    .await?;
+            ORDER BY updated_at DESC, c.id"#
+    );
+    let rows = sqlx::query_as::<_, TrackConversationRow>(&sql)
+        .bind(track_id)
+        .bind(CardRole::Assistant.as_db_str())
+        .bind(ASSISTANT_HARNESS_PROFILE_MARKER)
+        .bind(card_id)
+        .fetch_all(&pool)
+        .await?;
     rows.into_iter()
         .map(TrackConversationSummary::try_from)
         .collect()
@@ -403,6 +412,7 @@ struct TrackConversationRow {
     title: Option<String>,
     state: Option<String>,
     updated_at: i64,
+    last_turn_completed_at: Option<i64>,
 }
 
 impl TryFrom<TrackConversationRow> for TrackConversationSummary {
@@ -421,6 +431,7 @@ impl TryFrom<TrackConversationRow> for TrackConversationSummary {
             kind: TRACK_CONVERSATION_KIND.to_string(),
             state,
             updated_at: row.updated_at,
+            last_turn_completed_at: row.last_turn_completed_at,
         })
     }
 }

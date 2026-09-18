@@ -509,6 +509,9 @@ const serverVersionSchema = z.object({
   minWebCompatVersion: z.number(),
   syncEventVersion: z.number(),
   dbInstanceId: z.string(),
+  // #1722 S1b — decoded, not yet read; see `ServerVersionInfo`.
+  databaseId: z.string().optional(),
+  nowMs: z.number().optional(),
 });
 
 export function serverVersionOperation(): ApiOperation<ServerVersionInfo> {

@@ -7168,6 +7168,14 @@
           "kind": {
             "$ref": "#/components/schemas/WorkerSessionKind"
           },
+          "last_turn_completed_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "#1722 S1b — when the card's last non-interrupted turn ended (the newest\n`turn/completed` transcript row whose status is not `interrupted`), or\nabsent when it has none. Optional like `updated_at_ms`: this view is\npersisted inside `card.added` / `card.updated` events, and a required\nfield would invalidate every stored snapshot. A reader treats absence\nas \"never completed\" (never unread), which is the safe direction."
+          },
           "provider": {
             "oneOf": [
               {
@@ -10666,6 +10674,14 @@
             "type": "string",
             "description": "Always `\"track-assistant\"`, derived from the card's persisted marker."
           },
+          "lastTurnCompletedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "#1722 S1b — when the conversation's last non-interrupted turn ended:\nthe newest `turn/completed` transcript row whose status is not\n`interrupted`, or `null` when there is none. `updated_at` keeps its\nmeaning (it drives the ordering); this is the instant a read receipt\ncompares against. Required and nullable on the wire."
+          },
           "state": {
             "oneOf": [
               {
@@ -11727,7 +11743,9 @@
           "webCompatVersion",
           "minWebCompatVersion",
           "supervisorControlVersion",
-          "dbInstanceId"
+          "dbInstanceId",
+          "databaseId",
+          "nowMs"
         ],
         "properties": {
           "apiVersion": {
@@ -11748,6 +11766,10 @@
             "type": "boolean",
             "description": "First-message model selection is part of atomic conversation creation."
           },
+          "databaseId": {
+            "type": "string",
+            "description": "#1722 S1b — the database's stable id: minted once into the one-row\n`database_identity` table (migration 0110) and read back on every\nboot, so it survives restarts where `db_instance_id` does not."
+          },
           "dbInstanceId": {
             "type": "string",
             "description": "UUID v4 minted once per process boot. See module doc."
@@ -11762,6 +11784,11 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "nowMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "#1722 S1b — the server clock (unix ms) when this response was built."
           },
           "pluginMcpProtocolVersion": {
             "type": "string"

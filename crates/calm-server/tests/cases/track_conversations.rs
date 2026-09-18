@@ -801,6 +801,93 @@ async fn the_list_returns_assistant_conversations_and_nothing_else() {
     b.shutdown_harnesses().await;
 }
 
+/// #1722 S1b — `lastTurnCompletedAt` is the newest `turn/completed` transcript
+/// row that is not an interrupt, and `null` when the conversation has none.
+///
+/// The rows are written through `harness_turn_outcome_put`, the production
+/// writer, so the column and the `params` shape it reads (`status` at the turn
+/// object's root) are the ones the run loop persists. Their `created_at_ms`
+/// are then pinned to known instants — the writer stamps the clock, and the
+/// assertion needs the interrupt to be strictly later than the completion so
+/// that a subquery which forgot to exclude interrupts returns a different
+/// number, not the same one by coincidence of timing. `updatedAt` keeps its
+/// own meaning and is not asserted here.
+#[tokio::test]
+async fn the_list_carries_the_last_non_interrupted_turn_completion() {
+    let b = boot().await;
+    let track_id = b.create_track("last-turn-completed").await;
+
+    let (status, with_turns) = b.create_conversation(&track_id, "idem-lt-a", "first").await;
+    assert_eq!(status, StatusCode::CREATED, "body={with_turns}");
+    let (status, without_turns) = b
+        .create_conversation(&track_id, "idem-lt-b", "second")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={without_turns}");
+    let with_turns = with_turns["id"].as_str().unwrap().to_string();
+    let without_turns = without_turns["id"].as_str().unwrap().to_string();
+
+    let (status, rows) = b.list_conversations(&track_id).await;
+    assert_eq!(status, StatusCode::OK);
+    for row in rows.as_array().unwrap() {
+        assert!(
+            row["lastTurnCompletedAt"].is_null(),
+            "no turn has completed yet, the field must be present and null: {row}"
+        );
+    }
+
+    let session_id: String = sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+        .bind(&with_turns)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let mut outcome_ids = Vec::new();
+    for (turn_id, status) in [("turn-1", "completed"), ("turn-2", "interrupted")] {
+        let params = json!({ "id": turn_id, "status": status }).to_string();
+        outcome_ids.push(
+            b.repo
+                .harness_turn_outcome_put(
+                    &session_id,
+                    &with_turns,
+                    &track_id,
+                    "thread-lt",
+                    turn_id,
+                    &params,
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let (completed, interrupted) = (outcome_ids[0], outcome_ids[1]);
+    sqlx::query(
+        "UPDATE harness_items SET created_at_ms = CASE id WHEN ?1 THEN 1000 WHEN ?2 THEN 2000 END \
+         WHERE id IN (?1, ?2)",
+    )
+    .bind(completed)
+    .bind(interrupted)
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+
+    let (status, rows) = b.list_conversations(&track_id).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = rows.as_array().unwrap();
+    let row_of = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing from {rows:?}"))
+    };
+    assert_eq!(
+        row_of(&with_turns)["lastTurnCompletedAt"],
+        json!(1000),
+        "the completed turn's instant, not the later interrupt's: {rows:?}"
+    );
+    assert!(
+        row_of(&without_turns)["lastTurnCompletedAt"].is_null(),
+        "a conversation without turns stays null: {rows:?}"
+    );
+    b.shutdown_harnesses().await;
+}
+
 /// `POST /api/cards/{id}/planner/reset` restarts an assistant under the ASSISTANT
 /// profile.
 ///

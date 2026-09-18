@@ -56,4 +56,13 @@ pub struct WorkerSessionProjection {
     pub created_at_ms: TimestampMs,
     pub updated_at_ms: TimestampMs,
     pub completed_at_ms: Option<TimestampMs>,
+    /// #1722 S1b — when the card's last non-interrupted turn ended, read from
+    /// the transcript table by the projection SELECTs (one correlated
+    /// subquery, `calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY`);
+    /// `None` when the card has no completed turn. Optional on the wire like
+    /// `CardRuntimeView::updated_at_ms`: projections serialized before 0110
+    /// (operation outputs) omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_turn_completed_ms: Option<TimestampMs>,
 }

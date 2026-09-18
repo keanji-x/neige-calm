@@ -64,13 +64,13 @@ const HISTORY_PATH = '/harness/items';
 
 type Row = {
   id: string; trackId: string; title: string | null; kind: string;
-  state: string | null; updatedAt: number;
+  state: string | null; updatedAt: number; lastTurnCompletedAt: number | null;
 };
 
 function assistantRow(overrides: Partial<Row> = {}): Row {
   return {
     id: ASSISTANT_CARD.id, trackId: 'w1', title: null, kind: 'track-assistant',
-    state: 'idle', updatedAt: 30, ...overrides,
+    state: 'idle', updatedAt: 30, lastTurnCompletedAt: null, ...overrides,
   };
 }
 
@@ -225,6 +225,7 @@ const creates = (requests: readonly ApiRequest[], path: string) =>
 const derivedRow = (trackId: string, request: ApiRequest): Row => ({
   id: trackConversationCardId(trackId, request.headers?.['Idempotency-Key'] ?? ''),
   trackId, title: null, kind: 'track-assistant', state: null, updatedAt: 99,
+  lastTurnCompletedAt: null,
 });
 
 /* The open drawer, reached by the control only it has rather than by its name.

@@ -354,6 +354,21 @@ mod tests {
         let baseline = routes.clone();
         let app = super::mount_frontends(routes, Some(web.path()), Some(fe.path()));
 
+        // `/api/version` carries `nowMs`, the server clock at response time
+        // (#1722 S1b), so two reads of the same route differ there by design;
+        // it is erased before the byte comparison, and only there.
+        fn without_now_ms(
+            uri: &str,
+            (status, body): (StatusCode, Vec<u8>),
+        ) -> (StatusCode, Vec<u8>) {
+            if uri != "/api/version" {
+                return (status, body);
+            }
+            let mut json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(json["nowMs"].is_i64(), "{uri} must carry nowMs: {json}");
+            json.as_object_mut().unwrap().remove("nowMs");
+            (status, serde_json::to_vec(&json).unwrap())
+        }
         for (method, uri) in [
             (Method::GET, "/api/version"),
             (Method::GET, "/api/openapi.json"),
@@ -361,8 +376,14 @@ mod tests {
             (Method::POST, "/internal/claude/hook"),
         ] {
             assert_eq!(
-                response_body_with_method(app.clone(), method.clone(), uri).await,
-                response_body_with_method(baseline.clone(), method, uri).await,
+                without_now_ms(
+                    uri,
+                    response_body_with_method(app.clone(), method.clone(), uri).await
+                ),
+                without_now_ms(
+                    uri,
+                    response_body_with_method(baseline.clone(), method, uri).await
+                ),
                 "mounting the frontends changed the real {uri} route",
             );
         }

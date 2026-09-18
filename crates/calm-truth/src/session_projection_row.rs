@@ -8,33 +8,70 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::HashMap;
 
+/// #1722 S1b — the one spelling of "when did this card's last turn end".
+///
+/// A correlated subquery over the transcript table: the newest
+/// `turn/completed` row for the card whose outcome is not `interrupted`
+/// (`params` is the turn object; `status` sits at its root, so a `failed`
+/// turn counts as an ending and an interrupt does not). `c` is the `cards`
+/// alias of the enclosing statement — every embedding SELECT below binds it,
+/// and so does the conversation list in `calm-server`, which embeds this
+/// constant so the two surfaces can never disagree about the instant.
+///
+/// It is the transcript row, not `worker_sessions.last_turn_completed_ms`:
+/// the feeder stamps that column for stale turns too, while the transcript
+/// row is written only for the turn that really ended (§4.7 of the design).
+/// The `(card_id, method, created_at_ms)` index of migration 0110 serves it.
+///
+/// Spelled once as a macro so that `concat!` can inline it into the three
+/// `const` SELECTs; the `pub const` is the same literal for `format!` users.
+macro_rules! last_turn_completed_ms_subquery {
+    () => {
+        "(SELECT MAX(h.created_at_ms) FROM harness_items h \
+           WHERE h.card_id = c.id AND h.method = 'turn/completed' \
+             AND COALESCE(json_extract(h.params, '$.status'), '') <> 'interrupted')"
+    };
+}
+
+pub const LAST_TURN_COMPLETED_MS_SUBQUERY: &str = last_turn_completed_ms_subquery!();
+
+/// The projection column list, shared by the three SELECTs below so a column
+/// added to one is added to all — `card_runtime_from_ws_join_row` reads every
+/// column by name and fails on a missing one.
+macro_rules! ws_card_runtime_select {
+    ($tail:literal) => {
+        concat!(
+            "SELECT ws.id, ws.track_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,\n",
+            "                  ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,\n",
+            "                  ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,\n",
+            "                  ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,\n",
+            "                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id,\n",
+            "                  ws.last_activity_ms, ws.last_thread_status, ws.created_at_ms,\n",
+            "                  ws.updated_at_ms, ws.completed_at_ms,\n",
+            "                  ",
+            last_turn_completed_ms_subquery!(),
+            " AS last_turn_completed_ms,\n",
+            "                  c.id AS card_id\n",
+            $tail
+        )
+    };
+}
+
 /// Projection semantics: the card's current worker-session pointer is the winner.
-pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = r#"SELECT ws.id, ws.track_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
-                  ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
-                  ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
-                  ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
-                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id,
-                  ws.last_activity_ms, ws.last_thread_status, ws.created_at_ms,
-                  ws.updated_at_ms, ws.completed_at_ms,
-                  c.id AS card_id
-           FROM worker_sessions ws
+pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = ws_card_runtime_select!(
+    "           FROM worker_sessions ws
            JOIN cards c ON c.session_id = ws.id
            WHERE c.id IN ({card_id_bindings})
              AND ws.state != 'superseded'
-           ORDER BY c.id"#;
+           ORDER BY c.id"
+);
 
 const PROJECTABLE_RUNTIMES_FOR_CARDS_BINDINGS: &str = "{card_id_bindings}";
 
-pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.track_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
-                  ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
-                  ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
-                  ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
-                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id,
-                  ws.last_activity_ms, ws.last_thread_status, ws.created_at_ms,
-                  ws.updated_at_ms, ws.completed_at_ms,
-                  c.id AS card_id
-           FROM worker_sessions ws
-           JOIN cards c ON c.session_id = ws.id"#;
+pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = ws_card_runtime_select!(
+    "           FROM worker_sessions ws
+           JOIN cards c ON c.session_id = ws.id"
+);
 
 /// The **one** definition of "which runtime is this card's ACTIVE one", as a
 /// single SQL SELECT that yields exactly that runtime's id (or no row).
@@ -59,16 +96,10 @@ pub const ACTIVE_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id
             ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
             LIMIT 1"#;
 
-pub(crate) const WS_CARD_KEYED_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.track_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
-                  ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
-                  ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
-                  ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
-                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id,
-                  ws.last_activity_ms, ws.last_thread_status, ws.created_at_ms,
-                  ws.updated_at_ms, ws.completed_at_ms,
-                  c.id AS card_id
-           FROM worker_sessions ws
-           JOIN cards c ON c.id = ws.card_id"#;
+pub(crate) const WS_CARD_KEYED_RUNTIME_SELECT: &str = ws_card_runtime_select!(
+    "           FROM worker_sessions ws
+           JOIN cards c ON c.id = ws.card_id"
+);
 
 pub(crate) fn projectable_runtimes_for_cards_query<'a>(
     card_ids: &'a [CardId],
@@ -97,9 +128,13 @@ pub(crate) fn projectable_runtimes_for_cards_from_rows(
     Ok(out)
 }
 
+/// `last_turn_completed_ms` is a column of the projection row, not of
+/// `WorkerSession` (#1722 S1b): the join row carries the
+/// [`LAST_TURN_COMPLETED_MS_SUBQUERY`] result and hands it in here.
 pub(crate) fn card_runtime_from_session(
     ws: &WorkerSession,
     card_id: String,
+    last_turn_completed_ms: Option<i64>,
 ) -> Result<WorkerSessionProjection> {
     let kind = runtime_kind_from_session_identity(ws.provider, ws.contract)?;
     Ok(WorkerSessionProjection {
@@ -116,6 +151,7 @@ pub(crate) fn card_runtime_from_session(
         created_at_ms: ws.created_at_ms,
         updated_at_ms: ws.updated_at_ms,
         completed_at_ms: ws.completed_at_ms,
+        last_turn_completed_ms,
     })
 }
 
@@ -125,7 +161,10 @@ pub(crate) fn card_runtime_from_ws_join_row(row: &SqliteRow) -> Result<WorkerSes
             message: err.to_string(),
         })?;
     let card_id: String = row.try_get("card_id")?;
-    card_runtime_from_session(&ws, card_id)
+    // `try_get`, not `get`-with-default: a SELECT that forgot the column
+    // must fail here, not project "no completed turn" for every card.
+    let last_turn_completed_ms: Option<i64> = row.try_get("last_turn_completed_ms")?;
+    card_runtime_from_session(&ws, card_id, last_turn_completed_ms)
 }
 
 fn runtime_kind_from_session_identity(
@@ -230,7 +269,25 @@ mod tests {
             created_at_ms: 10,
             updated_at_ms: 20,
             completed_at_ms: Some(30),
+            last_turn_completed_ms: Some(40),
         }
+    }
+
+    /// The three SELECTs and the exported constant all spell the subquery
+    /// from one macro; this pins that no copy drifts and that every SELECT
+    /// carries the column `card_runtime_from_ws_join_row` reads.
+    #[test]
+    fn every_projection_select_carries_the_last_turn_completed_column() {
+        for sql in [
+            PROJECTABLE_RUNTIMES_FOR_CARDS_SQL,
+            WS_BACKED_CARD_RUNTIME_SELECT,
+            WS_CARD_KEYED_RUNTIME_SELECT,
+        ] {
+            assert!(sql.contains(LAST_TURN_COMPLETED_MS_SUBQUERY), "{sql}");
+            assert!(sql.contains(" AS last_turn_completed_ms,"), "{sql}");
+            assert!(sql.contains("c.id AS card_id"), "{sql}");
+        }
+        assert!(LAST_TURN_COMPLETED_MS_SUBQUERY.contains("<> 'interrupted'"));
     }
 
     #[test]
@@ -242,7 +299,7 @@ mod tests {
         );
 
         assert_eq!(
-            card_runtime_from_session(&ws, "card-1".into()).unwrap(),
+            card_runtime_from_session(&ws, "card-1".into(), Some(40)).unwrap(),
             expected_runtime(
                 WorkerSessionKind::Terminal,
                 None,
@@ -260,7 +317,7 @@ mod tests {
         );
 
         assert_eq!(
-            card_runtime_from_session(&ws, "card-1".into()).unwrap(),
+            card_runtime_from_session(&ws, "card-1".into(), Some(40)).unwrap(),
             expected_runtime(
                 WorkerSessionKind::CodexCard,
                 Some(AgentProvider::Codex),
@@ -278,7 +335,7 @@ mod tests {
         );
 
         assert_eq!(
-            card_runtime_from_session(&ws, "card-1".into()).unwrap(),
+            card_runtime_from_session(&ws, "card-1".into(), Some(40)).unwrap(),
             expected_runtime(
                 WorkerSessionKind::SharedPlanner,
                 Some(AgentProvider::Codex),
@@ -296,7 +353,7 @@ mod tests {
         );
 
         assert_eq!(
-            card_runtime_from_session(&ws, "card-1".into()).unwrap(),
+            card_runtime_from_session(&ws, "card-1".into(), Some(40)).unwrap(),
             expected_runtime(
                 WorkerSessionKind::ClaudeCard,
                 Some(AgentProvider::Claude),
@@ -312,7 +369,7 @@ mod tests {
             (WorkerProviderKind::Terminal, WorkerContract::Planner),
         ] {
             let ws = worker_session(provider, contract, WorkerSessionState::Running);
-            let err = card_runtime_from_session(&ws, "card-1".into()).unwrap_err();
+            let err = card_runtime_from_session(&ws, "card-1".into(), None).unwrap_err();
             let expected = format!(
                 "unmappable session identity (provider={provider:?}, contract={contract:?})"
             );

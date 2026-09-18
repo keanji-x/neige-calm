@@ -532,6 +532,43 @@
 #   This ledger does not admit any future occurrence; subsequent raises require
 #   their own closed enumeration. The commit lists each added source line.
 #
+#   A raise of exactly +4, taken ONCE by #1722 S1b (migration 0110: the
+#   transcript index, and the `last_turn_completed` column the conversation
+#   list and the card-runtime projection compute from the transcript table).
+#   Same shape: PER-FILE COUNTS, a closed list, not a criterion. The "before"
+#   column is measured against `f397061d2` (`origin/main` when the slice was
+#   cut):
+#
+#     crates/calm-truth/migrations/0110_database_identity_and_transcript_index.sql
+#                                                                     0 ->   1
+#     crates/calm-truth/src/session_projection_row.rs                 0 ->   1
+#     crates/calm-truth/src/db/sqlite/transcript_index_tests.rs       0 ->   1
+#     crates/calm-server/tests/cases/track_conversations.rs           1 ->   2
+#                                                          net      284 -> 288
+#
+#   Every one of the 4 is the real SQLite table name inside a SQL statement,
+#   and there is no other spelling SQLite accepts:
+#     * the migration's `CREATE INDEX ... ON harness_items(...)` — the index
+#       itself is named `idx_transcript_card_method_created_at`;
+#     * the ONE correlated subquery in `session_projection_row.rs`
+#       (`last_turn_completed_ms_subquery!`), spelled once and inlined by
+#       `concat!` into the three projection SELECTs and exported as
+#       `LAST_TURN_COMPLETED_MS_SUBQUERY` for the conversation list — which
+#       therefore costs zero in `routes/track_conversations.rs`;
+#     * the E1-shaped `EXPLAIN QUERY PLAN` statement in the plan test (the
+#       sibling test for the subquery embeds the constant and costs zero);
+#     * one fixture `UPDATE harness_items SET created_at_ms ...` that pins
+#       the two outcome rows to known instants after the production writer
+#       (`harness_turn_outcome_put`, which does not match this pattern) has
+#       stamped the clock.
+#   Everything the slice named was named in the target vocabulary and cost
+#   zero: the index, the test module `transcript_index_tests`, the
+#   `LAST_TURN_COMPLETED_MS_*` constant and macro, every tracing key and every
+#   sentence of prose says "transcript table" / "transcript row". `fe` does
+#   not move: the regenerated `wire.ts` / `openapi.json` gain fields named
+#   `last_turn_completed_*` / `databaseId` / `nowMs`. If a later commit needs
+#   any of these cells higher, that is a NEW raise needing its own argument.
+#
 # WHAT A TEXT COUNT CANNOT SEE — #1445, AND WHY THE ANSWER IS A RAISE
 #
 #   This gate counts TEXT. It therefore cannot see a retiring word that is

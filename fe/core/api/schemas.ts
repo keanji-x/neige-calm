@@ -255,6 +255,10 @@ export const cardRuntimeViewSchema = z.object({
   session_id: z.string().optional(),
   source: z.string().optional(),
   thread_status: z.string().optional(),
+  // #1722 S1b — when the card's last non-interrupted turn ended. Optional
+  // like `updated_at_ms`: persisted Card snapshots and cards without a
+  // completed turn omit it.
+  last_turn_completed_ms: z.number().optional(),
 });
 export type CardRuntimeView = z.infer<typeof cardRuntimeViewSchema>;
 

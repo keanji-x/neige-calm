@@ -115,7 +115,16 @@ export type CardRole = "worker" | "planner" | "reportcard" | "assistant";
  * result. Future cleanup (#581 item 4) will remove the legacy payload-key
  * projection; this typed view is the forward-compatible reader path.
  */
-export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKind, status: WorkerSessionState, updated_at_ms?: number, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, };
+export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKind, status: WorkerSessionState, updated_at_ms?: number, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, 
+/**
+ * #1722 S1b — when the card's last non-interrupted turn ended (the newest
+ * `turn/completed` transcript row whose status is not `interrupted`), or
+ * absent when it has none. Optional like `updated_at_ms`: this view is
+ * persisted inside `card.added` / `card.updated` events, and a required
+ * field would invalidate every stored snapshot. A reader treats absence
+ * as "never completed" (never unread), which is the safe direction.
+ */
+last_turn_completed_ms?: number, };
 
 /**
  * Per-channel verdict recorded on a `review.round`.
@@ -664,7 +673,15 @@ state: WorkerSessionState | null,
 /**
  * The session's last update, falling back to the card's own.
  */
-updatedAt: number, };
+updatedAt: number, 
+/**
+ * #1722 S1b — when the conversation's last non-interrupted turn ended:
+ * the newest `turn/completed` transcript row whose status is not
+ * `interrupted`, or `null` when there is none. `updated_at` keeps its
+ * meaning (it drives the ordering); this is the instant a read receipt
+ * compares against. Required and nullable on the wire.
+ */
+lastTurnCompletedAt: number | null, };
 
 export type TrackFsCardMeta = { created_at: number, deletable: boolean, id: CardId, kind: string, role: CardRole, sort: number, updated_at: number, };
 
@@ -1011,7 +1028,16 @@ export type WorkerSessionId = string;
 
 export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec";
 
-export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, };
+export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, 
+/**
+ * #1722 S1b — when the card's last non-interrupted turn ended, read from
+ * the transcript table by the projection SELECTs (one correlated
+ * subquery, `calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY`);
+ * `None` when the card has no completed turn. Optional on the wire like
+ * `CardRuntimeView::updated_at_ms`: projections serialized before 0110
+ * (operation outputs) omit it.
+ */
+last_turn_completed_ms?: number, };
 
 /**
  * Session state machine column (`worker_sessions.state`, issue #679 §1).
