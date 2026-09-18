@@ -119,7 +119,7 @@
   # tabulated a second time at the platform-independent tier
   # (`fe/core/domain/conversation.test.ts`, `describe('kernelQueuesInput')`), which is not cited
   # here because a row declares one `test_tier` and that suite is not jsdom.
-  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:1408-1452;
+  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:1412-1456;
     fe/web/src/app/router/track-conversation.test.tsx:660-744,860-879
   owner_slice: app/router
   intentional_omission: false

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { HarnessPhaseTag } from '../../../../core/api/generated/wire.js';
-import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
+import { HARNESS_ITEMS_PAGE_LIMIT as TRANSCRIPT_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { queryKeys } from '../providers/queries.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
@@ -30,6 +30,10 @@ const PLANNER_RUN_IDLE = {
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
+}
+
+function transcriptQueryKey() {
+  return queryKeys.harnessItems(CARD.id);
 }
 
 function harnessRows(count: number) {
@@ -606,7 +610,7 @@ describe('planner conversation regressions', () => {
     /* The next poll completes the running call: same `item_uuid`, so the same
        row and the same group — still open, still three. */
     rows = [...rows, command(5, 'command-3', 'item/completed', { command: 'cargo build', exitCode: 0, durationMs: 4_300 })];
-    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.harnessItems(CARD.id) }); });
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
     await screen.findByText('4.3s');
     expect(screen.getByRole('group', { name: '3 tool calls' })).toBe(group);
     expect(header.getAttribute('aria-expanded')).toBe('true');
@@ -617,7 +621,7 @@ describe('planner conversation regressions', () => {
   });
 
   /*
-   * The page boundary is the route's own — `HARNESS_ITEMS_PAGE_LIMIT` rows,
+   * The page boundary is the route's own — `TRANSCRIPT_PAGE_LIMIT` rows,
    * cut wherever the count says — and it can fall inside a run of calls. The
    * first page then shows the run's tail as a group; *Load earlier* must
    * extend that group rather than replace it: the reader's open group and the
@@ -636,7 +640,7 @@ describe('planner conversation regressions', () => {
     const firstPage = [
       command(101, 'command-101', 'item/completed', { command: 'npm test', exitCode: 1, aggregatedOutput: 'error: no test specified\n' }),
       command(102, 'command-102', 'item/completed', { command: 'pwd', exitCode: 0, durationMs: 12 }),
-      ...Array.from({ length: HARNESS_ITEMS_PAGE_LIMIT - 2 }, (_, index) => reply(103 + index, `reply ${103 + index}`)),
+      ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, index) => reply(103 + index, `reply ${103 + index}`)),
     ];
     /* The page before it ends with the same run's first two calls. */
     const earlierPage = [
@@ -691,11 +695,11 @@ describe('planner conversation regressions', () => {
     });
     const initial = [
       command(101, 'command-101', { command: 'pwd', exitCode: 0 }), failed,
-      ...Array.from({ length: HARNESS_ITEMS_PAGE_LIMIT - 2 }, (_, i) => reply(103 + i)),
+      ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, i) => reply(103 + i)),
     ];
     const shifted = [
       failed,
-      ...Array.from({ length: HARNESS_ITEMS_PAGE_LIMIT - 1 }, (_, i) => reply(103 + i)),
+      ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 1 }, (_, i) => reply(103 + i)),
     ];
     let refetched = false;
     const { client } = setup((request) => request.path.includes('/harness/items')
@@ -709,7 +713,7 @@ describe('planner conversation regressions', () => {
     expect(within(group).getByText('failure detail')).toBeTruthy();
 
     refetched = true;
-    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.harnessItems(CARD.id) }); });
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
     await waitFor(() => expect(screen.queryByRole('group', { name: '2 tool calls' })).toBeNull());
     expect(screen.getByText('failure detail')).toBeTruthy();
 
@@ -742,8 +746,8 @@ describe('planner conversation regressions', () => {
     });
     const failed = command(101, { command: 'npm test', exitCode: 1, aggregatedOutput: 'failure evidence\n' });
     const retained = [command(102, { command: 'pwd', exitCode: 0 }), command(103, { command: 'ls', exitCode: 0 })];
-    const initial = [failed, ...retained, ...Array.from({ length: HARNESS_ITEMS_PAGE_LIMIT - 3 }, (_, i) => reply(104 + i))];
-    const shifted = [...retained, ...Array.from({ length: HARNESS_ITEMS_PAGE_LIMIT - 2 }, (_, i) => reply(104 + i))];
+    const initial = [failed, ...retained, ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 3 }, (_, i) => reply(104 + i))];
+    const shifted = [...retained, ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, i) => reply(104 + i))];
     let refetched = false;
     const { client } = setup((request) => request.path.includes('/harness/items')
       ? ok(request.path.includes('after_id=0&') ? (refetched ? shifted : initial) : [failed])
@@ -756,7 +760,7 @@ describe('planner conversation regressions', () => {
     expect(within(group).getByText('failure evidence')).toBeTruthy();
 
     refetched = true;
-    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.harnessItems(CARD.id) }); });
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
     expect(await screen.findByRole('group', { name: '2 tool calls' })).toBe(group);
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(within(group).queryByText('failure evidence')).toBeNull();
@@ -789,8 +793,8 @@ describe('planner conversation regressions', () => {
       command(101, { command: 'npm test', exitCode: 1, aggregatedOutput: 'whole-run failure evidence\n' }),
       command(102, { command: 'pwd', exitCode: 0 }),
     ];
-    const initial = [...calls, ...Array.from({ length: HARNESS_ITEMS_PAGE_LIMIT - 2 }, (_, i) => reply(103 + i))];
-    const shifted = Array.from({ length: HARNESS_ITEMS_PAGE_LIMIT }, (_, i) => reply(103 + i));
+    const initial = [...calls, ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, i) => reply(103 + i))];
+    const shifted = Array.from({ length: TRANSCRIPT_PAGE_LIMIT }, (_, i) => reply(103 + i));
     let refetched = false;
     const { client } = setup((request) => request.path.includes('/harness/items')
       ? ok(request.path.includes('after_id=0&') ? (refetched ? shifted : initial) : calls)
@@ -802,7 +806,7 @@ describe('planner conversation regressions', () => {
     expect(within(group).getByText('whole-run failure evidence')).toBeTruthy();
 
     refetched = true;
-    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.harnessItems(CARD.id) }); });
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
     await waitFor(() => expect(screen.queryByRole('group', { name: '2 tool calls' })).toBeNull());
     fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
     const restored = await screen.findByRole('group', { name: '2 tool calls' });
@@ -827,7 +831,7 @@ describe('planner conversation regressions', () => {
 
   it('loads only the first history page until the user asks for earlier rows', async () => {
     const { requests } = setup((request) => request.path.includes('/harness/items')
-      ? ok(harnessRows(HARNESS_ITEMS_PAGE_LIMIT)) : undefined);
+      ? ok(harnessRows(TRANSCRIPT_PAGE_LIMIT)) : undefined);
     await openConversation();
     const historyRequests = () => requests.filter((request) => request.path.includes('/harness/items'));
     await waitFor(() => expect(historyRequests()).toHaveLength(1));
