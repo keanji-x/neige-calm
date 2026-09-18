@@ -102,7 +102,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
   const quietBlocks = useMemo(() => new Map(blocks
     .filter((block) => block.kind === 'quiet-sync').map((block) => [block.id, block] as const)), [blocks]);
   const visibleTurns = useMemo(() => blocks.map((block) => block.kind === 'entry'
-    ? block.entry : block.entries[0]!), [blocks]);
+    ? block.entry : block.entries[0]), [blocks]);
   /*
    * Which run of tool calls is which, carried from one transcript to the next
    * (`keyTranscriptGroups`). The memory it reads is the memory of the last
