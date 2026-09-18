@@ -12,8 +12,8 @@ use crate::operation::terminal_adapter::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::terminal_interaction::{
-    BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Target, TerminalInteraction, WaitFor,
-    WaitPlan, edits_the_draft, receipt_summary, summary_line,
+    BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Occurrence, ScrollTo, Target,
+    TerminalInteraction, WaitFor, WaitPlan, edits_the_draft, receipt_summary, summary_line,
 };
 use crate::terminal_permissions::{ClaudePermissionsScope, parse_scope, validate_scope};
 use crate::validation::TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY;
@@ -41,7 +41,9 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             "calm.terminal.observe",
             include_str!("../../../prompts/tools/calm.terminal.observe.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"format":{"type":"string","enum":["text","image"],"default":"text"}}),
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"format":{"type":"string","enum":["text","image"],"default":"text"},
+            // #1710 — the history search; its coupling (scroll_offset 0, no text conditions) is stated in the description and refused server-side.
+            "scroll_to_text":{"type":"string","minLength":1,"maxLength":200},"scroll_to_occurrence":{"type":"string","enum":["latest","earliest"],"default":"latest"}}),
             vec![],
         ),
         (
@@ -131,6 +133,9 @@ struct Observe {
     wait_text_absent: Option<Vec<String>>,
     #[serde(default)]
     format: ObservationFormat,
+    /// #1710 — the history search (`scroll_to_request` validates the pair).
+    scroll_to_text: Option<String>,
+    scroll_to_occurrence: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -225,8 +230,16 @@ fn observation_summary(state: &Value) -> String {
         }
         None => String::new(),
     };
+    // #1710 — a history search names its verdict and the row on the
+    // returned screen.
+    let scroll_to = match state["scroll_to"]["status"].as_str() {
+        Some("found") => format!(" scroll_to found row {}", state["scroll_to"]["row"]),
+        Some(status) => format!(" scroll_to {status}"),
+        None => String::new(),
+    };
     format!(
-        "terminal {} observation {} revision {} {} {}x{} cursor {},{} wait {}{permissions}; full state in structuredContent",
+        "terminal {} observation {} revision {} {} {}x{} cursor {},{} wait {}\
+         {permissions}{scroll_to}; full state in structuredContent",
         text("terminal_id"),
         text("observation_id"),
         text("observation_revision"),
@@ -345,7 +358,9 @@ async fn observe_for_open(
     format: ObservationFormat,
 ) -> anyhow::Result<(Value, Option<Vec<u8>>)> {
     let target = Target::Terminal(terminal_id.to_owned());
-    let attempt = service.observe(identity, &target, 0, wait, format).await;
+    let attempt = service
+        .observe(identity, &target, 0, wait, format, None)
+        .await;
     match attempt {
         Ok(observed) => Ok(observed),
         Err(error) if format == ObservationFormat::Image => {
@@ -356,6 +371,7 @@ async fn observe_for_open(
                     0,
                     WaitPlan::default(),
                     ObservationFormat::Text,
+                    None,
                 )
                 .await?;
             apply_image_outcome(&mut metadata, &mut png, Err(error));
@@ -409,6 +425,48 @@ fn open_payload_hash(
             serde_json::to_value(scope).map_err(failure)?;
     }
     stable_payload_hash(&view).map_err(failure)
+}
+/// #1710 — the history search of an observe, validated before the call:
+/// an occurrence needs the text; the pattern's bounds are `ScrollTo::new`'s;
+/// the search derives its own offset (so `scroll_offset` must be 0) and a
+/// wait that tests text returns the live viewport (so the two are
+/// exclusive). The service refuses the last two again.
+fn scroll_to_request(
+    text: Option<String>,
+    occurrence: Option<String>,
+    scroll_offset: usize,
+    wait_tests_text: bool,
+) -> Result<Option<ScrollTo>, RpcError> {
+    let Some(pattern) = text else {
+        if occurrence.is_some() {
+            return Err(RpcError::invalid_params(
+                "scroll_to_occurrence needs scroll_to_text",
+            ));
+        }
+        return Ok(None);
+    };
+    let occurrence = match occurrence.as_deref() {
+        None | Some("latest") => Occurrence::Latest,
+        Some("earliest") => Occurrence::Earliest,
+        Some(other) => {
+            return Err(RpcError::invalid_params(format!(
+                "scroll_to_occurrence must be latest or earliest, not {other}"
+            )));
+        }
+    };
+    let request = ScrollTo::new(pattern, occurrence)
+        .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+    if scroll_offset > 0 {
+        return Err(RpcError::invalid_params(
+            "scroll_to_text needs scroll_offset 0",
+        ));
+    }
+    if wait_tests_text {
+        return Err(RpcError::invalid_params(
+            "scroll_to_text and wait_for=text / text conditions are exclusive",
+        ));
+    }
+    Ok(Some(request))
 }
 async fn call(
     name: &str,
@@ -570,6 +628,7 @@ async fn call(
                                         0,
                                         WaitPlan::default(),
                                         args.format,
+                                        None,
                                     )
                                     .await;
                                 apply_image_outcome(&mut metadata, &mut png, image);
@@ -629,6 +688,12 @@ async fn call(
                     "wait_for=text or text conditions observe the live viewport; scroll_offset must be 0",
                 ));
             }
+            let scroll_to = scroll_to_request(
+                args.scroll_to_text,
+                args.scroll_to_occurrence,
+                args.scroll_offset,
+                wait.tests_text(),
+            )?;
             let wait = wait.plan()?;
             let (metadata, png) = service
                 .observe(
@@ -637,6 +702,7 @@ async fn call(
                     args.scroll_offset,
                     wait,
                     args.format,
+                    scroll_to,
                 )
                 .await
                 .map_err(failure)?;
@@ -715,92 +781,4 @@ async fn call(
 #[cfg(test)]
 mod schema_tests;
 #[cfg(test)]
-mod summary_tests {
-    use super::*;
-
-    /// #1620 F6 — an image failure after creation, claim and text readback
-    /// keeps the text state, the claim and the ids, drops the PNG and reports
-    /// the reason; an image success replaces state and PNG.
-    #[test]
-    fn open_image_failure_keeps_the_text_state_and_reports_image_unavailable() {
-        let text = json!({"terminal_id":"t-1","text":["READY"],"role":"owner","control_id":"c-1"});
-        let mut metadata = text.clone();
-        let mut png = Some(vec![1, 2, 3]);
-        apply_image_outcome(
-            &mut metadata,
-            &mut png,
-            Err(anyhow::anyhow!("terminal image unavailable: zero geometry")),
-        );
-        assert!(png.is_none(), "no PNG on an image failure");
-        assert_eq!(
-            metadata["image"],
-            json!({"status":"unavailable","reason":"terminal image unavailable: zero geometry"})
-        );
-        for key in ["terminal_id", "text", "role", "control_id"] {
-            assert_eq!(metadata[key], text[key], "{key} must survive");
-        }
-        metadata["claim"] = json!({"status":"claimed","control_id":"c-1"});
-        metadata["card_id"] = json!("card-1");
-        let wire =
-            serde_json::to_value(observation_result(metadata.clone(), png).unwrap()).unwrap();
-        assert_eq!(wire["structuredContent"], metadata);
-        assert_eq!(wire["content"].as_array().unwrap().len(), 1, "text only");
-        assert_eq!(wire["content"][0]["type"], "text");
-
-        let mut metadata = text.clone();
-        let mut png = None;
-        let rendered =
-            json!({"terminal_id":"t-1","text":["READY"],"image_source":"rmux_client_projection"});
-        apply_image_outcome(
-            &mut metadata,
-            &mut png,
-            Ok((rendered.clone(), Some(vec![9]))),
-        );
-        assert_eq!(metadata, rendered);
-        assert_eq!(png, Some(vec![9]));
-    }
-
-    /// #1704 S1 — the rule counts join the open's summary line only when the
-    /// state carries the echoed block, before the structuredContent pointer.
-    #[test]
-    fn open_summary_names_the_permission_counts_only_when_the_block_is_echoed() {
-        let mut state = json!({"terminal_id":"t-1","observation_id":"o-1","observation_revision":3,
-            "role":"owner","cols":80,"rows":24,"cursor":{"row":1,"column":2},
-            "wait":{"outcome":"elapsed"}});
-        let plain = observation_summary(&state);
-        assert_eq!(
-            plain,
-            "terminal t-1 observation o-1 revision 3 owner 80x24 cursor 1,2 wait elapsed; \
-             full state in structuredContent"
-        );
-        state["claude_permissions"] = json!({"allow":["Edit(//w/**)","Bash(git status *)"],
-            "ask":["Bash(git push *)"],"deny":[]});
-        assert_eq!(
-            observation_summary(&state),
-            "terminal t-1 observation o-1 revision 3 owner 80x24 cursor 1,2 wait elapsed \
-             permissions allow 2 ask 1 deny 0; full state in structuredContent"
-        );
-        state["claude_permissions"] = json!(null);
-        assert_eq!(observation_summary(&state), plain);
-    }
-
-    #[test]
-    fn terminal_open_failure_is_a_one_line_summary_with_structured_detail() {
-        let receipt = json!({"operation_id":"op-7","outcome":"unavailable","detail":"Failed { error: \"spawn refused\" }"});
-        let wire = serde_json::to_value(open_failure_result(receipt.clone())).unwrap();
-        assert_eq!(wire["structuredContent"], receipt);
-        let content = wire["content"].as_array().unwrap();
-        assert_eq!(content.len(), 1);
-        assert_eq!(
-            content[0]["text"],
-            "terminal open unavailable operation op-7; details in structuredContent"
-        );
-        assert!(
-            !content[0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("spawn refused"),
-            "the detail must live only in structuredContent"
-        );
-    }
-}
+mod summary_tests;

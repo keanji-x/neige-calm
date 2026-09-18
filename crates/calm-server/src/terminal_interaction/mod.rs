@@ -31,6 +31,8 @@ mod receipts;
 mod repaint;
 mod replace_plan;
 mod screen_diff;
+mod scroll_to;
+pub use scroll_to::{Occurrence, SCROLL_TO_TEXT_MAX_BYTES, ScrollTo};
 mod target;
 mod text_conditions;
 mod text_wait;
@@ -219,6 +221,9 @@ impl TerminalInteraction {
             .map(|client| client.serial_waiters())
             .sum()
     }
+    /// `scroll_to` (#1710) captures the screen scrolled to the matching
+    /// history row instead of `offset`, which must then be 0; the wait runs
+    /// first and the search reads the post-wait screen.
     pub async fn observe(
         &self,
         identity: &ToolCallIdentity,
@@ -226,6 +231,7 @@ impl TerminalInteraction {
         offset: usize,
         wait: WaitPlan,
         format: ObservationFormat,
+        scroll_to: Option<ScrollTo>,
     ) -> Result<(Value, Option<Vec<u8>>)> {
         wait.validate()?;
         // #1666 — a text wait is tested on the live viewport and returns that
@@ -235,10 +241,23 @@ impl TerminalInteraction {
             !wait.tests_text() || offset == 0,
             "wait_for=text or text conditions observe the live viewport; scroll_offset must be 0"
         );
+        // #1710 — a history search derives its own offset and a text wait
+        // returns the live viewport: the two are exclusive (the MCP layer
+        // refuses both as invalid params first).
+        ensure!(
+            scroll_to.is_none() || offset == 0,
+            "scroll_to_text needs scroll_offset 0"
+        );
+        ensure!(
+            scroll_to.is_none() || !wait.tests_text(),
+            "scroll_to_text and text conditions are exclusive"
+        );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let client = self.client(identity, &resolved.binding).await?;
-        self.capture(identity, resolved, &client, offset, wait, None, format)
-            .await
+        self.capture(
+            identity, resolved, &client, offset, wait, None, format, scroll_to,
+        )
+        .await
     }
     /// `baseline` is the revision (and signal seq) a change or signal wait
     /// compares against; `None` means this connection's previous observation
@@ -253,6 +272,7 @@ impl TerminalInteraction {
         wait: WaitPlan,
         baseline: Option<ReadbackBaseline>,
         format: ObservationFormat,
+        scroll_to: Option<ScrollTo>,
     ) -> Result<(Value, Option<Vec<u8>>)> {
         let terminal = resolved.binding.terminal_id.clone();
         let previous = *client
@@ -289,13 +309,46 @@ impl TerminalInteraction {
             ensure!(state.available, "terminal observation disconnected");
             (state.control, state.exited, state.exit_code)
         };
-        let (frame, revision) = client
-            .entry
-            .handle
-            .model_view
-            .lock()
-            .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
-            .capture(offset)?;
+        // #1709 — the exit instant is the renderer's once-only record
+        // (`RendererEntry::exit`, written before the exit is broadcast), the
+        // same for every connection, including one attached after the exit
+        // that only saw the replayed `TerminalExited`; read only once this
+        // connection's mirror says exited, so `exited`, `exit_code` and
+        // `exited_at_ms` are one consistent triple.
+        let exited_at = match exited {
+            true => client
+                .entry
+                .exit
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal exit state poisoned"))?
+                .as_ref()
+                .map(|info| info.exited_at),
+            false => None,
+        };
+        // #1709 — the capture instant, taken before the frame is read (and
+        // before rendering): the wall-clock time `observation_revision`
+        // refers to. Presentation only; no fence reads it.
+        let observed_at = std::time::SystemTime::now();
+        let (frame, revision, found) = {
+            let view = client
+                .entry
+                .handle
+                .model_view
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?;
+            // #1710 — the search and the frame come from one lock
+            // acquisition, so the found row and the returned screen are
+            // one revision.
+            let (offset, found) = match &scroll_to {
+                Some(request) => {
+                    let row = view.find_text(request.pattern(), request.occurrence())?;
+                    (scroll_to::offset_for(view.history_rows()?, row), row)
+                }
+                None => (offset, None),
+            };
+            let (frame, revision) = view.capture(offset)?;
+            (frame, revision, found)
+        };
         let png = format.render_image(&self.raster, &frame).await?;
         // Rendering takes time too: the emitted status is the last read.
         let resolved =
@@ -317,13 +370,18 @@ impl TerminalInteraction {
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
-            "text":frame.text,"exited":exited,"exit_code":exit_code,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
+            "text":frame.text,"exited":exited,"exit_code":exit_code,"observed_at_ms":observation::epoch_ms(observed_at),
+            "exited_at_ms":exited_at.map(observation::epoch_ms),"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
             "previous_observation_revision":previous.map(|prior| prior.revision.to_string()),
             "signals":{"hooks_seen":signals.last_seq > 0,"last_seq":signals.last_seq,
                 "since_previous_observation":signals.signals.iter().map(|signal| signal.to_json()).collect::<Vec<_>>(),
                 "dropped_since_previous_observation":signals.dropped}});
         if png.is_some() {
             metadata["image_source"] = json!("rmux_client_projection");
+        }
+        if let Some(request) = &scroll_to {
+            metadata["scroll_to"] =
+                scroll_to::report(request, found, frame.history_rows, frame.scroll_offset);
         }
         // Hashed outside the registry lock, from the capture already taken.
         let row_hashes = row_hashes(&frame);

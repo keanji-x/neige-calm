@@ -41,6 +41,7 @@ impl TerminalInteraction {
                 wait,
                 baseline,
                 ObservationFormat::Text,
+                None,
             )
             .await
         }

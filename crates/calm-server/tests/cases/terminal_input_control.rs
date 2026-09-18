@@ -100,6 +100,32 @@ fn submit(terminal: &str, request: &str, text: &str, extra: Value) -> Value {
     }
     args
 }
+/// #1709 — `observed_at_ms` is an integer within a minute of this process's
+/// clock; `exited_at_ms` is null before the exit and, after it, an integer
+/// between `since` (a time the test read before the exit) and the
+/// observation's own capture instant. Returns `observed_at_ms`.
+fn assert_observation_times(state: &Value, since: i64, exited: bool) -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let observed_at = state["observed_at_ms"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("observed_at_ms must be an integer: {state}"));
+    assert!((now - observed_at).abs() < 60_000, "{observed_at} vs {now}");
+    if !exited {
+        assert_eq!(state["exited_at_ms"], Value::Null, "{state}");
+        return observed_at;
+    }
+    let exited_at = state["exited_at_ms"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("exited_at_ms must be an integer: {state}"));
+    assert!(
+        since <= exited_at && exited_at <= observed_at,
+        "exited_at_ms {exited_at} outside [{since}, {observed_at}]: {state}"
+    );
+    observed_at
+}
 fn physical_lines(h: &Harness) -> Vec<u8> {
     std::fs::read(h.root.path().join("physical-lines")).unwrap_or_default()
 }
@@ -801,6 +827,9 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
     assert_eq!(opened["role"], "owner", "{opened}");
     assert_eq!(opened["exit_code"], Value::Null, "{opened}");
+    // #1709 — the open's readback ran before the exit: a capture instant
+    // and no exit instant.
+    let before_exit = assert_observation_times(&opened, 0, false);
     // Wait until this connection's mirror saw the exit (a change wait can
     // return `exited` off the entry's exit state a moment before the frame
     // is applied) and the worker session is no longer controllable.
@@ -822,6 +851,9 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     };
     assert_eq!(exited["wait"]["outcome"], "exited", "{exited}");
     assert_eq!(exited["role"], "owner", "{exited}");
+    // #1709 — the exit instant lies between the pre-exit readback and this
+    // observation's capture.
+    assert_observation_times(&exited, before_exit, true);
     assert!(
         registry_owner(&h, &terminal).is_some(),
         "the lease survives the exit"
@@ -852,7 +884,43 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     assert_eq!(state["exited"], true, "{state}");
     assert_eq!(state["exit_code"], 3, "{state}");
     assert_eq!(exited["exit_code"], 3, "known before the release: {exited}");
+    // #1709 — the release readback repeats the same exit instant.
+    assert_observation_times(state, before_exit, true);
+    assert_eq!(state["exited_at_ms"], exited["exited_at_ms"], "{state}");
     assert_eq!(registry_owner(&h, &terminal), None);
+    // #1709 r1 — a connection attached after the exit (detach, then observe
+    // more than 2 s after the first post-exit observation) receives only
+    // the replayed `TerminalExited`, and still reports the renderer's exit
+    // instant, never its own attach instant.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    let detached = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"detach"}),
+        )
+        .await;
+    assert_eq!(receipt(&detached)["had_client"], true, "{detached}");
+    let start = std::time::Instant::now();
+    let fresh = loop {
+        let view = h
+            .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+            .await;
+        assert_ne!(view["connection_id"], exited["connection_id"], "{view}");
+        if view["exited"] == true {
+            break view;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the replayed exit never reached the fresh connection: {view}"
+        );
+    };
+    assert_eq!(fresh["exit_code"], 3, "{fresh}");
+    let fresh_observed = assert_observation_times(&fresh, before_exit, true);
+    assert_eq!(fresh["exited_at_ms"], exited["exited_at_ms"], "{fresh}");
+    assert!(
+        fresh["exited_at_ms"].as_i64().unwrap() < fresh_observed - 2000,
+        "the exit instant must predate the fresh attach by the sleep: {fresh}"
+    );
     // The claim arm on an exited terminal: the binding check refuses it.
     let claim = h
         .call(

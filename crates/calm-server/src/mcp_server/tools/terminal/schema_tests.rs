@@ -69,11 +69,13 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         "wait_text",
         "wait_text_absent",
     ];
+    // #1710 — the history search is observe's alone (below).
+    const SCROLL_TO: [&str; 2] = ["scroll_to_text", "scroll_to_occurrence"];
     for (name, common, mandatory) in [
         ("resolve", vec![], vec![]),
         (
             "observe",
-            [&["scroll_offset", "format"][..], &WAIT[..]].concat(),
+            [&["scroll_offset", "format"][..], &SCROLL_TO[..], &WAIT[..]].concat(),
             vec![],
         ),
         (
@@ -275,6 +277,31 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         bytes < 4000,
         "open: {bytes} bytes; avoid model schema compaction"
     );
+    // #1710 — the history search: a bounded plain pattern (the wait_text
+    // bounds) and a two-value occurrence defaulting to latest, on observe
+    // ONLY; the coupling (scroll_offset 0, no text conditions) is refused
+    // server-side. The observe byte ceiling is asserted in the loop above.
+    assert_eq!(
+        observe_schema["properties"]["scroll_to_text"],
+        json!({"type":"string","minLength":1,"maxLength":200})
+    );
+    assert_eq!(
+        observe_schema["properties"]["scroll_to_occurrence"],
+        json!({"type":"string","enum":["latest","earliest"],"default":"latest"})
+    );
+    for name in ["open", "control", "input", "resolve"] {
+        let schema = &descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == format!("calm.terminal.{name}"))
+            .unwrap()
+            .input_schema;
+        for property in SCROLL_TO {
+            assert!(
+                schema["properties"].get(property).is_none(),
+                "{name}/{property}: the history search is observe's alone"
+            );
+        }
+    }
     let input = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.input")

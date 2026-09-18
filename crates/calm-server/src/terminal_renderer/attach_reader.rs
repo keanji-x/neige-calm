@@ -75,6 +75,7 @@ pub fn spawn_supervisor_attach_reader(
                                 code: status,
                                 pty_seq: rp.pty_seq(),
                                 render_rev: rp.render_rev(),
+                                exited_at: std::time::SystemTime::now(),
                             };
                             if let Ok(mut guard) = exit.lock()
                                 && guard.is_none()

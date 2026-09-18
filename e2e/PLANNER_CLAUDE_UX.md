@@ -186,7 +186,12 @@ observation-requesting calls in signal mode whose arguments carry `wait_text`
 or `wait_text_absent` (failed ones included); `signal_condition_outcomes`:
 tally of those calls' returned `wait.repaint.outcome` joined with whether
 every asked condition held (`settled/held`, `unsettled/not_held`, …); a
-missing `repaint` or `conditions` block (older server) adds nothing.
+missing `repaint` or `conditions` block (older server) adds nothing. #1710:
+`history_search_requests`: observe calls whose arguments carry
+`scroll_to_text` (failed ones included); `history_search_found`: the
+non-failed ones whose result `scroll_to.status` is `found` (a missing block,
+older server, adds nothing; a found row is a screen fact, not an
+application result).
 
 The counters live in `e2e/planner_claude_ux_metrics.py` (one program, two
 files; `planner_claude_ux.py` star-imports it).

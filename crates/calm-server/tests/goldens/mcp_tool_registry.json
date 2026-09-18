@@ -1691,7 +1691,7 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "c8e395f05062f699ca28cc9520cd0acc96f8b2322ef0f8a457debb1382ebec74",
+    "description_sha256": "c5b19a7c1e799db2665d124f3b85e46622d761253430429995a998a6b22c9764",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1712,6 +1712,19 @@
           "maximum": 2000,
           "minimum": 0,
           "type": "integer"
+        },
+        "scroll_to_occurrence": {
+          "default": "latest",
+          "enum": [
+            "latest",
+            "earliest"
+          ],
+          "type": "string"
+        },
+        "scroll_to_text": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
         },
         "settle_ms": {
           "default": 150,
