@@ -96,13 +96,13 @@ describe('planner attachments', () => {
   });
 
   it('uploads on pick and previews the server copy, not a local one', async () => {
-    const upload = vi.fn<UploadAttachment>().mockResolvedValue(uploaded(0));
+    const upload = vi.fn<UploadAttachment>().mockResolvedValue(() => uploaded(0));
     render(<Harness upload={upload} />);
     await pick(png());
 
     expect(upload).toHaveBeenCalledTimes(1);
-    const [bytes, contentType] = upload.mock.calls[0] ?? [];
-    expect(bytes).toBeInstanceOf(Uint8Array);
+    const [readBytes, contentType] = upload.mock.calls[0] ?? [];
+    expect(await readBytes()).toBeInstanceOf(Uint8Array);
     expect(contentType).toBe('image/png');
 
     /*
@@ -117,7 +117,7 @@ describe('planner attachments', () => {
   });
 
   it('removes a picked image before it is ever sent', async () => {
-    const upload = vi.fn<UploadAttachment>().mockResolvedValue(uploaded(0));
+    const upload = vi.fn<UploadAttachment>().mockResolvedValue(() => uploaded(0));
     render(<Harness upload={upload} />);
     await pick(png());
     expect(latest?.ids).toHaveLength(1);
@@ -128,7 +128,7 @@ describe('planner attachments', () => {
   });
 
   it('refuses a file that is not one of the four formats without a round trip', async () => {
-    const upload = vi.fn<UploadAttachment>().mockResolvedValue(uploaded(0));
+    const upload = vi.fn<UploadAttachment>().mockResolvedValue(() => uploaded(0));
     render(<Harness upload={upload} />);
     await pick(new File(['note'], 'notes.txt', { type: 'text/plain' }));
 
@@ -138,7 +138,7 @@ describe('planner attachments', () => {
 
   it('stops at eight and says so', async () => {
     const upload = vi.fn<UploadAttachment>()
-      .mockImplementation(() => Promise.resolve(uploaded(latest?.ids.length ?? 0)));
+      .mockImplementation(() => Promise.resolve(() => uploaded(latest?.ids.length ?? 0)));
     render(<Harness upload={upload} />);
     for (let index = 0; index < 8; index += 1) await pick(png(`shot-${index}.png`));
     expect(latest?.ids).toHaveLength(8);
@@ -169,7 +169,7 @@ describe('planner attachments', () => {
    * refusal when it is sent.
    */
   it('does not adopt an upload that finished after the card changed', async () => {
-    let settle: ((value: UploadAttachmentResponse) => void) | undefined;
+    let settle: ((value: () => UploadAttachmentResponse) => void) | undefined;
     const upload = vi.fn<UploadAttachment>()
       .mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
     const { rerender } = render(<Harness upload={upload} card="card-1" />);
@@ -179,7 +179,7 @@ describe('planner attachments', () => {
 
     rerender(<Harness upload={upload} card="card-2" />);
     await act(async () => {
-      settle?.(uploaded(0));
+      settle?.(() => uploaded(0));
       await Promise.resolve();
     });
     expect(latest?.ids).toEqual([]);
@@ -187,13 +187,13 @@ describe('planner attachments', () => {
   });
 
   it('does adopt an upload that finished while the same card was still open', async () => {
-    let settle: ((value: UploadAttachmentResponse) => void) | undefined;
+    let settle: ((value: () => UploadAttachmentResponse) => void) | undefined;
     const upload = vi.fn<UploadAttachment>()
       .mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
     render(<Harness upload={upload} card="card-1" />);
     await pick(png());
     await act(async () => {
-      settle?.(uploaded(0));
+      settle?.(() => uploaded(0));
       await Promise.resolve();
     });
     expect(latest?.ids).toEqual([uploaded(0).attachmentId]);
@@ -216,4 +216,16 @@ describe('planner attachments', () => {
     await userEvent.hover(attachButton());
     expect(await screen.findByText(ATTACHED_WORKSPACE_REASON)).toBeTruthy();
   });
+});
+
+it('an old card upload cannot release the new card upload busy state', async () => {
+  const pending: ((value: () => UploadAttachmentResponse) => void)[] = [];
+  const upload: UploadAttachment = () => new Promise(resolve => pending.push(resolve));
+  const mounted = render(<Harness upload={upload} card="card-1" />);
+  await pick(png()); mounted.rerender(<Harness upload={upload} card="card-2" />); await pick(png());
+  expect(latest?.busy).toBe(true);
+  await act(async () => { pending[0](() => uploaded(0)); await Promise.resolve(); });
+  expect(latest?.busy).toBe(true); expect(latest?.ids).toEqual([]);
+  await act(async () => { pending[1](() => uploaded(1)); await Promise.resolve(); });
+  expect(latest?.busy).toBe(false); expect(latest?.ids).toEqual([uploaded(1).attachmentId]);
 });

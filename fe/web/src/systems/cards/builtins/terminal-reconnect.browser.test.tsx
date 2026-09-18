@@ -1,7 +1,8 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
+import { RecoveryAccess } from '../../../../../core/domain/recovery/access.ts';
 
 import '../../../styles/entry.css';
 import type { ClientMsg, DaemonMsg } from '../../terminal/generated-terminal.ts';
@@ -9,6 +10,10 @@ import { createCardHost } from '../host.ts';
 import { createCardRegistry } from '../registry.ts';
 import { BoardHost } from '../ui/board-host.tsx';
 import { registerAvailableBuiltinCards } from './register.ts';
+
+// Load the real lazy chunk before timing socket behavior; cold Vite compilation
+// belongs to fixture setup and can exceed the socket assertion's one-second wait.
+beforeAll(async () => { await import('../../terminal/xterm-view.tsx'); });
 
 function terminalTransport() {
   const sockets: Socket[] = [];
@@ -46,14 +51,14 @@ function terminalTransport() {
   return sockets;
 }
 
-function mountTerminal(status: 'running' | 'starting' = 'running', width?: number) {
+function mountTerminal(status: 'running' | 'starting' = 'running', width?: number, recovery?: RecoveryAccess) {
   const registry = createCardRegistry();
   registerAvailableBuiltinCards(registry);
   const card = registry.resolve({ id: 'card-1', kind: 'terminal', payload: {},
     runtime: { worker_session_id: 'run-1', kind: 'terminal', status, terminal_id: 'pty-1' },
   });
   if (card === null) throw new Error('Missing terminal');
-  return render(<div style={{ width }}><BoardHost host={createCardHost(registry)} items={[
+  return render(<div style={{ width }}><BoardHost host={createCardHost(registry, { recovery })} items={[
     { card, title: 'Terminal', originalIndex: 0, deletable: true },
   ]} visible activeCardId="card-1" onRemoveCard={() => {}} /></div>);
 }
@@ -132,10 +137,12 @@ it.each(['running', 'starting'] as const)('retains process exit truth when REST 
 });
 
 
-it('accepts input after a recoverable ownership rejection and successful owner claim', async () => {
+it('accepts input and later automatically reconnects after a recoverable ownership rejection and successful owner claim', async () => {
+  vi.stubGlobal('__NC_BUNDLED__', true);
+  const access = new RecoveryAccess(); access.change('connected');
   await page.viewport(1200, 800);
   const sockets = terminalTransport();
-  mountTerminal();
+  mountTerminal('running', undefined, access);
   await waitFor(() => expect(sockets).toHaveLength(1));
   act(() => sockets[0].open('observer prompt', 'Observer'));
   const hello = sockets[0].sent.find((frame) => typeof frame === 'object' && 'ClientHello' in frame);
@@ -149,13 +156,18 @@ it('accepts input after a recoverable ownership rejection and successful owner c
   await waitFor(() => expect(sockets[0].sent.filter((frame) => typeof frame === 'object' && 'Input' in frame)).toHaveLength(1));
   expect(screen.queryByText('Connection error')).toBeNull();
   expect(screen.getByRole('img', { name: 'status Working' })).toBeTruthy();
+  act(() => access.invalidate('recovering')); act(() => access.change('connected'));
+  await waitFor(() => expect(sockets).toHaveLength(2));
+  expect(sockets[1].url).toBe(sockets[0].url);
 });
 
 it.each(['UnsupportedVersion', 'UnsupportedEncoding', 'BadHandshake', 'BadSequence', 'SnapshotMissing', 'closed', 'exited'] as const)(
   'does not revive input after %s when a late owner notification arrives', async (failure) => {
+    vi.stubGlobal('__NC_BUNDLED__', true);
+    const access = new RecoveryAccess(); access.change('connected');
     await page.viewport(1200, 800);
     const sockets = terminalTransport();
-    mountTerminal();
+    mountTerminal('running', undefined, access);
     await waitFor(() => expect(sockets).toHaveLength(1));
     act(() => sockets[0].open('observer prompt', 'Observer'));
     const hello = sockets[0].sent.find((frame) => typeof frame === 'object' && 'ClientHello' in frame);
@@ -175,6 +187,8 @@ it.each(['UnsupportedVersion', 'UnsupportedEncoding', 'BadHandshake', 'BadSequen
     expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
     if (failure === 'closed') expect(screen.getByRole('button', { name: 'Reconnect' })).toBeTruthy();
     if (failure !== 'closed' && failure !== 'exited') expect(screen.getByRole('alert').textContent).toContain('Cannot continue this connection');
+    act(() => access.invalidate('recovering')); act(() => access.change('connected'));
+    expect(sockets).toHaveLength(1);
   },
 );
 
@@ -211,4 +225,59 @@ it('keeps the disconnected status on the title row when the terminal is wide', a
   const statusRect = status.getBoundingClientRect();
   expect(statusRect.top).toBeCloseTo(titleRect.top, 0);
   expect(statusRect.left).toBeGreaterThanOrEqual(titleRect.right);
+});
+
+
+it('bundled recovery fences input and automatically reattaches the same terminal only after synchronization', async () => {
+  vi.stubGlobal('__NC_BUNDLED__', true); await page.viewport(390, 844);
+  const access = new RecoveryAccess(); access.change('syncing'); const sockets = terminalTransport();
+  mountTerminal('running', 390, access);
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  expect(sockets).toHaveLength(0);
+  act(() => access.change('connected')); await waitFor(() => expect(sockets).toHaveLength(1));
+  act(() => sockets[0].open('old retained prompt'));
+  await waitFor(() => expect(screen.getByRole('img', { name: 'status Working' })).toBeTruthy());
+  act(() => access.invalidate('recovering'));
+  expect(sockets[0].readyState).toBe(3);
+  const textarea = document.querySelector<HTMLTextAreaElement>('[data-nc-terminal-id] textarea')!;
+  await userEvent.type(textarea, 'offline input');
+  act(() => access.change('syncing')); expect(sockets).toHaveLength(1);
+  act(() => access.change('connected')); await waitFor(() => expect(sockets).toHaveLength(2));
+  expect(sockets[1].url).toBe(sockets[0].url); act(() => sockets[1].open('authoritative prompt'));
+  expect(sockets[1].sent.some(frame => typeof frame === 'object' && 'Input' in frame)).toBe(false);
+  act(() => sockets[1].message({ ProtocolError: { code: 'NotOwner', message: 'Refused', expected_version: null } }));
+  act(() => { access.invalidate('recovering'); access.change('connected'); });
+  expect(sockets).toHaveLength(2);
+});
+
+it('a successful manual same-terminal reconnect starts a fresh automatic recovery episode', async () => {
+  vi.stubGlobal('__NC_BUNDLED__', true); await page.viewport(1200, 800);
+  const access = new RecoveryAccess(); access.change('connected'); const sockets = terminalTransport();
+  mountTerminal('running', undefined, access); await waitFor(() => expect(sockets).toHaveLength(1));
+  act(() => sockets[0].open('initial prompt'));
+  act(() => { sockets[0].readyState = 3; sockets[0].onclose?.({ code: 1008, reason: 'permission refused', wasClean: true }); });
+  await userEvent.click(await screen.findByRole('button', { name: 'Reconnect' }));
+  await waitFor(() => expect(sockets).toHaveLength(2)); act(() => sockets[1].open('manual recovery succeeded'));
+  act(() => { access.invalidate('recovering'); access.change('connected'); });
+  await waitFor(() => expect(sockets).toHaveLength(3));
+  expect(sockets[2].url).toBe(sockets[0].url);
+  expect(sockets[2].sent.some(frame => typeof frame === 'object' && 'Input' in frame)).toBe(false);
+});
+it.each([1000, 1005])('a locally timed-out OPEN handshake retries the same terminal after normal close %s', async (code) => {
+  vi.stubGlobal('__NC_BUNDLED__', true); await page.viewport(1200, 800);
+  const deadlines: (() => void)[] = []; const schedule = globalThis.setTimeout.bind(globalThis);
+  const clock = vi.spyOn(globalThis, 'setTimeout').mockImplementation((handler, delay) => {
+    if (delay === 15_000 && typeof handler === 'function') deadlines.push(handler as () => void);
+    return schedule(handler, delay);
+  });
+  try {
+    const access = new RecoveryAccess(); access.change('connected'); const sockets = terminalTransport();
+    mountTerminal('running', undefined, access); await waitFor(() => expect(sockets).toHaveLength(1));
+    act(() => { sockets[0].readyState = 1; sockets[0].onopen?.(); });
+    expect(deadlines).toHaveLength(1);
+    act(() => { deadlines[0](); sockets[0].onclose?.({ code, reason: '', wasClean: true }); });
+    await waitFor(() => expect(sockets).toHaveLength(2), { timeout: 2000 });
+    expect(sockets[1].url).toBe(sockets[0].url);
+    expect(sockets[0].sent.some(frame => typeof frame === 'object' && ('Input' in frame || 'ResizeCommit' in frame))).toBe(false);
+  } finally { clock.mockRestore(); }
 });

@@ -34,8 +34,10 @@ import styles from './preflight-status.module.css';
  * field (API v9). A v29 bundle's row parser rejects every list from a v8
  * kernel, so a bundled client ahead of its kernel must sit behind the
  * `server-update` curtain; the raised floor keeps a v28 bundle off this kernel.
+ * Floor 30 retains #1712 scan-only enrollment; REST v10 combines its endpoints
+ * with the required #1722 fields instead of aliasing two different v9 contracts.
  */
-export const WEB_COMPAT_VERSION = 29;
+export const WEB_COMPAT_VERSION = 30;
 /**
  * `databaseId` / `nowMs` (#1722 S1b): the database's stable id and the server
  * clock at response time. Optional here like `conversationCreateModel`: this

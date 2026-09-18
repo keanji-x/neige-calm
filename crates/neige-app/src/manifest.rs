@@ -163,6 +163,8 @@ pub(crate) enum UnitName {
     NeigeMcpStdioShim,
     /// CLI binary.
     NeigeCli,
+    /// App-only private Tailnet HTTPS service.
+    NeigeTailnet,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

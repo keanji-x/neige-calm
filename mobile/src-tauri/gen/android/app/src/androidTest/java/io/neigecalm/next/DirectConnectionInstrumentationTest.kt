@@ -99,12 +99,17 @@ class DirectConnectionInstrumentationTest {
   }
 
   @Test fun directProbesRespectTimeoutAndDoNotFollowRedirects() {
-    ConnectionAttempt.checkDirect("http://10.0.2.2:5413")
+    fun checkDirect(origin: String) {
+      val operation = NativeOperation.reserve()
+      try { operation.run({}) { token -> P2PConnection.checked(NativeP2P.checkDirect(token, origin, "", false)) } }
+      finally { operation.cancel() }
+    }
+    checkDirect("http://10.0.2.2:5413")
     val start = SystemClock.elapsedRealtime()
-    try { ConnectionAttempt.checkDirect("http://10.0.2.2:5414"); fail("Silent peer must time out") }
+    try { checkDirect("http://10.0.2.2:5414"); fail("Silent peer must time out") }
     catch (_: java.io.IOException) {} catch (_: IllegalStateException) {}
     assertTrue("Direct timeout exceeded its budget", SystemClock.elapsedRealtime() - start < 6500)
-    try { ConnectionAttempt.checkDirect("http://10.0.2.2:5415"); fail("Redirect must be rejected") }
+    try { checkDirect("http://10.0.2.2:5415"); fail("Redirect must be rejected") }
     catch (_: IllegalStateException) {}
   }
 }

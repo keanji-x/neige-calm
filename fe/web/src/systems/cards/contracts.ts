@@ -1,3 +1,4 @@
+import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import type { CardFilesPort } from '../../../../core/domain/fs.ts';
 
 export type { CardFilesPort };
@@ -63,6 +64,7 @@ export interface CardHostCapabilities {
    * a reader can act on, an exception is not.
    */
   readonly files: CardFilesPort | null;
+  readonly recovery: RecoveryAccess | null;
   emit(command: CardRuntimeCommand): void;
 }
 

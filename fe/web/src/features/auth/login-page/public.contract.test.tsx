@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LoginPage } from './public.tsx';
+import { LoginPage, type LoginPageProps } from './public.tsx';
 
 afterEach(cleanup);
 
@@ -44,4 +44,21 @@ describe('login page oracle contracts', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('Sign-in failed.');
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Sign in' }).disabled).toBe(false);
   });
+});
+
+it('an ordinary web login unmount aborts its attempt and cannot reload a later form', async () => {
+  let finish!: (value: Awaited<ReturnType<LoginPageProps['login']>>) => void;
+  let signal!: AbortSignal;
+  const reload = vi.fn();
+  const login: LoginPageProps['login'] = (_username, _password, attempt) => {
+    signal = attempt; return new Promise(resolve => { finish = resolve; });
+  };
+  const view = render(<LoginPage login={login} reload={reload} />);
+  const form = screen.getByLabelText('Password').closest('form')!;
+  fireEvent.submit(form); view.unmount();
+  expect(signal.aborted).toBe(true);
+  render(<LoginPage login={() => Promise.resolve(null)} reload={reload} />);
+  await act(async () => { finish({ userId: 'owner', displayName: 'Owner', role: 'owner', sessionId: 'old-attempt' }); await Promise.resolve(); });
+  expect(reload).not.toHaveBeenCalled();
+  expect(screen.queryByRole('alert')).toBeNull();
 });

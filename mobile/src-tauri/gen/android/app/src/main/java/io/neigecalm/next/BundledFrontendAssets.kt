@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 internal data class BundledAsset(val path: String, val mime: String, val size: Long)
 
-internal class BundledFrontendAssets(private val assets: AssetManager, val origin: AtomicReference<BundledOrigin?>) {
+internal class BundledFrontendAssets(private val assets: AssetManager, val origin: AtomicReference<BundledOrigin?>, private val scan: ScanDocument? = null) {
   private val files: Map<String, BundledAsset>
   private val policy: BundledSelectionPolicy
 
@@ -44,17 +44,25 @@ internal class BundledFrontendAssets(private val assets: AssetManager, val origi
     is BundledSelection.File -> {
       val file = files.getValue(selected.path)
       try {
-        val headers = mutableMapOf("Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff", "Content-Length" to file.size.toString())
-        if (file.mime == "text/html") {
+        val headers = mutableMapOf("Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff")
+        val stream = if (file.mime == "text/html") {
           val websocket = checkNotNull(bound).value.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
-          headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-            "img-src 'self' data: blob: https:; connect-src 'self' " + websocket + "; font-src 'self' data:; " +
-            "media-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; " +
-            "frame-ancestors 'none'; form-action 'self'"
-        }
+          val nonce = ScanDocument.nonce()
+          headers["Content-Security-Policy"] = "default-src 'self'; script-src 'nonce-$nonce' 'strict-dynamic'; style-src 'self' 'unsafe-inline'; " +
+            "img-src 'self' data: blob:; connect-src " + bound.value + " " + websocket + "; font-src 'self' data:; " +
+            "media-src 'self' data: blob:; worker-src " + bound.value + "/next/assets/ blob:; object-src 'none'; base-uri 'none'; " +
+            "frame-src 'none'; frame-ancestors 'none'; form-action 'self', " +
+            // Intersect nonce/strict-dynamic with the APK-only path. Trust
+            // propagation must not allow an API response to become a script.
+            "script-src 'nonce-$nonce' " + bound.value + "/next/assets/"
+          val html = assets.open("neige-next/" + file.path).bufferedReader().use { it.readText() }
+          val boot = if (request.isForMainFrame) scan?.takeScript(nonce) ?: "" else ""
+          val document = html.replace("<script ", "<script nonce=\"$nonce\" ")
+            .replace("<head>", "<head>$boot")
+          ByteArrayInputStream(document.toByteArray(Charsets.UTF_8))
+        } else assets.open("neige-next/" + file.path)
         WebResourceResponse(file.mime, if (file.mime.startsWith("text/")) "UTF-8" else null,
-          200, "OK", headers,
-          assets.open("neige-next/" + file.path))
+          200, "OK", headers, stream)
       } catch (_: java.io.IOException) { error(500) }
     }
     }

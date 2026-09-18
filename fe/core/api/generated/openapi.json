@@ -2231,7 +2231,27 @@
               }
             }
           },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
             "description": "",
             "content": {
               "application/json": {
@@ -2351,6 +2371,214 @@
             "description": ""
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/enrollments": {
+      "get": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentCleanup"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/enrollments/claim": {
+      "post": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollmentClaim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentClaimed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/enrollments/redeem": {
+      "post": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "redeem",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollmentRedeem"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentRedeemed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/enrollments/{id}": {
+      "delete": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentCleanup"
+                }
+              }
+            }
+          },
+          "403": {
             "description": "",
             "content": {
               "application/json": {
@@ -2510,6 +2738,86 @@
             "description": ""
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/tailnet/login": {
+      "post": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "tailnet_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailnetLogin"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/tailnet/logout": {
+      "post": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "tailnet_logout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileStatus"
+                }
+              }
+            }
+          },
+          "400": {
             "description": "",
             "content": {
               "application/json": {
@@ -7747,6 +8055,142 @@
         },
         "additionalProperties": false
       },
+      "EnrollmentClaim": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "ticket",
+          "deviceName",
+          "attemptId",
+          "attemptSecret"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "attemptSecret": {
+            "type": "string"
+          },
+          "deviceName": {
+            "type": "string"
+          },
+          "enrollmentId": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentClaimed": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "attemptId",
+          "claimId"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "claimId": {
+            "type": "string"
+          },
+          "enrollmentId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentCleanup": {
+        "type": "object",
+        "required": [
+          "pendingCleanup",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "pendingCleanup": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentCreated": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "qrPayload",
+          "qrImage",
+          "authKeyExpiresAt",
+          "pairExpiresAt"
+        ],
+        "properties": {
+          "authKeyExpiresAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "enrollmentId": {
+            "type": "string"
+          },
+          "pairExpiresAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "qrImage": {
+            "type": "string"
+          },
+          "qrPayload": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentRedeem": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "attemptId",
+          "attemptSecret"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "attemptSecret": {
+            "type": "string"
+          },
+          "enrollmentId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentRedeemed": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "attemptId",
+          "sessionFingerprint"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "enrollmentId": {
+            "type": "string"
+          },
+          "sessionFingerprint": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "ErrorBody": {
         "type": "object",
         "description": "JSON shape returned for every error response — `{error, code}`.\nMirrors the body produced by `CalmError::into_response`. Hand-written\nduplicate of the in-line `json!` body so OpenAPI consumers see a\nconcrete schema.",
@@ -8263,9 +8707,19 @@
         "type": "object",
         "additionalProperties": false
       },
+      "MobileProvider": {
+        "type": "string",
+        "enum": [
+          "unavailable",
+          "funnel",
+          "private-tailnet"
+        ]
+      },
       "MobileStatus": {
         "type": "object",
         "required": [
+          "provider",
+          "tailnet",
           "available",
           "publicUrl",
           "pending",
@@ -8287,10 +8741,23 @@
               "$ref": "#/components/schemas/PendingPair"
             }
           },
+          "provider": {
+            "$ref": "#/components/schemas/MobileProvider"
+          },
           "publicUrl": {
             "type": [
               "string",
               "null"
+            ]
+          },
+          "tailnet": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TailnetStatus"
+              }
             ]
           }
         }
@@ -9978,6 +10445,120 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "TailnetLogin": {
+        "type": "object",
+        "required": [
+          "loginUrl",
+          "displayForSeconds"
+        ],
+        "properties": {
+          "displayForSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "loginUrl": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TailnetNodeState": {
+        "type": "string",
+        "enum": [
+          "stopped",
+          "starting",
+          "needs-login",
+          "needs-approval",
+          "online",
+          "offline"
+        ]
+      },
+      "TailnetPhase": {
+        "type": "string",
+        "enum": [
+          "disabled",
+          "starting",
+          "needs-login",
+          "needs-approval",
+          "online",
+          "degraded",
+          "failed"
+        ]
+      },
+      "TailnetStatus": {
+        "type": "object",
+        "required": [
+          "desiredEnabled",
+          "phase",
+          "processRunning",
+          "childPid",
+          "nodeState",
+          "httpsReady",
+          "upstreamReady",
+          "origin",
+          "dnsName",
+          "nodeId",
+          "addresses",
+          "detail"
+        ],
+        "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "childPid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "desiredEnabled": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "dnsName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "httpsReady": {
+            "type": "boolean"
+          },
+          "nodeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodeState": {
+            "$ref": "#/components/schemas/TailnetNodeState"
+          },
+          "origin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phase": {
+            "$ref": "#/components/schemas/TailnetPhase"
+          },
+          "processRunning": {
+            "type": "boolean"
+          },
+          "upstreamReady": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

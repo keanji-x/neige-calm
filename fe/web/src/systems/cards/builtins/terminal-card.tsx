@@ -76,7 +76,7 @@ export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'termin
         {attached
           ? (
             <Suspense fallback={<div className="term-line">Loading terminal…</div>}>
-              <TerminalSurface card={card} visible={visible} onStatusChange={onStatusChange} />
+              <TerminalSurface recovery={host.recovery} card={card} visible={visible} onStatusChange={onStatusChange} />
             </Suspense>
           )
           : <div className="term-line">{ended ? 'No terminal session available.' : message}</div>}

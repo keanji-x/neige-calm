@@ -61,9 +61,21 @@ pub struct PairingRedeem {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct MobileStatus {
+    pub provider: MobileProvider,
+    #[schema(required = true, nullable = true)]
+    pub tailnet: Option<crate::tailnet::TailnetStatus>,
     pub available: bool,
     #[schema(required = true, nullable = true)]
     pub public_url: Option<String>,
     pub pending: Vec<PendingPair>,
     pub devices: Vec<PairedDevice>,
+}
+
+#[derive(Clone, Copy, Serialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+#[serde(rename_all = "kebab-case")]
+pub enum MobileProvider {
+    Unavailable,
+    Funnel,
+    PrivateTailnet,
 }

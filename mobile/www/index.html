@@ -24,18 +24,20 @@
   </section>
   <div id="connection-status" class="connection-status sr-only" role="status"><span class="status-dot"></span><span id="status-text">正在恢复连接…</span></div>
   <section class="actions" aria-label="连接工作区">
+    <div id="tailnet-settings" hidden><label for="tailnet-target">已保存的工作区</label><select id="tailnet-target"></select></div>
     <div id="ip-settings" hidden><label class="sr-only" for="ip-origin">服务器地址</label><input id="ip-origin" type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="http://IP:端口" /></div>
     <button id="login" class="action action-login" type="button">
       <span class="action-icon tailscale-icon" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
-      <span class="action-copy"><strong id="login-label">登录 Tailscale</strong></span>
+      <span class="action-copy"><strong id="login-label">重新连接工作区</strong></span>
       <span class="action-arrow" aria-hidden="true">↗</span>
     </button>
-    <button id="scan" class="action action-scan" type="button" disabled>
+    <button id="scan" class="action action-scan" type="button">
       <span class="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><path d="M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z"/></svg></span>
       <span class="action-copy"><strong>扫码授权</strong></span>
       <span class="action-arrow" aria-hidden="true">→</span>
     </button>
   </section>
+  <button id="reset-network" type="button" class="text-button">重新开始手机入网</button>
   <p id="error" role="alert"></p>
   <p id="scan-error" role="alert"></p>
   <section id="pair-confirm" hidden aria-label="确认配对服务器" class="pair-confirm">

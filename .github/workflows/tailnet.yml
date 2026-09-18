@@ -1,0 +1,27 @@
+name: Private Tailnet helper
+on:
+  pull_request:
+    paths: ['tailnet/**', '.github/workflows/tailnet.yml']
+  push:
+    branches: [main]
+    paths: ['tailnet/**', '.github/workflows/tailnet.yml']
+permissions:
+  contents: read
+env:
+  NPM_CONFIG_AUDIT: 'false'
+jobs:
+  isolated-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - name: Test isolated proxy and control boundaries
+        working-directory: tailnet
+        run: |
+          go test -race -p 4 ./...
+          go test -race -tags=ts_omit_logtail -p 4 ./...
+      - name: Build bundled helper
+        run: tailnet/build.sh

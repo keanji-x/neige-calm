@@ -53,6 +53,11 @@ auth_dev_autologin = false
 cwd = ""
 extra_args = []
 
+[tailnet]
+# The bundled private node is available in Settings but starts disabled.
+provider = "private-tailnet"
+hostname = "neige"
+
 [timing]
 stop_grace_ms = 5000
 restart_delay_ms = 1000
@@ -261,3 +266,8 @@ It reads `<release.root>/last-activation.json` when present and restores the
 server and/or web symlink pair touched by the last activation, then deletes the
 metadata so the same activation cannot be rolled back twice. It does not restore
 a DB backup.
+
+Private Tailnet configuration and lifecycle are described in
+[Private remote access](private-tailnet.md). Existing files without `[tailnet]`
+keep the new provider unavailable until explicitly configured; the existing
+Funnel child flag cannot be combined with `provider = "private-tailnet"`.

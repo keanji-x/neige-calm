@@ -17,6 +17,8 @@
 // assertion stood there and why it was revoked; the new contract is
 // `today-conversation.test.tsx`.
 
+import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
+import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -148,7 +150,7 @@ function failure(status: number, code: string, error: string): ApiTransportRespo
 type Reply = (request: ApiRequest) => ApiTransportResponse | undefined
   | Promise<ApiTransportResponse | undefined>;
 
-function setup(reply?: Reply, storage?: UiPreferenceStorage) {
+function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: RecoveryAccess) {
   const requests: ApiRequest[] = [];
   const themeValues = new Map<string, string>();
   const themeStorage: Pick<Storage, 'getItem' | 'setItem'> = {
@@ -194,7 +196,7 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, onSignOut: vi.fn(), cards: bootTestCardRuntime(), uiPreferences: createUiPreferences(storage) });
+  const router = createAppRouter({ transport: recovery ? createRecoveryTransports(transport, recovery).business : transport, unauthorized, client, onSignOut: vi.fn(), cards: bootTestCardRuntime(), uiPreferences: createUiPreferences(storage) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -2012,7 +2014,9 @@ it('does not fetch a stored conversation absent from the current Track rows', as
   expect(requests.some((request) => request.path.includes('foreign-or-deleted-card'))).toBe(false);
 });
 
-it('selects a model before the first conversation message and sends it atomically', async () => {
+it.each([false, true])('selects a model before the first conversation message and sends it atomically (bundled=%s)', async bundled => {
+  vi.stubGlobal('__NC_BUNDLED__', bundled);
+  const access = new RecoveryAccess(); access.change('connected');
   const { requests } = setup(request => {
     if (request.path === '/api/version') return ok({ webCompatVersion: 28, minWebCompatVersion: 28,
       syncEventVersion: 20, dbInstanceId: 'test', conversationCreateModel: true });
@@ -2023,7 +2027,7 @@ it('selects a model before the first conversation message and sends it atomicall
     });
     if (request.method === 'POST' && request.path === CONVERSATIONS) return created(derivedRow('w1', request));
     return undefined;
-  });
+  }, undefined, bundled ? access : undefined);
   await openDraft();
   fireEvent.click(await screen.findByRole('button', { name: /^Model:/ }));
   fireEvent.click(await screen.findByRole('menuitem', { name: /^GPT-5/ }));
@@ -2184,4 +2188,28 @@ it('shows a closed Planner working and preserves unread completion until its his
     return Promise.resolve();
   });
   await waitFor(() => expect(indicator()).toBe('unread'));
+});
+
+it('an edited conversation retry cannot cross recovery after its reconciliation read completed', async () => {
+  vi.stubGlobal('__NC_BUNDLED__', true);
+  const access = new RecoveryAccess(); access.change('connected');
+  const { requests, client } = setup(request => request.method === 'POST' && request.path === CONVERSATIONS
+    ? failure(500, 'internal', 'unconfirmed first write') : undefined, undefined, access);
+  await screen.findByRole('button', { name: 'Conversation Planner chat' });
+  await openDraft(); await write('original words');
+  await screen.findByRole('button', { name: 'Try again' });
+  const fetchQuery = client.fetchQuery.bind(client);
+  const fetch = vi.spyOn(client, 'fetchQuery').mockImplementation(async options => {
+    const rows = await fetchQuery(options);
+    // Deliver the real result, with recovery occurring at the promise boundary
+    // between Query's completed read and the caller's continuation.
+    access.invalidate('recovering'); access.change('connected');
+    return rows;
+  });
+  try {
+    await write('edited words');
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    await screen.findByRole('button', { name: 'Try again' });
+    expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+  } finally { fetch.mockRestore(); }
 });

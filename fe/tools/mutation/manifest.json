@@ -5,7 +5,7 @@
       "oracle:INV-LOGIN-001"
     ],
     "target": "web/src/features/auth/login-page/public.tsx",
-    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..be25005b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -23,7 +23,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       void login(username, password).then((result) => {\n         if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n-        reload();\n+        setSubmitting(false);\n       }).catch((cause: unknown) => {\n         setError(cause instanceof Error && cause.message ? cause.message : 'Sign-in failed.');\n         setSubmitting(false);\n",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -44,5 +44,5 @@\n         if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n-        reload();\n+        setSubmitting(false);\n       }).catch((cause: unknown) => {\n         if (attempt.signal.aborted) return;\n",
     "expected_red": [
       "login page oracle contracts INV-LOGIN-001 reloads the whole document after successful login"
     ],
@@ -20,7 +20,7 @@
       "oracle:CAP-LOGIN-002"
     ],
     "target": "web/src/features/auth/login-page/public.tsx",
-    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..0377347a 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -21,7 +21,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       if (submitting) return;\n       setSubmitting(true); setError(null);\n       void login(username, password).then((result) => {\n-        if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n+        if (!result) { setError('Sign-in failed.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n         reload();\n       }).catch((cause: unknown) => {\n",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -42,5 +42,5 @@\n       void login(username, password, attempt.signal).then((result) => {\n         if (attempt.signal.aborted) return;\n-        if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n+        if (!result) { setError('Sign-in failed.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n         reload();\n",
     "expected_red": [
       "login page oracle contracts CAP-LOGIN-002 distinguishes rejected credentials, exceptions, and submitting state",
       "production login assembly CAP-LOGIN-002 maps a production 401 to credential copy without broadcasting"
@@ -558,7 +558,7 @@
       "oracle:INV-APP-049"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,6 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -102,7 +102,6 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       if (!__NC_BUNDLED__) this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
     "expected_red": [
       "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
       "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
@@ -576,7 +576,7 @@
       "oracle:INV-APP-055"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,7 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      if (this.retryDelay !== 500) socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -102,7 +102,7 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       if (!__NC_BUNDLED__) this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      if (this.retryDelay !== 500) socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
     "expected_red": [
       "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
       "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
@@ -594,7 +594,7 @@
       "oracle:INV-APP-049"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,7 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      socket.send(JSON.stringify({ sub: configuration.topics }));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -102,7 +102,7 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       if (!__NC_BUNDLED__) this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      socket.send(JSON.stringify({ sub: configuration.topics }));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
     "expected_red": [
       "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
       "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
@@ -612,7 +612,7 @@
       "oracle:INV-APP-044"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -95,6 +95,7 @@\n     socket.onopen = () => {\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n+      sink.connectionState('connected');\n       this.retryDelay = 500;\n       socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -101,6 +101,7 @@\n     socket.onopen = () => {\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n+      sink.connectionState('connected');\n       if (!__NC_BUNDLED__) this.retryDelay = 500;\n       socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n",
     "expected_red": [
       "WebSocketDriver contracts T-D4 stays connecting on open and becomes connected only before replay-complete delivery"
     ],
@@ -627,7 +627,7 @@
       "oracle:INV-APP-108"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -82,7 +82,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    // mutated: connect guard removed\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -128,7 +128,7 @@\n     const delay = this.retryDelay;\n     this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n     this.retryTimer = setTimeout(() => {\n-      if (this.closed || epoch !== this.epoch) return;\n+      // mutated: timer guard removed\n       this.retryTimer = null;\n       this.connect(epoch);\n     }, delay);\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -85,7 +85,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    // mutated: connect guard removed\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -136,7 +136,7 @@\n     const delay = __NC_BUNDLED__ ? this.retryDelay * (0.75 + Math.random() * 0.5) : this.retryDelay;\n     this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n     this.retryTimer = setTimeout(() => {\n-      if (this.closed || epoch !== this.epoch) return;\n+      // mutated: timer guard removed\n       this.retryTimer = null;\n       this.connect(epoch);\n     }, delay);\n",
     "expected_red": [
       "WebSocketDriver contracts T-D5a rejects an already-dequeued retry callback after stop"
     ],
@@ -642,7 +642,7 @@
       "oracle:INV-APP-109"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -68,7 +68,6 @@\n     ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n     this.retryTimer = null;\n     const socket = this.socket;\n     this.socket = null;\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -69,7 +69,6 @@\n     ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n     this.retryTimer = null;\n     if (this.handshakeTimer !== null) clearTimeout(this.handshakeTimer);\n     this.handshakeTimer = null;\n",
     "expected_red": [
       "WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket"
     ],
@@ -676,7 +676,7 @@
       "oracle:INV-APP-046"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -95,7 +95,6 @@\n     socket.onopen = () => {\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n-      this.retryDelay = 500;\n       socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n@@ -126,7 +125,7 @@\n   private scheduleRetry(epoch: number): void {\n     if (this.closed || epoch !== this.epoch || this.retryTimer !== null) return;\n     const delay = this.retryDelay;\n-    this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n+    this.retryDelay *= 2;\n     this.retryTimer = setTimeout(() => {\n       if (this.closed || epoch !== this.epoch) return;\n       this.retryTimer = null;\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -101,7 +101,6 @@\n     socket.onopen = () => {\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n-      if (!__NC_BUNDLED__) this.retryDelay = 500;\n       socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n@@ -134,7 +133,7 @@\n   private scheduleRetry(epoch: number): void {\n     if (this.closed || epoch !== this.epoch || this.retryTimer !== null) return;\n     const delay = __NC_BUNDLED__ ? this.retryDelay * (0.75 + Math.random() * 0.5) : this.retryDelay;\n-    this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n+    this.retryDelay *= 2;\n     this.retryTimer = setTimeout(() => {\n       if (this.closed || epoch !== this.epoch) return;\n       this.retryTimer = null;\n",
     "expected_red": [
       "WebSocketDriver contracts T-D6 backs off at 500/1000/2000/4000/8000/8000 and resets after open"
     ],
@@ -691,7 +691,7 @@
       "oracle:INV-APP-047"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -114,7 +114,7 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n-      if (!opened) this.probe(epoch);\n+      this.probe(epoch);\n       this.scheduleRetry(epoch);\n       sink.connectionState('connecting');\n     };\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -125,7 +125,7 @@\n       if (this.handshakeTimer !== null) clearTimeout(this.handshakeTimer);\n       this.handshakeTimer = null;\n       if (this.socket === socket) this.socket = null;\n-      if (!opened) this.probe(epoch);\n+      this.probe(epoch);\n       this.scheduleRetry(epoch);\n       sink.connectionState('connecting');\n     };\n",
     "expected_red": [
       "WebSocketDriver contracts T-D7 probes only a connection that closes before open"
     ],
@@ -736,7 +736,7 @@
       "oracle:INV-APP-108"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -87,8 +87,7 @@\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n     let socket: SocketPort;\n-    try { socket = this.socketFactory(this.url); }\n-    catch { this.scheduleRetry(epoch); return; }\n+    socket = this.socketFactory(this.url);\n     if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n     this.socket = socket;\n     let opened = false;\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -90,8 +90,7 @@\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n     let socket: SocketPort;\n-    try { socket = this.socketFactory(this.url); }\n-    catch { this.scheduleRetry(epoch); return; }\n+    socket = this.socketFactory(this.url);\n     if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n     this.socket = socket;\n     if (__NC_BUNDLED__) this.handshakeTimer = setTimeout(() => {\n",
     "expected_red": [
       "WebSocketDriver contracts T-D10 contains socket construction failures and retries"
     ],
@@ -766,7 +766,7 @@
       "oracle:INV-APP-111"
     ],
     "target": "web/src/app/composition.ts",
-    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -43,7 +43,7 @@\n   const store = createBrowserCursorStore(options.storage, options.idle);\n   const createDriver = options.driverFactory ?? ((driverOptions) => new WebSocketDriver(driverOptions));\n   const driver = createDriver({\n-    cursor: store,\n+    cursor: createBrowserCursorStore(options.storage, options.idle),\n     // The driver owns the single unauthorized notification for its probe.\n     probeUnauthorized: options.probeUnauthorized ?? (() => runOperation(options.transport, whoamiOperation(), undefined)),\n     onUnauthorized: options.onUnauthorized ?? (() => undefined),\n",
+    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -49,7 +49,7 @@\n   const store = options.cursorStore ?? createBrowserCursorStore(options.storage, options.idle);\n   const createDriver = options.driverFactory ?? ((driverOptions) => new WebSocketDriver(driverOptions));\n   const driver = createDriver({\n-    cursor: store,\n+    cursor: createBrowserCursorStore(options.storage, options.idle),\n     // The driver owns the single unauthorized notification for its probe.\n     probeUnauthorized: options.probeUnauthorized ?? (() => runOperation(options.transport, whoamiOperation(), undefined)),\n     onUnauthorized: options.onUnauthorized ?? (() => undefined),\n",
     "expected_red": [
       "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id"
     ],
@@ -821,17 +821,16 @@
       "oracle:INV-APP-108"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -53,7 +53,7 @@\n   }\n \n   start(configuration: EventStreamConfiguration, url: string, sink: EventStreamSink): void {\n-    const epoch = ++this.epoch;\n+    const epoch = this.epoch;\n     this.closed = false;\n     this.probeInFlight = false;\n     this.configuration = configuration;\n@@ -65,7 +65,6 @@\n   }\n \n   stop(): void {\n-    ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n     if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n@@ -82,7 +81,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    if (this.closed) return;\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -112,7 +111,6 @@\n       sink.frame(decoded.frame);\n     };\n     socket.onclose = () => {\n-      if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -54,7 +54,7 @@\n   }\n \n   start(configuration: EventStreamConfiguration, url: string, sink: EventStreamSink): void {\n-    const epoch = ++this.epoch;\n+    const epoch = this.epoch;\n     this.closed = false;\n     this.probeInFlight = false;\n     this.configuration = configuration;\n@@ -66,7 +66,6 @@\n   }\n \n   stop(): void {\n-    ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n     if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n@@ -85,7 +84,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    if (this.closed) return;\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -121,7 +120,6 @@\n       sink.frame(decoded.frame);\n     };\n     socket.onclose = () => {\n-      if (this.closed || epoch !== this.epoch) return;\n       if (this.handshakeTimer !== null) clearTimeout(this.handshakeTimer);\n       this.handshakeTimer = null;\n       if (this.socket === socket) this.socket = null;\n",
     "expected_red": [
       "WebSocketDriver contracts T-B3 rechecks epoch after connected delivery before delivering replay-complete",
       "WebSocketDriver contracts T-B4 stop prevents any new socket construction from an in-flight old close continuation",
-      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation",
-      "accepts all real oracle data without exceptions"
+      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
     ],
-    "why_more_than_one": "The combined mutation removes epoch advancement and representative callback/connect guards; T-B4 asserts construction count after stop."
+    "why_more_than_one": "The combined mutation removes epoch advancement and representative callback/connect guards; T-B4 asserts construction count after stop. All three behavioral witnesses remain required. The former static-oracle failure was incidental: deleting two lines from the old 151-line driver invalidated source ranges ending at 151. The recovery driver is longer, so the unchanged range validator correctly stays green; no behavioral assertion or oracle check is relaxed."
   },
   {
     "mutation_id": "events-reducer-reconnect-before-persist",
@@ -854,7 +853,7 @@
       "oracle:INV-APP-108"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -114,9 +114,9 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n+      sink.connectionState('connecting');\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n-      sink.connectionState('connecting');\n     };\n   }\n \n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -125,9 +125,9 @@\n       if (this.handshakeTimer !== null) clearTimeout(this.handshakeTimer);\n       this.handshakeTimer = null;\n       if (this.socket === socket) this.socket = null;\n+      sink.connectionState('connecting');\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n-      sink.connectionState('connecting');\n     };\n   }\n \n",
     "expected_red": [
       "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary"
     ],
@@ -914,7 +913,7 @@
       "oracle:INV-APP-112"
     ],
     "target": "web/src/app/composition.ts",
-    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -27,7 +27,7 @@\n   return createEventComposition({\n     storage: options.storage,\n     transport: options.transport,\n-    onUnauthorized: () => unauthorized.notify(),\n+    onUnauthorized: () => undefined,\n   });\n }\n \n",
+    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -29,7 +29,7 @@\n   return createEventComposition({\n     storage: options.storage,\n     transport: options.transport,\n-    onUnauthorized: () => unauthorized.notify(),\n+    onUnauthorized: () => undefined,\n     probeUnauthorized: options.probeUnauthorized,\n     cursorStore: options.cursorStore,\n   });\n",
     "expected_red": [
       "event composition T-A3 publishes driver unauthorized transitions through the browser channel"
     ],
@@ -1008,7 +1007,7 @@
       "oracle:INV-APP-116"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -898,6 +898,6 @@\n     // A lost response can follow a committed creation. Reconcile the sidebar;\n     // the retained creation key independently makes the next POST safe.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useMutation({\n     ...INTERACTIVE_WRITE_OPTIONS,\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -1079,7 +1079,7 @@\n     },\n     // A lost response can follow a committed creation. Reconcile the sidebar;\n     // the retained creation key independently makes the next POST safe.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useRecoveryMutation(transport, {\n     ...INTERACTIVE_WRITE_OPTIONS,\n",
     "expected_red": [
       "delete mutation wiring invalidates Areas after a failed POST that may already have committed"
     ],
@@ -1023,7 +1022,7 @@
       "oracle:INV-APP-116"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -888,7 +888,7 @@\n     // Success and failure both reconcile with the server. A transport failure\n     // may still follow a committed write, so failure cannot leave cached Area\n     // defaults authoritative.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const remove = useMutation({\n     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -1100,7 +1100,7 @@\n     // Success and failure both reconcile with the server. A transport failure\n     // may still follow a committed write, so failure cannot leave cached Area\n     // defaults authoritative.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const remove = useRecoveryMutation(transport, {\n     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>\n",
     "expected_red": [
       "delete mutation wiring invalidates Areas after a failed PATCH"
     ],

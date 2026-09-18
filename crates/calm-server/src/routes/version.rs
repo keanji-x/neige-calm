@@ -68,6 +68,9 @@ use utoipa::ToSchema;
 /// preflight must refuse that pairing instead of letting the list go blank.
 /// `CardRuntimeView.last_turn_completed_ms` rides along optional and needs no
 /// bump of its own.
+///
+/// Revision 10 combines those required fields with #1712 scan-only enrollment.
+/// Both branches used revision 9 independently; neither alone supplies the union.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor.
@@ -145,9 +148,10 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // parser requires `lastTurnCompletedAt`, which a v8 kernel does not send, so
 // a bundled client ahead of its kernel must sit behind the `server-update`
 // curtain rather than fail every conversation list; and the raised floor
-// keeps a v28 bundle — which keys its read receipts on the per-boot
-// `dbInstanceId` instead of `databaseId` — off this kernel.
-pub const WEB_COMPAT_VERSION: u32 = 29;
+// keeps a v28 bundle off this kernel.
+// #1712 retains floor 30 for scan-only v2 enrollment's claim/redeem endpoints;
+// the combined required-field and enrollment contract is REST revision 10.
+pub const WEB_COMPAT_VERSION: u32 = 30;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

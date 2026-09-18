@@ -33,6 +33,14 @@ auth_dev_autologin = false
 cwd = ""
 extra_args = []
 
+[tailnet]
+# Makes the bundled node available in Settings; remote access starts disabled.
+# Omit this section / use "disabled" for an existing explicit Funnel provider.
+provider = "private-tailnet"
+hostname = "neige"
+# binary = "~/.local/share/neige-app/releases/current-server/bin/neige-tailnet"
+# state_dir = "~/.local/share/neige-calm/tailnet"
+
 [timing]
 stop_grace_ms = 5000
 restart_delay_ms = 1000

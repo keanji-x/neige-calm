@@ -12,6 +12,7 @@ import java.io.ByteArrayInputStream
 internal class BundledWebViewClient(
   private val original: WebViewClient,
   private val assets: BundledFrontendAssets,
+  private val visited: (String) -> Unit = {},
 ) : WebViewClient() {
   override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
     // The original also tracks interception and injects initialization scripts
@@ -37,7 +38,10 @@ internal class BundledWebViewClient(
   }
   override fun onPageCommitVisible(view: WebView, url: String) = original.onPageCommitVisible(view, url)
   override fun onLoadResource(view: WebView, url: String) = original.onLoadResource(view, url)
-  override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) = original.doUpdateVisitedHistory(view, url, isReload)
+  override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+    original.doUpdateVisitedHistory(view, url, isReload)
+    visited(url)
+  }
   override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) = original.onReceivedError(view, request, error)
   override fun onReceivedError(view: WebView, code: Int, description: String, url: String) = original.onReceivedError(view, code, description, url)
   override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) = original.onReceivedHttpError(view, request, response)

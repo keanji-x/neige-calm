@@ -15,7 +15,7 @@ describe('production login assembly', () => {
     const transport = { send: vi.fn().mockResolvedValue({
       status: 401, statusText: 'Unauthorized', body: { code: 'unauthorized', error: 'unauthorized' },
     }) };
-    render(<LoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={vi.fn()} />);
+    render(<LoginPage login={(username, password, signal) => loginWithTransport(transport, username, password, signal)} reload={vi.fn()} />);
     await userEvent.type(screen.getByLabelText('Username'), 'owner');
     await userEvent.type(screen.getByLabelText('Password'), 'wrong');
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));

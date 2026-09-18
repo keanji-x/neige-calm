@@ -19,15 +19,27 @@ assert.equal(original.split(needle).length, 2);
 // privileged launcher; the second pins HTTPS/local-address rejection.
 const expected = ['io.neigecalm.next.BundledOriginTest#originRequiresAnExplicitSafeAuthority',
   'io.neigecalm.next.BundledOriginTest#serverBindingCannotTargetPrivilegedOrLoopbackOrigins'];
+// Exact discovery from the selected classes' JUnit reports. Check identities,
+// not only a count: a missing case must not be hidden by an unrelated new one.
+const discovery = {
+  BundledOriginTest: ['originRequiresAnExplicitSafeAuthority', 'originAndBackendRequestsNeverSelectBundledFiles',
+    'missingAssetsAndTraversalDoNotFallBackToNetworkOrSpaHtml', 'assetsAndMainFrameRoutesUseTheBundledFiles',
+    'serverBindingCannotTargetPrivilegedOrLoopbackOrigins'],
+  ConnectionAttemptTest: ['aFailedIpFallsBackOnceToConfiguredTailscale', 'explicitSelectionRejectsUnselectedOrDisabledTargetsBeforeProbe',
+    'exhaustionStopsAndMissingOptionsAreNotTried', 'explicitTailnetSelectionNeverProbesReachableDirect',
+    'cancellationStopsBeforeStartingAnotherRoute', 'unreachableExplicitTailnetNeverFallsBackToReachableDirect',
+    'addressesAreExplicitAndCannotTargetTheLauncherOrMetadata', 'cleartextIsLimitedToTheSelectedOrigin',
+    'ipIsPreferredEvenWhenTheEditorShowsTailscale', 'explicitSelectionCancellationCannotAdvanceToAnotherRoute'],
+};
+const expectedDiscovery = Object.entries(discovery).flatMap(([suite, names]) => names.map((name) => `io.neigecalm.next.${suite}#${name}`)).sort();
 
 async function run(label) {
   await rm(reports, { recursive: true, force: true });
   const result = spawnSync('./gradlew', [':app:testUniversalDebugUnitTest', '--tests', 'io.neigecalm.next.BundledOriginTest', '--tests', 'io.neigecalm.next.ConnectionAttemptTest',
-    '--max-workers=4', '--no-daemon'], { cwd: android, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    '--max-workers=2', '--no-daemon'], { cwd: android, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   await writeFile(join(artifacts, `${label}.log`), `${result.stdout ?? ''}${result.stderr ?? ''}`);
   const report = readJUnit(reports);
-  assert.equal(Object.keys(report).filter((name) => name.startsWith('io.neigecalm.next.BundledOriginTest#')).length, 5, 'Origin policy tests did not all run');
-  assert.equal(Object.keys(report).filter((name) => name.startsWith('io.neigecalm.next.ConnectionAttemptTest#')).length, 6, 'Direct-route policy tests did not all run');
+  assert.deepEqual(Object.keys(report).sort(), expectedDiscovery, 'Origin and direct-route policy discovery must match exactly');
   console.log(`${label}: ${JSON.stringify(report)}`);
   return { exit: result.status, report };
 }
@@ -51,5 +63,5 @@ try {
   assert.equal(await readFile(source, 'utf8'), original);
   green(await run('restored'));
 }
-await writeFile(join(artifacts, 'mutation.json'), JSON.stringify({ expected, actual, restoredGreen: true,
+await writeFile(join(artifacts, 'mutation.json'), JSON.stringify({ expected, actual, discovery: expectedDiscovery, restoredGreen: true,
   sourceSha256: createHash('sha256').update(original).digest('hex') }, null, 2));

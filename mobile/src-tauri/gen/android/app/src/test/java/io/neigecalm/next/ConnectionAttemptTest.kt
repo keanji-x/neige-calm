@@ -4,7 +4,7 @@ import org.junit.Test
 import org.junit.Assert.*
 
 class ConnectionAttemptTest {
-  private val settings = ConnectionSettings("tailscale", "http://192.168.1.8:4140", true)
+  private val settings = ConnectionSettings("tailscale", "http://192.168.1.8:4140", true, P2PConnection.ORIGIN, false)
 
   @Test fun ipIsPreferredEvenWhenTheEditorShowsTailscale() {
     val attempted = mutableListOf<String>()
@@ -22,11 +22,47 @@ class ConnectionAttemptTest {
     assertEquals("tailscale", result.route?.mode)
     assertEquals(1, result.failures.size)
   }
+  @Test fun explicitTailnetSelectionNeverProbesReachableDirect() {
+    val attempted = mutableListOf<ConnectionRoute>()
+    val result = ConnectionAttempt.firstAvailable(settings, settings.tailnetOrigin) { attempted.add(it) }
+    assertEquals(listOf(ConnectionRoute("tailscale", settings.tailnetOrigin)), attempted)
+    assertEquals(ConnectionRoute("tailscale", settings.tailnetOrigin), result.route)
+  }
+  @Test fun unreachableExplicitTailnetNeverFallsBackToReachableDirect() {
+    val attempted = mutableListOf<ConnectionRoute>()
+    val result = ConnectionAttempt.firstAvailable(settings, settings.tailnetOrigin) {
+      attempted.add(it)
+      if (it.mode == "tailscale") throw java.net.SocketTimeoutException("chosen unavailable")
+    }
+    assertNull(result.route)
+    assertEquals(listOf(ConnectionRoute("tailscale", settings.tailnetOrigin)), attempted)
+    assertEquals(listOf(ConnectionFailure("tailscale", "chosen unavailable")), result.failures)
+  }
+  @Test fun explicitSelectionRejectsUnselectedOrDisabledTargetsBeforeProbe() {
+    for ((configured, requested) in listOf(settings to "https://other.tail.example", settings to "",
+      settings.copy(tailscaleEnabled = false) to settings.tailnetOrigin)) {
+      try {
+        ConnectionAttempt.firstAvailable(configured, requested) { fail("Invalid choice cannot probe any route") }
+        fail("Invalid choice must be rejected")
+      } catch (_: IllegalArgumentException) {}
+    }
+  }
+  @Test fun explicitSelectionCancellationCannotAdvanceToAnotherRoute() {
+    val cancellation = ConnectionAttempt.Cancellation()
+    val attempted = mutableListOf<ConnectionRoute>()
+    try {
+      ConnectionAttempt.firstAvailable(settings, settings.tailnetOrigin) {
+        attempted.add(it); cancellation.cancel(); cancellation.check()
+      }
+      fail("Cancelled choice must not complete")
+    } catch (_: java.util.concurrent.CancellationException) {}
+    assertEquals(listOf(ConnectionRoute("tailscale", settings.tailnetOrigin)), attempted)
+  }
   @Test fun exhaustionStopsAndMissingOptionsAreNotTried() {
     var attempts = 0
     val result = ConnectionAttempt.firstAvailable(settings) { attempts++; throw java.net.SocketTimeoutException("timeout") }
     assertNull(result.route); assertEquals(2, attempts); assertEquals(2, result.failures.size)
-    val empty = ConnectionAttempt.firstAvailable(ConnectionSettings("ip", "", false)) { fail("No configured route") }
+    val empty = ConnectionAttempt.firstAvailable(ConnectionSettings("ip", "", false, "", false)) { fail("No configured route") }
     assertNull(empty.route); assertTrue(empty.failures.isEmpty())
   }
   @Test fun cancellationStopsBeforeStartingAnotherRoute() {

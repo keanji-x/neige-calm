@@ -120,3 +120,31 @@ it('does not overwrite a newer acknowledgement from another tab', () => {
   second.markRead('conversation', 'a', 15);
   expect(createUiPreferences(storage).isUnread('conversation', 'a', 20)).toBe(false);
 });
+
+it('isolates remembered conversation selection by verified recovery scope', () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const preferences = createUiPreferences(storage);
+  preferences.setRecoveryScope('origin/owner/db-a'); preferences.setConversation('track', 'conversation-a');
+  preferences.setRecoveryScope('origin/owner/db-b'); expect(preferences.conversation('track')).toBeNull();
+  preferences.setConversation('track', 'conversation-b');
+  const resumed = createUiPreferences(storage); resumed.setRecoveryScope('origin/owner/db-b');
+  expect(resumed.conversation('track')).toBe('conversation-b');
+});
+
+it('preserves newer cross-tab read receipts within the same recovery scope only', () => {
+  const storage = memoryStorage();
+  const first = createUiPreferences(storage);
+  const second = createUiPreferences(storage);
+  for (const preferences of [first, second]) {
+    preferences.setRecoveryScope('origin/owner/db-a'); preferences.setReadScope('db-a');
+  }
+  first.markRead('conversation', 'visible', 20);
+  second.markRead('conversation', 'visible', 10);
+  const restored = createUiPreferences(storage);
+  restored.setReadScope('db-a'); restored.setRecoveryScope('origin/owner/db-a');
+  expect(restored.isUnread('conversation', 'visible', 20)).toBe(false);
+  expect(restored.isUnread('conversation', 'visible', 21)).toBe(true);
+  restored.setRecoveryScope('origin/another-owner/db-a');
+  expect(restored.isUnread('conversation', 'visible', 20)).toBe(true);
+});

@@ -6,7 +6,7 @@
     term.cols 小于 MIN_COMMIT_COLS 或 term.rows 小于 MIN_COMMIT_ROWS 时必须 dispose，并返回 deferUntilUsableGeometry
   why: >
     瞬时无效尺寸不能成为共享 PTY 的提交尺寸
-  source: fe/web/src/systems/terminal/xterm-view.tsx:130-138,551-560
+  source: fe/web/src/systems/terminal/xterm-view.tsx:140-141,545-558
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-geometry
   intentional_omission: false
@@ -22,7 +22,7 @@
     SnapshotRequired 必须清空本地终端并等待随后下发的 RenderSnapshot
   why: >
     daemon 已决定恢复方式，客户端不能自行请求或重连制造第二条恢复路径
-  source: fe/web/src/systems/terminal/xterm-view.tsx:801-805
+  source: fe/web/src/systems/terminal/xterm-view.tsx:823-828
   authoritative_test: NONE
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -38,7 +38,7 @@
     JSON 线格以普通 number array 传输，写入 xterm 前转换成 Uint8Array
   why: >
     JSON 不能承载二进制，xterm.write 需要 Uint8Array
-  source: fe/web/src/systems/terminal/xterm-view.tsx:175-177,715-724
+  source: fe/web/src/systems/terminal/xterm-view.tsx:735-747,771-776
   authoritative_test: NONE
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -54,7 +54,7 @@
     protocol-error 是唯一接管式覆盖层，并提供 assertive alert、错误详情和刷新动作
   why: >
     协议不兼容需要阻止继续交互，其余终端状态不应遮盖线格
-  source: fe/web/src/systems/terminal/xterm-view.tsx:1161-1188
+  source: fe/web/src/systems/terminal/xterm-view.tsx:1231-1247
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false

@@ -162,6 +162,18 @@ export type ClaudePermissionsSource = "declared" | "track_policy" | "declared_wi
  */
 export type EditAuthor = "planner" | "user" | "assistant" | "kernel" | "plugin";
 
+export type EnrollmentClaim = { enrollmentId: string, ticket: string, deviceName: string, attemptId: string, attemptSecret: string, };
+
+export type EnrollmentClaimed = { enrollmentId: string, attemptId: string, claimId: string, };
+
+export type EnrollmentCleanup = { pendingCleanup: number, detail: string, };
+
+export type EnrollmentCreated = { enrollmentId: string, qrPayload: string, qrImage: string, authKeyExpiresAt: number, pairExpiresAt: number, };
+
+export type EnrollmentRedeem = { enrollmentId: string, attemptId: string, attemptSecret: string, };
+
+export type EnrollmentRedeemed = { enrollmentId: string, attemptId: string, sessionFingerprint: string, };
+
 /**
  * The full set of WS event envelopes the kernel emits on `/api/events`.
  *
@@ -363,7 +375,9 @@ export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" |
 
 export type McpCheckResult = { tools: Array<string>, };
 
-export type MobileStatus = { available: boolean, publicUrl: string | null, pending: Array<PendingPair>, devices: Array<PairedDevice>, };
+export type MobileProvider = "unavailable" | "funnel" | "private-tailnet";
+
+export type MobileStatus = { provider: MobileProvider, tailnet: TailnetStatus | null, available: boolean, publicUrl: string | null, pending: Array<PendingPair>, devices: Array<PairedDevice>, };
 
 export type Overlay = { id: string, plugin_id: string, 
 /**
@@ -492,6 +506,14 @@ export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
  * locates the anchor by `text`).
  */
 export type SourceQuote = { id: string, text: string, start: number, end: number, };
+
+export type TailnetLogin = { loginUrl: string, displayForSeconds: number, };
+
+export type TailnetNodeState = "stopped" | "starting" | "needs-login" | "needs-approval" | "online" | "offline";
+
+export type TailnetPhase = "disabled" | "starting" | "needs-login" | "needs-approval" | "online" | "degraded" | "failed";
+
+export type TailnetStatus = { desiredEnabled: boolean, phase: TailnetPhase, processRunning: boolean, childPid: number | null, nodeState: TailnetNodeState, httpsReady: boolean, upstreamReady: boolean, origin: string | null, dnsName: string | null, nodeId: string | null, addresses: Array<string>, detail: string, };
 
 /**
  * Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const apk = process.argv[2];
 assert.ok(apk, 'Usage: node scripts/verify-bundled-apk.mjs <apk>');
@@ -12,7 +15,22 @@ const nativeAbis = names.filter((name) => /^lib\/[^/]+\/libapp_lib\.so$/.test(na
 assert.ok(nativeAbis.length > 0, 'APK must contain the native app runtime');
 for (const abi of nativeAbis) assert.ok(names.includes(`lib/${abi}/libneige_p2p.so`), `Missing userspace networking for ${abi}`);
 
-const read = (name) => execFileSync('unzip', ['-p', apk, name], { maxBuffer: 32 * 1024 * 1024 });
+const read = (name) => execFileSync('unzip', ['-p', apk, name], { maxBuffer: 64 * 1024 * 1024 });
+const nativeDirectory = mkdtempSync(join(tmpdir(), 'neige-native-build-info-'));
+try {
+  for (const name of names.filter((name) => /^lib\/[^/]+\/libneige_p2p\.so$/.test(name))) {
+    const abi = name.split('/')[1];
+    const library = join(nativeDirectory, `${abi}.so`);
+    const binary = read(name);
+    writeFileSync(library, binary);
+    const info = execFileSync('go', ['version', '-m', library], { encoding: 'utf8' });
+    const tags = info.match(/build\s+-tags=([^\n\r]+)/)?.[1].split(',') ?? [];
+    assert.ok(tags.includes('ts_omit_logtail'), `Userspace networking for ${abi} must omit logtail from its actual build`);
+    assert.ok(!tags.includes('neige_instrumentation'), `Userspace networking for ${abi} must not include instrumentation trust`);
+    assert.ok(!binary.includes(Buffer.from('NEIGE_INSTRUMENTATION_CA')), `Userspace networking for ${abi} must not include the fixture CA loader`);
+  }
+} finally { rmSync(nativeDirectory, { recursive: true, force: true }); }
+
 const manifest = JSON.parse(read(`${prefix}manifest.json`).toString('utf8'));
 assert.equal(manifest.version, 1);
 assert.match(manifest.sourceRevision, /^[0-9a-f]{40}$/);

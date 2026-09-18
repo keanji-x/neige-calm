@@ -1150,6 +1150,7 @@ fn write_v2_source_tree(source: &Path, version: &str) -> anyhow::Result<()> {
         "calm-proc-supervisor",
         "neige-codex-bridge",
         "neige-mcp-stdio-shim",
+        "neige-tailnet",
         "neige",
     ] {
         write_executable(

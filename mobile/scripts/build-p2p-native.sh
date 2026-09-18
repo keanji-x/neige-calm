@@ -14,5 +14,14 @@ export GOOS=android GOARCH="$goarch" CGO_ENABLED=1
 export CC="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$compiler-clang"
 export CXX="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$compiler-clang++"
 output="../src-tauri/gen/android/app/src/main/jniLibs/$abi"
+tags=ts_omit_logtail
+case "${2:-normal}" in
+  normal) ;;
+  instrumented)
+    output="../src-tauri/gen/android/app/build/instrumented-p2p/$abi"
+    tags+=,neige_instrumentation
+    ;;
+  *) echo "Unsupported native build variant: $2" >&2; exit 1 ;;
+esac
 mkdir -p "$output"
-go build -p 4 -buildmode=c-shared -trimpath -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o "$output/libneige_p2p.so" .
+go build -p 2 -tags="$tags" -buildmode=c-shared -trimpath -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o "$output/libneige_p2p.so" .

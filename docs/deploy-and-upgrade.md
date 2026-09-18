@@ -23,7 +23,7 @@ plugin sources should not be linked to shared or lower-trust agent worktrees.
 │   ├── previous-web    -> rel-YYYY/
 │   ├── rel-XXXX/                              (release package)
 │   │   ├── bin/{calm-server, calm-proc-supervisor, neige-codex-bridge,
-│   │   │        neige-mcp-stdio-shim, neige, neige-app}
+│   │   │        neige-mcp-stdio-shim, neige, neige-app, neige-tailnet}
 │   │   ├── web/dist/                         (next/ contains the maintained FE)
 │   │   └── manifest.json                      (schemaVersion=2 v2 manifest)
 │   └── rel-YYYY/
@@ -56,12 +56,16 @@ changes; never expose it to LAN.
 
 ### 2.1 Build all binaries + web
 
+Install the Rust and Node.js development prerequisites and Go 1.26.6 (the version
+declared in `tailnet/go.mod`). The Go helper must be built before packaging.
+
 ```bash
 cd /path/to/neige-calm
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   NEIGE_BUILD_SHA="$(git rev-parse HEAD)" cargo build --locked --release \
   -p neige-app -p calm-server -p calm-proc-supervisor \
   -p calm-codex-bridge -p neige-mcp-stdio-shim -p neige-cli
+tailnet/build.sh
 (cd fe && npm ci && npm run build)
 ```
 
@@ -77,7 +81,8 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   --bin calm-proc-supervisor=target/release/calm-proc-supervisor \
   --bin neige-codex-bridge=target/release/neige-codex-bridge \
   --bin neige-mcp-stdio-shim=target/release/neige-mcp-stdio-shim \
-  --bin neige=target/release/neige
+  --bin neige=target/release/neige \
+  --bin neige-tailnet=target/release/neige-tailnet
 ```
 
 Inspect `releases/rel-1/manifest.json`:
@@ -88,7 +93,7 @@ Inspect `releases/rel-1/manifest.json`:
   breaking release to a `preserving` verdict.
 - `compatibility { ... }` (9 fields sourced from
   `calm-server --emit-kernel-compatibility-json` of the just-built binary)
-- `units` map covering all 7 crates with `version` + `binarySha256` (or
+- `units` map covering all 8 release units with `version` + `binarySha256` (or
   `treeSha256` for `web`) + `restartPolicy`. `calmServer.dbMigrationPolicy`
   defaults to `forwardOnly`; override at package time with
   `NEIGE_DB_MIGRATION_POLICY=none|additive|forwardOnly|destructive`.

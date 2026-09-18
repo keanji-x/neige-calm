@@ -2,61 +2,52 @@ use super::pairing::PairingState;
 use axum::serve::Listener;
 use std::future::Future;
 use std::io;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::{TcpListener, TcpStream};
 
 /// Cancellation reaches the actual upgraded transport, including WebSockets.
 /// Merely removing a session or gracefully stopping the listener is insufficient.
-pub(super) struct RevocableListener {
-    pub listener: TcpListener,
+pub(super) struct RevocableListener<L> {
+    pub listener: L,
     pub state: Arc<Mutex<PairingState>>,
 }
 
-pub(super) struct RevocableIo {
-    stream: TcpStream,
+pub(super) struct RevocableIo<S> {
+    stream: S,
     read_revoked: Pin<Box<dyn Future<Output = ()> + Send>>,
     write_revoked: Pin<Box<dyn Future<Output = ()> + Send>>,
     closed: bool,
 }
 
-impl Listener for RevocableListener {
-    type Io = RevocableIo;
-    type Addr = SocketAddr;
+impl<L: Listener> Listener for RevocableListener<L> {
+    type Io = RevocableIo<L::Io>;
+    type Addr = L::Addr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
-            match self.listener.accept().await {
-                Ok((stream, addr)) => {
-                    let Ok(state) = self.state.lock() else {
-                        continue;
-                    };
-                    let read_revoked = Box::pin(state.connections.clone().cancelled_owned());
-                    let write_revoked = Box::pin(state.connections.clone().cancelled_owned());
-                    return (
-                        RevocableIo {
-                            stream,
-                            read_revoked,
-                            write_revoked,
-                            closed: false,
-                        },
-                        addr,
-                    );
-                }
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
-            }
+            let (stream, addr) = self.listener.accept().await;
+            let Ok(state) = self.state.lock() else {
+                continue;
+            };
+            return (
+                RevocableIo {
+                    stream,
+                    read_revoked: Box::pin(state.connections.clone().cancelled_owned()),
+                    write_revoked: Box::pin(state.connections.clone().cancelled_owned()),
+                    closed: false,
+                },
+                addr,
+            );
         }
     }
-
-    fn local_addr(&self) -> io::Result<SocketAddr> {
+    fn local_addr(&self) -> io::Result<Self::Addr> {
         self.listener.local_addr()
     }
 }
 
-impl RevocableIo {
+impl<S> RevocableIo<S> {
     fn check(&mut self, cx: &mut Context<'_>, writing: bool) -> io::Result<()> {
         let revoked = if writing {
             &mut self.write_revoked
@@ -75,7 +66,7 @@ impl RevocableIo {
     }
 }
 
-impl AsyncRead for RevocableIo {
+impl<S: AsyncRead + Unpin> AsyncRead for RevocableIo<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -88,7 +79,7 @@ impl AsyncRead for RevocableIo {
     }
 }
 
-impl AsyncWrite for RevocableIo {
+impl<S: AsyncWrite + Unpin> AsyncWrite for RevocableIo<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -115,6 +106,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Wake, Waker};
+    use tokio::net::{TcpListener, TcpStream};
 
     #[derive(Default)]
     struct WakeCounter(AtomicUsize);

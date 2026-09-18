@@ -35,6 +35,7 @@ mod manifest;
 mod package;
 mod preflight;
 mod source;
+mod tailnet;
 mod upgrade;
 
 use config::{AppConfig, ServeOverrides, SystemdScope, default_config_path, init_config};
@@ -293,6 +294,7 @@ struct AppState {
     cfg: Arc<AppConfig>,
     supervisor: Arc<Supervisor>,
     proc_supervisor: Arc<Supervisor>,
+    tailnet: Option<Arc<tailnet::TailnetManager>>,
     apply_lock: Arc<Mutex<()>>,
     admin_token: Option<Arc<str>>,
 }
@@ -323,6 +325,14 @@ impl From<&AppConfig> for SupervisorConfig {
 fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
     let control_sock = cfg.proc_supervisor_sock();
     let mut child_args = cfg.child.extra_args.clone();
+    if cfg.tailnet_unavailable {
+        child_args.push("--private-tailnet-unavailable".into());
+    } else if let Some(tailnet) = &cfg.tailnet {
+        child_args.extend([
+            "--private-tailnet-config".into(),
+            tailnet.ingress_config().display().to_string(),
+        ]);
+    }
     for (flag, path) in [
         ("--plugins-dir", &cfg.child.plugins_dir),
         ("--plugins-data-dir", &cfg.child.plugins_data_dir),
@@ -1098,6 +1108,25 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("bind admin API on {admin_listen}"))?;
 
+    let tailnet = if let Some(config) = &cfg.tailnet {
+        // Conflicting declared providers remain a configuration error. The
+        // optional subsystem's files, state version and sockets cannot stop
+        // local kernel/proc startup, nor may unreadable intent become disabled.
+        config.validate_provider_conflicts(&cfg.child.extra_args)?;
+        match config
+            .validate(&cfg.child.extra_args)
+            .and_then(|()| tailnet::TailnetManager::start(config.clone()))
+        {
+            Ok(manager) => Some(manager),
+            Err(error) => {
+                tracing::warn!(%error,"private Tailnet initialization failed; local Neige remains available");
+                cfg.tailnet_unavailable = true;
+                None
+            }
+        }
+    } else {
+        None
+    };
     let proc_control_sock = cfg.proc_supervisor_sock();
     let cfg = Arc::new(cfg);
     let proc_supervisor = Supervisor::new(proc_supervisor_config(&cfg));
@@ -1106,6 +1135,7 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         cfg: cfg.clone(),
         supervisor: supervisor.clone(),
         proc_supervisor: proc_supervisor.clone(),
+        tailnet: tailnet.clone(),
         apply_lock: Arc::new(Mutex::new(())),
         admin_token,
     };
@@ -1131,6 +1161,9 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
 
     supervisor.shutdown().await;
     proc_supervisor.shutdown().await;
+    if let Some(tailnet) = tailnet {
+        tailnet.shutdown().await?;
+    }
     supervisor_task.await?;
     if let Some(task) = proc_supervisor_task {
         task.await?;
@@ -1301,6 +1334,7 @@ async fn upgrade_apply(
                 state.supervisor.clone(),
                 state.proc_supervisor.clone(),
                 kill_proc_supervisor,
+                state.tailnet.clone(),
             );
             StatusCode::ACCEPTED
         }
@@ -1409,6 +1443,7 @@ fn schedule_exec_self(
     supervisor: Arc<Supervisor>,
     proc_supervisor: Arc<Supervisor>,
     kill_proc_supervisor: bool,
+    tailnet: Option<Arc<tailnet::TailnetManager>>,
 ) {
     tokio::spawn(async move {
         // Axum has no per-response flush hook here. This delay gives hyper time
@@ -1421,6 +1456,12 @@ fn schedule_exec_self(
         }
         if kill_proc_supervisor && let Err(err) = proc_supervisor.force_stop_and_wait().await {
             tracing::warn!(error = %err, "failed to stop proc-supervisor before exec-self");
+        }
+        if let Some(tailnet) = tailnet
+            && let Err(error) = tailnet.shutdown().await
+        {
+            tracing::error!(%error,"failed to stop private Tailnet before exec-self");
+            return;
         }
         exec_self(&cfg);
     });

@@ -131,7 +131,7 @@ fn mobile_pairing_expiry_and_capacity_are_enforced() {
 fn mobile_pairing_device_revocation_removes_only_its_session_and_closes_streams() {
     let sessions = SessionStore::new();
     let mut state = enabled();
-    let owner_session = sessions.create();
+    let owner_session = sessions.create(crate::auth::SessionAuthority::PasswordLogin);
     let claim = claimed(&mut state);
     state.approve(&claim.id).unwrap();
     let mobile_session = state

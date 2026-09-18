@@ -1,3 +1,4 @@
+import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import {
   createCardLifecycleStore,
   sameGeometry,
@@ -47,6 +48,7 @@ export interface CardHostOptions {
    * and say so (see `CardHostCapabilities.files`).
    */
   files?: CardFilesPort;
+  recovery?: RecoveryAccess;
 }
 
 function connectController(
@@ -140,6 +142,7 @@ export function createCardHost(registry: CardRegistry, options: CardHostOptions 
         lifecycle,
         slots,
         files: options.files ?? null,
+        recovery: options.recovery ?? null,
         emit(command: CardRuntimeCommand) {
           if (command.type === 'refresh') writer.bumpRefresh();
         },

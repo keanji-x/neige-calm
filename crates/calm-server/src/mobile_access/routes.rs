@@ -15,8 +15,15 @@ use utoipa::ToSchema;
 #[serde(deny_unknown_fields)]
 pub struct MobileAction {}
 
-fn owner(auth: &AuthState, principal: &Principal) -> Result<()> {
-    if auth.config.dev_autologin || auth.sessions.get(&principal.session_id).is_none() {
+pub(super) fn owner(auth: &AuthState, principal: &Principal) -> Result<()> {
+    if auth.config.dev_autologin
+        || !auth
+            .sessions
+            .get(&principal.session_id)
+            .is_some_and(|session| {
+                session.authority == crate::auth::SessionAuthority::PasswordLogin
+            })
+    {
         return Err(CalmError::Forbidden(
             "Mobile access requires a real owner login".into(),
         ));
@@ -26,10 +33,13 @@ fn owner(auth: &AuthState, principal: &Principal) -> Result<()> {
 
 pub fn management_router() -> Router<AuthState> {
     Router::new()
+        .merge(super::enrollment_routes::management_router())
         .route(
             "/api/mobile/access",
             get(status).post(enable).delete(disable),
         )
+        .route("/api/mobile/tailnet/login", post(tailnet_login))
+        .route("/api/mobile/tailnet/logout", post(tailnet_logout))
         .route("/api/mobile/pairings", post(create))
         .route("/api/mobile/pairings/{id}/approve", post(approve))
         .route("/api/mobile/devices/{id}", axum::routing::delete(revoke))
@@ -38,6 +48,7 @@ pub fn management_router() -> Router<AuthState> {
 
 pub fn public_router() -> Router<AuthState> {
     Router::new()
+        .merge(super::enrollment_routes::public_router())
         .route("/api/mobile/pairings/claim", post(claim))
         .route("/api/mobile/pairings/redeem", post(redeem))
         .route("/mobile/pair", get(bootstrap))
@@ -46,7 +57,7 @@ pub fn public_router() -> Router<AuthState> {
         .layer(DefaultBodyLimit::max(4096))
 }
 
-fn no_store(value: impl IntoResponse) -> Response {
+pub(super) fn no_store(value: impl IntoResponse) -> Response {
     let mut response = value.into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -55,7 +66,11 @@ fn no_store(value: impl IntoResponse) -> Response {
     response
 }
 
-#[utoipa::path(get, path = "/api/mobile/access", tag = "mobile", responses((status = 200, body = MobileStatus), (status = 401, body = ErrorBody)))]
+#[utoipa::path(
+    get, path = "/api/mobile/access", tag = "mobile",
+    responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody), (status = 403, body = ErrorBody))
+)]
 pub async fn status(State(auth): State<AuthState>, principal: Principal) -> Result<Response> {
     owner(&auth, &principal)?;
     Ok(no_store(Json(auth.mobile.status().await?)))
@@ -188,4 +203,41 @@ async fn bootstrap_css() -> Response {
         [(header::CONTENT_TYPE, "text/css")],
         include_str!("pair.css"),
     ))
+}
+
+#[utoipa::path(
+    post, path = "/api/mobile/tailnet/login", tag = "mobile", request_body = MobileAction,
+    responses((status = 200, body = calm_types::tailnet::TailnetLogin), (status = 400, body = ErrorBody))
+)]
+pub async fn tailnet_login(
+    State(auth): State<AuthState>,
+    principal: Principal,
+    Json(_body): Json<MobileAction>,
+) -> Result<Response> {
+    owner(&auth, &principal)?;
+    let response = auth
+        .mobile
+        .tailnet_action(calm_types::tailnet::TailnetAction::Login)
+        .await?;
+    let login_url = response.login_url.ok_or_else(|| {
+        CalmError::BadRequest("No login request available; refresh node status".into())
+    })?;
+    Ok(no_store(Json(calm_types::tailnet::TailnetLogin {
+        login_url,
+        display_for_seconds: 120,
+    })))
+}
+
+#[utoipa::path(post, path = "/api/mobile/tailnet/logout", tag = "mobile", request_body = MobileAction, responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody)))]
+pub async fn tailnet_logout(
+    State(auth): State<AuthState>,
+    principal: Principal,
+    Json(_body): Json<MobileAction>,
+) -> Result<Response> {
+    owner(&auth, &principal)?;
+    auth.mobile.lock()?.disable(&auth.sessions);
+    auth.mobile
+        .tailnet_action(calm_types::tailnet::TailnetAction::Logout)
+        .await?;
+    Ok(no_store(Json(auth.mobile.status().await?)))
 }

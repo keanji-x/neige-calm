@@ -206,15 +206,18 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(FE_DIST) ## Build binaries and the maintained frontend bundle.
+build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(WORKTREE)/target/release/neige-tailnet $(FE_DIST) ## Build binaries and the maintained frontend bundle.
 
 # Single cargo invocation builds all binaries — cheaper than separate
 # calls because deps overlap. Touch every output so the rule re-fires
 # only when sources change. Issue #236 followup added `neige-mcp-stdio-shim`;
 # issue #388 Phase 1 added `calm-proc-supervisor` (peer-supervised by
 # neige-app and contacted by calm-server for every terminal spawn).
-$(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
+$(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock $(WORKTREE)/tailnet/THIRD_PARTY_NOTICES.txt
 	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-codex-bridge -p neige-app -p neige-mcp-stdio-shim -p calm-proc-supervisor -p neige-cli --bin calm-server --bin neige-codex-bridge --bin neige-app --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
+
+$(WORKTREE)/target/release/neige-tailnet: $(wildcard $(WORKTREE)/tailnet/*.go) $(WORKTREE)/tailnet/go.mod $(WORKTREE)/tailnet/go.sum $(WORKTREE)/tailnet/build.sh
+	$(WORKTREE)/tailnet/build.sh $@
 
 $(FE_NODE_MODULES_STAMP): $(WORKTREE)/fe/package-lock.json
 	@$(CHECK_FE_NODE)

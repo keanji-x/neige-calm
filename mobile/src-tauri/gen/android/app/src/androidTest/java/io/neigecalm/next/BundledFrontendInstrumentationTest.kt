@@ -2,6 +2,7 @@ package io.neigecalm.next
 
 import android.Manifest
 import android.os.SystemClock
+import android.system.Os
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -17,6 +18,7 @@ import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
 import java.net.URL
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -56,7 +58,7 @@ class BundledFrontendInstrumentationTest {
   }
 
   private fun asyncValue(expression: String): JSONObject {
-    evaluate("window.__nativeProbe=null; Promise.resolve().then(function(){return " + expression + ";}).then(function(value){window.__nativeProbe={ok:true,value:value};},function(error){window.__nativeProbe={ok:false,error:String(error)};});")
+    evaluate("window.__nativeProbe=null; Promise.resolve().then(function(){return " + expression + ";}).then(function(value){window.__nativeProbe={ok:true,value:value};},function(error){window.__nativeProbe={ok:false,error:error instanceof Error?error.message:typeof error==='string'?error:JSON.stringify(error)};});")
     val deadline = SystemClock.elapsedRealtime() + 30000
     while (SystemClock.elapsedRealtime() < deadline) {
       val encoded = evaluate("JSON.stringify(window.__nativeProbe && typeof window.__nativeProbe.ok==='boolean' ? window.__nativeProbe : undefined)")
@@ -87,6 +89,7 @@ class BundledFrontendInstrumentationTest {
   @Before fun launch() {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     Assume.assumeTrue(BundledWebViewSupport.available(instrumentation.targetContext))
+    configureNativeFixtureTrust()
     val args = InstrumentationRegistry.getArguments()
     origin = requireNotNull(args.getString("server_origin"))
     otherOrigin = requireNotNull(args.getString("other_origin"))
@@ -113,15 +116,37 @@ class BundledFrontendInstrumentationTest {
     api("/_test/reset")
   }
 
+  internal fun configureNativeFixtureTrust() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    check(context.packageName.endsWith(".instrumented")) { "Fixture trust requires the isolated instrumented APK" }
+    val resource = context.resources.getIdentifier("neige_instrumentation_ca", "raw", context.packageName)
+    check(resource != 0) { "Missing instrumented-only fixture CA" }
+    val ca = File(context.cacheDir, "neige-instrumentation-ca.pem")
+    context.resources.openRawResource(resource).use { input -> ca.outputStream().use { input.copyTo(it) } }
+    // Orchestrator starts a fresh process per test. The instrumentation-tagged
+    // Go init reads this C environment setting before any native TLS request.
+    // Normal networking builds contain no such CA loader.
+    Os.setenv("NEIGE_INSTRUMENTATION_CA", ca.absolutePath, true)
+  }
+
   private fun waitForLauncher() {
+    // An empty saved configuration intentionally performs no network probe.
+    // Require initialized controls before accepting its scan-ready idle state.
     waitFor("Launcher/native connection attempt did not settle",
-      "location.host==='tauri.localhost' && typeof window.__TAURI__?.core?.invoke==='function' && !!document.querySelector('#connection-mode') && document.querySelector('#login')?.disabled===false && ['IP 已连接','连接超时，请重新配置'].includes(document.querySelector('#status-text')?.textContent)")
+      "location.host==='tauri.localhost' && document.readyState==='complete' && typeof window.__TAURI__?.core?.invoke==='function' && document.querySelector('#connection-mode')?.disabled===false && document.querySelector('#ip-origin')?.disabled===false && document.querySelector('#login')?.disabled===false && (['IP 已连接','连接超时，请重新配置'].includes(document.querySelector('#status-text')?.textContent) || (document.querySelector('#status-text')?.textContent==='扫描电脑上的添加手机二维码' && document.querySelector('#ip-origin')?.value==='' && document.querySelector('#error')?.textContent===''))")
   }
 
   private fun bind(server: String) {
     val saved = asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|save_connection',{mode:'ip',ipOrigin:" + JSONObject.quote(server) + ",tailscaleEnabled:false})")
     assertTrue(saved.toString(), saved.getBoolean("ok"))
-    val binding = asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|bind_server',{origin:" + JSONObject.quote(server) + "})")
+    val intent = JSONObject.quote(UUID.randomUUID().toString())
+    val attempt = asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|attempt_connection',{confirmDirect:true,intentId:" + intent + "})")
+    assertTrue(attempt.toString(), attempt.getBoolean("ok"))
+    val route = attempt.getJSONObject("value")
+    assertTrue(route.toString(), route.getBoolean("connected"))
+    assertEquals("ip", route.getString("mode"))
+    assertEquals(server, route.getString("origin"))
+    val binding = asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|bind_server',{origin:" + JSONObject.quote(server) + ",intentId:" + intent + "})")
     assertTrue(binding.toString(), binding.getBoolean("ok"))
   }
 
@@ -155,16 +180,22 @@ class BundledFrontendInstrumentationTest {
     waitFor("Bundled deep link did not render", "document.body.innerText.includes('Network')")
     assertEquals(0, api("/_test/stats").getInt("assets"))
     api("/_test/offline")
-    transition { it.reload() }
-    waitFor("Offline session probe became blank", "document.body.innerText.includes('暂时无法连接服务器')")
-    api("/_test/online")
+    try {
+      transition { it.reload() }
+      waitFor("Offline reload lost the local settings page or recovery status",
+        "location.pathname==='/next/settings/network' && !!document.querySelector('[data-nc-recovery-page=settings]') && !!document.querySelector('[data-nc-recovery-status=offline]')")
+      assertEquals(0, api("/_test/stats").getInt("assets"))
+    } finally { api("/_test/online") }
+    waitFor("Restored backend did not recover the settings page",
+      "location.pathname==='/next/settings/network' && document.body.innerText.includes('Network') && !!document.querySelector('[data-nc-recovery-status=connected]')")
+    assertEquals(0, api("/_test/stats").getInt("assets"))
   }
 
   private fun assertNativeDenied() {
     waitFor("Native bridge must exist for an actual ACL check", "typeof window.__TAURI__?.core?.invoke==='function'")
     for (command in listOf("plugin:bundled-frontend|bind_server", "plugin:bundled-frontend|connection_settings",
       "plugin:bundled-frontend|save_connection", "plugin:bundled-frontend|attempt_connection",
-      "plugin:bundled-frontend|login_tailscale", "plugin:barcode-scanner|request_permissions")) {
+      "plugin:bundled-frontend|enroll_from_scan", "plugin:bundled-frontend|cancel_enrollment", "plugin:bundled-frontend|confirm_legacy_tailnet", "plugin:barcode-scanner|request_permissions")) {
       val result = asyncValue("window.__TAURI__.core.invoke(" + JSONObject.quote(command) + ",{origin:" + JSONObject.quote(otherOrigin) + "})")
       assertFalse("Remote page invoked " + command, result.getBoolean("ok"))
       assertTrue("Expected the permission fence, not a missing bridge or handler: " + result, result.getString("error").contains("not allowed"))

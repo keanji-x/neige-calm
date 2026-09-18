@@ -13,15 +13,20 @@ workspace opens setup; Back from setup backgrounds the app without logging out.
 IP mode accepts trusted LAN/public IP HTTP origins or trusted HTTPS server
 origins, entered after installation. Tailscale uses the userspace tsnet engine
 inside the app, so no separate Tailscale app or Android VPN slot is required.
-Log in through the external browser, then scan the server's web Settings →
-Network → Mobile connection QR and approve the phone there.
+Scan the computer's short-lived "Add phone" v2 QR to join its Tailnet and pair
+with Neige in one native-owned, bundled document. The phone never opens a
+Tailscale browser login. The host needs separately configured enrollment
+credentials, HTTPS and network policy; those real-account prerequisites are not
+proven by the local tests.
 
-**This release's Tailscale destination is fixed** to
-`pivot-neige.tail328551.ts.net:10000` via tailnet peer `100.123.126.35:10000`.
-It is a deployment-specific build, not an arbitrary-tailnet QR client. The
-constants in `p2p-native/main.go`, `P2PConnection.kt`, and `server-profile.json`
-form that build profile; changing only the web default does not retarget tsnet.
-Use IP mode for another directly reachable server.
+The scanned origin is accepted only after its peer identity and numeric address
+are verified against the app node's current authenticated map and TLS succeeds.
+The app retains the same private node directory and previously verified targets.
+An uncertain registration can retry only the same still-valid QR. Replacing an
+unknown or foreign identity requires the launcher's explicit native-confirmed
+restart-enrollment action, which uses the SDK Logout API. It does not delete the
+node directory or remove devices from the Tailnet administrator's inventory.
+Legacy v1 pairing keeps its existing approval flow and fixed deployment profile.
 
 Requires ARM64 Android 8.0/API 26+, an up-to-date Android System WebView
 (Chromium 111+), and a reachable server. This is an online data client. TLS
@@ -85,9 +90,9 @@ emulator job that launches the real activity against a temporary real backend,
 refuses frontend network requests, tests native authority after navigation, and
 drives the direct IP route, Back navigation and remembered sessions; a second job
 drives the minified release APK through adb. Both emulator jobs run for `mobile/`
-pull requests and for every push to `main`. CI builds use the committed Tailscale
-endpoint and no prefilled IP connection; the Tailscale login itself needs the real
-control plane and is verified on a phone, not in CI.
+pull requests and for every push to `main`. CI builds have no prefilled IP
+connection and cannot enroll without a valid QR. Real Tailnet enrollment needs
+the configured control plane and is verified separately on a phone, not in CI.
 
 ```sh
 npm test

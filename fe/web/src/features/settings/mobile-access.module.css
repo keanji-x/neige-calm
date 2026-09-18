@@ -1,4 +1,10 @@
 @layer features {
+  .enrollmentWarning {
+    max-inline-size: 45rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    margin-block: var(--space-3);
+  }
   .invitation {
     display: grid;
     justify-items: center;

@@ -8,6 +8,7 @@ import { TaskRecoveryDetails } from '../../features/report/task/recovery.tsx';
 import { ApiError, queryKeys, runOperation } from '../providers/queries.ts';
 import { currentTaskExecution, type TaskRecoveryIntent as Intent } from '../../../../core/domain/task-execution.ts';
 import { TaskReport } from './task-report.tsx';
+import { beginTaskIntent } from './task-intent-lease.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 
 function uncertainFailure(failure: ApiFailure): boolean {
@@ -47,7 +48,7 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
   const recover = async () => {
     // Read cache synchronously: two activations before the next render still make one request.
     const active = client.getQueryData<Intent>(intentKey);
-    if (active?.phase === 'sending') return;
+    if (active === undefined || active.phase === 'sending') return;
     const view = history.data;
     let request: TaskRecoveryRequest;
     if (active?.phase === 'uncertain') request = active.request;
@@ -58,20 +59,21 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
       request = { expected_attempt_id: view.current.attempt_id, idempotency_key: mintIdempotencyKey(),
         reason: 'User requested a new attempt under the unchanged task requirements.' };
     }
-    client.setQueryData<Intent>(intentKey, () => ({ phase: 'sending', request }));
-    const result = await runOperation(transport, recoverTaskOperation(trackId, taskKey, request), unauthorized)
+    let lease;
+    try { lease = beginTaskIntent<Intent>(client, intentKey, transport, active, { phase: 'sending', request }); }
+    catch { return; } // A rejected click must not become a queued write.
+    if (lease === null) return;
+    const result = await runOperation(lease.transport, recoverTaskOperation(trackId, taskKey, request), unauthorized)
       .then((value) => ({ status: 'ready', value } as const))
-      .catch((error: unknown) => {
-        if (!(error instanceof ApiError)) throw error;
-        return { status: 'failed', error: error.failure } as const;
-      });
+      .catch((error: unknown) => ({ status: 'failed', error } as const));
+    if (!lease.current()) { lease.release({ phase: 'uncertain', request }); return; }
     if (result.status === 'ready') {
-      client.setQueryData<Intent>(intentKey, () => ({ phase: 'accepted', receipt: result.value }));
+      lease.commit({ phase: 'accepted', receipt: result.value });
       await refresh();
-    } else if (uncertainFailure(result.error)) {
-      client.setQueryData<Intent>(intentKey, () => ({ phase: 'uncertain', request }));
+    } else if (!(result.error instanceof ApiError) || uncertainFailure(result.error.failure)) {
+      lease.commit({ phase: 'uncertain', request });
     } else {
-      client.setQueryData<Intent>(intentKey, () => ({ phase: 'rejected', message: result.error.message }));
+      lease.commit({ phase: 'rejected', message: result.error.message });
       await refresh();
     }
   };

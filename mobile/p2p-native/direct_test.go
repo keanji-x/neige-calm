@@ -24,7 +24,9 @@ func TestDirectProxyRejectsUnconfiguredRedirectTargets(t *testing.T) {
 	transport := &directTestTransport{}
 	reverse := directForwarder(target)
 	reverse.Transport = transport
-	proxy := &directProxy{target: target, reverse: reverse}
+	proxy := newDirectProxy(target, "", systemDirectNetwork())
+	defer proxy.close()
+	proxy.reverse = reverse
 	for _, raw := range []string{"http://192.168.1.9:4140/api/version", "http://192.168.1.8:4141/api/version", "http://169.254.169.254/api/version", "http://user@192.168.1.8:4140/api/version"} {
 		response := httptest.NewRecorder()
 		proxy.ServeHTTP(response, httptest.NewRequest(http.MethodGet, raw, nil))
@@ -60,7 +62,9 @@ func TestDirectProxyDoesNotForgeForwardedIdentity(t *testing.T) {
 	transport := &directTestTransport{}
 	reverse := directForwarder(target)
 	reverse.Transport = transport
-	proxy := &directProxy{target: target, reverse: reverse}
+	proxy := newDirectProxy(target, "", systemDirectNetwork())
+	defer proxy.close()
+	proxy.reverse = reverse
 	request := httptest.NewRequest(http.MethodGet, target.String()+"/api/version", nil)
 	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP"} {
 		request.Header.Set(header, "127.0.0.1")

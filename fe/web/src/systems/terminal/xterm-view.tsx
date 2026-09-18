@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { useState } from '../../ui/state/public.ts';
+import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { dlog } from './debug.ts';
 import { makeUuid } from './uuid.ts';
@@ -71,6 +72,7 @@ export interface ExitChange {
 }
 
 interface XtermViewProps {
+  recovery?: RecoveryAccess | null;
   /** `Terminal.id` from the kernel. */
   terminalId: string;
   theme?: 'light' | 'dark';
@@ -189,6 +191,7 @@ interface ExitInfo {
  */
 export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
   terminalId,
+  recovery = null,
   theme = 'light',
   onRoleChange,
   onExitChange,
@@ -555,18 +558,32 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     }
     lastFailedMountSizeRef.current = null;
 
+    let automaticAllowed = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelay = 500;
+    const permitted = () => recovery !== null ? recovery.read().phase === 'connected' : !__NC_BUNDLED__;
     const connect = () => {
-      setStatus('connecting');
+      setStatus(permitted() ? 'connecting' : 'closed');
       setCloseInfo(null);
       setProtocolError(null);
+      setExitInfo(null);
       exitInfoRef.current = null;
+      onExitChangeRef.current?.(null);
       term.options.disableStdin = true;
+      if (!permitted()) return () => {};
+      const generation = recovery?.read().generation;
+      let live = true;
+      const current = () => live && permitted() && generation === recovery?.read().generation;
       let connectionReady = false;
       let awaitingOwner = false;
       const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${
         location.host
       }/api/terminals/${encodeURIComponent(terminalId)}`;
       const ws = new WebSocket(wsUrl);
+      let handshakeTimedOut = false;
+      const handshakeTimer = __NC_BUNDLED__ ? setTimeout(() => {
+        if (current()) { handshakeTimedOut = true; ws.close(); }
+      }, 15_000) : null;
 
       // #177 — queue frames produced before the WS finishes its handshake.
       // The theme-effect (sibling below) can fire between `new WebSocket(…)`
@@ -577,9 +594,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       // zombie-message risk.
       const pendingFrames: ClientMsg[] = [];
       const send = (msg: ClientMsg) => {
+        if (!current()) { pendingFrames.length = 0; return; }
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(msg));
-        } else if (ws.readyState === WebSocket.CONNECTING) {
+        } else if (ws.readyState === WebSocket.CONNECTING && typeof msg === 'object' && 'TerminalThemeUpdate' in msg) {
           pendingFrames.push(msg);
         }
       };
@@ -635,6 +653,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       // redundant and harmful.
 
       ws.onopen = () => {
+        if (!current()) { ws.close(); return; }
         setStatus('handshaking');
         send({
           ClientHello: {
@@ -680,26 +699,30 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         // OPEN inside `onopen`).
         while (pendingFrames.length > 0) {
           const queued = pendingFrames.shift()!;
-          ws.send(JSON.stringify(queued));
+          send(queued);
         }
       };
 
       ws.onmessage = (e) => {
+        if (!current()) return;
         let msg: DaemonMsg;
         try {
           msg = JSON.parse(typeof e.data === 'string' ? e.data : '') as DaemonMsg;
         } catch {
           return;
         }
+        if ('ProtocolError' in msg || 'TerminalExited' in msg) automaticAllowed = false;
         // Dispatch over the externally-tagged enum. Each branch narrows the
         // payload via TypeScript's discriminated-union rules; this is why
         // `DaemonMsg` is sourced from `generated-terminal.ts`.
         if ('ServerHello' in msg) {
+          if (handshakeTimer !== null) clearTimeout(handshakeTimer);
           const sh = msg.ServerHello;
           onRoleChangeRef.current?.(sh.client_role);
           setStatus('connected');
           awaitingOwner = false;
           connectionReady = true;
+          retryDelay = 500;
           term.options.disableStdin = false;
           // A full replay replaces the retained view; do not append it twice.
           term.reset();
@@ -725,7 +748,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             term.write('\r\n'.repeat(term.rows));
           }
           term.write(Uint8Array.from(sh.snapshot.data), () => {
-            term.scrollToBottom();
+            if (current() && termRef.current === term) term.scrollToBottom();
           });
           // A pure expansion cannot clip the authoritative recovery model, so
           // it is safe to apply after the snapshot write is queued. This keeps
@@ -784,7 +807,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             term.write('\r\n'.repeat(term.rows));
           }
           term.write(Uint8Array.from(s.data), () => {
-            term.scrollToBottom();
+            if (current() && termRef.current === term) term.scrollToBottom();
           });
           renderRev = s.render_rev;
           ptySeq = s.pty_seq;
@@ -867,6 +890,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             if (awaitingOwner) {
               awaitingOwner = false;
               connectionReady = true;
+              automaticAllowed = true;
+              retryDelay = 500;
               term.options.disableStdin = false;
               setStatus('connected');
               setProtocolError(null);
@@ -910,6 +935,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       };
 
       ws.onclose = (e) => {
+        if (handshakeTimer !== null) clearTimeout(handshakeTimer);
         const wasAwaitingOwner = awaitingOwner;
         awaitingOwner = false;
         connectionReady = false;
@@ -931,6 +957,13 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         });
         const isChildExitClose =
           e.code === 1000 && e.reason === 'child-exited';
+        const transientClose = [1001, 1006, 1011].includes(e.code)
+          || (handshakeTimedOut && [1000, 1005].includes(e.code));
+        if (isChildExitClose || !transientClose) automaticAllowed = false;
+        if (__NC_BUNDLED__ && automaticAllowed && current() && retryTimer === null) {
+          retryTimer = setTimeout(() => { retryTimer = null; if (automaticAllowed && permitted()) reconnect(); }, retryDelay * (0.75 + Math.random() * 0.5));
+          retryDelay = Math.min(8000, retryDelay * 2);
+        }
         // Don't clobber a more-specific terminal state (`exited`,
         // `protocol-error`) — those carry richer information than the
         // generic close code. A `child-exited` close promotes us to
@@ -1080,6 +1113,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       void ptySeq;
 
       return () => {
+        live = false;
+        if (handshakeTimer !== null) clearTimeout(handshakeTimer);
         if (flushResizeRef.current === onResize) flushResizeRef.current = null;
         ro.disconnect();
         if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
@@ -1105,42 +1140,46 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         // onclose) so a strict-mode unmount or a `terminalId` change clears
         // the parent state even if no close frame fires.
         onRoleChangeRef.current?.(null);
-        // #306 followup — defensive: reset the live exit mirror on teardown.
-        // On a terminal swap or reconnect the next attach must not inherit
-        // this ref still
-        // pointing at the previous terminal's exit, and the close-frame
-        // backstop in `ws.onclose` (which gates on `exitInfoRef.current
-        // === null`) could be suppressed for the new terminal if its
-        // `TerminalExited` JSON frame is lost on a slow link. Narrow edge
-        // today, one line to prevent.
-        exitInfoRef.current = null;
-        // #421 followup — mirror `onRoleChange` above: the parent's `exit`
-        // state must also be cleared on teardown so a user-triggered
-        // reconnect (Refresh / Reset) doesn't inherit a `TerminalExited`
-        // badge from the previous daemon attach. Without this, a clean
-        // exit_code=1 delivered just before tear-down (e.g. the old codex
-        // daemon exits when its app-server is reaped during Reset) stays
-        // pinned on the new card head even though the new daemon is up.
-        // Synced here (not via `ws.onclose`) so a strict-mode unmount or a
-        // reconnect always clears it, matching the role pill.
-        onExitChangeRef.current?.(null);
+        // Revoking the transport does not revoke authoritative exit/error facts.
+        // A new attach resets them in connect(); disposal clears the parent below.
       };
     };
     let disconnect = connect();
     const reconnect = () => {
-      disconnect();
-      disconnect = connect();
+      if (!permitted()) return;
+      disconnect(); disconnect = connect();
     };
-    reconnectRef.current = reconnect;
+    let wasPermitted = permitted();
+    const unsubscribeRecovery = recovery?.subscribe(() => {
+      const now = permitted();
+      if (!now) {
+        if (retryTimer !== null) clearTimeout(retryTimer);
+        retryTimer = null; disconnect(); disconnect = () => {};
+        term.options.disableStdin = true;
+        setStatus(previous => previous === 'exited' || previous === 'protocol-error' ? previous : 'closed');
+      } else if (!wasPermitted && automaticAllowed) reconnect();
+      wasPermitted = now;
+    });
+    const manualReconnect = () => {
+      if (!permitted()) return;
+      automaticAllowed = true; retryDelay = 500;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      retryTimer = null; reconnect();
+    };
+    reconnectRef.current = manualReconnect;
     return () => {
-      if (reconnectRef.current === reconnect) reconnectRef.current = null;
+      if (reconnectRef.current === manualReconnect) reconnectRef.current = null;
+      unsubscribeRecovery?.();
+      if (retryTimer !== null) clearTimeout(retryTimer);
       disconnect();
+      exitInfoRef.current = null;
+      onExitChangeRef.current?.(null);
       term.dispose();
       removeTestDumpHook();
       if (termRef.current === term) termRef.current = null;
     };
     // Theme changes and connection status must never tear down the buffer.
-  }, [terminalId, layoutRetryKey]);
+  }, [terminalId, layoutRetryKey, recovery]);
 
   return (
     <div ref={rootRef} className="xterm-view" data-nc-terminal-id={terminalId}>
