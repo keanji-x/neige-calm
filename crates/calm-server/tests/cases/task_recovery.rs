@@ -761,7 +761,7 @@ async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop()
         .await
         .unwrap_err();
         assert_eq!(denied.code, -32409);
-        assert!(denied.message.contains("descendant write fence"));
+        assert!(denied.message.contains("no stop proof"));
         let view = calm_server::task_recovery::task_recovery_view(
             boot.repo.as_ref(),
             boot.track_id.as_str(),
@@ -773,7 +773,7 @@ async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop()
         .unwrap();
         assert!(!view.recovery.allowed);
         assert_eq!(view.recovery.code, "predecessor_not_quiescent");
-        assert!(view.recovery.reason.contains("before worker preparation"));
+        assert!(view.recovery.reason.contains("new task"));
     }
 }
 
@@ -805,4 +805,200 @@ async fn task_recovery_of_legacy_attempt_states_its_actual_executor() {
     // Replays carry the same statement.
     let replay = recover(&boot, &b, "request-b").await;
     assert_eq!(replay, receipt);
+}
+
+/// #1727 S3 — an ordinary (shared) codex worker that timed out after it was
+/// prepared: the view names the way out, and `calm.plan.list` (MCP only)
+/// carries `recovery.guidance` with the retained worktree. The REST
+/// `TaskRecoveryView` stays `{allowed, code, reason}`.
+#[tokio::test]
+async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task() {
+    let boot = boot().await;
+    declare(
+        &boot,
+        json!({"key": "b", "kind": "codex", "goal": "do b", "depends_on": [],
+            "no_gate_reason": "ordinary worker timeout fixture",
+            "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "ready": true}),
+    )
+    .await;
+    let b = current(&boot, "b").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let card_id = boot.worker_card_id.as_str().to_string();
+    let track_id = boot.track_id.as_str().to_string();
+    // The worker's workspace lease, held while it ran; the timeout sweep
+    // releases it but keeps the directory.
+    let lease_dir = tempfile::Builder::new()
+        .prefix("neige-1727-lease-")
+        .tempdir()
+        .unwrap();
+    let lease_path = lease_dir.path().display().to_string();
+    let now = calm_server::model::now_ms();
+    sqlx::query(
+        "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms, boot_id, created_at_ms, updated_at_ms) \
+         VALUES ('lease-1727', ?1, ?2, ?3, 'held', 'test-owner', ?4, NULL, ?5, ?5)",
+    )
+    .bind(&card_id)
+    .bind(&track_id)
+    .bind(&lease_path)
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Claim, run on the worker card, then the scheduler's liveness timeout:
+    // the same `task_fail_from_worker_tx(.., Kernel, "worker-timeout", ..)`
+    // `fail_task_liveness_timeout` issues.
+    let monitor = TaskContextMonitor::new(
+        boot.repo.clone(),
+        boot.ctx.events.clone(),
+        boot.ctx.write.clone(),
+    );
+    let closure = monitor.resolve_task_closure(&track_id, "b").await.unwrap();
+    let mut tx = begin_immediate_tx(&pool).await.unwrap();
+    assert_eq!(
+        task_claim_pending_tx(&mut tx, &b.id, 10, &closure.refs, closure.closure_truncated)
+            .await
+            .unwrap(),
+        1
+    );
+    sqlx::query("UPDATE tasks SET status='running', worker_card_id=?1 WHERE id=?2")
+        .bind(&card_id)
+        .bind(&b.id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        task_fail_from_worker_tx(
+            &mut tx,
+            &b.id,
+            &track_id,
+            TaskReporter::Kernel,
+            "worker-timeout",
+            now + 1,
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    sqlx::query("UPDATE workspace_leases SET state='released', released_at_ms=?1 WHERE lease_id='lease-1727'")
+        .bind(now + 1)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let failed = current(&boot, "b").await;
+    assert_eq!(failed.id, b.id);
+    assert_eq!(
+        failed
+            .status_detail
+            .as_deref()
+            .map(calm_server::db::sqlite::status_detail_class),
+        Some("worker-timeout")
+    );
+
+    let view = calm_server::task_recovery::task_recovery_view(
+        boot.repo.as_ref(),
+        &track_id,
+        "b",
+        calm_server::ids::ActorId::User,
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+    )
+    .await
+    .unwrap();
+    assert!(!view.recovery.allowed);
+    assert_eq!(view.recovery.code, "predecessor_not_quiescent");
+    assert!(
+        view.recovery.reason.contains("new task"),
+        "{}",
+        view.recovery.reason
+    );
+
+    let entry = |list: &Value| {
+        list["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["key"] == "b")
+            .unwrap()
+            .clone()
+    };
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let recovery = &entry(&list)["recovery"];
+    assert_eq!(recovery["allowed"], false);
+    assert_eq!(recovery["code"], "predecessor_not_quiescent");
+    let guidance = &recovery["guidance"];
+    assert_eq!(guidance["supported_continuation"], "new_task");
+    assert!(
+        guidance["blocking_condition"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "{guidance}"
+    );
+    assert_eq!(guidance["retained"]["workspace_path"], lease_path);
+    assert_eq!(
+        guidance["retained"]["branch"],
+        format!("neige/{track_id}/{card_id}"),
+        "no commit recorded: the branch is the lease's slice branch name"
+    );
+    assert!(
+        guidance["retained"].get("last_commit").is_none(),
+        "{guidance}"
+    );
+
+    // Summary mode carries the same guidance paths.
+    let summary = call_tool(
+        &boot,
+        "calm.plan.list",
+        planner_identity(&boot),
+        json!({"detail": "summary", "key": "b"}),
+    )
+    .await
+    .unwrap();
+    let summary_guidance = &entry(&summary)["recovery"]["guidance"];
+    assert_eq!(summary_guidance["supported_continuation"], "new_task");
+    assert_eq!(summary_guidance["retained"]["workspace_path"], lease_path);
+
+    // A kernel-recorded commit for that card names the retained commit + branch.
+    let mut tx = pool.begin().await.unwrap();
+    calm_server::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &calm_server::ids::ActorId::KernelDispatcher,
+        &calm_server::event::EventScope::Track {
+            track: boot.track_id.clone(),
+            area: boot.area_id.clone(),
+        },
+        None,
+        &calm_server::event::Event::WorktreeCommitted {
+            track_id: boot.track_id.clone(),
+            card_id: boot.worker_card_id.clone(),
+            commit_sha: "abc123def".into(),
+            branch: "neige/recorded-branch".into(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let retained = &entry(&list)["recovery"]["guidance"]["retained"];
+    assert_eq!(retained["workspace_path"], lease_path);
+    assert_eq!(retained["last_commit"], "abc123def");
+    assert_eq!(retained["branch"], "neige/recorded-branch");
+
+    // REST serialisation of the wire type is unchanged: no `guidance` key.
+    let rest =
+        crate::task_recovery_reads::rest_attempts(&boot, "b", axum::http::StatusCode::OK).await;
+    assert_eq!(rest["recovery"]["code"], "predecessor_not_quiescent");
+    assert_eq!(
+        rest["recovery"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["allowed", "code", "reason"]
+    );
 }

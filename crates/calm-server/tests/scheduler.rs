@@ -10585,7 +10585,7 @@ printf stopped > "$1/stopped"
     let error =
         result.expect_err("normal gate exit cannot authorize recovery without a descendant fence");
     assert_eq!(error.code, -32409);
-    assert!(error.message.contains("descendant write fence"));
+    assert!(error.message.contains("no stop proof"));
 }
 
 #[tokio::test]

@@ -138,13 +138,23 @@ async fn planner_observes_failure_then_settled_isolated_recovery() {
     std::fs::write(workspace.join("report-failure"), b"").unwrap();
     let early = wait_observation(&handle, &first.id, false).await;
     assert_eq!(operation(&fx, &first).await.1, "parked");
-    assert_eq!(planner_recovery(&fx).await["allowed"], false);
+    let refused = planner_recovery(&fx).await;
+    assert_eq!(refused["allowed"], false);
+    // #1727 S3 — an isolated predecessor that has not settled: wait, do not re-key.
+    assert_eq!(refused["code"], "predecessor_not_quiescent", "{refused}");
+    assert_eq!(
+        refused["guidance"]["supported_continuation"], "wait_for_settlement",
+        "{refused}"
+    );
     assert!(!handle.snapshot().await.pending_observations().iter().any(|observation|
         matches!(observation, Observation::SystemContext { text } if text.contains(&first.id) && text.contains("calm.plan.list"))));
     assert_eq!(owned.id, op_id);
     ops.clear_parked_lease_for_boot(&op_id).await.unwrap();
     finish(&fx, &first, &workspace, false).await;
-    assert_eq!(planner_recovery(&fx).await["allowed"], true);
+    let allowed = planner_recovery(&fx).await;
+    assert_eq!(allowed["allowed"], true);
+    // #1727 S3 — guidance exists only for a refused recovery.
+    assert!(allowed.get("guidance").is_none(), "{allowed}");
     // Make the red assertion only after the owned fake process has been stopped.
     let settled = wait_observation(&handle, &first.id, true).await;
     assert!(early, "Planner must observe failure before cleanup");
