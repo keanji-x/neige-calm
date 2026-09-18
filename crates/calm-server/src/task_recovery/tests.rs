@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 const PLANNER: &str = calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
+const CHILD_ROUTE: &str = calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 
 fn declaration(declared_by: &str) -> Value {
     json!({"key":"b","kind":"terminal","command":"true","ready":true,"declared_by":declared_by})
@@ -743,8 +744,8 @@ async fn drive(site: Site) -> RecoveryRefusal {
                 let fx = failed_initial(PLANNER).await;
                 sql(
                     &fx,
-                    "UPDATE tasks SET spawn='sub-wave' WHERE id=?1",
-                    &[&fx.fixture.task.id],
+                    "UPDATE tasks SET spawn=?1 WHERE id=?2",
+                    &[CHILD_ROUTE, &fx.fixture.task.id],
                 )
                 .await;
                 refused(site, admit(&fx, user(), 1).await)
@@ -940,8 +941,8 @@ async fn drive(site: Site) -> RecoveryRefusal {
                 let fx = failed_initial("user").await;
                 sql(
                     &fx,
-                    "UPDATE tasks SET declared_by='spec' WHERE id=?1",
-                    &[&fx.fixture.task.id],
+                    "UPDATE tasks SET declared_by=?1 WHERE id=?2",
+                    &[PLANNER, &fx.fixture.task.id],
                 )
                 .await;
                 refused(site, admit(&fx, user(), 1).await)
