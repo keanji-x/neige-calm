@@ -79,7 +79,10 @@ impl Drop for Reservation {
     }
 }
 
-#[utoipa::path(post, path="/api/mobile/enrollments", tag="mobile", request_body=MobileAction, responses((status=200, body=EnrollmentCreated),(status=400, body=ErrorBody),(status=403, body=ErrorBody)))]
+#[utoipa::path(
+    post, path="/api/mobile/enrollments", tag="mobile", request_body=MobileAction,
+    responses((status=200, body=EnrollmentCreated),(status=400, body=ErrorBody),(status=403, body=ErrorBody))
+)]
 pub async fn create(
     State(auth): State<AuthState>,
     principal: Principal,

@@ -1,0 +1,1 @@
+Private remote access could not initialize. Local Neige is still available. Check the private state and socket permissions, then restart Neige; the stored enabled state was left untouched.

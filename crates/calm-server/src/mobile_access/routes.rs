@@ -66,7 +66,11 @@ pub(super) fn no_store(value: impl IntoResponse) -> Response {
     response
 }
 
-#[utoipa::path(get, path = "/api/mobile/access", tag = "mobile", responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody), (status = 401, body = ErrorBody), (status = 403, body = ErrorBody)))]
+#[utoipa::path(
+    get, path = "/api/mobile/access", tag = "mobile",
+    responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody), (status = 403, body = ErrorBody))
+)]
 pub async fn status(State(auth): State<AuthState>, principal: Principal) -> Result<Response> {
     owner(&auth, &principal)?;
     Ok(no_store(Json(auth.mobile.status().await?)))
@@ -201,7 +205,10 @@ async fn bootstrap_css() -> Response {
     ))
 }
 
-#[utoipa::path(post, path = "/api/mobile/tailnet/login", tag = "mobile", request_body = MobileAction, responses((status = 200, body = calm_types::tailnet::TailnetLogin), (status = 400, body = ErrorBody)))]
+#[utoipa::path(
+    post, path = "/api/mobile/tailnet/login", tag = "mobile", request_body = MobileAction,
+    responses((status = 200, body = calm_types::tailnet::TailnetLogin), (status = 400, body = ErrorBody))
+)]
 pub async fn tailnet_login(
     State(auth): State<AuthState>,
     principal: Principal,

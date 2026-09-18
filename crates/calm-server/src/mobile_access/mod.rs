@@ -141,7 +141,9 @@ impl MobileAccess {
 
     pub async fn status(&self) -> Result<MobileStatus> {
         if self.inner.unavailable.load(Ordering::Acquire) {
-            return Err(CalmError::BadRequest("Private remote access could not initialize. Local Neige is still available. Check the private state and socket permissions, then restart Neige; the stored enabled state was left untouched.".into()));
+            return Err(CalmError::BadRequest(
+                include_str!("templates/unavailable.txt").trim_end().into(),
+            ));
         }
         let tailnet = if let Some(private) = self.inner.private.lock().await.as_ref() {
             Some(private.status().await?)
