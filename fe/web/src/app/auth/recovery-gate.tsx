@@ -35,7 +35,8 @@ export function RecoveryGate({ children, transport, unauthorized, client, runtim
     let disposed = false;
     let started = false;
     // StrictMode's discarded setup must not consume a one-document scan grant.
-    queueMicrotask(() => { if (!disposed) { started = true; session.start(); } });
+    if (session.scanOnly) queueMicrotask(() => { if (!disposed) { started = true; session.start(); } });
+    else { started = true; session.start(); }
     return () => { disposed = true; unsubscribe(); unobserve(); if (started) session.stop(); releaseQueries(); };
   }, [client, session, unauthorized]);
   const hasScope = session.identity !== null && session.version !== null && transport.recovery !== undefined;
