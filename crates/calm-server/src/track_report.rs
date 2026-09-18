@@ -552,6 +552,11 @@ pub(crate) fn block_not_found(id: &str) -> CalmError {
 /// propagates it, aborting the transaction, so a conflicting op writes
 /// nothing and emits nothing. Unknown ids / out-of-range indexes are
 /// `CalmError::BadRequest`.
+///
+/// #1727 S2 (#1678 B2) — the conflict names BOTH current revisions, the
+/// block's and the document's, so the RPC mapping
+/// (`track_report_blocks::rev_conflict_error`) can hand a retry
+/// `data.{rev, docRev}` without a full re-read.
 fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
     // A malformed doc/rev is Internal (corruption), never folded
     // into "block not found" (BadRequest).
@@ -560,9 +565,12 @@ fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError>
         .map_err(|e| CalmError::Internal(format!("track_report: block rev: {e}")))?
         .ok_or_else(|| block_not_found(id))?;
     if current != expected {
+        let doc_rev = doc
+            .doc_rev()
+            .map_err(|e| CalmError::Internal(format!("track_report: doc rev: {e}")))?;
         return Err(CalmError::Conflict(format!(
-            "rev conflict on block {id}: current rev is {current}, expected if_rev {expected} \
-             — re-read the report and retry with the current rev"
+            "rev conflict on block {id}: current rev is {current}, expected if_rev {expected}; \
+             current doc_rev is {doc_rev} — re-read the report and retry with the current rev"
         )));
     }
     Ok(current)

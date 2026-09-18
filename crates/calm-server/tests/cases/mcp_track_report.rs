@@ -2213,6 +2213,49 @@ async fn full_read_delivers_the_document_once_behind_a_one_line_summary() {
     assert!(structured.get("taskDiagnostics").is_some(), "{structured}");
 }
 
+/// #1727 fix round 1 F2 — the receipt's summary clip is a BYTE budget on a
+/// char boundary: `planner.md` mandates a Chinese summary, and 120 CJK chars
+/// clipped by chars would be ~360 bytes, blowing the size bound the test
+/// above pins on an ASCII summary.
+#[tokio::test]
+async fn full_read_summary_line_stays_short_for_a_long_cjk_summary() {
+    use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_COMMIT;
+    let boot = boot().await;
+    let body = seed_large_body(&boot).await;
+    let summary = "报".repeat(200);
+    call_tool(
+        &boot,
+        TOOL_REPORT_COMMIT,
+        planner_identity(&boot),
+        json!({
+            "if_doc_rev": current_doc_rev(&boot).await,
+            "message": "long cjk summary",
+            "summary": summary,
+        }),
+    )
+    .await
+    .expect("planner sets a 200-char summary");
+    let wire = call_tool_raw(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
+        .await
+        .expect("planner reads the report");
+    let line = wire["content"][0]["text"].as_str().expect("text block");
+    assert!(
+        line.len() < 300,
+        "content[0].text must stay one short line for a CJK summary, got {} bytes: {line}",
+        line.len()
+    );
+    assert!(line.contains("报报报报…;"), "{line}");
+    assert!(
+        line.contains(&format!(" · {} bytes · ", body.len())),
+        "{line}"
+    );
+    assert_eq!(
+        wire["structuredContent"]["summary"].as_str(),
+        Some(summary.as_str()),
+        "the clip is receipt-only; structuredContent carries the whole summary"
+    );
+}
+
 #[tokio::test]
 async fn select_index_returns_anchors_without_text() {
     let boot = boot().await;
@@ -2414,10 +2457,11 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
         err.message.contains(&format!("current rev is {rev}")),
         "{err:?}"
     );
+    // #1678 B2 — both anchors, so the retry needs no full re-read.
     assert_eq!(
-        err.data.as_ref().and_then(|d| d["rev"].as_u64()),
-        Some(rev),
-        "data.rev must be the block's current rev: {err:?}"
+        err.data,
+        Some(json!({"docRev": current, "rev": rev})),
+        "data must carry the current docRev AND the block's current rev: {err:?}"
     );
     // Nothing was written: the anchors a retry would use are unchanged.
     assert_eq!(current_doc_rev(&boot).await, current);

@@ -120,8 +120,25 @@ fn read_result(value: Value) -> ToolResult {
     ToolResult::structured_with_summary(value, summary)
 }
 
-/// Longest prefix of the report summary rendered on the one-line receipt.
-const SUMMARY_LINE_CHARS: usize = 120;
+/// Longest prefix of the report summary rendered on the one-line receipt,
+/// in BYTES (the receipt's size bound is a byte bound, and the summary is
+/// Chinese by `planner.md`'s rule — 120 chars of it would be ~360 bytes).
+const SUMMARY_LINE_BYTES: usize = 120;
+
+/// The longest prefix of `text` that fits `budget` bytes, cut on a char
+/// boundary; `None` when the whole text fits.
+fn clip_to_bytes(text: &str, budget: usize) -> Option<&str> {
+    if text.len() <= budget {
+        return None;
+    }
+    let cut = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= budget)
+        .last()
+        .unwrap_or(0);
+    Some(&text[..cut])
+}
 
 fn read_summary_line(value: &Value) -> String {
     let doc_rev = &value["docRev"];
@@ -132,8 +149,8 @@ fn read_summary_line(value: &Value) -> String {
     };
     let summary = value["summary"].as_str().unwrap_or_default();
     let summary = summary.split(['\n', '\r']).next().unwrap_or_default();
-    let summary = match summary.char_indices().nth(SUMMARY_LINE_CHARS) {
-        Some((cut, _)) => format!("{}…", &summary[..cut]),
+    let summary = match clip_to_bytes(summary, SUMMARY_LINE_BYTES) {
+        Some(prefix) => format!("{prefix}…"),
         None => summary.to_string(),
     };
     format!(
@@ -808,7 +825,9 @@ mod tests {
     }
 
     /// #1727 S2 — the one-line receipt: counts, the payload size, the
-    /// summary clipped to one line of at most `SUMMARY_LINE_CHARS` chars.
+    /// summary clipped to one line of at most `SUMMARY_LINE_BYTES` bytes
+    /// (fix round 1 F2: bytes, cut on a char boundary — the bound the size
+    /// assertion in `mcp_track_report.rs` measures is a byte bound).
     #[test]
     fn read_summary_line_is_one_short_line() {
         let line = read_summary_line(&json!({
@@ -826,15 +845,22 @@ mod tests {
             index,
             "docRev 0 · 0 blocks · index only · ; full state in structuredContent"
         );
-        let long = "字".repeat(SUMMARY_LINE_CHARS + 5);
+        // 200 three-byte chars → the longest whole-char prefix within the
+        // byte budget (40 chars = 120 bytes), then the ellipsis.
+        let long = "字".repeat(200);
         let clipped = read_summary_line(&json!({"docRev": 1, "blocks": [], "summary": long}));
-        assert!(clipped.contains(&format!("{}…;", "字".repeat(SUMMARY_LINE_CHARS))));
-        assert!(!clipped.contains('\n'));
         assert!(
-            clipped.chars().count() < SUMMARY_LINE_CHARS + 80,
-            "{}",
-            clipped.chars().count()
+            clipped.contains(&format!("· {}…;", "字".repeat(SUMMARY_LINE_BYTES / 3))),
+            "{clipped}"
         );
+        assert!(!clipped.contains('\n'));
+        assert!(clipped.len() < SUMMARY_LINE_BYTES + 80, "{}", clipped.len());
+        // A budget that lands mid-char backs off to the char boundary; a
+        // summary that fits is not clipped at all.
+        assert_eq!(clip_to_bytes("字字", 4), Some("字"));
+        assert_eq!(clip_to_bytes("字字", 6), None);
+        assert_eq!(clip_to_bytes("abc", 2), Some("ab"));
+        assert_eq!(clip_to_bytes("", 0), None);
     }
 
     #[test]

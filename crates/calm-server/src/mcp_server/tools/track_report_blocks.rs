@@ -103,9 +103,10 @@ pub const RPC_REV_CONFLICT: i64 = -32001;
 /// transaction and only speak `CalmError`, and this is the single site
 /// where those strings become RPC errors.
 ///
-/// A block-rev conflict names only `rev`: the transaction wrote nothing,
-/// so the caller's `if_doc_rev` is still current, and the message does not
-/// carry a docRev to parse.
+/// A block-rev conflict names both: `check_rev` appends `current doc_rev is
+/// N` so a `blocks.upsert{id}` retry (which takes no `if_doc_rev`) and a
+/// `commit` retry (which does) each find their anchor here. A
+/// document-rev conflict names only `docRev` — no block was compared.
 pub(crate) fn rev_conflict_error(message: String) -> RpcError {
     let mut data = serde_json::Map::new();
     if let Some(doc_rev) = number_after(&message, "current doc_rev is ") {
@@ -884,10 +885,10 @@ mod rev_conflict_tests {
 
         let block = rev_conflict_error(
             "calm.report.blocks.upsert: rev conflict on block b_1: current rev is 7, expected \
-             if_rev 3 — re-read the report and retry with the current rev"
+             if_rev 3; current doc_rev is 12 — re-read the report and retry with the current rev"
                 .into(),
         );
-        assert_eq!(block.data, Some(json!({"rev": 7})));
+        assert_eq!(block.data, Some(json!({"docRev": 12, "rev": 7})));
 
         // The edit precheck's message has no tool prefix; still parsed.
         let edit = rev_conflict_error(
