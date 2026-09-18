@@ -29,16 +29,15 @@ pub(crate) async fn observations_since(
                 // pushes.
                 "task.gate_result",
                 "track.report_edited",
-                "workspace.leased",
-                "workspace.released",
+                // #1727 S1 — `workspace.leased/released`,
+                // `worktree.provisioned/committed` and `review.round` are
+                // no longer wakes (`event_warrants_planner_push_with_role`
+                // returns false for them), so they are not read here either.
                 "forge.scan.completed",
                 "forge.pr.opened",
                 "forge.pr.checks",
                 "forge.issue.closed",
-                "worktree.provisioned",
-                "worktree.committed",
                 "forge.pr.merged",
-                "review.round",
                 "ratify.requested",
                 "ratify.resolved",
                 "codex.hook",
@@ -61,6 +60,12 @@ pub(crate) async fn observations_since(
         // emit tx and the live push must not replay a gated task's
         // raw self-report to the planner.
         if dispatcher::is_gated_self_report(repo, &row.event).await {
+            continue;
+        }
+        // #1727 S1 — the SAME stale-worker-stop consultation the live
+        // hook arm runs: a stop hook whose tasks row already left
+        // `dispatched | running` is not replayed either.
+        if dispatcher::is_stale_worker_stop_hook(repo, &row.event).await {
             continue;
         }
         let Some(obs) = dispatcher::resolve_harness_observation(repo, track_id, &row.event).await?

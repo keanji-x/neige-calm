@@ -115,17 +115,27 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // leaving the planner unaware that its report changed under it is a
         // worse failure than one extra wake-up.
         Event::TrackReportEdited { author, .. } => PLANNER_WAKE_AUTHORS.contains(author),
-        Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
         Event::ForgePrMerged { .. }
-        | Event::ReviewRound { .. }
         | Event::RatifyRequested { .. }
         | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }
         | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
-        | Event::ForgeIssueClosed { .. }
+        | Event::ForgeIssueClosed { .. } => true,
+        // #1727 S1 — workspace / worktree lifecycle notices and
+        // `review.round` no longer wake the planner. The facts stay in the
+        // events table, `calm.plan.list` and the track views, where the
+        // planner reads them on its next actionable turn; each of these
+        // used to cost a whole turn that ended in one `calm.plan.list`.
+        // `review.round` can only be written by the planner author
+        // (`calm-truth::role_gate`), so pushing it is pure self-echo. A
+        // successful `worktree.committed` needs no wake either — failures
+        // surface through the task's own terminal events.
+        Event::WorkspaceLeased { .. }
+        | Event::WorkspaceReleased { .. }
         | Event::WorktreeProvisioned { .. }
-        | Event::WorktreeCommitted { .. } => true,
+        | Event::WorktreeCommitted { .. }
+        | Event::ReviewRound { .. } => false,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
             let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
@@ -224,6 +234,41 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
                 idempotency_key = %idempotency_key,
                 error = %e,
                 "dispatcher push: gated-self-report lookup failed; pushing self-report (fail-open)"
+            );
+            false
+        }
+    }
+}
+
+/// #1727 S1 — the stale-worker-stop consultation shared by the live
+/// `CodexHook | ClaudeHook` push arm and the boot catch-up
+/// (`harness::catch_up::observations_since`), run AFTER the sync
+/// predicate said the hook is a worker stop. A worker card's stop hook is
+/// only a wake while its tasks row is still `dispatched | running`: once
+/// the row moved on (`verifying`, or terminal) the gate result / task
+/// terminal event IS the wake, and the stop hook would cost the planner
+/// an extra turn that ends in one `calm.plan.list`. Returns `true` when
+/// the push must be suppressed.
+///
+/// No tasks row for the card (ungated / legacy worker cards) → push.
+/// Lookup error → push (fail-open, same shape as `is_gated_self_report`:
+/// a spurious wake is benign, a silently lost one is not).
+pub(crate) async fn is_stale_worker_stop_hook(repo: &dyn crate::db::Repo, event: &Event) -> bool {
+    let card_id = match event {
+        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => card_id,
+        _ => return false,
+    };
+    match repo.task_for_worker_card(card_id.as_str()).await {
+        Ok(Some(task)) => !matches!(
+            task.status,
+            crate::model::TaskStatus::Dispatched | crate::model::TaskStatus::Running
+        ),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(
+                card_id = %card_id,
+                error = %e,
+                "dispatcher push: stale-worker-stop lookup failed; pushing stop hook (fail-open)"
             );
             false
         }
@@ -1218,7 +1263,14 @@ impl Inner {
                 // worker cards should notify the planner. Stop hooks carry no
                 // result/artifacts, so the pushed observation is a light
                 // wake-up that asks the planner to re-read track state.
-                if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write) {
+                //
+                // #1727 S1 — and only while the card's task is still
+                // `dispatched | running`: past that the gate result / task
+                // terminal event is the wake (`is_stale_worker_stop_hook`,
+                // the same consultation the boot catch-up runs).
+                if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write)
+                    && !is_stale_worker_stop_hook(self.repo.as_ref(), &envelope.event).await
+                {
                     if let Some(track_id) = envelope.scope.track_id().cloned() {
                         self.observe_harness(track_id, &envelope.event, envelope.id)
                             .await;

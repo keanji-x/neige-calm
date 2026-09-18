@@ -756,14 +756,22 @@ mod tests {
     use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
     use serde_json::json;
 
+    /// #1727 S1 — boot catch-up applies the same diet as the live push:
+    /// `workspace.leased/released`, `worktree.provisioned/committed` and the
+    /// planner-authored `review.round` yield no observation, a worker stop
+    /// hook whose tasks row already left `dispatched | running` is skipped,
+    /// and — the positive control that keeps the negatives honest — a stop
+    /// hook for a still-running worker and the gate result replay and issue
+    /// exactly one turn. (Before this slice each of the quiet rows replayed
+    /// and issued a turn of its own.)
     #[tokio::test]
-    async fn workspace_leased_replays_into_recovered_harness_and_issues_turn() {
+    async fn boot_catch_up_skips_quiet_kinds_and_stale_stop_hooks_and_replays_the_wakes() {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let role_cache = CardRoleCache::new();
         let track_area_cache = TrackAreaCache::new();
         let area = repo
             .area_create(NewArea {
-                name: "workspace replay".into(),
+                name: "catch-up parity".into(),
                 color: "#111111".into(),
                 sort: None,
             })
@@ -773,7 +781,7 @@ mod tests {
             .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
-                title: "workspace replay".into(),
+                title: "catch-up parity".into(),
                 sort: None,
                 cwd: "/tmp".into(),
                 template_id: None,
@@ -802,51 +810,208 @@ mod tests {
         )
         .await
         .unwrap();
-        let worker_card = card_create_with_id_tx(
-            &mut tx,
-            new_id(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: json!({"schemaVersion": 1}),
-            },
-            CardRole::Worker,
-            true,
-            &role_cache,
-        )
-        .await
-        .unwrap();
+        async fn worker_card(
+            tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+            track_id: &TrackId,
+            role_cache: &CardRoleCache,
+        ) -> crate::model::Card {
+            card_create_with_id_tx(
+                tx,
+                new_id(),
+                NewCard {
+                    track_id: track_id.clone(),
+                    title: None,
+                    kind: "codex".into(),
+                    sort: None,
+                    payload: json!({"schemaVersion": 1}),
+                },
+                CardRole::Worker,
+                true,
+                role_cache,
+            )
+            .await
+            .unwrap()
+        }
+        let running_worker = worker_card(&mut tx, &track.id, &role_cache).await;
+        let verifying_worker = worker_card(&mut tx, &track.id, &role_cache).await;
+        // Tasks rows: the running worker's row still needs its stop hook;
+        // the verifying worker's row is past that, and its gate result is
+        // the wake instead.
+        let mk_task =
+            |key: &str, card: &CardId, status: crate::model::TaskStatus| crate::model::Task {
+                id: format!("{}:{key}", track.id),
+                track_id: track.id.to_string(),
+                key: key.into(),
+                kind: crate::model::TaskKind::Codex,
+                goal: "g".into(),
+                context_json: "null".into(),
+                acceptance_criteria: None,
+                cwd: None,
+                depends_on_json: "[]".into(),
+                priority: 0,
+                gate_json: Some("{\"steps\":[{\"name\":\"t\",\"cmd\":\"true\"}]}".into()),
+                status,
+                status_detail: None,
+                worker_card_id: Some(card.to_string()),
+                gate_result_json: None,
+                gate_attempt: 1,
+                gate_pid: None,
+                gate_pid_starttime: None,
+                gate_pid_boot_id: None,
+                running_deadline_ms: None,
+                context_stale_at_ms: None,
+                declared_by: "spec".into(),
+                spawn: "in-wave".into(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                finished_at_ms: None,
+            };
+        let running_task = mk_task("run", &running_worker.id, crate::model::TaskStatus::Running);
+        let verifying_task = mk_task(
+            "verify",
+            &verifying_worker.id,
+            crate::model::TaskStatus::Verifying,
+        );
+        crate::test_support::insert_task_tx(&mut tx, &running_task)
+            .await
+            .unwrap();
+        crate::test_support::insert_task_tx(&mut tx, &verifying_task)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
-        let lease_id = "lease-replay".to_string();
-        let workspace_path = "/tmp/workspace-replay".to_string();
-        let workspace_event = Event::WorkspaceLeased {
-            track_id: track.id.clone(),
-            card_id: worker_card.id.clone(),
-            lease_id: lease_id.clone(),
-            path: workspace_path.clone(),
-        };
-        let scope = EventScope::Card {
-            card: worker_card.id.clone(),
+        let card_scope = |card: &CardId| EventScope::Card {
+            card: card.clone(),
             track: track.id.clone(),
             area: area.id.clone(),
         };
-        let mut tx = repo.pool().begin().await.unwrap();
-        let event_id = append_decision_event_in_tx(
-            &mut tx,
-            &ActorId::KernelDispatcher,
-            &scope,
-            None,
-            &workspace_event,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+        let track_scope = EventScope::Track {
+            track: track.id.clone(),
+            area: area.id.clone(),
+        };
+        let workspace_path = "/tmp/workspace-replay".to_string();
+        // (actor, scope, event, expected to replay)
+        let rows: Vec<(ActorId, EventScope, Event, bool)> = vec![
+            (
+                ActorId::KernelDispatcher,
+                card_scope(&running_worker.id),
+                Event::WorkspaceLeased {
+                    track_id: track.id.clone(),
+                    card_id: running_worker.id.clone(),
+                    lease_id: "lease-replay".into(),
+                    path: workspace_path.clone(),
+                },
+                false,
+            ),
+            (
+                ActorId::KernelDispatcher,
+                card_scope(&running_worker.id),
+                Event::WorktreeProvisioned {
+                    track_id: track.id.clone(),
+                    card_id: running_worker.id.clone(),
+                    path: "/tmp/worktree-replay".into(),
+                },
+                false,
+            ),
+            (
+                ActorId::User,
+                card_scope(&running_worker.id),
+                Event::CodexHook {
+                    card_id: running_worker.id.clone(),
+                    kind: "hook.codex.stop".into(),
+                    hook_idempotency_key: "hook-running-stop".into(),
+                    payload: serde_json::Value::Null,
+                },
+                true,
+            ),
+            (
+                ActorId::User,
+                card_scope(&verifying_worker.id),
+                Event::ClaudeHook {
+                    card_id: verifying_worker.id.clone(),
+                    kind: "hook.claude.stop".into(),
+                    hook_idempotency_key: "hook-verifying-stop".into(),
+                    payload: serde_json::Value::Null,
+                },
+                false,
+            ),
+            (
+                ActorId::KernelDispatcher,
+                card_scope(&verifying_worker.id),
+                Event::WorktreeCommitted {
+                    track_id: track.id.clone(),
+                    card_id: verifying_worker.id.clone(),
+                    commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                    branch: "neige/replay/verify".into(),
+                },
+                false,
+            ),
+            (
+                ActorId::KernelDispatcher,
+                card_scope(&verifying_worker.id),
+                Event::WorkspaceReleased {
+                    track_id: track.id.clone(),
+                    card_id: verifying_worker.id.clone(),
+                    lease_id: "lease-replay".into(),
+                },
+                false,
+            ),
+            (
+                ActorId::AiPlanner(planner_card.id.clone()),
+                track_scope.clone(),
+                Event::ReviewRound {
+                    track_id: track.id.clone(),
+                    subject: ReviewSubject {
+                        phase: "impl".into(),
+                        slice_id: "5b".into(),
+                        pr_number: Some(760),
+                    },
+                    head_sha: Some("head-sha".into()),
+                    n: 1,
+                    cap: 8,
+                    converged: false,
+                    channels: vec![ChannelVerdict {
+                        role: "design-correctness".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
+                    }],
+                    root_cause: Some("tests failing".into()),
+                    idempotency_key: format!("review.round:{}:impl:5b:760:1", track.id),
+                },
+                false,
+            ),
+            (
+                ActorId::KernelDispatcher,
+                track_scope.clone(),
+                Event::TaskGateResult {
+                    task_id: verifying_task.id.clone(),
+                    idempotency_key: verifying_task.id.clone(),
+                    passed: true,
+                    failing_step: None,
+                    exit_code: Some(0),
+                    log_tail: "ok\n".into(),
+                    log_path: "/tmp/gate.log".into(),
+                    attempt: 1,
+                    agent_message: None,
+                },
+                true,
+            ),
+        ];
+        let mut expected_ids = Vec::new();
+        let mut last_id = 0;
+        for (actor, scope, event, replays) in &rows {
+            let mut tx = repo.pool().begin().await.unwrap();
+            let id = append_decision_event_in_tx(&mut tx, actor, scope, None, event)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            if *replays {
+                expected_ids.push(Some(id));
+            }
+            last_id = id;
+        }
 
         let runtime_id = new_id();
-        let thread_id = "thread-workspace-recovered".to_string();
+        let thread_id = "thread-catch-up-parity".to_string();
         let mut snapshot = HarnessSnapshot::initial(0, vec![]);
         snapshot.phase = HarnessPhaseTag::Idle;
         snapshot.last_thread_id = Some(thread_id.clone());
@@ -883,215 +1048,24 @@ mod tests {
         .unwrap();
         assert_eq!(
             snapshot.pending_observations(),
-            vec![Observation::WorkspaceLeased {
-                track_id: track.id.clone(),
-                card_id: worker_card.id.clone(),
-                lease_id: lease_id.clone(),
-                path: workspace_path.clone(),
-            }]
-        );
-        assert_eq!(
-            snapshot
-                .pending_entries()
-                .iter()
-                .map(QueueEntry::envelope_id)
-                .collect::<Vec<_>>(),
-            vec![Some(event_id)]
-        );
-        assert_eq!(snapshot.push_watermark, event_id);
-        assert!(
-            !snapshot.pending_entries()[0].is_hard_fire(),
-            "workspace observations must remain soft-fire"
-        );
-
-        let runtime = repo
-            .session_projection_by_id(&runtime_id)
-            .await
-            .unwrap()
-            .unwrap();
-        let stored: HarnessSnapshot =
-            serde_json::from_value(runtime.handle_state_json.clone().unwrap()).unwrap();
-        assert_eq!(stored.pending_entries(), snapshot.pending_entries());
-        assert_eq!(stored.push_watermark, event_id);
-
-        let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-        let registry = HarnessRegistry::new();
-        let handle = spawn_recovered_harness(
-            repo.clone(),
-            EventBus::new(),
-            role_cache,
-            track_area_cache,
-            daemon.clone(),
-            &registry,
-            &crate::per_card_lock::new_keyed_locks(),
-            runtime,
-            ClaimMode::Replace,
-        )
-        .await
-        .unwrap()
-        .installed()
-        .expect("recovered harness");
-        assert!(registry.get(&runtime_id).is_some());
-
-        tokio::time::timeout(Duration::from_millis(750), async {
-            loop {
-                if daemon.turn_start_count_for_test() > 0 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("recovered workspace lease backlog should issue a turn");
-        assert_eq!(daemon.turn_start_count_for_test(), 1);
-
-        let after_issue = handle.snapshot().await;
-        assert!(after_issue.pending_entries().is_empty());
-        assert_eq!(after_issue.push_watermark, event_id);
-        assert_eq!(
-            after_issue.last_thread_id.as_deref(),
-            Some(thread_id.as_str())
-        );
-
-        handle.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn review_round_replays_into_recovered_harness_and_issues_turn() {
-        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-        let role_cache = CardRoleCache::new();
-        let track_area_cache = TrackAreaCache::new();
-        let area = repo
-            .area_create(NewArea {
-                name: "review replay".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
-            .await
-            .unwrap();
-        let track = repo
-            .track_create(NewTrack {
-                template_input: None,
-                area_id: area.id.clone(),
-                title: "review replay".into(),
-                sort: None,
-                cwd: "/tmp".into(),
-                template_id: None,
-                plugin_scope: None,
-                attach_folder: false,
-                theme: crate::routes::theme::RequestTheme::default_dark(),
-            })
-            .await
-            .unwrap();
-        track_area_cache.insert(track.id.clone(), area.id.clone());
-
-        let mut tx = repo.pool().begin().await.unwrap();
-        let planner_card = card_create_with_id_tx(
-            &mut tx,
-            new_id(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: json!({"schemaVersion": 1, "planner_harness": true}),
-            },
-            CardRole::Planner,
-            false,
-            &role_cache,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-
-        let review_event = Event::ReviewRound {
-            track_id: track.id.clone(),
-            subject: ReviewSubject {
-                phase: "impl".into(),
-                slice_id: "5b".into(),
-                pr_number: Some(760),
-            },
-            head_sha: Some("head-sha".into()),
-            n: 1,
-            cap: 8,
-            converged: false,
-            channels: vec![
-                ChannelVerdict {
-                    role: "design-correctness".into(),
-                    verdict: ChannelVerdictKind::ChangesRequested,
+            vec![
+                Observation::WorkerHookStop {
+                    track_id: track.id.clone(),
+                    card_id: running_worker.id.clone(),
+                    kind: HookKind::CodexStop,
+                    idempotency_key: "hook-running-stop".into(),
                 },
-                ChannelVerdict {
-                    role: "failure-path".into(),
-                    verdict: ChannelVerdictKind::Approved,
+                Observation::TaskGateResult {
+                    idempotency_key: verifying_task.id.clone(),
+                    key: "verify".into(),
+                    passed: true,
+                    failing_step: None,
+                    exit_code: Some(0),
+                    log_tail: "ok\n".into(),
+                    attempt: 1,
                 },
             ],
-            root_cause: Some("tests failing".into()),
-            idempotency_key: format!("review.round:{}:impl:5b:760:1", track.id),
-        };
-        let scope = EventScope::Track {
-            track: track.id.clone(),
-            area: area.id.clone(),
-        };
-        let mut tx = repo.pool().begin().await.unwrap();
-        let event_id = append_decision_event_in_tx(
-            &mut tx,
-            &ActorId::AiPlanner(planner_card.id.clone()),
-            &scope,
-            None,
-            &review_event,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-
-        let runtime_id = new_id();
-        let thread_id = "thread-review-recovered".to_string();
-        let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-        snapshot.phase = HarnessPhaseTag::Idle;
-        snapshot.last_thread_id = Some(thread_id.clone());
-        let mut tx = repo.pool().begin().await.unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: runtime_id.clone(),
-                card_id: planner_card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Idle,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.clone()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-
-        replay_harness_events_since(
-            repo.clone(),
-            planner_card.id.as_str(),
-            &track.id,
-            0,
-            &mut snapshot,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            snapshot.pending_observations(),
-            vec![Observation::ReviewRound {
-                track_id: track.id.clone(),
-                phase: "impl".into(),
-                slice_id: "5b".into(),
-                pr_number: Some(760),
-                head_sha: Some("head-sha".into()),
-                n: 1,
-                cap: 8,
-                converged: false,
-            }]
+            "only the running worker's stop hook and the gate result replay"
         );
         assert_eq!(
             snapshot
@@ -1099,13 +1073,10 @@ mod tests {
                 .iter()
                 .map(QueueEntry::envelope_id)
                 .collect::<Vec<_>>(),
-            vec![Some(event_id)]
+            expected_ids
         );
-        assert_eq!(snapshot.push_watermark, event_id);
-        assert!(
-            snapshot.pending_entries()[0].is_hard_fire(),
-            "review.round observations must hard-fire"
-        );
+        // The gate result is the last row, so the watermark lands on it.
+        assert_eq!(snapshot.push_watermark, last_id);
 
         let runtime = repo
             .session_projection_by_id(&runtime_id)
@@ -1115,7 +1086,6 @@ mod tests {
         let stored: HarnessSnapshot =
             serde_json::from_value(runtime.handle_state_json.clone().unwrap()).unwrap();
         assert_eq!(stored.pending_entries(), snapshot.pending_entries());
-        assert_eq!(stored.push_watermark, event_id);
 
         let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
         let registry = HarnessRegistry::new();
@@ -1145,17 +1115,31 @@ mod tests {
             }
         })
         .await
-        .expect("recovered review.round backlog should issue a turn");
+        .expect("the replayed stop hook + gate result backlog should issue a turn");
         assert_eq!(daemon.turn_start_count_for_test(), 1);
+        let turns = daemon.started_turns_for_test();
+        let crate::codex_appserver::InputItem::Text { text } = &turns[0].1[0] else {
+            panic!("expected text input, got {:?}", turns[0].1)
+        };
+        assert!(text.contains("gate passed"), "{text}");
+        assert!(text.contains("hook_id=hook-running-stop"), "{text}");
+        for quiet in [
+            workspace_path.as_str(),
+            "/tmp/worktree-replay",
+            "neige/replay/verify",
+            "lease was released",
+            "Review round",
+            "hook-verifying-stop",
+        ] {
+            assert!(
+                !text.contains(quiet),
+                "{quiet:?} leaked into the turn: {text}"
+            );
+        }
 
         let after_issue = handle.snapshot().await;
         assert!(after_issue.pending_entries().is_empty());
-        assert_eq!(after_issue.push_watermark, event_id);
-        assert_eq!(
-            after_issue.last_thread_id.as_deref(),
-            Some(thread_id.as_str())
-        );
-
+        assert_eq!(after_issue.push_watermark, last_id);
         handle.shutdown().await.unwrap();
     }
 }

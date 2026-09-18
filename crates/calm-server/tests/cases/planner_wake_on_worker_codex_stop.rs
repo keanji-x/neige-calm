@@ -17,7 +17,9 @@ use calm_server::harness::{
     PlannerHarness, PlannerHarnessParams,
 };
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
-use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
+use calm_server::model::{
+    CardRole, NewArea, NewCard, NewTrack, Task, TaskKind, TaskStatus, new_id, now_ms,
+};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -34,6 +36,7 @@ use tower::ServiceExt;
 struct Boot {
     app: axum::Router,
     repo: Arc<dyn Repo>,
+    repo_sqlx: Arc<SqlxRepo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
@@ -188,6 +191,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         repo,
+        repo_sqlx,
         events,
         card_role_cache,
         track_area_cache,
@@ -203,6 +207,109 @@ async fn boot() -> Boot {
         renderer,
         shared,
     }
+}
+
+/// #1727 S1 — a gated tasks row on the boot track, bound to `worker_card_id`
+/// when given, in `status`. Returns the row (its `id` is the gate result's
+/// execution id).
+async fn seed_task(
+    boot: &Boot,
+    key: &str,
+    worker_card_id: Option<&CardId>,
+    status: TaskStatus,
+) -> Task {
+    let task = Task {
+        id: format!("{}:{key}", boot.track_id),
+        track_id: boot.track_id.to_string(),
+        key: key.into(),
+        kind: TaskKind::Codex,
+        goal: "g".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: Some("{\"steps\":[{\"name\":\"t\",\"cmd\":\"true\"}]}".into()),
+        status,
+        status_detail: None,
+        worker_card_id: worker_card_id.map(ToString::to_string),
+        gate_result_json: None,
+        gate_attempt: 1,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        running_deadline_ms: None,
+        context_stale_at_ms: None,
+        declared_by: "spec".into(),
+        spawn: "in-wave".into(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        finished_at_ms: None,
+    };
+    let mut tx = boot.repo_sqlx.pool().begin().await.unwrap();
+    crate::support::task::insert_task_tx(&mut tx, &task)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    task
+}
+
+/// The positive control for the negative tests below: a `task.gate_result`
+/// (kernel-emitted; always a wake) for `task`, through the same live event
+/// path the quiet event took.
+async fn emit_gate_result(boot: &Boot, task: &Task) {
+    boot.repo
+        .log_pure_event(
+            ActorId::KernelDispatcher,
+            EventScope::Track {
+                track: boot.track_id.clone(),
+                area: boot.area_id.clone(),
+            },
+            None,
+            &boot.events,
+            &boot.card_role_cache,
+            &boot.track_area_cache,
+            Event::TaskGateResult {
+                task_id: task.id.clone(),
+                idempotency_key: task.id.clone(),
+                passed: true,
+                failing_step: None,
+                exit_code: Some(0),
+                log_tail: "ok\n".into(),
+                log_path: "/tmp/gate.log".into(),
+                attempt: 1,
+                agent_message: None,
+            },
+        )
+        .await
+        .expect("persist task.gate_result event");
+}
+
+/// A worker card on the boot track, role `Worker` in the dispatcher's cache.
+async fn add_worker_card(boot: &Boot) -> CardId {
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            track_id: boot.track_id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    boot.card_role_cache
+        .insert(card.id.clone(), CardRole::Worker, boot.track_id.clone());
+    card.id
+}
+
+fn stop_hook_payload(session_id: &str) -> Value {
+    json!({
+        "hook_event_name": "Stop",
+        "session_id": session_id,
+        "transcript_path": "/tmp/x.jsonl",
+        "transcript_size_bytes": 0,
+    })
 }
 
 fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
@@ -244,19 +351,18 @@ async fn post_hook(
         .unwrap()
 }
 
-async fn wait_for_worker_hook_stop(harness: &PlannerHarness) -> Vec<Observation> {
+async fn wait_for_worker_hook_stop(harness: &PlannerHarness, card: &CardId) -> Vec<Observation> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let pending = harness.pending_queue_for_test().await;
-        if pending
-            .iter()
-            .any(|obs| matches!(obs, Observation::WorkerHookStop { .. }))
-        {
+        if pending.iter().any(
+            |obs| matches!(obs, Observation::WorkerHookStop { card_id, .. } if card_id == card),
+        ) {
             return pending;
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for WorkerHookStop"
+            "timed out waiting for WorkerHookStop of {card}; pending={pending:?}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -301,7 +407,7 @@ async fn worker_codex_stop_hook_reaches_planner_harness_observation_queue() {
     let resp = post_hook(&boot.app, &boot.worker_card_id, payload).await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    let pending = wait_for_worker_hook_stop(&boot.harness).await;
+    let pending = wait_for_worker_hook_stop(&boot.harness, &boot.worker_card_id).await;
     let worker_stop_observations = pending
         .iter()
         .filter(|obs| matches!(obs, Observation::WorkerHookStop { .. }))
@@ -332,8 +438,15 @@ async fn worker_codex_stop_hook_reaches_planner_harness_observation_queue() {
     boot.harness.shutdown().await.unwrap();
 }
 
+/// #1727 S1 — `review.round` is planner-authored (the role gate admits no
+/// other author), so pushing it back was pure self-echo: it no longer
+/// reaches the harness queue or issues a turn. The wait is the harness's own
+/// `debounce_max_wait` plus a margin — had the event been queued, the
+/// hard-fire turn would have been issued well inside it. The gate result
+/// emitted afterwards is the positive control: the same live path, the same
+/// harness, one turn.
 #[tokio::test]
-async fn live_review_round_event_reaches_planner_harness_and_issues_turn() {
+async fn live_review_round_event_does_not_reach_the_planner_harness_or_issue_a_turn() {
     let boot = boot().await;
     let _dispatcher = spawn_dispatcher(&boot);
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -377,7 +490,73 @@ async fn live_review_round_event_reaches_planner_harness_and_issues_turn() {
         .await
         .expect("persist review.round event");
 
-    let text = wait_for_turn_text_containing(&boot.shared, "Review round 1/8").await;
-    assert!(text.contains("Review round 1/8"), "turn text={text}");
-    assert!(text.contains("converged=false"), "turn text={text}");
+    tokio::time::sleep(HarnessConfig::default().debounce_max_wait + Duration::from_secs(1)).await;
+    let pending = boot.harness.pending_queue_for_test().await;
+    assert!(
+        !pending
+            .iter()
+            .any(|obs| matches!(obs, Observation::ReviewRound { .. })),
+        "review.round must not be queued; pending={pending:?}"
+    );
+    assert!(
+        boot.shared.started_turns_for_test().is_empty(),
+        "review.round must not issue a turn; turns={:?}",
+        boot.shared.started_turns_for_test()
+    );
+
+    // Positive control.
+    let task = seed_task(&boot, "gate", None, TaskStatus::Verifying).await;
+    emit_gate_result(&boot, &task).await;
+    let text = wait_for_turn_text_containing(&boot.shared, "gate passed").await;
+    assert!(!text.contains("Review round"), "turn text={text}");
+    boot.harness.shutdown().await.unwrap();
+}
+
+/// #1727 S1 — a worker stop hook is a wake only while the card's tasks row
+/// is still `dispatched | running`; a `verifying` row means the gate result
+/// is the wake. The positive control is a second worker whose row is still
+/// `running`: its hook (posted after the stale one, through the same
+/// dispatcher) does arrive, and the stale one still has not.
+#[tokio::test]
+async fn live_worker_stop_hook_past_running_does_not_reach_the_planner_harness() {
+    let boot = boot().await;
+    let _dispatcher = spawn_dispatcher(&boot);
+
+    let stale_worker = boot.worker_card_id.clone();
+    seed_task(&boot, "verify", Some(&stale_worker), TaskStatus::Verifying).await;
+    let running_worker = add_worker_card(&boot).await;
+    seed_task(&boot, "run", Some(&running_worker), TaskStatus::Running).await;
+
+    let resp = post_hook(&boot.app, &stale_worker, stop_hook_payload("stale-session")).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let resp = post_hook(
+        &boot.app,
+        &running_worker,
+        stop_hook_payload("running-session"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let pending = wait_for_worker_hook_stop(&boot.harness, &running_worker).await;
+    // Both hooks went through the same dispatcher; give the stale one a
+    // further grace window before concluding it was suppressed, not late.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let pending_after = boot.harness.pending_queue_for_test().await;
+    for queue in [&pending, &pending_after] {
+        assert!(
+            !queue.iter().any(
+                |obs| matches!(obs, Observation::WorkerHookStop { card_id, .. } if card_id == &stale_worker)
+            ),
+            "stop hook of a verifying task's worker must not be queued; pending={queue:?}"
+        );
+        assert_eq!(
+            queue
+                .iter()
+                .filter(|obs| matches!(obs, Observation::WorkerHookStop { .. }))
+                .count(),
+            1,
+            "exactly the running worker's stop hook is queued; pending={queue:?}"
+        );
+    }
+    boot.harness.shutdown().await.unwrap();
 }

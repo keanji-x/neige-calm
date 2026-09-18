@@ -530,6 +530,141 @@ async fn gated_self_report_predicate() {
     );
 }
 
+/// #1727 S1 — the stale-worker-stop consultation, per tasks-row state.
+/// The sync predicate already said "worker stop hook"; this decides whether
+/// the row still needs the wake. Lookup errors are produced the way
+/// production produces them: two rows claiming the same worker card make
+/// `task_for_worker_card` return `Conflict`.
+#[tokio::test]
+async fn stale_worker_stop_hook_consultation_per_task_status() {
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite");
+    let mk_task = |key: &str, card: &str, status: crate::model::TaskStatus| crate::model::Task {
+        id: format!("w:{key}"),
+        track_id: "w".into(),
+        key: key.into(),
+        kind: crate::model::TaskKind::Codex,
+        goal: "g".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: None,
+        status,
+        status_detail: None,
+        worker_card_id: Some(card.into()),
+        gate_result_json: None,
+        gate_attempt: 0,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        running_deadline_ms: None,
+        context_stale_at_ms: None,
+        declared_by: "spec".into(),
+        spawn: "in-wave".into(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        finished_at_ms: None,
+    };
+    use crate::model::TaskStatus;
+    let seeded = vec![
+        mk_task("dispatched", "card-dispatched", TaskStatus::Dispatched),
+        mk_task("running", "card-running", TaskStatus::Running),
+        mk_task("verifying", "card-verifying", TaskStatus::Verifying),
+        mk_task("done", "card-done", TaskStatus::Done),
+        mk_task("failed", "card-failed", TaskStatus::Failed),
+        mk_task("canceled", "card-canceled", TaskStatus::Canceled),
+        // Two rows on one card: the lookup errors with `Conflict`.
+        mk_task("ambiguous-a", "card-ambiguous", TaskStatus::Verifying),
+        mk_task("ambiguous-b", "card-ambiguous", TaskStatus::Verifying),
+    ];
+    crate::db::write_in_tx_typed(&repo, move |tx| {
+        Box::pin(async move {
+            for t in &seeded {
+                crate::test_support::insert_task_tx(tx, t).await?;
+            }
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed tasks");
+    assert!(
+        calm_truth::db::RepoRead::task_for_worker_card(&repo, "card-ambiguous")
+            .await
+            .is_err(),
+        "fixture: the ambiguous card must make the lookup fail"
+    );
+
+    let codex_stop = |card: &str| Event::CodexHook {
+        card_id: CardId::from(card),
+        kind: "hook.codex.stop".into(),
+        hook_idempotency_key: format!("hook-codex-stop-{card}"),
+        payload: serde_json::Value::Null,
+    };
+    let claude_stop = |card: &str| Event::ClaudeHook {
+        card_id: CardId::from(card),
+        kind: "hook.claude.stop".into(),
+        hook_idempotency_key: format!("hook-claude-stop-{card}"),
+        payload: serde_json::Value::Null,
+    };
+    // (card, expect_suppressed, why)
+    let table: &[(&str, bool, &str)] = &[
+        (
+            "card-dispatched",
+            false,
+            "dispatched row still needs the wake",
+        ),
+        ("card-running", false, "running row still needs the wake"),
+        ("card-verifying", true, "the gate result is the wake"),
+        (
+            "card-done",
+            true,
+            "terminal row: the task terminal event was the wake",
+        ),
+        (
+            "card-failed",
+            true,
+            "terminal row: the task terminal event was the wake",
+        ),
+        (
+            "card-canceled",
+            true,
+            "terminal row: nothing left to wake for",
+        ),
+        (
+            "card-no-row",
+            false,
+            "no tasks row (ungated / legacy card) pushes as today",
+        ),
+        ("card-ambiguous", false, "lookup error pushes (fail-open)"),
+    ];
+    for (card, expect_suppressed, why) in table {
+        for event in [codex_stop(card), claude_stop(card)] {
+            assert_eq!(
+                is_stale_worker_stop_hook(&repo, &event).await,
+                *expect_suppressed,
+                "{card} ({}): {why}",
+                event.kind_tag()
+            );
+        }
+    }
+    // Non-hook events are never this consultation's business.
+    assert!(
+        !is_stale_worker_stop_hook(
+            &repo,
+            &Event::TaskCompleted {
+                idempotency_key: "w:verifying".into(),
+                result: serde_json::Value::Null,
+                artifacts: Vec::new(),
+                agent_message: None,
+            }
+        )
+        .await
+    );
+}
+
 /// Both live and boot paths resolve opaque execution IDs through the same reader.
 #[tokio::test]
 async fn task_recovery_gate_observation_resolves_opaque_execution_identity() {
@@ -725,40 +860,21 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         &write
     ));
 
-    // Issue #760 slice ⑦ — workspace lease lifecycle events always warrant a
-    // push (kernel-emitted; no author/role gate).
-    let leased = Event::WorkspaceLeased {
-        track_id: track.clone(),
-        card_id: worker.clone(),
-        lease_id: "lease".into(),
-        path: "/tmp/ws".into(),
-    };
-    assert!(event_warrants_planner_push(
-        &leased,
-        &ActorId::KernelDispatcher,
-        &write
-    ));
-    let released = Event::WorkspaceReleased {
-        track_id: track.clone(),
-        card_id: worker.clone(),
-        lease_id: "lease".into(),
-    };
-    assert!(event_warrants_planner_push(
-        &released,
-        &ActorId::KernelDispatcher,
-        &write
-    ));
-
-    for forge_event in [
-        Event::ForgePrMerged {
+    // #1727 S1 — workspace lease / worktree lifecycle notices and the
+    // planner-authored `review.round` no longer wake the planner: the facts
+    // stay in the events table and the track views. (Issue #760 slice ⑦
+    // used to push all of these unconditionally.)
+    for quiet_event in [
+        Event::WorkspaceLeased {
             track_id: track.clone(),
-            subject: crate::event::ForgeMergeSubject {
-                phase: "impl".into(),
-                slice_id: "6".into(),
-                pr_number: 1,
-            },
-            head_sha: "head-sha".into(),
-            merge_sha: "merge-sha".into(),
+            card_id: worker.clone(),
+            lease_id: "lease".into(),
+            path: "/tmp/ws".into(),
+        },
+        Event::WorkspaceReleased {
+            track_id: track.clone(),
+            card_id: worker.clone(),
+            lease_id: "lease".into(),
         },
         Event::ReviewRound {
             track_id: track.clone(),
@@ -777,6 +893,43 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             }],
             root_cause: Some("tests failing".into()),
             idempotency_key: "review.round:w:impl:5b:760:1".into(),
+        },
+        Event::WorktreeProvisioned {
+            track_id: track.clone(),
+            card_id: worker.clone(),
+            path: "/tmp/worktree".into(),
+        },
+        Event::WorktreeCommitted {
+            track_id: track.clone(),
+            card_id: worker.clone(),
+            commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            branch: "neige/w/card".into(),
+        },
+    ] {
+        for actor in [
+            ActorId::KernelDispatcher,
+            ActorId::Kernel,
+            ActorId::AiPlanner(planner.clone()),
+            ActorId::User,
+        ] {
+            assert!(
+                !event_warrants_planner_push(&quiet_event, &actor, &write),
+                "#1727 S1: {} must not wake the planner (actor {actor:?})",
+                quiet_event.kind_tag()
+            );
+        }
+    }
+
+    for forge_event in [
+        Event::ForgePrMerged {
+            track_id: track.clone(),
+            subject: crate::event::ForgeMergeSubject {
+                phase: "impl".into(),
+                slice_id: "6".into(),
+                pr_number: 1,
+            },
+            head_sha: "head-sha".into(),
+            merge_sha: "merge-sha".into(),
         },
         Event::RatifyRequested {
             track_id: track.clone(),
@@ -804,23 +957,12 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             track_id: track.clone(),
             issue_number: 1,
         },
-        Event::WorktreeProvisioned {
-            track_id: track.clone(),
-            card_id: worker.clone(),
-            path: "/tmp/worktree".into(),
-        },
-        Event::WorktreeCommitted {
-            track_id: track.clone(),
-            card_id: worker.clone(),
-            commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
-            branch: "neige/w/card".into(),
-        },
     ] {
-        assert!(event_warrants_planner_push(
-            &forge_event,
-            &ActorId::KernelDispatcher,
-            &write
-        ));
+        assert!(
+            event_warrants_planner_push(&forge_event, &ActorId::KernelDispatcher, &write),
+            "{} must still wake the planner",
+            forge_event.kind_tag()
+        );
     }
     assert!(!event_warrants_planner_push(
         &Event::ForgePrDiffRead {
@@ -1670,6 +1812,10 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
             true,
             true,
         ),
+        // #1727 S1 — workspace / worktree lifecycle notices and the
+        // planner-authored `review.round` keep their observation mapping
+        // (old snapshots may still hold queued entries) but no longer
+        // pass the push predicate.
         row(
             Event::WorkspaceLeased {
                 track_id: track.clone(),
@@ -1678,7 +1824,7 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
                 path: "/tmp/ws".into(),
             },
             ActorId::KernelDispatcher,
-            true,
+            false,
             true,
         ),
         row(
@@ -1688,7 +1834,7 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
                 lease_id: "lease".into(),
             },
             ActorId::KernelDispatcher,
-            true,
+            false,
             true,
         ),
         row(
@@ -1726,7 +1872,7 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
                 idempotency_key: "review.round:w:impl:5b:760:1".into(),
             },
             ActorId::KernelDispatcher,
-            true,
+            false,
             true,
         ),
         row(
@@ -1792,7 +1938,7 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
                 path: "/tmp/worktree".into(),
             },
             ActorId::KernelDispatcher,
-            true,
+            false,
             true,
         ),
         row(
@@ -1803,7 +1949,7 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
                 branch: "neige/w/card".into(),
             },
             ActorId::KernelDispatcher,
-            true,
+            false,
             true,
         ),
         row(
