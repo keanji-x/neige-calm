@@ -8,7 +8,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -56,7 +55,7 @@ class ScanWorkspaceInstrumentationTest {
   @Test fun scanWorkspaceInstallsAttachmentChooserWithoutNativeBridge() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     check(context.packageName.endsWith(".instrumented"))
-    val scenario = ActivityScenario.launch(MainActivity::class.java)
+    val scenario = ScanFixtureActivity.acquire("scan-handler")
     try {
       scenario.onActivity { host ->
         val launcher = checkNotNull(find(host.findViewById(android.R.id.content)))
@@ -68,18 +67,19 @@ class ScanWorkspaceInstrumentationTest {
           assertNotNull("The production scan WebView must handle attachment file inputs", WebViewCompat.getWebChromeClient(workspace.view))
         } finally { workspace.destroy() }
       }
-    } finally { scenario.moveToState(Lifecycle.State.CREATED) }
+    } finally { ScanFixtureActivity.pause(scenario,"scan-handler") }
   }
   @Test fun bundledScanDocumentExecutesOnceWithoutBridgeAndRejectsRemoteCode() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     check(context.packageName.endsWith(".instrumented"))
     assertTrue(context.getSharedPreferences("connection-profiles", 0).edit().clear().commit())
     assertTrue(context.getSharedPreferences("workspace-resume", 0).edit().clear().commit())
-    val scenario = ActivityScenario.launch(MainActivity::class.java)
+    val scenario = ScanFixtureActivity.acquire("scan-document")
     lateinit var workspace: ScanWorkspace
     lateinit var launcher: WebView
     lateinit var client: WebViewClient
     var visits = 0
+    var dispose: () -> Unit = {}
     try {
       scenario.onActivity { host ->
         launcher = checkNotNull(find(host.findViewById(android.R.id.content)))
@@ -87,6 +87,7 @@ class ScanWorkspaceInstrumentationTest {
           .put("attemptId", "attempt").put("attemptSecret", "a".repeat(64)).put("pairTicket", "b".repeat(64))
           .put("deadline", System.currentTimeMillis() + 120000)
         workspace = ScanWorkspace(host, launcher, BundledOrigin.parse(origin) { false }, ScanDocument(bootstrap), { visits++ }, {})
+        dispose = { workspace.destroy() }
         client = WebViewCompat.getWebViewClient(workspace.view)!!
         // Hold the network boundary locally; never make a real account request.
         workspace.view.webViewClient = object : WebViewClient() {
@@ -126,7 +127,8 @@ class ScanWorkspaceInstrumentationTest {
     } finally {
       // The parent driver force-stops only after instrumentation reports;
       // closing Tauri's last Activity would terminate its in-process runner.
-      scenario.moveToState(Lifecycle.State.CREATED)
+      scenario.onActivity { dispose() }
+      ScanFixtureActivity.pause(scenario,"scan-document")
     }
   }
 }

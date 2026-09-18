@@ -1,12 +1,8 @@
 package io.neigecalm.next
 
-import androidx.lifecycle.Lifecycle
-import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.espresso.Espresso.onView
-import androidx.test.espresso.action.ViewActions.click
-import androidx.test.espresso.matcher.ViewMatchers.withText
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -50,12 +46,15 @@ class NativeAdmissionInstrumentationTest {
     assertTrue(context.getSharedPreferences("connection-profiles",0).edit().clear().commit())
     assertTrue(context.getSharedPreferences("workspace-resume",0).edit().clear().commit())
     val helper = RecoveryInstrumentationTest()
-    val scenario = ActivityScenario.launch(MainActivity::class.java)
+    val scenario = ScanFixtureActivity.acquire("native-admission")
     val parked = Parked(); val deadlines = Deadlines()
     lateinit var plugin: BundledFrontendPlugin
     lateinit var originalNetwork: ExecutorService
     lateinit var originalDeadlines: ScheduledExecutorService
     lateinit var originalView: android.webkit.WebView
+    var initialized = false
+    var path = "setup"
+    val passed = JSONArray()
     try {
       helper.await(scenario, "location.host==='tauri.localhost' && !document.querySelector('#connection-mode').disabled", "Launcher unavailable")
       scenario.onActivity { host ->
@@ -72,13 +71,27 @@ class NativeAdmissionInstrumentationTest {
         originalDeadlines = field(plugin,"deadlines").get(plugin) as ScheduledExecutorService
         field(plugin,"network").set(plugin,parked)
         field(plugin,"deadlines").set(plugin,deadlines)
+        initialized = true
+        ScanFixtureActivity.emit(ScanFixtureActivity.snapshot("admission.parked",host))
       }
-      for (path in listOf("save", "select", "attempt", "bind", "cancel", "pause", "timeout", "new-scan", "reset", "legacy", "attach", "destroy")) {
-        scenario.onActivity { ConnectionProfiles(context).selectTailnet(if (path=="legacy") P2PConnection.ORIGIN else "https://saved.tail.example") }
+      for (nextPath in listOf("save", "select", "attempt", "bind", "cancel", "pause", "timeout", "new-scan", "reset", "legacy", "attach", "destroy")) {
+        path = nextPath
+        scenario.onActivity { host ->
+          val profiles=ConnectionProfiles(context)
+          profiles.selectTailnet(if (path=="legacy") P2PConnection.ORIGIN else "https://saved.tail.example")
+          if (path=="select") profiles.selectTailnet("https://other-saved.tail.example")
+          ScanFixtureActivity.emit(ScanFixtureActivity.snapshot("admission.$path.before-reserve",host).put("passed",passed))
+        }
         helper.evaluate(scenario, "window.s4Pending=null; window.__TAURI__.core.invoke('plugin:bundled-frontend|enroll_from_scan',{payload:'neige-enroll:v2:parked'}).then(()=>s4Pending='ok',()=>s4Pending='cancelled'); true")
         var token = ""
+        lateinit var oldPending: Any
+        ScanFixtureActivity.awaitUi(scenario,"admission.$path.reserved") {
+          val pending=field(plugin,"pending").get(plugin)
+          pending!=null && field(pending,"nativeOperation").get(pending)!=null
+        }
         scenario.onActivity {
           val pending = checkNotNull(field(plugin,"pending").get(plugin))
+          oldPending = pending
           val operation = checkNotNull(field(pending,"nativeOperation").get(pending))
           token = field(operation,"token").get(operation) as String
         }
@@ -108,26 +121,56 @@ class NativeAdmissionInstrumentationTest {
             "destroy" -> plugin.onDestroy(host)
           }
         }
-        if (path=="reset") onView(withText("退出并重新扫码")).perform(click())
+        if (path=="reset") {
+          scenario.onActivity { host ->
+            assertSame("Reset must not bypass native confirmation",oldPending,field(plugin,"pending").get(plugin))
+            ScanFixtureActivity.emit(ScanFixtureActivity.snapshot("reset.before-confirmation-wait",host))
+          }
+          ScanFixtureActivity.confirmOwnedResetDialog(scenario)
+        }
+        ScanFixtureActivity.awaitUi(scenario,"admission.$path.dispatched") {
+          val settled=(field(oldPending,"settled").get(oldPending) as java.util.concurrent.atomic.AtomicBoolean).get()
+          val current=field(plugin,"pending").get(plugin)
+          settled && when(path) {
+            "save" -> current==null && ConnectionProfiles(context).read().let { settings -> settings.mode=="ip" && settings.ipOrigin=="https://direct.invalid" && !settings.tailscaleEnabled }
+            "select" -> current==null && ConnectionProfiles(context).read().tailnetOrigin=="https://saved.tail.example"
+            "new-scan", "reset", "legacy" -> current!=null && current!==oldPending && field(current,"nativeOperation").get(current)?.let { operation -> field(operation,"token").get(operation)!=token }==true
+            "attempt", "bind" -> current!=null && current!==oldPending
+            else -> current==null
+          }
+        }
         scenario.onActivity {
           // Real JNI checks the old ticket before current()/node startup or QR decoding.
           val result = JSONObject(NativeP2P.enroll(token,"unused"))
           assertFalse("$path admitted old JNI", result.getBoolean("ok"))
           assertEquals("$path did not revoke native admission", "原生操作已取消", result.getString("error"))
         }
-        if (path!="destroy") helper.evaluate(scenario,"window.__TAURI__.core.invoke('plugin:bundled-frontend|cancel_enrollment').catch(()=>{}); true")
+        passed.put(path)
+        scenario.onActivity { host -> ScanFixtureActivity.emit(ScanFixtureActivity.snapshot("admission.$path.passed",host).put("passed",passed)) }
+        if (path!="destroy") {
+          helper.evaluate(scenario,"window.s4Cleanup=false; window.__TAURI__.core.invoke('plugin:bundled-frontend|cancel_enrollment').then(()=>s4Cleanup=true,()=>s4Cleanup=false); true")
+          helper.await(scenario,"window.s4Cleanup===true","Cleanup command did not acknowledge: $path")
+          ScanFixtureActivity.awaitUi(scenario,"admission.$path.cleaned") { field(plugin,"pending").get(plugin)==null }
+        }
       }
+      assertEquals("Every superseding path must reach its own JNI assertion",12,passed.length())
+    } catch (error: Throwable) {
+      scenario.onActivity { host -> ScanFixtureActivity.emit(ScanFixtureActivity.snapshot("admission.$path.failed",host).put("passed",passed).put("error",error.javaClass.simpleName)) }
+      throw error
     } finally {
       scenario.onActivity { host ->
         // Disable wake before lifecycle cleanup; this test never starts tsnet.
         ConnectionProfiles(context).disableTailnet()
-        field(plugin,"network").set(plugin,originalNetwork)
-        field(plugin,"deadlines").set(plugin,originalDeadlines)
+        ScanFixtureActivity.cancelOwnedResetDialog(host)
+        if (initialized) {
+          field(plugin,"network").set(plugin,originalNetwork)
+          field(plugin,"deadlines").set(plugin,originalDeadlines)
+          BundledFrontendPlugin.attachActivity(host,originalView)
+        }
         NativeP2P.cancelEnrollment()
-        BundledFrontendPlugin.attachActivity(host,originalView)
       }
       parked.shutdownNow(); deadlines.shutdownNow()
-      scenario.moveToState(Lifecycle.State.CREATED)
+      ScanFixtureActivity.pause(scenario,"native-admission")
     }
   }
 }
