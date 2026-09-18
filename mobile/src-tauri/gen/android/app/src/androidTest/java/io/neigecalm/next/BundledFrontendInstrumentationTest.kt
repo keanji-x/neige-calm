@@ -114,8 +114,10 @@ class BundledFrontendInstrumentationTest {
   }
 
   private fun waitForLauncher() {
+    // An empty saved configuration intentionally performs no network probe.
+    // Require initialized controls before accepting its scan-ready idle state.
     waitFor("Launcher/native connection attempt did not settle",
-      "location.host==='tauri.localhost' && typeof window.__TAURI__?.core?.invoke==='function' && !!document.querySelector('#connection-mode') && document.querySelector('#login')?.disabled===false && ['IP 已连接','连接超时，请重新配置'].includes(document.querySelector('#status-text')?.textContent)")
+      "location.host==='tauri.localhost' && document.readyState==='complete' && typeof window.__TAURI__?.core?.invoke==='function' && document.querySelector('#connection-mode')?.disabled===false && document.querySelector('#ip-origin')?.disabled===false && document.querySelector('#login')?.disabled===false && (['IP 已连接','连接超时，请重新配置'].includes(document.querySelector('#status-text')?.textContent) || (document.querySelector('#status-text')?.textContent==='扫描电脑上的添加手机二维码' && document.querySelector('#ip-origin')?.value==='' && document.querySelector('#error')?.textContent===''))")
   }
 
   private fun bind(server: String) {
