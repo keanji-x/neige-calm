@@ -59,6 +59,7 @@ android {
         buildConfig = true
     }
     sourceSets.getByName("main").assets.srcDir("../../../../bundled-frontend")
+    sourceSets.getByName("instrumented").jniLibs.srcDir("build/instrumented-p2p")
 }
 
 rust {
@@ -94,6 +95,16 @@ val p2pTasks = p2pAbis.map { abi ->
         outputs.file(file("src/main/jniLibs/$abi/libneige_p2p.so"))
     }
 }
+val instrumentedP2pTasks = p2pAbis.map { abi ->
+    tasks.register<Exec>("buildInstrumentedP2p" + abi.replace("-", "").replace("_", "")) {
+        workingDir = file("../../../..")
+        commandLine("bash", "scripts/build-p2p-native.sh", abi, "instrumented")
+        inputs.dir(file("../../../../p2p-native"))
+        inputs.file(file("../../../../scripts/build-p2p-native.sh"))
+        outputs.file(file("build/instrumented-p2p/$abi/libneige_p2p.so"))
+    }
+}
 tasks.configureEach {
     if (name.endsWith("JniLibFolders")) dependsOn(p2pTasks)
+    if (name.endsWith("JniLibFolders") && name.contains("Instrumented")) dependsOn(instrumentedP2pTasks)
 }

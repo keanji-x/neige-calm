@@ -89,6 +89,12 @@ jobs:
           test -f mobile/src-tauri/gen/android/app/src/instrumented/res/raw/neige_instrumentation_ca.pem
           env -u NEIGE_CODEX_BIN npm --prefix mobile run tauri -- android build --debug --apk --target x86_64
           npm --prefix mobile run verify:apk -- src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+      # The normal APK above is verified before producing the separate native
+      # test library. Only the instrumented source set packages its CA loader.
+      - name: Build instrumentation-only native fixture trust
+        env:
+          GOMAXPROCS: '2'
+        run: mobile/scripts/build-p2p-native.sh x86_64 instrumented
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

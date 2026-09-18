@@ -18,12 +18,16 @@ for (const abi of nativeAbis) assert.ok(names.includes(`lib/${abi}/libneige_p2p.
 const read = (name) => execFileSync('unzip', ['-p', apk, name], { maxBuffer: 64 * 1024 * 1024 });
 const nativeDirectory = mkdtempSync(join(tmpdir(), 'neige-native-build-info-'));
 try {
-  for (const abi of nativeAbis) {
+  for (const name of names.filter((name) => /^lib\/[^/]+\/libneige_p2p\.so$/.test(name))) {
+    const abi = name.split('/')[1];
     const library = join(nativeDirectory, `${abi}.so`);
-    writeFileSync(library, read(`lib/${abi}/libneige_p2p.so`));
+    const binary = read(name);
+    writeFileSync(library, binary);
     const info = execFileSync('go', ['version', '-m', library], { encoding: 'utf8' });
     const tags = info.match(/build\s+-tags=([^\n\r]+)/)?.[1].split(',') ?? [];
     assert.ok(tags.includes('ts_omit_logtail'), `Userspace networking for ${abi} must omit logtail from its actual build`);
+    assert.ok(!tags.includes('neige_instrumentation'), `Userspace networking for ${abi} must not include instrumentation trust`);
+    assert.ok(!binary.includes(Buffer.from('NEIGE_INSTRUMENTATION_CA')), `Userspace networking for ${abi} must not include the fixture CA loader`);
   }
 } finally { rmSync(nativeDirectory, { recursive: true, force: true }); }
 
