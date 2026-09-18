@@ -64,8 +64,9 @@ pub(crate) struct WorkerWorktreeFacts {
 /// card and the `worktree.removed` / `worktree.provisioned` ordering that
 /// decides `removed`. `None` when the card never held a lease.
 ///
-/// Keep this signature: #1727 PR-B delegates `recovery.guidance.retained`
-/// to it.
+/// Keep this signature: `calm.plan.list` reads it once per entry and derives
+/// both `worktree` and `recovery.guidance.retained` (#1727 PR-B) from the one
+/// result.
 pub(crate) async fn worker_worktree_facts_tx(
     tx: &mut Tx<'_>,
     worker_card_id: &str,
