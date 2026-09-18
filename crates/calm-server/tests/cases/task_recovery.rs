@@ -835,7 +835,8 @@ async fn time_out_prepared_ordinary_worker(
     let now = calm_server::model::now_ms();
     let lease_id = format!("lease-1727-{}", task.id);
     sqlx::query(
-        "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms, boot_id, created_at_ms, updated_at_ms) \
+        "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, lease_owner, \
+         lease_until_ms, boot_id, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6)",
     )
     .bind(&lease_id)
@@ -1266,14 +1267,19 @@ fn isolated_codex_declaration(key: &str) -> Value {
 /// one after normal card/session cleanup. Returns its id.
 async fn insert_isolated_operation(boot: &Boot, task: &Task, phase: &str) -> String {
     let id = format!("isolated-{phase}-{}", task.id);
-    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,tx_output_json,created_at_ms,updated_at_ms) VALUES(?1,?1,'codex-isolated-worker',?2,'h','track',?3,'{}','{}',?4,'{}',1,1)")
-        .bind(&id)
-        .bind(&task.id)
-        .bind(boot.track_id.as_str())
-        .bind(phase)
-        .execute(&boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,\
+                 target_type,target_id,target_json,payload_json,phase,tx_output_json,\
+                 created_at_ms,updated_at_ms) VALUES(?1,?1,'codex-isolated-worker',?2,'h',\
+                 'track',?3,'{}','{}',?4,'{}',1,1)",
+    )
+    .bind(&id)
+    .bind(&task.id)
+    .bind(boot.track_id.as_str())
+    .bind(phase)
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
     id
 }
 

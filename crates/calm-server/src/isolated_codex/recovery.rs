@@ -41,7 +41,10 @@ pub(crate) async fn require_stopped_tx(
     if task.status != TaskStatus::Failed || !super::selected(task).unwrap_or(false) {
         return Err(permanent(
             RefusalSite::IsolatedRouteMismatch,
-            "predecessor isolated operation does not belong to a failed isolated-route execution; its namespace stop cannot fence this key, so same-key recovery is permanently unavailable".into(),
+            "predecessor isolated operation does not belong to a failed isolated-route execution; \
+             its namespace stop cannot fence this key, so same-key recovery is permanently \
+             unavailable"
+                .into(),
         ));
     }
     let operation: Option<(String, String, bool, bool)> = sqlx::query_as(
@@ -57,13 +60,19 @@ pub(crate) async fn require_stopped_tx(
     else {
         return Err(permanent(
             RefusalSite::IsolatedOperationNotThisExecution,
-            "predecessor isolated operation named for settlement is not this execution's keyed isolated operation; its namespace stop cannot fence this key, so same-key recovery is permanently unavailable".into(),
+            "predecessor isolated operation named for settlement is not this execution's keyed \
+             isolated operation; its namespace stop cannot fence this key, so same-key recovery \
+             is permanently unavailable"
+                .into(),
         ));
     };
     if spawn_artifacts || compensation {
         return Err(permanent(
             RefusalSite::IsolatedCompensationRecorded,
-            "predecessor isolated execution recorded spawn artifacts or compensation state, so its namespace stop is not attributable; same-key recovery is permanently unavailable and no settlement briefing re-opens it".into(),
+            "predecessor isolated execution recorded spawn artifacts or compensation state, so \
+             its namespace stop is not attributable; same-key recovery is permanently \
+             unavailable and no settlement briefing re-opens it"
+                .into(),
         ));
     }
     if phase != "failed" {
@@ -71,7 +80,9 @@ pub(crate) async fn require_stopped_tx(
             return Err(permanent(
                 RefusalSite::IsolatedOperationTerminalWithoutFailure,
                 format!(
-                    "predecessor isolated operation ended in phase {phase} rather than failed; the failed execution has no matching stop proof, so same-key recovery is permanently unavailable"
+                    "predecessor isolated operation ended in phase {phase} rather than failed; \
+                     the failed execution has no matching stop proof, so same-key recovery is \
+                     permanently unavailable"
                 ),
             ));
         }
@@ -79,7 +90,9 @@ pub(crate) async fn require_stopped_tx(
             RefusalSite::IsolatedStopPending,
             SupportedContinuation::WaitForSettlement,
             format!(
-                "predecessor isolated execution has no confirmed namespace stop yet (operation phase {phase}); recovery re-opens if the kernel records the stop and delivers its settlement briefing"
+                "predecessor isolated execution has no confirmed namespace stop yet (operation \
+                 phase {phase}); recovery re-opens if the kernel records the stop and delivers \
+                 its settlement briefing"
             ),
         ));
     }
@@ -98,7 +111,9 @@ pub(super) async fn confirmed_record_tx(
     let unreadable = || {
         permanent(
             RefusalSite::IsolatedRecordUnreadable,
-            "predecessor isolated operation's journal cannot be read as a prepared run, so no namespace stop proof exists for it; same-key recovery is permanently unavailable".into(),
+            "predecessor isolated operation's journal cannot be read as a prepared run, so no \
+             namespace stop proof exists for it; same-key recovery is permanently unavailable"
+                .into(),
         )
     };
     let record = journal::load_tx(tx, op_id)
@@ -108,7 +123,10 @@ pub(super) async fn confirmed_record_tx(
     let StopState::Quiesced(proof) = &session.stop else {
         return Err(permanent(
             RefusalSite::IsolatedStopUnconfirmed,
-            "predecessor isolated execution has no recorded namespace quiescence proof although its operation is terminal, and the kernel will not record one; same-key recovery is permanently unavailable".into(),
+            "predecessor isolated execution has no recorded namespace quiescence proof although \
+             its operation is terminal, and the kernel will not record one; same-key recovery is \
+             permanently unavailable"
+                .into(),
         ));
     };
     let identity = &record.request.identity;
@@ -152,7 +170,9 @@ pub(super) async fn confirmed_record_tx(
     {
         return Err(permanent(
             RefusalSite::IsolatedStopIdentityMismatch,
-            "predecessor isolated execution's recorded namespace stop proof does not match its retained identity; same-key recovery is permanently unavailable".into(),
+            "predecessor isolated execution's recorded namespace stop proof does not match its \
+             retained identity; same-key recovery is permanently unavailable"
+                .into(),
         ));
     }
     Ok(record)

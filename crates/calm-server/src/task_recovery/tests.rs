@@ -233,17 +233,22 @@ async fn insert_operation_with(
 ) -> String {
     let pool = fx.repo.sqlite_pool().unwrap();
     let id = format!("op-{kind}-{phase}");
-    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,tx_output_json,compensation_state,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,?3,'h','track',?4,'{}','{}',?5,?6,?7,1,1)")
-        .bind(&id)
-        .bind(kind)
-        .bind(&fx.fixture.task.id)
-        .bind(&fx.track_id)
-        .bind(phase)
-        .bind(tx_output)
-        .bind(compensation_state)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,\
+                 target_type,target_id,target_json,payload_json,phase,tx_output_json,\
+                 compensation_state,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,?3,'h','track',\
+                 ?4,'{}','{}',?5,?6,?7,1,1)",
+    )
+    .bind(&id)
+    .bind(kind)
+    .bind(&fx.fixture.task.id)
+    .bind(&fx.track_id)
+    .bind(phase)
+    .bind(tx_output)
+    .bind(compensation_state)
+    .execute(&pool)
+    .await
+    .unwrap();
     id
 }
 
@@ -696,11 +701,13 @@ const ROWS: &[(Site, Code, Kind, Next)] = &[
 const UNREACHABLE: &[(Site, &str)] = &[
     (
         Site::IsolatedStopUnconfirmed,
-        "needs a prepared run record whose stop state is not Quiesced; only the Controller writes one (covered by isolated_codex_retry with the fake backend)",
+        "needs a prepared run record whose stop state is not Quiesced; only the Controller writes \
+         one (covered by isolated_codex_retry with the fake backend)",
     ),
     (
         Site::IsolatedStopIdentityMismatch,
-        "needs a prepared run record with a Quiesced stop whose identity chain is then broken; only the Controller writes one (covered by isolated_codex_retry with the fake backend)",
+        "needs a prepared run record with a Quiesced stop whose identity chain is then broken; \
+         only the Controller writes one (covered by isolated_codex_retry with the fake backend)",
     ),
 ];
 

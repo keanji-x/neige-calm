@@ -86,7 +86,9 @@ pub(super) async fn recovery_policy(
             RecoveryRefusalCode::TrackNotReady,
             SupportedContinuation::None,
             format!(
-                "track is blocked or terminal (lifecycle {}) and does not schedule work; explicitly request working to resolve a blocker, or separately reopen a terminal track",
+                "track is blocked or terminal (lifecycle {}) and does not schedule work; \
+                 explicitly request working to resolve a blocker, or separately reopen a \
+                 terminal track",
                 track.lifecycle.as_db_str()
             ),
         ));
@@ -266,7 +268,8 @@ async fn declaration_tx(tx: &mut Tx<'_>, track: &Track, key: &str) -> Admission<
             RecoveryRefusalCode::DeclarationWithdrawn,
             SupportedContinuation::None,
             format!(
-                "task declaration `{key}` is no longer in the report or is unreadable; same-contract recovery has nothing current to honour"
+                "task declaration `{key}` is no longer in the report or is unreadable; \
+                 same-contract recovery has nothing current to honour"
             ),
         )
     })?;
@@ -311,7 +314,8 @@ async fn declaration_tx(tx: &mut Tx<'_>, track: &Track, key: &str) -> Admission<
             RecoveryRefusalCode::DeclarationWithdrawn,
             SupportedContinuation::None,
             format!(
-                "task execution release for `{key}` was withdrawn under declare-and-wait; same-contract recovery waits for a current User release"
+                "task execution release for `{key}` was withdrawn under declare-and-wait; \
+                 same-contract recovery waits for a current User release"
             ),
         ));
     }
@@ -545,29 +549,36 @@ pub(super) async fn require_recoverable_predecessor_tx(
 /// A prepared isolated execution whose key also carries other operations or
 /// verification effects: the kernel cannot tell which process the stop proof
 /// would cover, and no settlement briefing re-opens this.
-pub(crate) const ISOLATED_AMBIGUOUS_OPERATIONS: &str = "predecessor isolated execution has ambiguous operations or verification effects on its key; the namespace stop proof cannot be attributed, so same-key recovery is permanently unavailable and no settlement briefing re-opens it";
+pub(crate) const ISOLATED_AMBIGUOUS_OPERATIONS: &str = "predecessor isolated execution has ambiguous operations or verification effects on its key; \
+     the namespace stop proof cannot be attributed, so same-key recovery is permanently \
+     unavailable and no settlement briefing re-opens it";
 
 /// A worker card was prepared for the key (`worker_card_id` is set) with no
 /// isolated preparation receipt on the key — whatever the declaration's
 /// context shape says — so nothing proves its descendants stopped writing.
 /// `calm.plan.list` guidance carries the retained worktree path when a lease
 /// exists.
-pub(crate) const ORDINARY_WORKER_PREPARED_NO_STOP_PROOF: &str = "an ordinary worker was prepared for this key and has no stop proof; same-key recovery is unavailable. Continue by declaring a new task (new key).";
+pub(crate) const ORDINARY_WORKER_PREPARED_NO_STOP_PROOF: &str = "an ordinary worker was prepared for this key and has no stop proof; same-key recovery is \
+     unavailable. Continue by declaring a new task (new key).";
 
 /// Verification effects (`gate_attempt`, `gate_pid`, `gate_result_json`)
 /// exist for the key but no worker card was prepared: a detached verifier
 /// descendant may still write.
-pub(crate) const VERIFICATION_EFFECTS_NO_STOP_PROOF: &str = "verification effects were recorded for this key with no worker stop proof; same-key recovery is unavailable. Continue by declaring a new task (new key).";
+pub(crate) const VERIFICATION_EFFECTS_NO_STOP_PROOF: &str = "verification effects were recorded for this key with no worker stop proof; same-key recovery \
+     is unavailable. Continue by declaring a new task (new key).";
 
 /// The failure is not a spawn failure yet neither a worker card nor
 /// verification effects remain: the kernel holds no stop proof and does not
 /// claim to know whether a preparation happened.
-pub(crate) const NOT_SPAWN_FAILED_NO_STOP_PROOF: &str = "the failed execution was not a spawn failure and has no stop proof; same-key recovery is unavailable. Continue by declaring a new task (new key).";
+pub(crate) const NOT_SPAWN_FAILED_NO_STOP_PROOF: &str = "the failed execution was not a spawn failure and has no stop proof; same-key recovery is \
+     unavailable. Continue by declaring a new task (new key).";
 
 /// A keyed operation whose recorded shape is not a pre-preparation failure
 /// (foreign kind, advanced phase, prepared target, output, artifacts or
 /// compensation): its external effects are uncertain.
-pub(crate) const OPERATION_UNCERTAIN_EXTERNAL_EFFECTS: &str = "predecessor operation has uncertain external effects; recovery currently requires a failure before worker preparation, so same-key recovery is unavailable. Continue by declaring a new task (new key).";
+pub(crate) const OPERATION_UNCERTAIN_EXTERNAL_EFFECTS: &str = "predecessor operation has uncertain external effects; recovery currently requires a failure \
+     before worker preparation, so same-key recovery is unavailable. Continue by declaring a new \
+     task (new key).";
 
 #[derive(sqlx::FromRow)]
 struct PredecessorOperation {
