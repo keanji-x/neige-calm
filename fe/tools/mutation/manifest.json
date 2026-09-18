@@ -1237,5 +1237,219 @@
       "web/src/systems/cards/registry.ts"
     ],
     "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card. The fifth entry is the panel's #1149 name/kind row, and it is a genuine witness rather than collateral: the router merges the visible and unknown branches and re-sorts on originalIndex (app/router `panelCards`), so renumbering either branch reorders the rendered list — that test reads the whole list in order, and its fixture has cards in both branches, so it sees the reordering. It is listed rather than loosened because asserting the list unordered would give up the wire order INV-CARD-226 is about."
+  },
+  {
+    "mutation_id": "s2a-track-activity-state-from-lifecycle",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/domain/track.ts",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex 0c405ae11..c6bcbb6d9 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -787,7 +787,7 @@ export function hasFailed(track: Track): boolean {\n  * receipt; the rest is the overlay's.\n  */\n export function trackActivityState(track: Track, unread: boolean): ActivityState {\n-  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });\n+  return activityStateOf({ working: isRunning(track.lifecycle), attention: track.attention, unread });\n }\n \n /** Needs a person first, then in a running phase, then everything quiet. */\n",
+    "expected_red": [
+      "Today rows carry the track read receipt",
+      "navigation activity markers derives the marker and the name from the activity overlay, not the lifecycle",
+      "navigation activity markers ignores the retired any_card_needs_input flag",
+      "TrackPage header paints one activity indicator beside the title, from the overlay rather than the lifecycle",
+      "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention from the retired any_card_needs_input flag",
+      "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive working from a running lifecycle phase"
+    ],
+    "selection_paths": [
+      "core/domain/track.test.ts",
+      "web/src/app/router/today-activity.test.tsx",
+      "web/src/features/track/page/public.test.tsx",
+      "web/src/features/track/row/public.test.tsx"
+    ],
+    "why_more_than_one": "The predicate is shared: the rail row, the page head, the router-level Today row and the core predicate suite each pin one surface of the same lifecycle-instead-of-overlay drift (a planning track with an idle planner reads quiet; a done track with work in flight reads working)."
+  },
+  {
+    "mutation_id": "s2a-activity-overlay-plugin-gate-dropped",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/domain/track.ts",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex a76187531..64b534433 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -247,7 +247,7 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir\n     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };\n     else if (overlay.kind === 'any_card_needs_input' && typeof value === 'boolean') {\n       activity = { ...activity, anyCardNeedsInput: value };\n-    } else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {\n+    } else if (overlay.kind === 'activity') {\n       const fields = activityOverlayFields(overlay.payload);\n       if (fields !== null) activity = { ...activity, ...fields };\n     }\n",
+    "expected_red": [
+      "trackActivityFrom: the kernel activity overlay applies only the kernel-owned activity row; a plugin-owned one leaves the track quiet"
+    ],
+    "selection_paths": [
+      "core/domain/track.test.ts"
+    ],
+    "why_more_than_one": "Only the plugin-owned row case should fail when the kernel plugin_id gate is dropped: every other activity-overlay fixture in the file is written under plugin_id kernel and folds the same way with or without the gate."
+  },
+  {
+    "mutation_id": "s2a-track-row-name-from-lifecycle",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/features/track/row/public.tsx",
+    "patch": "diff --git a/web/src/features/track/row/public.tsx b/web/src/features/track/row/public.tsx\nindex 7dc08d523..62675e8b8 100644\n--- a/web/src/features/track/row/public.tsx\n+++ b/web/src/features/track/row/public.tsx\n@@ -18,7 +18,7 @@\n import { ListText } from '../../../ui/list-typography/public.tsx';\n import { useId } from 'react';\n import {\n-  lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,\n+  isRunning, lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,\n } from '../../../../../core/domain/track.ts';\n import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';\n import { Icon } from '../../../ui/icon/public.tsx';\n@@ -107,7 +107,7 @@ export function TrackRow({\n    * in the name as what it is — a phase.\n    */\n   const activity = trackActivityState(track, unread);\n-  const activityBit = activity === 'working' ? 'working'\n+  const activityBit = isRunning(track.lifecycle) ? 'running'\n     : activity === 'attention' ? 'waiting on you'\n       : activity === 'failed' ? 'needs attention' : '';\n   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}, ${lifecycle}`\n",
+    "expected_red": [
+      "accessible name names the area only when the surface supplies one",
+      "navigation activity markers derives the marker and the name from the activity overlay, not the lifecycle"
+    ],
+    "selection_paths": [
+      "web/src/features/track/row/public.test.tsx"
+    ],
+    "why_more_than_one": "The accessible name is derived from the same state as the dot: the fixture that disagrees with the lifecycle in both directions reddens, and so does the plain working-name case that now says \"running\"."
+  },
+  {
+    "mutation_id": "s2a-needs-attention-lifecycle-or",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/domain/track.ts",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex 0c405ae11..686481ee4 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -773,7 +773,7 @@ export function isWorking(track: Track): boolean {\n \n /** The kernel says a person has to give input somewhere on this track. */\n export function needsUserAttention(track: Track): boolean {\n-  return track.attention === 'input';\n+  return isWaitingForUser(track.lifecycle) || track.attention === 'input';\n }\n \n /** The kernel says something on this track is broken and needs repair. */\n",
+    "expected_red": [
+      "Today clock counts waiting on you by the kernel verdict and In progress by lifecycle phase",
+      "collapse toggle shows the waiting count as the strip's only figure, with no dot beside it",
+      "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention from the lifecycle phase",
+      "activity predicates read only the kernel activity overlay (INV-APP-118) ranks a failed track with the waiting ones, and a running phase in the middle"
+    ],
+    "selection_paths": [
+      "core/domain/track.test.ts",
+      "web/src/app/shell/sidebar.test.tsx",
+      "web/src/features/today/public.test.tsx"
+    ],
+    "why_more_than_one": "A lifecycle OR inside needsUserAttention leaks into every consumer of the predicate: the core cases, the rail strip count and the Today waiting count each pick up a blocked track the kernel said nothing about."
+  },
+  {
+    "mutation_id": "s2a-activity-precedence-working-first",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/domain/activity.ts",
+    "patch": "diff --git a/core/domain/activity.ts b/core/domain/activity.ts\nindex 96b3822a4..77655fad9 100644\n--- a/core/domain/activity.ts\n+++ b/core/domain/activity.ts\n@@ -40,9 +40,9 @@ export type ActivityItem = Readonly<{\n export function activityStateOf(\n   s: Readonly<{ working: boolean; attention: AttentionKind; unread: boolean }>,\n ): ActivityState {\n+  if (s.working) return 'working';\n   if (s.attention === 'failed') return 'failed';\n   if (s.attention === 'input') return 'attention';\n-  if (s.working) return 'working';\n   if (s.unread) return 'unread';\n   return 'quiet';\n }\n",
+    "expected_red": [
+      "navigation activity markers gives needs-input precedence over working and unread, and failed over all three",
+      "activityStateOf working=true attention=input unread=false → attention",
+      "activityStateOf working=true attention=input unread=true → attention",
+      "activityStateOf working=true attention=failed unread=false → failed",
+      "activityStateOf working=true attention=failed unread=true → failed",
+      "activityStateOf ranks a person-needed state above motion when both hold at once",
+      "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict"
+    ],
+    "selection_paths": [
+      "core/domain/activity.test.ts",
+      "core/domain/track.test.ts",
+      "web/src/features/track/row/public.test.tsx"
+    ],
+    "why_more_than_one": "The exhaustive 2x3x2 table names each row the reordered chain gets wrong; the row-level precedence test and the core predicate test are the two consumers that see the same swap."
+  },
+  {
+    "mutation_id": "s2a-receipt-baseline-not-written",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/providers/ui-preferences.tsx",
+    "patch": "diff --git a/web/src/app/providers/ui-preferences.tsx b/web/src/app/providers/ui-preferences.tsx\nindex 2d603ac37..c741f2252 100644\n--- a/web/src/app/providers/ui-preferences.tsx\n+++ b/web/src/app/providers/ui-preferences.tsx\n@@ -84,9 +84,6 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {\n      * writes nothing and keeps receipts in memory.\n      */\n     setReadScope(id: string | null, nowMs: number | null = null): void {\n-      if (id !== null && nowMs !== null && Number.isFinite(nowMs) && nowMs > 0 && read(baselineKey(id)) === null) {\n-        write(baselineKey(id), String(nowMs), false);\n-      }\n       if (database === id) return;\n       database = id;\n       notify();\n",
+    "expected_red": [
+      "local read receipts first_scope_entry_marks_everything_read",
+      "local read receipts null_scope_is_never_unread",
+      "receipts_survive_a_recovery_scope_change_on_the_same_database",
+      "receipts_are_isolated_per_user",
+      "Today rows carry the track read receipt",
+      "reads the track receipt against the activity high-water mark, not updatedAt"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/ui-preferences.test.tsx",
+      "web/src/app/router/today-activity.test.tsx",
+      "web/src/app/shell/sidebar.test.tsx"
+    ],
+    "why_more_than_one": "Without the baseline, first entry into a scope no longer marks older activity read: the receipt unit cases, the rail receipt case and the router-level Today receipt case all rely on it. The two receipt-namespace cases (recovery-scope change on the same database, per-user isolation) also count the baseline key under the stable namespace and find none."
+  },
+  {
+    "mutation_id": "s2a-receipt-scope-from-instance-id",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/providers/ui-preferences.tsx",
+    "patch": "diff --git a/web/src/app/providers/ui-preferences.tsx b/web/src/app/providers/ui-preferences.tsx\nindex 2d603ac37..88784c304 100644\n--- a/web/src/app/providers/ui-preferences.tsx\n+++ b/web/src/app/providers/ui-preferences.tsx\n@@ -1,6 +1,6 @@\n import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';\n \n-import { createStorageKey, DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';\n+import { createStorageKey, DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';\n import { useState } from '../../ui/state/public.ts';\n \n type Preference = boolean | string | null;\n@@ -20,7 +20,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {\n    * `null` until the compat gate has confirmed the id for this load.\n    */\n   let database: string | null = null;\n-  try { database = storage?.getItem(DATABASE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }\n+  try { database = storage?.getItem(DB_INSTANCE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }\n   const notify = () => {\n     revision += 1;\n     for (const listener of listeners) listener();\n",
+    "expected_red": [
+      "records the initially visible track under the first discovered instance",
+      "database_id_change_overwrites_the_key",
+      "local read receipts keeps read receipts across reloads, accepts only newer acknowledgements, and isolates databases",
+      "local read receipts construction_seeds_from_database_id_key",
+      "local read receipts null_scope_is_never_unread",
+      "does not overwrite a newer acknowledgement from another tab",
+      "uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading",
+      "keeps new replies unread while reopening cached history is still loading",
+      "shows a closed Planner working and preserves unread completion until its history is read"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/read-receipts.test.tsx",
+      "web/src/app/providers/ui-preferences.test.tsx",
+      "web/src/app/router/track-conversation.test.tsx"
+    ],
+    "why_more_than_one": "Seeding the scope from the per-boot instance id changes what every scoped receipt resolves against, so the seeding case, the persistence cases, the gate cases and the router conversation-unread cases all move."
+  },
+  {
+    "mutation_id": "s2a-null-scope-reads-unread",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/providers/ui-preferences.tsx",
+    "patch": "diff --git a/web/src/app/providers/ui-preferences.tsx b/web/src/app/providers/ui-preferences.tsx\nindex 2d603ac37..9897f293c 100644\n--- a/web/src/app/providers/ui-preferences.tsx\n+++ b/web/src/app/providers/ui-preferences.tsx\n@@ -94,7 +94,6 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {\n     isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {\n       // No scope, no verdict: an unscoped receipt map is empty, and \"everything\n       // is unread until /api/version answers\" is a lie on every page load.\n-      if (database === null) return false;\n       return updatedAt > receipt(receiptKey(kind, id));\n     },\n     markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {\n",
+    "expected_red": [
+      "leaves the receipt scope null, and nothing unread, when the kernel reports no database identity",
+      "local read receipts null_scope_is_never_unread"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/read-receipts.test.tsx",
+      "web/src/app/providers/ui-preferences.test.tsx"
+    ],
+    "why_more_than_one": "A null scope must never read as unread; the unit case and the gate case for a kernel without database identity are the two carriers of that contract."
+  },
+  {
+    "mutation_id": "s2a-failed-dot-uses-warn",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/ui/activity-indicator/activity-indicator.module.css",
+    "patch": "diff --git a/web/src/ui/activity-indicator/activity-indicator.module.css b/web/src/ui/activity-indicator/activity-indicator.module.css\nindex ae2a88d32..53ec72ea9 100644\n--- a/web/src/ui/activity-indicator/activity-indicator.module.css\n+++ b/web/src/ui/activity-indicator/activity-indicator.module.css\n@@ -5,7 +5,7 @@\n      tell two 6px dots apart (#1722 decision (b)); the browser test pins the\n      hue distance. */\n   .attention { background: var(--warn); }\n-  .failed { background: var(--error); }\n+  .failed { background: var(--warn); }\n   .working {\n     inline-size: 10px;\n     block-size: 10px;\n",
+    "expected_red": [
+      "activity indicator colours light: attention and failed sit more than 30° apart in OKLCH hue",
+      "activity indicator colours dark: attention and failed sit more than 30° apart in OKLCH hue"
+    ],
+    "selection_paths": [
+      "web/src/ui/activity-indicator/activity-indicator.browser.test.tsx"
+    ],
+    "why_more_than_one": "The hue-distance test runs once per theme, and the failed dot falling back to the warn family collapses the distance in both."
+  },
+  {
+    "mutation_id": "s2a-badge-running-tone-restored",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/features/track/lifecycle-badge/public.tsx",
+    "patch": "diff --git a/web/src/features/track/lifecycle-badge/public.tsx b/web/src/features/track/lifecycle-badge/public.tsx\nindex 958b94de9..eb257115e 100644\n--- a/web/src/features/track/lifecycle-badge/public.tsx\n+++ b/web/src/features/track/lifecycle-badge/public.tsx\n@@ -13,7 +13,7 @@\n // vocabulary uses for \"broken\" and \"waiting on you\".\n \n import {\n-  isWaitingForUser, lifecycleLabel, type TrackLifecycle,\n+  isRunning, isWaitingForUser, lifecycleLabel, type TrackLifecycle,\n } from '../../../../../core/domain/track.ts';\n import styles from './lifecycle-badge.module.css';\n \n@@ -27,6 +27,7 @@ type BadgeTone = 'attention' | 'failed' | 'neutral';\n function toneOf(lifecycle: TrackLifecycle): BadgeTone {\n   if (lifecycle === 'failed') return 'failed';\n   if (isWaitingForUser(lifecycle)) return 'attention';\n+  if (isRunning(lifecycle)) return 'running' as BadgeTone;\n   return 'neutral';\n }\n \n",
+    "expected_red": [
+      "TrackLifecycleBadge leaves planning, dispatching and working neutral — the phase word does not read as alive"
+    ],
+    "selection_paths": [
+      "web/src/features/track/lifecycle-badge/public.test.tsx"
+    ],
+    "why_more_than_one": "Only the tone case for the running phases should fail when the retired running tone is restored; the phrase and attention cases are unaffected."
+  },
+  {
+    "mutation_id": "s2a-today-groups-by-working",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/features/today/public.tsx",
+    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\nindex 845233890..6def1a91c 100644\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -16,7 +16,7 @@ import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/co\n import { useEffect, useMemo, useRef, type ReactNode } from 'react';\n \n import {\n-  activeTracksOn, hasFailed, isRunning, needsUserAttention, visibleTracks, type Track,\n+  activeTracksOn, hasFailed, isRunning, isWorking, needsUserAttention, visibleTracks, type Track,\n } from '../../../../core/domain/track.ts';\n import { areaOf, type Area } from '../../../../core/domain/area.ts';\n import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';\n@@ -236,7 +236,7 @@ function TodayDesktop({\n    */\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = shownTracks.filter(needsPerson);\n-  const inProgress = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));\n+  const inProgress = shownTracks.filter((track) => isWorking(track) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n       <PanelCard>\n",
+    "expected_red": [
+      "degraded workspace reads stay usable does not claim empty activity while the areas read is unavailable",
+      "degraded workspace reads stay usable does not claim empty activity while the tracks read is unavailable",
+      "degraded workspace reads stay usable does not claim empty activity while the activity read is unavailable",
+      "degraded workspace reads stay usable keeps Today content when one area track read fails",
+      "Today rows carry the track read receipt",
+      "Today clock counts waiting on you by the kernel verdict and In progress by lifecycle phase"
+    ],
+    "selection_paths": [
+      "web/src/app/router/read-fallbacks.contract.test.tsx",
+      "web/src/app/router/today-activity.test.tsx",
+      "web/src/features/today/public.test.tsx"
+    ],
+    "why_more_than_one": "Grouping In progress by isWorking instead of the lifecycle phase empties the section for the phase-only fixtures: the Today unit case, the router-level Today row case and the degraded-read cases that count a working-phase track all move."
   }
 ]

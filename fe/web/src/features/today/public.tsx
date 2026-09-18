@@ -2,21 +2,21 @@
 // from app/router, and navigation leaves through `onOpenTrack` (features must
 // not import app).
 //
-// §8.1 — the header keeps the compact waiting/running summary, while the main
+// §8.1 — the header keeps the compact waiting/in-progress summary, while the main
 // column belongs wholly to the durable Today document. The clock, which used to
 // be 36px, is ambient information and sits at the header's right edge at
 // --text-base rather than competing with that document.
 //
 // #1253 D2 — "the document is the protagonist" is expressed by area and visual
 // weight, and by the document region reading at the prose rank while the rest of
-// the page stays interface-sized. Running remains ambience in the panel; the
+// the page stays interface-sized. In progress remains ambience in the panel; the
 // former Waiting-on-you list was removed from the reading column by owner call.
 
 import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import {
-  activeTracksOn, isRunning, needsUserAttention, visibleTracks, type Track,
+  activeTracksOn, hasFailed, isRunning, needsUserAttention, visibleTracks, type Track,
 } from '../../../../core/domain/track.ts';
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
@@ -226,8 +226,17 @@ function TodayDesktop({
   const { now, today } = useNow(nowMs);
 
   const shownTracks = visibleTracks(tracks);
-  const waiting = shownTracks.filter(needsUserAttention);
-  const running = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsUserAttention(track));
+  /*
+   * #1722 §5.3 — grouped by PHASE, indicated by ACTIVITY. `waiting` is the
+   * kernel's verdict (input or failed) and is a count only: the list was
+   * removed by owner call (#1253 D2). "In progress" is the lifecycle phase —
+   * a `planning` track whose planner is idle stays listed, without a spinner,
+   * and the list does not churn with every planner turn. Whether a row is in
+   * motion right now is the row's own indicator, from `trackActivityState`.
+   */
+  const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);
+  const waiting = shownTracks.filter(needsPerson);
+  const inProgress = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));
   const panel = (
     <aside className={styles.panelColumn} data-nc-panel="">
       <PanelCard>
@@ -242,7 +251,7 @@ function TodayDesktop({
             nowMs={now.getTime()}
           />
         </PanelModule>
-        <PanelRows title="Running" tracks={running} render={renderTrackRow} />
+        <PanelRows title="In progress" tracks={inProgress} render={renderTrackRow} />
         <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
       </PanelCard>
     </aside>
@@ -251,7 +260,7 @@ function TodayDesktop({
     <div className={styles.page}>
       <TodayHeader
         activityAvailable={activityAvailable}
-        today={today} waiting={waiting.length} running={running.length}
+        today={today} waiting={waiting.length} inProgress={inProgress.length}
         now={now}
       />
       <div className={styles.content}>
@@ -358,7 +367,7 @@ function TodayDocument({ launchpad, document, error, action }: {
  * `variant: 'compact'` — the same rows this list has always been, moved from
  * the main column into the panel and nothing else. The `panel` variant is the
  * *agenda's*, and it is what `app/router` keys the row's delete affordance off;
- * handing it to Running would put a second Delete button on every track that is
+ * handing it to In progress would put a second Delete button on every track that is
  * also on today's agenda, in the same card.
  */
 function PanelRows({ title, tracks, render }: {
@@ -378,10 +387,10 @@ function PanelRows({ title, tracks, render }: {
   );
 }
 
-function TodayHeader({ today, waiting, running, now, activityAvailable }: {
+function TodayHeader({ today, waiting, inProgress, now, activityAvailable }: {
   today: Date;
   waiting: number;
-  running: number;
+  inProgress: number;
   now: Date;
   activityAvailable: boolean;
 }) {
@@ -396,13 +405,16 @@ function TodayHeader({ today, waiting, running, now, activityAvailable }: {
       }
       meta={activityAvailable ? (
         <span className={styles.counts}>
-          {/* The two numbers summarise the two attention sections, so they take
-              the weight; the words stay quiet. */}
+          {/* The first number is how many tracks are waiting on you (no list —
+              #1253 D2); the second is the row count of the "In progress"
+              section below. Whether anything is moving is each row's own
+              indicator, not a number here (#1722 M13). The numbers take the
+              weight; the words stay quiet. */}
           <span className={styles.countValue}>{waiting}</span>
-          <span className={styles.countWord}>waiting</span>
+          <span className={styles.countWord}>waiting on you</span>
           <span className={styles.countSep} aria-hidden="true">·</span>
-          <span className={styles.countValue}>{running}</span>
-          <span className={styles.countWord}>running</span>
+          <span className={styles.countValue}>{inProgress}</span>
+          <span className={styles.countWord}>in progress</span>
         </span>
       ) : undefined}
       actions={<Clock now={now} />}

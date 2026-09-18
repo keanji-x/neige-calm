@@ -85,7 +85,7 @@ describe('route registration', () => {
        panel. The anchor used to be the retired placeholder's `aria-label`,
        which no longer exists; the status counts are the replacement — they are
        in `TodayHeader` and on no other route. */
-    expect(screen.getByText('waiting')).toBeTruthy();
+    expect(screen.getByText('waiting on you')).toBeTruthy();
     /* And this is the exact locator the two Playwright suites now anchor
        `/next/` on. It is asserted here, against the real route tree, so that
        "the anchor exists" is something a run proves rather than something a

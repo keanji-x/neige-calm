@@ -205,12 +205,12 @@ describe('the main column belongs to the document', () => {
   it('omits the Waiting on you list while retaining its header count', () => {
     render(<TodayPage
       activityAvailable
-      renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked', attention: 'input' })]} areas={[area()]} nowMs={NOW}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.queryByText('Waiting on you')).toBeNull();
-    expect(screen.getByRole('banner').textContent).toContain('1waiting');
+    expect(screen.getByRole('banner').textContent).toContain('1waiting on you');
     expect(screen.getByText("the day's report")).toBeTruthy();
   });
 });

@@ -583,9 +583,12 @@
     padding: 0;
   }
 
-  /* Permanent, so it gets the quiet tone at rest and only picks up a fill on
-     hover — the rail is greyscale apart from §7.5's two exceptions, and a
-     create action is neither of them. */
+  /* The rail's colours belong only to the indicator vocabulary
+     (`ui/activity-indicator`: warn = waiting on you, error = broken,
+     accent = unread, grey = in motion) and to the current location
+     (`--accent-soft`); titles never carry a state colour; area identity
+     does not enter the rail. A create action is none of those, so it gets
+     the quiet tone at rest and only a fill on hover. */
   .areaNew:hover,
   .areaNew:focus-visible {
     background: var(--overlay-hover-strong);

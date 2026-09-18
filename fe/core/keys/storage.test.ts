@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { DB_INSTANCE_ID_KEY, SYNC_CURSOR_KEY, THEME_KEY, createStorageKey } from './storage.js';
+import { DATABASE_ID_KEY, DB_INSTANCE_ID_KEY, SYNC_CURSOR_KEY, THEME_KEY, createStorageKey } from './storage.js';
 
 describe('stable storage keys', () => {
   it('preserves deployed key spellings independently of production constants', () => {
     expect(SYNC_CURSOR_KEY).toBe('calm:sync:cursor');
     expect(DB_INSTANCE_ID_KEY).toBe('calm:db_instance_id');
+    expect(DATABASE_ID_KEY).toBe('calm:database_id');
     expect(THEME_KEY).toBe('calm.theme');
   });
 

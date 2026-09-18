@@ -9,7 +9,7 @@ import { useCollapsible } from '@astryxdesign/core/Collapsible';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 
 import { areaOf, visibleAreas, type Area } from '../../../../core/domain/area.ts';
-import { needsUserAttention, userVisibleTracks, visibleTracks, type Track } from '../../../../core/domain/track.ts';
+import { hasFailed, needsUserAttention, userVisibleTracks, visibleTracks, type Track } from '../../../../core/domain/track.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
@@ -99,7 +99,9 @@ export function Sidebar({
 
   const userAreas = visibleAreas(areas);
   const userTracks = userVisibleTracks(tracks, areas);
-  const waiting = userTracks.filter(needsUserAttention);
+  // "Waiting on you" is what the kernel says needs a person: input or repair
+  // (#1722 §5.1) — the same predicate pair `lifecycleRank` puts first.
+  const waiting = userTracks.filter((track) => needsUserAttention(track) || hasFailed(track));
   const pinned = userTracks.filter((track) => track.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
 
@@ -140,7 +142,10 @@ export function Sidebar({
 
   const rowProps = {
     currentPath,
-    isUnread: (track: Track) => preferences.isUnread('track', track.id, track.updatedAt),
+    // The receipt compares the overlay's completion high-water mark, not the
+    // row's `updatedAt` (which moves on every rename and pin). `null` — the
+    // kernel has recorded no completion yet — is never unread (#1722 §5.2).
+    isUnread: (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0),
     onGo,
     nowMs,
     onSetPinned: (trackId: string, next: boolean) => {
@@ -194,11 +199,11 @@ export function Sidebar({
 
       {collapsed ? (
         <>
-          {/* The one number in the collapsed rail, and the only colour in it.
-              §7.5 allows exactly two exceptions to greyscale — the current
-              location and "waiting on you" — and the tone alone carries this
-              one, so the warn dot that used to sit beside it is gone: a
-              coloured digit and a coloured dot said the same thing twice. */}
+          {/* The rail's colours belong only to the indicator vocabulary
+              (`ui/activity-indicator`: warn = waiting on you, error = broken,
+              accent = unread, grey = in motion) and to the current location
+              (`--accent-soft`); titles never carry a state colour; area
+              identity does not enter the rail. */}
           {waiting.length > 0 && (
             <div className={styles.stripWaiting} aria-label={`${waiting.length} waiting on you`}>
               {waiting.length}
@@ -208,9 +213,10 @@ export function Sidebar({
               strip turned navigation into a palette — and they were the app's
               only use of `--area-*` outside the surfaces that genuinely mix
               areas (Today's agenda, the calendar day dot). A letter says which
-              area without spending a channel §7.5 reserves for state, and the
-              current one is still marked the way every other row marks it:
-              `--accent-soft` fill. */}
+              area without spending the channel the indicator vocabulary
+              reserves for state (see the note above), and the current one is
+              still marked the way every other row marks it: `--accent-soft`
+              fill. */}
           {userAreas.map((area) => (
             <button
               key={area.id}

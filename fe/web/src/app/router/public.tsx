@@ -1331,9 +1331,12 @@ function useConversationPanel(
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   const preferences = useUiPreferences();
   // The transcript projection can be older than server activity or include a
-  // local optimistic timestamp. Both unread checks and receipts use server rows.
+  // local optimistic timestamp. Both unread checks and receipts use server
+  // rows, and compare the row's completion time (#1722 §5.2): `updatedAt`
+  // also moves when the reader queues a message, so acknowledging it would
+  // mark the reply that has not arrived yet as read. `null` is never unread.
   const openActivity = rows.find(row => row.id === open?.id);
-  useReadReceipt('conversation', openActivity?.id ?? null, openActivity?.updatedAt ?? 0,
+  useReadReceipt('conversation', openActivity?.id ?? null, openActivity?.lastTurnCompletedAt ?? 0,
     store.historyReady && !store.historyLoading && store.historyError === null);
 
   /*
@@ -1849,7 +1852,7 @@ function useConversationPanel(
     list: (
       <ChatList
         conversations={store.conversations}
-        unreadIds={new Set(rows.filter(row => preferences.isUnread('conversation', row.id, row.updatedAt)).map(row => row.id))}
+        unreadIds={new Set(rows.filter(row => preferences.isUnread('conversation', row.id, row.lastTurnCompletedAt ?? 0)).map(row => row.id))}
         activeId={open?.id ?? null}
         showTrack={options?.showTrack ?? true}
         onOpen={(conversation) => {
@@ -2205,6 +2208,7 @@ function useConversationPanel(
 function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const workspace = useWorkspace(transport, unauthorized);
   const go = useGo();
+  const preferences = useUiPreferences();
   const trackMutations = useTrackMutations(transport, unauthorized);
   const deletion = useDeleteConfirm((trackId, signal) => {
     const track = workspace.tracks.find((candidate) => candidate.id === trackId);
@@ -2483,6 +2487,10 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
           variant={options.variant}
           hourLabel={options.hourLabel}
           areaName={options.areaName}
+          /* The same receipt key and comparison point as the rail
+             (`sidebar.tsx`), so a track reads as unread on Today exactly when
+             it does in the rail (#1722 §5.3). */
+          unread={preferences.isUnread('track', track.id, track.activityAt ?? 0)}
           onOpen={(trackId) => go({ name: 'track', trackId })}
           /* The panel variant only — that is the calendar's agenda, inside the
              card, where every other list already puts a delete under the status
@@ -2743,7 +2751,9 @@ function TrackRouteBody({
   recentFiles: RecentFileHistory;
 }) {
   useTrackViewState(track.id);
-  useReadReceipt('track', track.id, track.updatedAt);
+  // The same key and comparison point the rail uses (`sidebar.tsx`): the
+  // overlay's completion high-water mark, never the row's `updatedAt` (#1722 §5.2).
+  useReadReceipt('track', track.id, track.activityAt ?? 0);
   const trackMutations = useTrackMutations(transport, unauthorized);
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();
@@ -2823,6 +2833,9 @@ function TrackRouteBody({
     kind: 'shared-spec',
     state: plannerCard.runtime?.status ?? null,
     updatedAt: plannerCard.runtime?.updated_at_ms ?? plannerCard.updated_at,
+    // The receipt's comparison point, from the same runtime projection the
+    // server rows get theirs from (#1722 §4.7); absent on a legacy snapshot.
+    lastTurnCompletedAt: plannerCard.runtime?.last_turn_completed_ms ?? null,
   }, [plannerCard, track.id, trackTitle]);
   /*
    * ── Redeeming "open the planner conversation of the track I just created" ────

@@ -42,10 +42,10 @@ export function ChatList({
       {conversations.toSorted(byRecency).map((conversation) => {
         const live = isLiveConversation(conversation.state);
         const unread = unreadIds?.has(conversation.id) ?? false;
-        const attention = conversation.state === 'failed';
-        const description = attention ? 'Needs input' : unread ? 'Unread updates' : null;
+        const failed = conversation.state === 'failed';
+        const description = failed ? 'Needs attention' : unread ? 'Unread updates' : null;
         const descriptionId = `${descriptionPrefix}-${encodeURIComponent(conversation.id)}`;
-        const activity: ActivityState = attention ? 'attention' : live ? 'working' : unread ? 'unread' : 'quiet';
+        const activity: ActivityState = failed ? 'failed' : live ? 'working' : unread ? 'unread' : 'quiet';
         const active = conversation.id === activeId;
         /* Both are optional and both are said only when known: a row whose track
            has no title the reader may see says nothing about a track, and a row

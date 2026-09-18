@@ -43,6 +43,28 @@ describe('TrackPage header', () => {
     expect(screen.getAllByRole('status', { name: 'Track lifecycle: Draft' })).toHaveLength(2);
   });
 
+  /*
+   * #1722 §5.3 — the desktop head carries the same indicator as the rail, from
+   * the same overlay-derived state (INV-APP-118): nothing for a quiet track
+   * whatever its phase, a spinner for work in flight, the failed dot for a
+   * broken one. Exactly one indicator: the mobile head (`MobileHeader` meta,
+   * the second lifecycle status below) is a declared exception and paints none.
+   */
+  it('paints one activity indicator beside the title, from the overlay rather than the lifecycle', () => {
+    const view = renderPage({ track: track({ lifecycle: 'working', working: false }) });
+    expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
+    cleanup();
+    const working = renderPage({ track: track({ lifecycle: 'done', working: true }) });
+    expect(working.container.querySelectorAll('[data-nc-activity]')).toHaveLength(1);
+    expect(working.container.querySelector('[data-nc-activity="working"]')?.closest('h1, div')?.contains(
+      screen.getByRole('button', { name: 'Rename track' }),
+    )).toBe(true);
+    cleanup();
+    const failed = renderPage({ track: track({ lifecycle: 'working', attention: 'failed' }) });
+    expect(failed.container.querySelectorAll('[data-nc-activity]')).toHaveLength(1);
+    expect(failed.container.querySelector('[data-nc-activity="failed"]')).toBeTruthy();
+  });
+
   it('shows done, canceled and failed', () => {
     for (const [lifecycle, label] of [
       ['done', 'Done'], ['canceled', 'Canceled'], ['failed', 'Failed'],

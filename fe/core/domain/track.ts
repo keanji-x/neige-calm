@@ -6,6 +6,9 @@ import { z } from 'zod';
 
 import { cardRuntimeViewSchema } from '../api/schemas.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
+import {
+  activityStateOf, type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
+} from './activity.js';
 import { visibleAreas, type Area } from './area.js';
 
 export const trackLifecycleSchema = z.enum([
@@ -45,11 +48,35 @@ export type TrackActivity = Readonly<{
   progress: number;
   eta: string;
   now: string;
+  /**
+   * #254's `any_card_needs_input` overlay, still decoded so the field keeps
+   * its value, but **no predicate reads it any more** (#1722 §5.1): the
+   * kernel's `activity` overlay below is the one source of attention. The
+   * field and its writer go together in S4.
+   */
   anyCardNeedsInput: boolean;
+  /** `kernel/track/activity` (#1722 §4.1): something dispatched is still running. */
+  working: boolean;
+  /** Same overlay: the fold of `attentionItems` — any failed → failed, else any input → input. */
+  attention: AttentionKind;
+  /** Same overlay: high-water mark of completion-class evidence; the read receipt compares against it. */
+  activityAt: number | null;
+  /** Same overlay: every item that needs a person, with where it came from. */
+  attentionItems: readonly ActivityItem[];
+  /** Same overlay: the per-card verdicts, keyed by card id. Read through `cardActivityOf`. */
+  cards: Readonly<Record<string, CardActivity>>;
 }>;
 
+/*
+ * Every nested container is frozen on its own: `architecture/no-module-runtime-state`
+ * only credits a module-level `Object.freeze({...})` as static data when the
+ * `[]` / `{}` inside it are frozen too, and a `new Map()` here would be
+ * rejected outright — which is why `cards` is a `Record`, not a `ReadonlyMap`.
+ */
 export const NEUTRAL_ACTIVITY: TrackActivity = Object.freeze({
   progress: 0, eta: '', now: '', anyCardNeedsInput: false,
+  working: false, attention: 'none', activityAt: null,
+  attentionItems: Object.freeze([]), cards: Object.freeze({}),
 });
 
 export type Track = Readonly<{
@@ -139,10 +166,75 @@ function payloadField(payload: unknown, key: string): unknown {
     : undefined;
 }
 
+const attentionKindSchema = z.enum(['none', 'input', 'failed']);
+const activityItemWireSchema = z.object({
+  kind: z.enum(['input', 'failed']),
+  source: z.enum(['card', 'task', 'session', 'lifecycle']),
+  id: z.string(),
+  card_id: z.string().nullable(),
+  at_ms: z.number(),
+});
+const activityCardWireSchema = z.object({
+  card_id: z.string(),
+  state: z.enum(['working', 'input', 'failed']),
+});
+
+/**
+ * `kernel/track/activity` (#1722 §4.1). `items` and `cards` are parsed row by
+ * row on purpose: one malformed row is dropped, the rest of the payload still
+ * lands. A whole-array `z.array(schema)` would turn one bad row into a track
+ * with no activity at all, which is the failure the loose decoders above avoid.
+ */
+/** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */
+const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';
+const activityOverlayWireSchema = z.object({
+  schemaVersion: z.literal(1),
+  working: z.boolean(),
+  attention: attentionKindSchema,
+  activity_at_ms: z.number().nullable(),
+  items: z.array(z.unknown()),
+  cards: z.array(z.unknown()),
+});
+
+function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null {
+  const parsed = activityOverlayWireSchema.safeParse(payload);
+  if (!parsed.success) return null;
+  const attentionItems: ActivityItem[] = [];
+  for (const row of parsed.data.items) {
+    const item = activityItemWireSchema.safeParse(row);
+    if (!item.success) continue;
+    attentionItems.push({
+      origin: item.data.source, id: item.data.id, cardId: item.data.card_id,
+      atMs: item.data.at_ms, kind: item.data.kind,
+    });
+  }
+  // Folded into a Record inside the call: a per-track object built per decode,
+  // never a module-level container.
+  const cards: Record<string, CardActivity> = {};
+  for (const row of parsed.data.cards) {
+    const card = activityCardWireSchema.safeParse(row);
+    if (card.success) cards[card.data.card_id] = card.data.state;
+  }
+  return {
+    working: parsed.data.working,
+    attention: parsed.data.attention,
+    activityAt: parsed.data.activity_at_ms,
+    attentionItems,
+    cards,
+  };
+}
+
 /**
  * Folds a track's overlays into its activity fields. Unknown overlay kinds and
  * mistyped payloads are ignored rather than rejected: a plugin writing junk
  * must not blank out a track the sidebar is trying to render.
+ *
+ * The `activity` verdict is kernel-owned: the projector writes it as
+ * `plugin_id = 'kernel'` (`KERNEL_OVERLAY_PLUGIN_ID`), while the public overlay
+ * endpoint lets any plugin write a row of any `kind` under its *own* id. A
+ * plugin-owned `activity` row is therefore not the verdict and is skipped. The
+ * older kinds (`progress` / `eta` / `now` / `any_card_needs_input`) are
+ * plugin-written by design and stay ungated.
  */
 export function trackActivityFrom(trackId: string, overlays: readonly OverlayWire[]): TrackActivity {
   let activity = NEUTRAL_ACTIVITY;
@@ -155,6 +247,9 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir
     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };
     else if (overlay.kind === 'any_card_needs_input' && typeof value === 'boolean') {
       activity = { ...activity, anyCardNeedsInput: value };
+    } else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {
+      const fields = activityOverlayFields(overlay.payload);
+      if (fields !== null) activity = { ...activity, ...fields };
     }
   }
   return activity;
@@ -664,24 +759,49 @@ export function isWaitingForUser(lifecycle: TrackLifecycle): boolean {
   return lifecycle === 'blocked' || lifecycle === 'reviewing' || lifecycle === 'failed';
 }
 
-/**
- * #254 — the UI grouping predicate for every "Waiting on you" surface. ORs the
- * lifecycle bucket with the kernel `card_fsm`-derived overlay so a track whose
- * worker card is sitting on AwaitingInput surfaces even before the Planner Agent
- * has driven `working → blocked`.
+/*
+ * #1722 §5.1 — the three activity predicates read the kernel's
+ * `kernel/track/activity` overlay and nothing else. There is deliberately no
+ * lifecycle OR and no `anyCardNeedsInput` OR: the kernel computes attention
+ * from every persisted row it can see (session state, FSM overlays gated by a
+ * live session, task attempts, lifecycle), so a second derivation here would
+ * only ever disagree with it — and "planner sitting idle on a `planning`
+ * track" was exactly such a disagreement. A track the kernel has said nothing
+ * about is quiet, not guessed at.
  *
- * This stays separate from `isWaitingForUser` on purpose: the two signals have
- * different owners (Planner Agent vs kernel) and different storage (column vs
- * overlay), and places that genuinely want the pure lifecycle bucket — the
- * lifecycle badge, area bucket sort — must keep getting it.
+ * `isWaitingForUser` / `isRunning` stay as *phase* predicates: the lifecycle
+ * badge's phrase, `lifecycleRank`'s middle bucket and Today's "In progress"
+ * grouping are about which phase a track is in, not about whether anything
+ * is moving right now.
  */
-export function needsUserAttention(track: Track): boolean {
-  return isWaitingForUser(track.lifecycle) || track.anyCardNeedsInput;
+
+/** The kernel says something dispatched is still running. */
+export function isWorking(track: Track): boolean {
+  return track.working;
 }
 
-/** Waiting first, then running, then everything quiet. */
+/** The kernel says a person has to give input somewhere on this track. */
+export function needsUserAttention(track: Track): boolean {
+  return track.attention === 'input';
+}
+
+/** The kernel says something on this track is broken and needs repair. */
+export function hasFailed(track: Track): boolean {
+  return track.attention === 'failed';
+}
+
+/**
+ * The one indicator state for a track, on every surface (rail, Today, the
+ * page head, the mobile list). `unread` is the reader's, from the read
+ * receipt; the rest is the overlay's.
+ */
+export function trackActivityState(track: Track, unread: boolean): ActivityState {
+  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });
+}
+
+/** Needs a person first, then in a running phase, then everything quiet. */
 export function lifecycleRank(track: Track): number {
-  if (needsUserAttention(track)) return 0;
+  if (needsUserAttention(track) || hasFailed(track)) return 0;
   if (isRunning(track.lifecycle)) return 1;
   return 2;
 }

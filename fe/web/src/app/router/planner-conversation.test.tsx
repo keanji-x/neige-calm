@@ -1433,6 +1433,12 @@ describe('planner conversation regressions', () => {
         expect(messageField().getAttribute('contenteditable')).toBe('false');
         expect((await screen.findByRole('alert')).textContent).toContain('This conversation is stuck');
         expect(screen.getByRole('button', { name: 'Start a new conversation' })).toBeTruthy();
+        /* The wedged row is the drawer's own `failed`, not a request for input
+           (#1722 S2a r3): the `failed` indicator, described as `Needs attention`.
+           Mapped to `attention` it would read, in amber, as "waiting for you". */
+        const row = screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
+        expect(row.closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('failed');
+        expect(document.getElementById(row.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs attention');
         await sendWithEnter(messageField());
         expect(input()).toHaveLength(0);
         expect(document.querySelector('[data-nc-queued]')).toBeNull();

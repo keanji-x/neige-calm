@@ -17,12 +17,14 @@
     color: var(--warn-text);
   }
 
-  /* Active work gets one restrained colour channel: the accent is mixed back
-     into the normal metadata grey so it reads as alive, not highlighted. */
-  .running {
-    color: color-mix(in oklab, var(--accent) 58%, var(--text-3));
+  /* Broken is the error family, not the warn family: the same split the
+     activity indicator makes between "waiting on you" and "needs repair". */
+  .failed {
+    color: var(--error-text);
   }
 
+  /* A running phase is plain metadata. It used to mix the accent in so it
+     "read as alive"; motion is the activity indicator's to show now. */
   .neutral {
     color: var(--text-3);
   }

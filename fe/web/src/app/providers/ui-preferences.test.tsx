@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
+import { DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { createUiPreferences } from './ui-preferences.tsx';
 
 function memoryStorage() {
@@ -83,17 +83,20 @@ describe('local read receipts', () => {
     preferences.markRead('track', 'previously-visible', 100);
     expect(preferences.isUnread('track', 'previously-visible', 100)).toBe(false);
     expect(storage.values.size).toBe(0);
-    preferences.setReadScope('db-a');
+    // The scope is entered with a server time *before* the activity, so the
+    // baseline does not hide it: what this asserts is that the unscoped
+    // in-memory receipt did not travel into the database scope.
+    preferences.setReadScope('db-a', 50);
     expect(preferences.isUnread('track', 'previously-visible', 100)).toBe(true);
     preferences.markRead('track', 'currently-visible', 100);
     expect(preferences.isUnread('track', 'currently-visible', 100)).toBe(false);
-    preferences.setReadScope('db-b');
+    preferences.setReadScope('db-b', 50);
     expect(preferences.isUnread('track', 'currently-visible', 100)).toBe(true);
   });
 
   it('keeps read receipts across reloads, accepts only newer acknowledgements, and isolates databases', () => {
     const storage = memoryStorage();
-    storage.values.set(DB_INSTANCE_ID_KEY, 'db-a');
+    storage.values.set(DATABASE_ID_KEY, 'db-a');
     const preferences = createUiPreferences(storage);
     expect(preferences.isUnread('track', 'a', 100)).toBe(true);
     preferences.markRead('track', 'a', 100);
@@ -103,15 +106,68 @@ describe('local read receipts', () => {
     const restored = createUiPreferences(storage);
     expect(restored.isUnread('track', 'a', 100)).toBe(false);
     expect(restored.isUnread('conversation', 'a', 100)).toBe(true);
-    storage.values.set(DB_INSTANCE_ID_KEY, 'db-b');
-    restored.setReadScope('db-b');
+    storage.values.set(DATABASE_ID_KEY, 'db-b');
+    restored.setReadScope('db-b', 50);
     expect(restored.isUnread('track', 'a', 100)).toBe(true);
+  });
+
+  /*
+   * #1722 §5.2 — the four receipt contracts this slice adds, each named after
+   * the mutation that must redden it (§6 must-red table).
+   */
+  it('first_scope_entry_marks_everything_read', () => {
+    const now = 1_000_000;
+    const storage = memoryStorage();
+    const preferences = createUiPreferences(storage);
+    // A null scope first (the compat verdict is still pending): nothing is
+    // written — there is no database to key a baseline on yet.
+    preferences.setReadScope(null, now);
+    expect(storage.values.size).toBe(0);
+    preferences.setReadScope('db1', now);
+    // Everything that completed before the first look reads as read…
+    expect(preferences.isUnread('track', 't', now - 1)).toBe(false);
+    expect(preferences.isUnread('track', 't', now)).toBe(false);
+    expect(preferences.isUnread('conversation', 'c', now - 1)).toBe(false);
+    // …and what completes after it is unread until acknowledged.
+    expect(preferences.isUnread('track', 't', now + 1)).toBe(true);
+    // Written once, on disk, so a reload of the same device keeps the baseline
+    // without a receipt for every track.
+    expect([...storage.values.keys()].filter((key) => key.includes('baseline'))).toHaveLength(1);
+    const restored = createUiPreferences(storage);
+    restored.setReadScope('db1', now + 500);
+    expect(restored.isUnread('track', 'never-visited', now - 1)).toBe(false);
+    expect(restored.isUnread('track', 'never-visited', now + 1)).toBe(true);
+  });
+
+  it('construction_seeds_from_database_id_key', () => {
+    const storage = memoryStorage();
+    storage.values.set(DB_INSTANCE_ID_KEY, 'boot-42');
+    // Only the per-boot instance id is present: it must not become a scope.
+    expect(createUiPreferences(storage).readScope()).toBeNull();
+    storage.values.set(DATABASE_ID_KEY, 'db1');
+    expect(createUiPreferences(storage).readScope()).toBe('db1');
+  });
+
+  it('null_scope_is_never_unread', () => {
+    const now = 1_000_000;
+    const storage = memoryStorage();
+    storage.values.set(DATABASE_ID_KEY, 'db1');
+    const preferences = createUiPreferences(storage);
+    expect(preferences.isUnread('track', 't', now)).toBe(true);
+    // The layout effect runs with a pending verdict: the seeded scope is
+    // replaced by null, and under null nothing is unread rather than everything.
+    preferences.setReadScope(null);
+    expect(preferences.isUnread('track', 't', now)).toBe(false);
+    expect(preferences.isUnread('conversation', 'c', now)).toBe(false);
+    preferences.setReadScope('db1', now);
+    expect(preferences.isUnread('track', 't', now + 1)).toBe(true);
+    expect(preferences.isUnread('track', 't', now)).toBe(false);
   });
 });
 
 it('does not overwrite a newer acknowledgement from another tab', () => {
   const storage = memoryStorage();
-  storage.values.set(DB_INSTANCE_ID_KEY, 'same-db');
+  storage.values.set(DATABASE_ID_KEY, 'same-db');
   const first = createUiPreferences(storage);
   const second = createUiPreferences(storage);
   first.markRead('conversation', 'a', 10);
@@ -137,14 +193,75 @@ it('preserves newer cross-tab read receipts within the same recovery scope only'
   const first = createUiPreferences(storage);
   const second = createUiPreferences(storage);
   for (const preferences of [first, second]) {
-    preferences.setRecoveryScope('origin/owner/db-a'); preferences.setReadScope('db-a');
+    preferences.setRecoveryScope('origin/owner/db-a'); preferences.setReadScope('db-a', 5);
   }
   first.markRead('conversation', 'visible', 20);
   second.markRead('conversation', 'visible', 10);
   const restored = createUiPreferences(storage);
-  restored.setReadScope('db-a'); restored.setRecoveryScope('origin/owner/db-a');
+  restored.setReadScope('db-a', 5); restored.setRecoveryScope('origin/owner/db-a');
   expect(restored.isUnread('conversation', 'visible', 20)).toBe(false);
   expect(restored.isUnread('conversation', 'visible', 21)).toBe(true);
   restored.setRecoveryScope('origin/another-owner/db-a');
   expect(restored.isUnread('conversation', 'visible', 20)).toBe(true);
+});
+
+/*
+ * #1722 S2a review — the bundled recovery scope is `[origin, userId,
+ * dbInstanceId]` and `dbInstanceId` changes on every kernel boot. Receipts and
+ * the baseline live beside it, not under it: the Codex reproduction (baseline
+ * 100, completion 150, restart at 200) re-stamped the baseline under the new
+ * boot and swallowed the completion.
+ */
+it('receipts_survive_a_recovery_scope_change_on_the_same_database', () => {
+  const storage = memoryStorage();
+  const writes: string[] = [];
+  const recorded = { getItem: storage.getItem, setItem: (key: string, value: string) => { writes.push(key); storage.setItem(key, value); } };
+  const bootOne = JSON.stringify(['https://server.test', 'owner', 'boot-1']);
+  const bootTwo = JSON.stringify(['https://server.test', 'owner', 'boot-2']);
+  const preferences = createUiPreferences(recorded);
+  preferences.setRecoveryScope(bootOne);
+  preferences.setReadScope('db', 100);
+  const baselineKeys = () => [...storage.values.keys()].filter((key) => key.includes('baseline'));
+  expect(baselineKeys()).toHaveLength(1);
+  expect(baselineKeys()[0]).not.toContain('boot-1');
+  expect(preferences.isUnread('track', 't', 150)).toBe(true);
+  // The kernel restarts: a new boot id is adopted and the compat gate confirms
+  // the same database at a later server time.
+  preferences.setRecoveryScope(bootTwo);
+  preferences.setReadScope('db', 200);
+  expect(preferences.isUnread('track', 't', 150)).toBe(true);
+  expect(baselineKeys()).toHaveLength(1);
+  expect(storage.getItem(baselineKeys()[0])).toBe(JSON.stringify('100'));
+  expect(writes.filter((key) => key.includes('baseline'))).toHaveLength(1);
+  // A receipt taken under one boot is read back under the next, and a fresh
+  // app instance (page reload after the restart) sees the same facts.
+  preferences.markRead('track', 't', 150);
+  const restored = createUiPreferences(recorded);
+  restored.setRecoveryScope(bootTwo);
+  restored.setReadScope('db', 300);
+  expect(restored.isUnread('track', 't', 150)).toBe(false);
+  expect(restored.isUnread('track', 't', 151)).toBe(true);
+  expect(restored.isUnread('track', 'never-visited', 120)).toBe(true);
+  expect(baselineKeys()).toHaveLength(1);
+});
+
+it('receipts_are_isolated_per_user', () => {
+  const storage = memoryStorage();
+  const owner = createUiPreferences(storage);
+  owner.setRecoveryScope(JSON.stringify(['https://server.test', 'owner', 'boot-1']));
+  owner.setReadScope('db', 100);
+  owner.markRead('track', 't', 150);
+  expect(owner.isUnread('track', 't', 150)).toBe(false);
+  // Same origin, same boot, same database — another user sees neither the
+  // owner's receipt nor the owner's baseline.
+  const guest = createUiPreferences(storage);
+  guest.setRecoveryScope(JSON.stringify(['https://server.test', 'guest', 'boot-1']));
+  guest.setReadScope('db', 100);
+  expect(guest.isUnread('track', 't', 150)).toBe(true);
+  expect([...storage.values.keys()].filter((key) => key.includes('baseline'))).toHaveLength(2);
+  // Display preferences keep the per-boot recovery scope untouched.
+  owner.setConversation('track', 'conversation-a');
+  const ownerAgain = createUiPreferences(storage);
+  ownerAgain.setRecoveryScope(JSON.stringify(['https://server.test', 'owner', 'boot-2']));
+  expect(ownerAgain.conversation('track')).toBeNull();
 });

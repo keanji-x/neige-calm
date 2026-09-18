@@ -206,11 +206,16 @@
 
     /*
      * Hue 267, not 245. 245 is the default SaaS blue, and it was also exactly
-     * `--area-6` — so an area's identity dot could land on the one colour §7.5
-     * reserves for "you are here". 267 is the point farthest from every hue on
-     * the 8-step area ring (22.5 degrees from its two nearest), so identity and
-     * state can never be confused. Chroma drops 0.13 -> 0.10 as well: the app
-     * spends one accent, sparingly, on a page that is otherwise greyscale.
+     * `--area-6` — so an area's identity dot could land on the one colour
+     * reserved for "you are here". The rail's colours belong only to the
+     * indicator vocabulary (`ui/activity-indicator`: warn = waiting on you,
+     * error = broken, accent = unread, grey = in motion) and to the current
+     * location (`--accent-soft`); titles never carry a state colour; area
+     * identity does not enter the rail. 267 is the point farthest from every
+     * hue on the 8-step area ring (22.5 degrees from its two nearest), so
+     * identity and state can never be confused. Chroma drops 0.13 -> 0.10 as
+     * well: the app spends one accent, sparingly, on a page that is otherwise
+     * greyscale.
      */
     --accent: oklch(45% 0.10 267);
 
@@ -224,8 +229,18 @@
      * so all three are alpha.
      */
     --accent-soft: oklch(49% 0.10 267 / 0.14);
-    --warn: oklch(49% 0.14 30);
-    --warn-soft: oklch(52% 0.14 30 / 0.12);
+    /*
+     * Hue 80, not 30 (#1722 decision (b)). At hue 30 `--warn` sat 5° from
+     * `--error` (hue 25) at equal chroma: the two 6px dots the rail paints for
+     * "waiting on you" and "broken" were the same colour to the eye, and
+     * fe-design.md says error and warning must not both collapse into amber
+     * — which this family was not, either. A real amber at hue 80; chroma is
+     * the sRGB ceiling at this lightness (`check-contrast.mjs` reddens on
+     * out-of-gamut values), and the lightness keeps every warn pairing there
+     * green. The dark block re-hues the same family.
+     */
+    --warn: oklch(52% 0.10 80);
+    --warn-soft: oklch(70% 0.14 80 / 0.16);
 
     --surface-rail: oklch(89% 0.005 88);
     --surface-card: oklch(99.4% 0.004 90);
@@ -402,7 +417,7 @@
        the contract test. */
     --overlay-scrim: rgba(28, 29, 33, 0.32);
     --error-text: oklch(42% 0.17 25);
-    --warn-border: oklch(85% 0.05 30);
+    --warn-border: oklch(85% 0.06 80);
 
     /* Weights: three steps only (§2.2). 300/700/bold are forbidden. */
     --weight-normal: 400;
@@ -459,7 +474,7 @@
     --menu-w-max: 320px;
 
     /* Text-carrying semantic colours: --warn/--error/--success are fills, never type. */
-    --warn-text: oklch(42% 0.16 30);
+    --warn-text: oklch(44% 0.09 80);
     /* Chroma 0.132, not 0.14: 0.14 at this L and hue is outside sRGB. Same
        reasoning as dark `--accent`; the rendered pixel does not move. */
     --success-text: oklch(42% 0.132 145);
@@ -521,8 +536,8 @@
        unchanged and still the point farthest from the area ring. */
     --accent: oklch(80% 0.10 267);
     --accent-soft: oklch(74% 0.11 267 / 0.18);
-    --warn: oklch(74% 0.15 30);
-    --warn-soft: oklch(72% 0.15 30 / 0.18);
+    --warn: oklch(79% 0.155 80);
+    --warn-soft: oklch(74% 0.14 80 / 0.18);
     --surface-rail: oklch(17.5% 0.016 248);
     --surface-card: oklch(31.4% 0.013 251);
     --surface-chip: oklch(21% 0.016 249);
@@ -539,9 +554,9 @@
     --error: oklch(74% 0.14 25);
     --overlay-scrim: rgba(0, 0, 0, 0.55);
     --error-text: oklch(85% 0.07 25);
-    --warn-border: oklch(40% 0.05 30);
+    --warn-border: oklch(40% 0.05 80);
 
-    --warn-text: oklch(85% 0.07 30);
+    --warn-text: oklch(88% 0.11 80);
     --success-text: oklch(82% 0.13 145);
     --error-soft: oklch(76% 0.13 25 / 0.18);
     --error-border: oklch(40% 0.05 25);

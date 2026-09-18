@@ -63,6 +63,16 @@ export type Conversation = Readonly<{
   /** Last turn, or the session's own update time when it has no turns yet. */
   updatedAt: number;
   /**
+   * When the last non-interrupted turn ended (#1722 §4.7), `null` before any
+   * has — the read receipt's comparison point: `updatedAt` also moves when the
+   * reader queues a message, so it cannot say "something finished".
+   *
+   * Optional for the same reason `turns` is: a surface that produced the row
+   * without the kernel's completion column (a terminal or codex row assembled
+   * elsewhere) cannot say, and absent — like `null` — is never unread.
+   */
+  lastTurnCompletedAt?: number | null;
+  /**
    * Turn count, or absent when the surface that produced the row cannot count.
    *
    * Optional because the conversation list will not: counting turns means re-parsing
@@ -1036,8 +1046,7 @@ const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.ob
   // #1722 S1b — required and nullable, as the kernel sends it (API v9): the
   // instant the last non-interrupted turn ended, `null` before any has. An
   // older kernel's rows lack it and are rejected, which is what the WEB 29
-  // curtain exists for. Decoded here; `toTrackConversation` does not carry it
-  // yet — the domain field and its reader (read receipts) land together.
+  // curtain exists for. `toTrackConversation` carries it to the read receipt.
   lastTurnCompletedAt: z.number().nullable(),
 });
 
@@ -1062,6 +1071,7 @@ export function toTrackConversation(row: TrackConversationSummary): Conversation
     kind: 'track-assistant',
     state: row.state,
     updatedAt: row.updatedAt,
+    lastTurnCompletedAt: row.lastTurnCompletedAt,
   };
 }
 

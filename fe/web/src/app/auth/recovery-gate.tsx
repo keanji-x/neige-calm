@@ -44,7 +44,9 @@ export function RecoveryGate({ children, transport, unauthorized, client, runtim
   const eventsAllowed = privateVisible && ['connected', 'syncing'].includes(state.phase);
   return <QueryClientProvider client={client}><ThemeProvider storage={runtime.storage}>
     {privateVisible ? <div key={session.scopeRevision} className={styles.workspace}>
-      <ReadReceiptScopeProvider id={session.version!.dbInstanceId}>{children}</ReadReceiptScopeProvider>
+      {/* Receipts are scoped by the stable database identity, never the per-boot
+          instance id (#1722 §5.2); a kernel without one leaves the scope null. */}
+      <ReadReceiptScopeProvider id={session.version!.databaseId ?? null} nowMs={session.version!.nowMs ?? null}>{children}</ReadReceiptScopeProvider>
     </div>
       : state.phase === 'login' ? renderLogin() : state.phase === 'update' ? <main><h1>{state.detail}</h1><a href="http://tauri.localhost/">返回连接页</a></main>
         : <RecoveryPresentation />}

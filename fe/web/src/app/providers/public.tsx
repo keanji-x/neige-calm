@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { useEffect, type ReactNode } from 'react';
-import { DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
+import { DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
 import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -40,9 +40,12 @@ import styles from './preflight-status.module.css';
 export const WEB_COMPAT_VERSION = 30;
 /**
  * `databaseId` / `nowMs` (#1722 S1b): the database's stable id and the server
- * clock at response time. Optional here like `conversationCreateModel`: this
- * slice only decodes them; the reader (read-receipt scope keyed on
- * `databaseId`) lands with S2, which is where requiring them earns its keep.
+ * clock at response time. Optional in the *type* like `conversationCreateModel`
+ * — the version schema parses before the curtain decides, so a v8 kernel
+ * without them must still produce a `ServerVersionInfo` the curtain can judge.
+ * The reader (`ServerCompatGate` → `ReadReceiptScopeProvider`, #1722 S2a)
+ * treats them as required: absent means a `null` receipt scope, under which
+ * nothing is ever unread.
  */
 export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string; nowMs?: number }>;
 export interface ProviderRuntime {
@@ -93,12 +96,29 @@ export function ServerCompatGate({ children: routeContent, runtime, client, rend
     if (!previous) safeWrite(runtime, DB_INSTANCE_ID_KEY, id);
   }, [client, cursorStore, previousInstanceId, query.data?.dbInstanceId, runtime]);
 
+  /*
+   * #1722 §5.2 — the database's *stable* id, remembered the same way as the
+   * instance id above (write when missing, overwrite when it changes) but with
+   * none of the cache busting: it seeds `createUiPreferences` on the next load.
+   */
+  const databaseId = query.data?.databaseId;
+  useEffect(() => {
+    if (databaseId === undefined) return;
+    if (safeRead(runtime, DATABASE_ID_KEY) !== databaseId) safeWrite(runtime, DATABASE_ID_KEY, databaseId);
+  }, [databaseId, runtime]);
+
   const id = query.data?.dbInstanceId;
   const verdict = id === undefined ? 'pending'
     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';
   // Route preferences consume the verdict; the event bridge keeps its own
-  // independent guard and lifetime below.
-  const children = <ReadReceiptScopeProvider id={verdict === 'same' ? id! : null}>{routeContent}</ReadReceiptScopeProvider>;
+  // independent guard and lifetime below. The receipt scope is the database
+  // identity (never the per-boot instance id), together with the server clock
+  // that stamps a first visit's baseline; a kernel that reports neither leaves
+  // the scope null, and a null scope is never unread (#1722 §5.2).
+  const nowMs = query.data?.nowMs;
+  const receiptScope = verdict === 'same' && databaseId !== undefined && nowMs !== undefined
+    ? { id: databaseId, nowMs } : { id: null, nowMs: null };
+  const children = <ReadReceiptScopeProvider id={receiptScope.id} nowMs={receiptScope.nowMs}>{routeContent}</ReadReceiptScopeProvider>;
   if (busted) return __NC_BUNDLED__ ? <BundledConnectionNotice kind="checking" /> : null;
   if (__NC_BUNDLED__ && query.data === undefined) return <BundledConnectionNotice kind={query.isError || query.fetchStatus === 'paused' ? 'unreachable' : 'checking'}>
     {(query.isError || query.fetchStatus === 'paused') && <button type="button" disabled={query.isFetching} onClick={() => { void query.refetch(); }}>重试连接</button>}

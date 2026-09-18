@@ -34,6 +34,7 @@ import type { Conversation, TranscriptEntry } from '../../../../core/domain/conv
 import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
+import { DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
@@ -74,6 +75,18 @@ function assistantRow(overrides: Partial<Row> = {}): Row {
     id: ASSISTANT_CARD.id, trackId: 'w1', title: null, kind: 'track-assistant',
     state: 'idle', updatedAt: 30, lastTurnCompletedAt: null, ...overrides,
   };
+}
+
+/*
+ * Read receipts need a database scope (#1722 §5.2): this harness renders the
+ * router without `ServerCompatGate`, so the scope is seeded the way a second
+ * page load seeds it — from the stored database identity. Under a null scope
+ * nothing is unread, which is the right answer for a verdict still pending and
+ * the wrong fixture for a case about unread dots.
+ */
+function receiptStorage(): UiPreferenceStorage {
+  const values = new Map<string, string>([[DATABASE_ID_KEY, 'db-receipts']]);
+  return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); } };
 }
 
 /**
@@ -2052,19 +2065,27 @@ it('keeps first-message selection disabled on an older server that would ignore 
 });
 
 it('uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading', async () => {
-  let rows = [assistantRow()];
-  const { client } = setup(request => request.method === 'GET' && request.path === CONVERSATIONS ? ok(rows) : undefined);
+  /* Unread follows `lastTurnCompletedAt`, the kernel's completion time
+     (#1722 §5.2) — `updatedAt` also moves when a message is queued, and a
+     queued question is not a finished answer. */
+  let rows = [assistantRow({ lastTurnCompletedAt: 30 })];
+  const { client } = setup(request => request.method === 'GET' && request.path === CONVERSATIONS ? ok(rows) : undefined, receiptStorage());
   const indicator = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }).closest('li')?.querySelector('[data-nc-activity]');
   await screen.findByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
   expect(indicator()?.getAttribute('data-nc-activity')).toBe('unread');
   fireEvent.click(screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }));
   await waitFor(() => expect(indicator()).toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-  rows = [{ ...assistantRow(), state: 'turn_pending', updatedAt: 40 }];
+  rows = [{ ...assistantRow(), state: 'turn_pending', updatedAt: 40, lastTurnCompletedAt: 30 }];
   await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
   await waitFor(() => expect(screen.getByRole('button', { name: /^Conversation Assistant/ }).closest('li')
     ?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('working'));
-  rows = [{ ...assistantRow(), state: 'idle', updatedAt: 50 }];
+  // A newer `updatedAt` alone (the reader queued something) is not unread…
+  rows = [{ ...assistantRow(), state: 'idle', updatedAt: 45, lastTurnCompletedAt: 30 }];
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  await waitFor(() => expect(indicator()).toBeNull());
+  // …a newer completion is.
+  rows = [{ ...assistantRow(), state: 'idle', updatedAt: 50, lastTurnCompletedAt: 50 }];
   await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
   await waitFor(() => expect(indicator()?.getAttribute('data-nc-activity')).toBe('unread'));
   fireEvent.click(screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }));
@@ -2102,7 +2123,7 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
 });
 
 it('keeps new replies unread while reopening cached history is still loading', async () => {
-  let rows = [assistantRow()];
+  let rows = [assistantRow({ lastTurnCompletedAt: 30 })];
   let holdHistory = false;
   let release!: (response: ApiTransportResponse) => void;
   const pending = new Promise<ApiTransportResponse>(resolve => { release = resolve; });
@@ -2111,13 +2132,13 @@ it('keeps new replies unread while reopening cached history is still loading', a
     if (request.path.includes(HISTORY_PATH)) return holdHistory ? pending
       : ok([harnessMessage(20, 'agentMessage', { type: 'agentMessage', text: 'Previously read answer.' })]);
     return undefined;
-  });
+  }, receiptStorage());
   const row = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
   const unread = () => row().closest('li')?.querySelector('[data-nc-activity="unread"]');
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
   await waitFor(() => expect(unread()).toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-  rows = [{ ...assistantRow(), updatedAt: 50 }];
+  rows = [{ ...assistantRow(), updatedAt: 50, lastTurnCompletedAt: 50 }];
   await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
   await waitFor(() => expect(unread()).toBeTruthy());
   const previousReads = requests.filter(request => request.path.includes(HISTORY_PATH)).length;
@@ -2151,19 +2172,23 @@ it('keeps a nonempty conversation read after closing when activity is newer than
 it('shows a closed Planner working and preserves unread completion until its history is read', async () => {
   let status = 'turn_pending';
   let activityAt = 50;
+  /* The injected planner row's completion time is `CardRuntimeView.last_turn_completed_ms`
+     (#1722 §4.7): absent while the first turn is still running. */
+  let lastTurnCompletedMs: number | undefined;
   const { client } = setup(request => {
     if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
-      cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'shared-spec', status, updated_at_ms: activityAt } }], overlays: [] });
+      cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'shared-spec', status, updated_at_ms: activityAt,
+        ...(lastTurnCompletedMs === undefined ? {} : { last_turn_completed_ms: lastTurnCompletedMs }) } }], overlays: [] });
     if (request.path.startsWith('/api/cards/card-planner/harness/items')) return ok([
       harnessMessage(40, 'agentMessage', { type: 'agentMessage', text: 'Completed planner answer.' }),
     ]);
     return undefined;
-  });
+  }, receiptStorage());
   const row = () => screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
   const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
   await screen.findByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
   expect(indicator()).toBe('working');
-  status = 'idle'; activityAt = 60;
+  status = 'idle'; activityAt = 60; lastTurnCompletedMs = 60;
   await act(() => {
     const plan = invalidationPlanFor({ ev: 'harness.phase.changed', data: {
       worker_session_id: 'planner-live', card_id: 'card-planner', track_id: 'w1',
@@ -2178,8 +2203,7 @@ it('shows a closed Planner working and preserves unread completion until its his
   await waitFor(() => expect(indicator()).toBeUndefined());
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
   expect(indicator()).toBeUndefined();
-  activityAt = 70;
-  await act(() => {
+  const completed = () => act(() => {
     const plan = invalidationPlanFor({ ev: 'harness.phase.changed', data: {
       worker_session_id: 'planner-live', card_id: 'card-planner', track_id: 'w1',
       old_phase: 'turn_running', new_phase: 'turn_completed',
@@ -2187,6 +2211,17 @@ it('shows a closed Planner working and preserves unread completion until its his
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
     return Promise.resolve();
   });
+  // The session's `updated_at_ms` moving on its own (the reader queued a
+  // message, say) is not a completion and does not relight the row…
+  activityAt = 70;
+  await completed();
+  const cachedActivityAt = () => client.getQueryData<{ cards: { runtime?: { updated_at_ms?: number } }[] }>(['track', 'w1'])
+    ?.cards[0]?.runtime?.updated_at_ms;
+  await waitFor(() => expect(cachedActivityAt()).toBe(70));
+  expect(indicator()).toBeUndefined();
+  // …a newer `last_turn_completed_ms` does.
+  activityAt = 80; lastTurnCompletedMs = 80;
+  await completed();
   await waitFor(() => expect(indicator()).toBe('unread'));
 });
 

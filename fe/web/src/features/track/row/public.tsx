@@ -18,9 +18,9 @@
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { useId } from 'react';
 import {
-  isRunning, lifecycleLabel, needsUserAttention, trackDisplayTitle, type Track,
+  lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,
 } from '../../../../../core/domain/track.ts';
-import { ActivityIndicator, type ActivityState } from '../../../ui/activity-indicator/public.tsx';
+import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './row.module.css';
 
@@ -91,8 +91,6 @@ export function TrackRow({
   onOpen, onSetPinned, onDelete, unread = false,
 }: TrackRowProps) {
   const descriptionId = useId();
-  const attention = needsUserAttention(track);
-  const running = isRunning(track.lifecycle);
   const pinned = track.pinnedAt !== null;
   const title = trackDisplayTitle(track.title);
   const lifecycle = lifecycleLabel(track.lifecycle);
@@ -100,11 +98,20 @@ export function TrackRow({
   const hasRemove = onDelete !== undefined;
   const now = nowMs ?? Date.now();
 
-  const bits = [attention ? 'waiting on you' : '', running ? 'running' : ''].filter(Boolean);
-  const label = `Track ${title}${bits.length > 0 ? `, ${bits.join(', ')}` : ''}, ${lifecycle}`
+  /*
+   * One state, from the kernel's activity overlay plus the reader's receipt
+   * (INV-APP-118). The accessible name's activity bit is derived from the SAME
+   * value as the dot, never from the lifecycle: a `planning` track whose
+   * planner is idle must neither spin nor be read as "running", and a `done`
+   * track with work still in flight must do both. The lifecycle phrase stays
+   * in the name as what it is — a phase.
+   */
+  const activity = trackActivityState(track, unread);
+  const activityBit = activity === 'working' ? 'working'
+    : activity === 'attention' ? 'waiting on you'
+      : activity === 'failed' ? 'needs attention' : '';
+  const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}, ${lifecycle}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
-
-  const activity: ActivityState = attention ? 'attention' : running ? 'working' : unread ? 'unread' : 'quiet';
 
   /*
    * The rail moves the status dot to the *trailing* edge and lets the delete
