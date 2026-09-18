@@ -235,9 +235,9 @@ async fn insert_operation_with(
     let id = format!("op-{kind}-{phase}");
     sqlx::query(
         "INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,\
-                 target_type,target_id,target_json,payload_json,phase,tx_output_json,\
-                 compensation_state,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,?3,'h','track',\
-                 ?4,'{}','{}',?5,?6,?7,1,1)",
+         target_type,target_id,target_json,payload_json,phase,tx_output_json,\
+         compensation_state,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,?3,'h','track',\
+         ?4,'{}','{}',?5,?6,?7,1,1)",
     )
     .bind(&id)
     .bind(kind)

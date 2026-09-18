@@ -1269,9 +1269,9 @@ async fn insert_isolated_operation(boot: &Boot, task: &Task, phase: &str) -> Str
     let id = format!("isolated-{phase}-{}", task.id);
     sqlx::query(
         "INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,\
-                 target_type,target_id,target_json,payload_json,phase,tx_output_json,\
-                 created_at_ms,updated_at_ms) VALUES(?1,?1,'codex-isolated-worker',?2,'h',\
-                 'track',?3,'{}','{}',?4,'{}',1,1)",
+         target_type,target_id,target_json,payload_json,phase,tx_output_json,\
+         created_at_ms,updated_at_ms) VALUES(?1,?1,'codex-isolated-worker',?2,'h',\
+         'track',?3,'{}','{}',?4,'{}',1,1)",
     )
     .bind(&id)
     .bind(&task.id)
