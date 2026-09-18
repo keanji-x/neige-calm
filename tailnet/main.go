@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -78,6 +79,7 @@ func run() error {
 	hostname := flag.String("hostname", "neige", "private node name")
 	enrollmentConfig := flag.String("enrollment-config", "", "private issuer configuration file")
 	cleanupOnly := flag.Bool("cleanup-only", false, "clean pending auth keys without starting a node or listener")
+	cleanupStatus := flag.Bool("cleanup-status", false, "read secret-free cleanup status without credentials, network, or node startup")
 	showVersion := flag.Bool("version", false, "print version")
 	flag.Parse()
 	if *showVersion {
@@ -116,12 +118,19 @@ func run() error {
 	os.Setenv("LANG", "C.UTF-8")
 	os.Setenv("HOME", *stateDir)
 	syscall.Umask(0077)
+	if *cleanupStatus {
+		if *cleanupOnly {
+			return errors.New("select one cleanup mode")
+		}
+		return reportCleanup(os.Stdout, *stateDir)
+	}
 	lock, err := lockState(*stateDir)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
 	var enrollment *issuer
+	var cleanupResult enrollmentResult
 	if *enrollmentConfig != "" {
 		enrollment, err = newIssuer(*stateDir, *enrollmentConfig)
 		if err != nil {
@@ -129,14 +138,17 @@ func run() error {
 		}
 		defer enrollment.dir.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		_, err = enrollment.cleanup(ctx, "", true)
+		cleanupResult, err = enrollment.cleanup(ctx, "", true)
 		cancel()
 		if err != nil {
 			return err
 		}
 	}
 	if *cleanupOnly {
-		return nil
+		if enrollment == nil {
+			return reportCleanup(os.Stdout, *stateDir)
+		}
+		return json.NewEncoder(os.Stdout).Encode(cleanupReport{Version: 2, PendingCleanup: cleanupResult.PendingCleanup, Detail: cleanupResult.Detail})
 	}
 	if err = checkStateVersion(*stateDir); err != nil {
 		return err

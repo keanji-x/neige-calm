@@ -7,9 +7,9 @@ import { MobileAccessHost } from './mobile-access-host.tsx';
 
 afterEach(cleanup);
 
-function mount(reply: (request: ApiRequest) => Promise<ApiTransportResponse>) {
+function mount(reply: (request: ApiRequest) => Promise<ApiTransportResponse>, customCleanup = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const send = vi.fn((request: ApiRequest) => request.method === 'GET' && request.path === '/api/mobile/enrollments'
+  const send = vi.fn((request: ApiRequest) => !customCleanup && request.method === 'GET' && request.path === '/api/mobile/enrollments'
     ? Promise.resolve(ok({ pendingCleanup: 0, detail: 'No pending cleanup' })) : reply(request));
   const ui = render(<QueryClientProvider client={client}><MobileAccessHost
     transport={{ send }} unauthorized={createUnauthorizedChannel({ enqueue: (task) => task() })} onBack={() => undefined}
@@ -69,4 +69,16 @@ it('does not retry an uncertain create or display an invented expiry', async () 
   await screen.findByRole('alert');
   expect(view.send.mock.calls.filter(([r]) => r.method === 'POST')).toHaveLength(1);
   expect(screen.queryByAltText('Scan once to join and pair this Neige workspace')).toBeNull();
+});
+
+it('reads pending cloud cleanup and its actual expiry while remote access is disabled', async () => {
+  const disabled = status();
+  disabled.tailnet.desiredEnabled = false;
+  disabled.tailnet.processRunning = false;
+  const message = 'Cloud key cleanup pending; returned expiry 2026-09-18T18:05:00Z';
+  const view = mount((request) => Promise.resolve(ok(request.path === '/api/mobile/enrollments'
+    ? { pendingCleanup: 1, detail: message } : disabled)), true);
+  await screen.findByText(message);
+  expect(view.send.mock.calls.some(([r]) => r.path === '/api/mobile/enrollments' && r.method === 'GET')).toBe(true);
+  expect(view.send.mock.calls.every(([r]) => r.method === 'GET')).toBe(true);
 });

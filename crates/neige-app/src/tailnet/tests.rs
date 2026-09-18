@@ -316,3 +316,182 @@ pathlib.Path('cleanup-args.json').write_text(json.dumps(sys.argv[1:]))
     );
     assert!(!cfg.state_dir.join("node").exists());
 }
+
+#[tokio::test]
+async fn tailnet_disabled_host_reports_pending_cleanup_without_node() {
+    use calm_types::enrollment::{EnrollmentAction, EnrollmentCommand};
+    let (_dir, mut cfg) = fixture();
+    cfg.binary = cfg.binary.with_file_name("real-helper");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tailnet");
+    let built = std::process::Command::new("go")
+        .args(["build", "-p", "2", "-tags", "ts_omit_logtail", "-o"])
+        .arg(&cfg.binary)
+        .arg(".")
+        .env("GOMAXPROCS", "2")
+        .current_dir(source)
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    std::fs::create_dir(&cfg.state_dir).unwrap();
+    std::fs::set_permissions(&cfg.state_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let ledger = cfg.state_dir.join("enrollment-ledger.json");
+    std::fs::write(&ledger,serde_json::json!({"schemaVersion":1,"records":[{
+        "enrollmentId":"pending","bindingHash":"a".repeat(64),"keyId":"key-id","expires":"2099-01-01T00:00:00Z","state":"cleanup","deadline":1
+    }]}).to_string()).unwrap();
+    std::fs::set_permissions(&ledger, std::fs::Permissions::from_mode(0o600)).unwrap();
+    cfg.enrollment_config = Some(cfg.state_dir.join("absent.json"));
+    let manager = TailnetManager::start(cfg.clone()).unwrap();
+    manager.action(TailnetAction::Status).await.unwrap();
+    let request = || EnrollmentCommand {
+        action: EnrollmentAction::Status,
+        enrollment_id: "status".into(),
+        generation: "generation".into(),
+        deadline: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 8000,
+    };
+    let result = TailnetClient::new(cfg.socket()).enrollment(request()).await;
+    let result = result.unwrap_or_else(|e| panic!("disabled status rejected: {e}"));
+    assert_eq!(result.pending_cleanup, 1);
+    assert!(result.detail.contains("2099-01-01T00:00:00Z"));
+    assert!(result.auth_key.is_empty());
+    let before = std::fs::read(&ledger).unwrap();
+    assert!(
+        TailnetClient::new(cfg.socket())
+            .enrollment(request())
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        std::fs::read(&ledger).unwrap(),
+        before,
+        "status rewrote the ledger"
+    );
+    std::fs::write(&ledger, "corrupt fixture ledger").unwrap();
+    assert!(
+        TailnetClient::new(cfg.socket())
+            .enrollment(request())
+            .await
+            .is_err(),
+        "corrupt status fabricated no pending keys"
+    );
+    manager.shutdown().await.unwrap();
+    for name in ["node", "helper.sock", "state-version"] {
+        assert!(!cfg.state_dir.join(name).exists(), "status started {name}");
+    }
+}
+
+#[tokio::test]
+async fn tailnet_stopped_status_preserves_cleanup_process_failure() {
+    use calm_types::enrollment::{EnrollmentAction, EnrollmentCommand};
+    let (_dir, mut cfg) = fixture();
+    cfg.enrollment_config = Some(cfg.state_dir.join("unused.json"));
+    std::fs::write(&cfg.binary,r#"#!/usr/bin/python3
+import json, sys
+if '--cleanup-only' in sys.argv:
+    sys.exit(2)
+if '--cleanup-status' in sys.argv:
+    print(json.dumps({'version':2,'pendingCleanup':1,'detail':'Retained key; returned expiry 2099-01-01T00:00:00Z'}))
+    sys.exit(0)
+sys.exit(3)
+"#).unwrap();
+    let manager = TailnetManager::start(cfg.clone()).unwrap();
+    manager.action(TailnetAction::Status).await.unwrap();
+    let result = TailnetClient::new(cfg.socket())
+        .enrollment(EnrollmentCommand {
+            action: EnrollmentAction::Status,
+            enrollment_id: "status".into(),
+            generation: "g".into(),
+            deadline: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                + 8000,
+        })
+        .await;
+    manager.shutdown().await.unwrap();
+    let result = result.unwrap();
+    assert_eq!(result.pending_cleanup, 1);
+    assert!(result.detail.contains("Cleanup helper failed"));
+    assert!(result.detail.contains("2099-01-01T00:00:00Z"));
+}
+
+#[tokio::test]
+async fn tailnet_app_cancel_overtakes_partial_create_without_cloud_post() {
+    use calm_types::enrollment::{
+        EnrollmentAction, EnrollmentCommand, EnrollmentRequest, EnrollmentResponse,
+    };
+    let (dir, cfg) = fixture();
+    let helper = dir.path().join("go-fixture");
+    let output = std::process::Command::new("go")
+        .args(["test", "-c", "-p", "2", "-tags", "ts_omit_logtail", "-o"])
+        .arg(&helper)
+        .arg(".")
+        .env("GOMAXPROCS", "2")
+        .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tailnet"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::write(
+        &cfg.binary,
+        format!(
+            "#!/bin/sh\nexec '{}' -test.run '^TestEnrollmentAppControlFixture$' -- \"$@\"\n",
+            helper.display()
+        ),
+    )
+    .unwrap();
+    let manager = TailnetManager::start(cfg.clone()).unwrap();
+    manager.action(TailnetAction::Enable).await.unwrap();
+    wait_file(cfg.helper_socket()).await;
+    let make = |action| EnrollmentCommand {
+        action,
+        enrollment_id: "overtaken".into(),
+        generation: "original-generation".into(),
+        deadline: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 8000,
+    };
+    let bytes = serde_json::to_vec(&EnrollmentRequest {
+        version: 2,
+        command: make(EnrollmentAction::Create),
+    })
+    .unwrap();
+    let mut original = UnixStream::connect(cfg.socket()).await.unwrap();
+    original.write_all(&bytes[..bytes.len() / 2]).await.unwrap();
+    let cancelled = TailnetClient::new(cfg.socket())
+        .enrollment(make(EnrollmentAction::Cancel))
+        .await;
+    original.write_all(&bytes[bytes.len() / 2..]).await.unwrap();
+    original.write_all(b"\n").await.unwrap();
+    let mut response = Vec::new();
+    BufReader::new(original)
+        .read_until(b'\n', &mut response)
+        .await
+        .unwrap();
+    manager.shutdown().await.unwrap();
+    assert!(cancelled.is_ok(), "cancel acknowledgement missing");
+    let response: EnrollmentResponse = serde_json::from_slice(&response).unwrap();
+    assert!(
+        response
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("already admitted or cancelled")),
+        "late create lacked the production issuer fence"
+    );
+    assert!(
+        !cfg.state_dir.join("cloud-post").exists(),
+        "overtaken handler sent a key POST"
+    );
+}

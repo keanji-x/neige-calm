@@ -1,6 +1,8 @@
 //! App-owned private Tailnet child. Kernel restart never owns or signals it.
 pub(crate) mod config;
+mod enrollment;
 mod storage;
+use enrollment::HelperMode;
 #[cfg(test)]
 mod tests;
 
@@ -32,6 +34,7 @@ struct State {
     failed: bool,
     shutdown: bool,
     next_cleanup: Instant,
+    cleanup_error: Option<String>,
 }
 impl TailnetManager {
     /// Configuration/UDS setup is local only. Node startup is asynchronous and
@@ -63,6 +66,7 @@ impl TailnetManager {
                 failed: false,
                 shutdown: false,
                 next_cleanup: Instant::now(),
+                cleanup_error: None,
             }),
             _lock: lock,
         });
@@ -86,14 +90,11 @@ impl TailnetManager {
             let _ = Self::stop_child(state).await;
             if self.cfg.enrollment_config.is_some() && Instant::now() >= state.next_cleanup {
                 state.next_cleanup = Instant::now() + Duration::from_secs(60);
-                if let Ok(mut child) = self.spawn_mode(true)
-                    && tokio::time::timeout(Duration::from_secs(10), child.wait())
-                        .await
-                        .is_err()
-                {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                }
+                state.cleanup_error = self
+                    .cleanup_report(HelperMode::Cleanup)
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
             }
             return;
         }
@@ -136,13 +137,13 @@ impl TailnetManager {
         }
     }
     fn spawn(&self) -> anyhow::Result<Child> {
-        self.spawn_mode(false)
+        self.spawn_mode(HelperMode::Node)
     }
-    fn spawn_mode(&self, cleanup_only: bool) -> anyhow::Result<Child> {
+    fn spawn_mode(&self, mode: HelperMode) -> anyhow::Result<Child> {
         // Explicit allowlist: no tokens, proxy settings, TS_AUTHKEY, cloud
         // credentials, system tailscaled socket or parent HOME reach tsnet.
         let binary=self.pinned_binary.as_ref().ok_or_else(||anyhow::anyhow!("Tailnet helper is not installed; complete the release installation and restart Neige"))?;
-        if !cleanup_only {
+        if mode == HelperMode::Node {
             storage::backup_for_binary(&self.cfg.state_dir, binary)?;
         }
         let mut command = Command::new(binary);
@@ -161,15 +162,25 @@ impl TailnetManager {
             .arg(&self.cfg.hostname)
             .current_dir(&self.cfg.state_dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(if mode == HelperMode::Node {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            })
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .process_group(0);
         if let Some(path) = &self.cfg.enrollment_config {
             command.arg("--enrollment-config").arg(path);
         }
-        if cleanup_only {
-            command.arg("--cleanup-only");
+        match mode {
+            HelperMode::Node => {}
+            HelperMode::Cleanup => {
+                command.arg("--cleanup-only");
+            }
+            HelperMode::Status => {
+                command.arg("--cleanup-status");
+            }
         }
         #[cfg(target_os = "linux")]
         unsafe {
@@ -315,19 +326,7 @@ impl TailnetManager {
             if serde_json::from_slice::<serde_json::Value>(&line)?["version"] == 2 {
                 use calm_types::enrollment::{EnrollmentRequest, EnrollmentResponse};
                 let request: EnrollmentRequest = serde_json::from_slice(&line)?;
-                let state = self.state.lock().await;
-                let result = if !state.shutdown
-                    && state.desired.desired_enabled
-                    && state.child.is_some()
-                {
-                    TailnetClient::new(self.cfg.helper_socket())
-                        .enrollment(request.command)
-                        .await
-                } else {
-                    Err(anyhow::anyhow!(
-                        "setup-required: enable private access first; stopped-node cleanup runs independently"
-                    ))
-                };
+                let result = self.enrollment_action(request.command).await;
                 let response = match result {
                     Ok(result) => EnrollmentResponse {
                         version: 2,

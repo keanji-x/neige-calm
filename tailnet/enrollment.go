@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"sort"
@@ -38,6 +39,7 @@ type issuer struct {
 	api        *enrollmentAPI
 	ledger     cleanupLedger
 	broken     bool
+	clock      func() (enrollmentClockReading, error)
 }
 
 func newIssuer(stateDir, configPath string) (*issuer, error) {
@@ -50,7 +52,7 @@ func newIssuer(stateDir, configPath string) (*issuer, error) {
 		dir.Close()
 		return nil, err
 	}
-	i := &issuer{dir: dir, configPath: configPath, api: newEnrollmentAPI(), ledger: l}
+	i := &issuer{dir: dir, configPath: configPath, api: newEnrollmentAPI(), ledger: l, clock: enrollmentClock}
 	// Restart never republishes QR secrets or resumes a prior kernel's grant.
 	for n := range i.ledger.Records {
 		if i.ledger.Records[n].State == "active" {
@@ -75,6 +77,9 @@ func (i *issuer) issue(ctx context.Context, cmd enrollmentCommand, s *service) (
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	result := enrollmentResult{EnrollmentID: cmd.EnrollmentID, Generation: cmd.Generation}
+	if ctx.Err() != nil || time.Now().UnixMilli() >= cmd.Deadline {
+		return result, errors.New("enrollment command expired before admission")
+	}
 	if i.broken || len(i.ledger.Records) >= 64 {
 		return result, errors.New("cleanup ledger requires administrator reconciliation")
 	}
@@ -88,6 +93,9 @@ func (i *issuer) issue(ctx context.Context, cmd enrollmentCommand, s *service) (
 		return result, errors.New("setup-required: configure private enrollment credentials and expected node")
 	}
 	if err = s.enrollmentReady(ctx, c); err != nil {
+		return result, err
+	}
+	if err = i.fenceAttempt(cmd.EnrollmentID, false); err != nil {
 		return result, err
 	}
 	token, err := i.api.token(ctx, c)
@@ -152,6 +160,9 @@ func (i *issuer) issue(ctx context.Context, cmd enrollmentCommand, s *service) (
 	}
 	r.State = "active"
 	r.Deadline = deadline.UnixMilli()
+	if reading, e := i.clock(); e == nil {
+		r.ExpiryEvidence = &expiryEvidence{Created: key.Created.UTC().Format(time.RFC3339Nano), Expires: r.Expires, ReceivedAt: reading.Wall.UnixMilli(), BootID: reading.BootID, BootNanos: reading.BootNanos}
+	}
 	if err = i.save(); err != nil {
 		_ = i.api.delete(ctx, c, token, r.KeyID)
 		return result, err
@@ -184,6 +195,11 @@ func (i *issuer) cleanup(ctx context.Context, id string, all bool) (enrollmentRe
 	if i.broken {
 		return result, errors.New("cleanup ledger unavailable; administrator reconciliation required")
 	}
+	if id != "" {
+		if err := i.fenceAttempt(id, true); err != nil {
+			return result, err
+		}
+	}
 	for n := range i.ledger.Records {
 		r := &i.ledger.Records[n]
 		if r.State == "active" && (all || r.EnrollmentID == id || time.Now().UnixMilli() >= r.Deadline) {
@@ -200,11 +216,17 @@ func (i *issuer) cleanup(ctx context.Context, id string, all bool) (enrollmentRe
 		return result, nil
 	}
 	var token string
+	reading, clockErr := i.clock()
+	retired := 0
 	remaining := make([]cleanupRecord, 0, len(i.ledger.Records))
 	for _, r := range i.ledger.Records {
 		// Never apply a new issuer's 404 (or presumed expiry) to another binding.
 		if r.BindingHash != binding || r.State != "cleanup" || !safeID(r.KeyID) {
 			remaining = append(remaining, r)
+			continue
+		}
+		if clockErr == nil && r.expired(reading) {
+			retired++
 			continue
 		}
 		if token == "" {
@@ -219,10 +241,16 @@ func (i *issuer) cleanup(ctx context.Context, id string, all bool) (enrollmentRe
 	if result.PendingCleanup > 0 {
 		result.Detail = cleanupDetail(remaining)
 	}
+	if retired > 0 {
+		result.Detail += fmt.Sprintf("; %d verified expired key records retired by bounded expiry evidence, not confirmed DELETE", retired)
+	}
 	return result, i.save()
 }
 
 func cleanupDetail(records []cleanupRecord) string {
+	if len(records) == 0 {
+		return "No pending cloud-key records; this does not confirm removal of an enrolled device"
+	}
 	detail := "Cloud key records retained; deleting a key does not remove an enrolled device"
 	for _, r := range records {
 		detail += "; " + r.EnrollmentID + " (" + r.State + ")"

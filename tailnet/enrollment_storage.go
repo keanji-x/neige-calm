@@ -188,21 +188,23 @@ func safeID(s string) bool {
 }
 
 type cleanupRecord struct {
-	EnrollmentID string `json:"enrollmentId"`
-	BindingHash  string `json:"bindingHash"`
-	KeyID        string `json:"keyId"`
-	Expires      string `json:"expires"`
-	State        string `json:"state"`
-	Deadline     int64  `json:"deadline"`
+	EnrollmentID   string          `json:"enrollmentId"`
+	BindingHash    string          `json:"bindingHash"`
+	KeyID          string          `json:"keyId"`
+	Expires        string          `json:"expires"`
+	State          string          `json:"state"`
+	Deadline       int64           `json:"deadline"`
+	ExpiryEvidence *expiryEvidence `json:"expiryEvidence"`
 }
 type cleanupLedger struct {
-	SchemaVersion int             `json:"schemaVersion"`
-	Records       []cleanupRecord `json:"records"`
+	SchemaVersion int               `json:"schemaVersion"`
+	Records       []cleanupRecord   `json:"records"`
+	Fences        []enrollmentFence `json:"fences"`
 }
 
 func readLedger(dir *os.File) (cleanupLedger, error) {
-	l := cleanupLedger{SchemaVersion: 1, Records: []cleanupRecord{}}
-	b, err := privateReadAt(dir, "enrollment-ledger.json", 65536)
+	l := cleanupLedger{SchemaVersion: 2, Records: []cleanupRecord{}, Fences: []enrollmentFence{}}
+	b, err := privateReadAt(dir, "enrollment-ledger.json", 131072)
 	if errors.Is(err, unix.ENOENT) {
 		return l, nil
 	}
@@ -210,7 +212,14 @@ func readLedger(dir *os.File) (cleanupLedger, error) {
 		return l, err
 	}
 	var shape map[string]json.RawMessage
-	if strictJSON(b, &shape) != nil || len(shape) != 2 || shape["schemaVersion"] == nil || shape["records"] == nil || bytes.Equal(shape["records"], []byte("null")) {
+	if strictJSON(b, &shape) != nil || shape["schemaVersion"] == nil || shape["records"] == nil || bytes.Equal(shape["records"], []byte("null")) {
+		return l, errors.New("invalid cleanup ledger fields")
+	}
+	var version int
+	if json.Unmarshal(shape["schemaVersion"], &version) != nil || (version != 1 && version != 2) {
+		return l, errors.New("unsupported cleanup ledger version")
+	}
+	if version == 1 && len(shape) != 2 || version == 2 && (len(shape) != 3 || shape["fences"] == nil || bytes.Equal(shape["fences"], []byte("null"))) {
 		return l, errors.New("invalid cleanup ledger fields")
 	}
 	var rows []map[string]json.RawMessage
@@ -218,8 +227,11 @@ func readLedger(dir *os.File) (cleanupLedger, error) {
 		return l, errors.New("invalid cleanup records")
 	}
 	for _, row := range rows {
-		if len(row) != 6 {
+		if version == 1 && len(row) != 6 || version == 2 && (len(row) != 7 || row["expiryEvidence"] == nil) {
 			return l, errors.New("invalid cleanup record fields")
+		}
+		if version == 2 && !bytes.Equal(row["expiryEvidence"], []byte("null")) && !exactFields(row["expiryEvidence"], "created", "expires", "receivedAt", "bootId", "bootNanos") {
+			return l, errors.New("invalid expiry evidence fields")
 		}
 		for _, key := range []string{"enrollmentId", "bindingHash", "keyId", "expires", "state", "deadline"} {
 			if row[key] == nil || bytes.Equal(row[key], []byte("null")) {
@@ -227,14 +239,32 @@ func readLedger(dir *os.File) (cleanupLedger, error) {
 			}
 		}
 	}
-	if err = strictJSON(b, &l); err != nil || l.SchemaVersion != 1 || len(l.Records) > 64 {
+	if err = strictJSON(b, &l); err != nil || len(l.Records) > 64 || len(l.Fences) > 128 {
 		return l, errors.New("invalid cleanup ledger")
+	}
+	for _, f := range l.Fences {
+		if !safeID(f.EnrollmentID) || !safeID(f.BootID) || f.Until <= 0 || f.BootNanos < 0 {
+			return l, errors.New("invalid enrollment fence")
+		}
 	}
 	for _, r := range l.Records {
 		if !safeID(r.EnrollmentID) || len(r.BindingHash) != 64 || len(r.Expires) > 128 || r.Deadline <= 0 || (r.State != "unknown" && r.State != "active" && r.State != "cleanup") || r.State != "unknown" && !safeID(r.KeyID) {
 			return l, errors.New("invalid cleanup record")
 		}
 	}
+	// Explicit v1 migration: no expiry evidence is invented for old records.
+	if version == 2 {
+		var fences []json.RawMessage
+		if json.Unmarshal(shape["fences"], &fences) != nil {
+			return l, errors.New("invalid enrollment fences")
+		}
+		for _, f := range fences {
+			if !exactFields(f, "enrollmentId", "until", "bootId", "bootNanos") {
+				return l, errors.New("invalid enrollment fence fields")
+			}
+		}
+	}
+	l.SchemaVersion = 2
 	return l, nil
 }
 
@@ -242,6 +272,9 @@ func writeLedger(dir *os.File, l cleanupLedger) error {
 	data, err := json.Marshal(l)
 	if err != nil {
 		return err
+	}
+	if len(data) > 131072 {
+		return errors.New("cleanup ledger exceeds size bound")
 	}
 	// A killed writer may leave its temporary file behind. A fresh exclusive
 	// name permits recovery without deleting or trusting those orphaned bytes.

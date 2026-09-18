@@ -37,6 +37,29 @@ func TestEnrollmentCleanupOnlyNeverStartsNodeOrListener(t *testing.T) {
 	command.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("cleanup-only: %v %s", err, output)
+	} else {
+		var report cleanupReport
+		if json.Unmarshal(output, &report) != nil || report.Version != 2 {
+			t.Fatal("cleanup-only did not return its secret-free result")
+		}
+	}
+	before, err := os.ReadFile(filepath.Join(dir, "enrollment-ledger.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command(build, "--state-dir", dir, "--control-socket", filepath.Join(dir, "helper.sock"), "--upstream-socket", filepath.Join(dir, "ingress.sock"), "--enrollment-config", filepath.Join(dir, "unreadable-config"), "--cleanup-status")
+	command.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read-only status failed: %v %s", err, output)
+	}
+	var report cleanupReport
+	if json.Unmarshal(output, &report) != nil || report.Version != 2 || report.PendingCleanup != 0 {
+		t.Fatal("invalid read-only status")
+	}
+	after, err := os.ReadFile(filepath.Join(dir, "enrollment-ledger.json"))
+	if err != nil || string(before) != string(after) {
+		t.Fatal("read-only status changed ledger")
 	}
 	for _, name := range []string{"node", "helper.sock", "ingress.sock", "state-version"} {
 		if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {

@@ -1,5 +1,56 @@
 # S5 Host Enrollment
 
+## Review Fix Round 2
+
+Both complete independent reports against `21c6ea650` requested changes. This
+round addresses four distinct findings, preserving those reports and their
+private probes unchanged:
+
+- B1: disabled-host status now invokes a read-only `--cleanup-status` helper
+  mode. This mode reads only the private ledger, not issuer configuration or
+  credentials; it neither starts tsnet/listeners nor rewrites state. The
+  periodic `--cleanup-only` process returns a bounded versioned secret-free
+  report. Manager failures remain visible beside the retained record/expiry
+  information. Settings polls this status even when access is disabled.
+- B2: ledger v2 stores receipt-time evidence only after actual cloud key
+  capabilities/lifetime passed validation. Same-binding cleanup records may
+  retire by expiry only after both the returned expiry and a full provider
+  lifetime plus five seconds on Linux CLOCK_BOOTTIME. A new boot restarts the
+  conservative waiting window; forward wall time alone cannot retire a key.
+  Unknown outcomes, mismatched configurations, missing/corrupt evidence, and
+  v1 records remain retained. Expiry retirement is explicitly not a successful
+  DELETE or device removal. Counts remain bounded at 64 key records.
+- A1: durable admission/cancellation fences are distinct from key records and
+  survive successful deletion. Cancellation before a create arrives records
+  its ID first; any replay inside the still-admissible command window fails
+  before OAuth/key POST. Fences cover the ten-second maximum control deadline,
+  require wall and boot-time passage to prune, and cap at 128 entries. A full
+  fence set refuses new admission/cancellation rather than acknowledging an
+  unrecorded cancellation. Unknown-result records remain an independent fence.
+- A2: an observed authoritative disable or confirmed origin/node change
+  advances the Settings generation and clears the QR. Late create responses
+  are cancelled, including when the server has already been re-enabled.
+  Offline/degraded status with no new authoritative identity is not revocation.
+  Cleanup status no longer remains hidden behind an old local cancel response.
+
+Public claim/redeem and management DTOs, REST 9 and web 30 remain unchanged.
+Ledger migration is explicit: old six-field v1 records acquire **no** invented
+expiry evidence. No deployed migration was changed. The bounded CLI report is
+internal to the manager/helper; old helpers fail explicitly and require a full
+host restart after update.
+
+Red reproductions are under `/tmp/neige-1712-s5-r2-*-red.log`: expiry capacity,
+real stopped host, UI disabled status, both control replay cases, and both UI
+revocation cases. The first stopped-host test attempt failed while replacing
+an existing script with a Go executable; its corrected run reached the actual
+disabled-status rejection before any root fix. The final integration test also
+sends a partial create over the real app socket, lets cancellation overtake it,
+then finishes the original request against the production Go control server
+with only node/API I/O faked. No cloud POST is allowed in that sequence.
+
+Final round-2 gates and mutation results are recorded below after completion.
+Fresh full A and CLI B review of the updated source remains required.
+
 Implementation base: `3757477219263c3e9b887077473c384762545336`.
 Worktree: `.claude/worktrees/tailnet-enrollment`, sole writer. No rebase onto
 the subsequently fetched main, account/device operation, deployment or push.
