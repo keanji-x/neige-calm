@@ -631,8 +631,11 @@ for `settle_ms` at the signal returns at once even if a later repaint follows.
 
 * `input` action `{"type":"submit","text":"..."}`: the same validation as `text`
   (nonempty, ≤16384 bytes, no control characters), encoded as the text bytes
-  plus one CR in ONE `ClientMsg::Input`, one receipt, one barrier; `repeat` is
-  refused. The plain `text` action still never submits.
+  plus one CR: one input request (`PumpCommand::Input`, one `input_seq`), one
+  receipt, one barrier; since #1725 the writer hands the PTY the text and,
+  after `SUBMIT_CR_GAP`, the CR as a second `WriteStdin` (Claude Code reads
+  one chunk of more than ~62 characters as a paste); `repeat` is refused. The
+  plain `text` action still never submits.
 * `open` `claim: true`: after creation the claim runs through the Planner
   client's pump as a claim-if-unowned (`PumpCommand::ClaimIfUnowned`): the
   same grant barrier, scope check and `OwnerClaim` effects as

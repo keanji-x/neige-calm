@@ -284,8 +284,8 @@ write request:
 | `old draft` + Ctrl+U + `new draft` | `new draft` |
 | Left/Right mixes, CJK edits | as expected |
 
-So a bounded edit can be one ordered write request, like `submit` (text + CR)
-and `repeat` (Left×5) already are. The focused suite pins the same facts against the real
+So a bounded edit can be one ordered write request, like `submit` (text + CR —
+one request, two PTY writes since #1725) and `repeat` (Left×5) already are. The focused suite pins the same facts against the real
 PTY with `stty raw -echo; exec cat -v` (the bytes arrive concatenated, in
 order, as `7200 + 19^[[D^[[D^[[D^[[D^[[D^?9`) and against bash's readline
 (the draft reads `echo 7209 + 19`).

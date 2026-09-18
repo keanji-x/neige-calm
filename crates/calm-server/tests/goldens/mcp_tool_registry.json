@@ -1468,7 +1468,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "bbaeb35c8e30f823555d858eb63624c6bb8052989cc03c332274678c2b666a7a",
+    "description_sha256": "c444f29f45a748f02af1261e9994d3864a8a90b1d980dfbbcf9ddc8efb57fbc5",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
