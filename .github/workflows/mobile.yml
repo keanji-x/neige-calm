@@ -15,9 +15,12 @@ env:
 
 concurrency:
   group: android-client-${{ github.ref }}
-  # Native mutation runs must restore production source before ending.
+  # The policy mutation run must restore production source before ending.
   cancel-in-progress: false
 
+# Emulator-backed checks live in mobile-native.yml and only run for mobile/**
+# pull requests; this job is the one that still runs for every fe/** change
+# because the APK bundles the fe build.
 jobs:
   android:
     name: mobile (test + Android APK)
@@ -85,96 +88,3 @@ jobs:
             mobile/artifacts/native-policy/
           if-no-files-found: error
           retention-days: 7
-
-  native:
-    name: mobile native (API ${{ matrix.api }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        api: [26, 35]
-    env:
-      CARGO_BUILD_JOBS: '4'
-      CARGO_PROFILE_RELEASE_OPT_LEVEL: '1'
-      RUSTC_WRAPPER: ''
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: |
-            mobile/package-lock.json
-            fe/package-lock.json
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: mobile/p2p-native/go.mod
-          cache-dependency-path: mobile/p2p-native/go.sum
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            mobile/src-tauri -> target
-          shared-key: mobile-native
-      - name: Prepare native toolchains
-        run: |
-          rustup show active-toolchain
-          rustup target add x86_64-linux-android
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865'
-          echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
-          npm --prefix mobile ci
-          npm --prefix fe ci
-      - name: Build the real backend
-        run: |
-          env -u NEIGE_CODEX_BIN cargo build --locked --release -p calm-server --bin calm-server
-      - name: Start the isolated native test backend
-        run: |
-          node mobile/tests/native/backend.mjs "$PWD/target/release/calm-server" "$PWD/mobile/src-tauri/gen/android/app/src/instrumented/res/raw/neige_instrumentation_ca.pem" "$RUNNER_TEMP/neige-native" > "$RUNNER_TEMP/neige-native.log" 2>&1 &
-          echo "$!" > "$RUNNER_TEMP/neige-native.pid"
-          for attempt in $(seq 1 60); do
-            if [ -f "$RUNNER_TEMP/neige-native/runtime.json" ]; then exit 0; fi
-            kill -0 "$(cat "$RUNNER_TEMP/neige-native.pid")" || { cat "$RUNNER_TEMP/neige-native.log"; exit 1; }
-            sleep 1
-          done
-          cat "$RUNNER_TEMP/neige-native.log"
-          exit 1
-      - name: Build normal APK with test CA present and prove it is excluded
-        run: |
-          test -f mobile/src-tauri/gen/android/app/src/instrumented/res/raw/neige_instrumentation_ca.pem
-          env -u NEIGE_CODEX_BIN npm --prefix mobile run tauri -- android build --debug --apk --target x86_64
-          npm --prefix mobile run verify:apk -- src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
-      - name: Enable emulator acceleration
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Run native loading and authority tests
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ matrix.api }}
-          target: google_apis
-          arch: x86_64
-          disable-animations: true
-          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
-          script: node mobile/tests/native/run.mjs "$RUNNER_TEMP/neige-native/runtime.json" "${{ matrix.api }}" ${{ matrix.api == 35 && '--mutation' || '' }}
-      - name: Stop the test backend
-        if: always()
-        run: |
-          if [ -f "$RUNNER_TEMP/neige-native.pid" ]; then kill "$(cat "$RUNNER_TEMP/neige-native.pid")" || true; fi
-      - name: Check source restoration
-        run: git diff --exit-code
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mobile-native-api-${{ matrix.api }}
-          path: |
-            mobile/artifacts/native/
-            mobile/src-tauri/gen/android/app/build/outputs/androidTest-results/
-            mobile/src-tauri/gen/android/app/build/reports/androidTests/
-          retention-days: 7
-          if-no-files-found: ignore
