@@ -60,8 +60,9 @@ pub(crate) struct WorkerWorktreeFacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
     /// `true` when the kernel removed the worktree after its last
-    /// provisioning (see the struct doc); `false` while the checkout is
-    /// still on disk, whatever the lease `state`.
+    /// provisioning (see the struct doc); `false` when it has not — whatever
+    /// the lease `state`, and saying nothing about the filesystem beyond the
+    /// kernel's own removals.
     pub removed: bool,
 }
 
