@@ -1,0 +1,619 @@
+# 工作状态与通知的统一表达：track 级 activity 投影（#1722）— 设计 v6
+
+基线：`origin/main` = `b2341b871`（工作树 `1722-activity-design`）。所有 `file:line` 都在该基线上读取核实（[实测]）；未核实的写「未核实」。v0 是 issue #1722 正文；owner 已定的三条决定不再讨论：(a) `Stop` ≠ attention；(b) 琥珀 attention / 红 failed / 蓝 unread / 灰 spinner，rail §7.5 改写；(c) 新设备基线 = 全部已读。v0 与代码不一致处在 §2 逐条登记为 **M-n**，设计按代码走，不改写 v0。v2 折入第一轮双通道评审（存档 `docs/_1722-design-review-subagent-v1.md`、`docs/_1722-design-review-codex-v1.md`）；v3 折入第二轮（存档 `docs/_1722-design-review-subagent-v2.md`、`docs/_1722-design-review-codex-v2.md`）与编排方在 4140 生产库上的一次只读测量（SPIKE-1，F2.29）；v4 折入第三轮（存档 `docs/_1722-design-review-subagent-v3.md`、`docs/_1722-design-review-codex-v3.md`）；v5 折入第四轮（存档 `docs/_1722-design-review-subagent-v4.md`、`docs/_1722-design-review-codex-v4.md`）；v6 折入第五轮（存档 `docs/_1722-design-review-subagent-v5.md`、`docs/_1722-design-review-codex-v5.md`）。每条发现的处置在 §11（五轮，自包含），被驳回或订正的附证据行，文档不为其改动。
+
+## 1. 问题与证据
+
+生产（4140，`1d46d500c`，含 #1714）：rail 里「股票持仓表」`data-nc-activity=working`，其 planner 会话自 2026-09-16 起 `state=idle`、`active_turn_id=NULL`；「投研试用｜美联储与黄金」同样。新浏览器 17 条 track 全是蓝点（含 Draft）。7 条 `kernel/card/status` overlay 里 6 条停在 09-15/09-16（5 `Working`、1 `AwaitingInput`），对应会话全部 `running/alive`；`4379b4aa…` 的事件序列 `stop → notification → subagent_stop` 之后三天无事件。（以上为 issue 上的生产观测，本文不重测。）
+
+根因在代码里可以直接读到：
+
+- spinner 由 **阶段** 驱动：`activity = attention ? 'attention' : running ? 'working' : unread ? 'unread' : 'quiet'`，其中 `running = isRunning(track.lifecycle)`（[实测] `fe/web/src/features/track/row/public.tsx:95,107`），`isRunning` = `planning | dispatching | working`（`fe/core/domain/track.ts:716-718`）。而 `lifecycle` 的边表只允许 planner 走 `planning → dispatching/reviewing`，用户从 `planning` 只能 `→ canceled`（`crates/calm-types/src/track_lifecycle.rs:32-47`；`user_can_resume` 不含 `Planning`，`:171-179`）。planner 干完活不推进阶段，track 就永远转。
+- 蓝点由 `tracks.updated_at` 驱动（`fe/web/src/app/shell/sidebar.tsx:143`），而该列只在 `track_update_tx`（title/sort/archive/pin/lifecycle，`crates/calm-truth/src/db/sqlite/track.rs:312-419`）和 launchpad 领养（`crates/calm-server/src/routes/today.rs:539`）时移动；报告改写、任务完成、planner 回话都不动它（`grep -rn "UPDATE tracks" crates/*/src` 无其它写者，[实测]）。
+- 内核唯一的「卡在干活/等输入」投影 `card_fsm` 是「最后一个 hook 的目标态赢」+ 严重度降级保持 750 ms（`crates/calm-server/src/card_fsm.rs:93,125-134,432-470`），没有源态条件；`Stop → AwaitingInput` 在 codex 与 claude 两张表里各一行（`:170-173`、`:300-304`）；只有 claude `SessionEnd → Done`（`:314-318`），codex 表没有任何到 `Done`/`Errored` 的行；会话退出不进 FSM。
+- **「点掉的蓝点重启后全回来」的机制**（v2 新增）：回执 key 是 `read:${database}:${kind}:${id}`，`database` = `/api/version` 的 `dbInstanceId`（`fe/web/src/app/providers/ui-preferences.tsx:17,45`）；而 `dbInstanceId` 是**每次进程启动**新铸的 UUID v4（`crates/calm-server/src/state.rs:1668-1672`、`routes/version.rs:6-7`）。`ServerCompatGate` 见到 id 变化就 `client.clear()`、删 IDB、写新 id 并 reload（`providers/public.tsx:75-81`），`ReadReceiptScopeProvider` 随之换成新 id（`:89`）。每次 calm-server 重启，#1714 之前写的全部回执都被换到读不到的 key 下。回执挂错了所有者（进程身份而非数据库身份），§4.8 修。
+- **共享 daemon 线程完成 turn 之后 `last_thread_status` 停在 `active`**（v3 新增，SPIKE-1 实测，F2.29）：4140 上两条 `codex-worker` 会话在各自任务的 `task.completed` 之后 90 分钟仍 `state='running'`、`last_thread_status='active'`，其后没有任何 `worker_session.status_changed`。原因可以直接读到：feeder 把 `turn/started` 与 `turn/completed` 都盖成 `active`（`crates/calm-server/src/liveness_feeder.rs:82`），没有别的写者会把它改回 `idle`（F2.25）。任何把 `working` 押在 `last_thread_status='active'` 上的投影都会永远转——v2 的后端 (ii) 正是——v3 改 feeder 并让派发出去的工作一律以任务行为准（§4.2）。
+
+## 2. 事实表
+
+**基线漂移（v5 登记，不变基）**：本文事实仍以 `b2341b871` 为准；写本版时 `origin/main` 已是 `3dbb96c84`（21 个文件，[实测] `git diff --stat b2341b871 origin/main`），其中三个文件动了本文引用的锚点：`fe/web/src/features/chat/thread/public.tsx`（+233：§5.3/F1.16 的四处 `styles.live` 在 `3dbb96c84` 上是 `:683,695,790,1164`，首处已改为 `showLive && last`）、`crates/calm-truth/src/validation.rs`（+30：§4.5 的 `OVERLAY_KIND_REGISTRY` 在 `:330`）、`docs/oracle/capabilities-e2e.yaml`（`:116` 与 `:394` 的锚点已重排）。S1/S2 的简报必须在各自的基线上重读 §5.3 与 §4.5/§2.4 的这些锚点，不得照抄本文行号。
+
+### 2.1 前端：状态推导与指示器
+
+| # | 事实 | 位置 | 核实 |
+|---|---|---|---|
+| F1.1 | `TrackRow`：`attention = needsUserAttention(track)`，`running = isRunning(track.lifecycle)`，`activity` 三元链；rail/panel 变体把指示器放尾槽（`trailingStatus`），`quiet` 不渲染；**`aria-label` 的 `bits` 也由这两个值拼出（`'waiting on you'`/`'running'`）** | `fe/web/src/features/track/row/public.tsx:94-95,104-107,133,154-155,173-175` | [实测] |
+| F1.2 | `needsUserAttention = isWaitingForUser(lifecycle) ∨ track.anyCardNeedsInput`；`isWaitingForUser = blocked ∨ reviewing ∨ failed`；`lifecycleRank` 与 sidebar 的 `waiting` 桶都只用 `needsUserAttention` | `fe/core/domain/track.ts:663-681,683-687`；`fe/web/src/app/shell/sidebar.tsx:102` | [实测] |
+| F1.3 | `TrackActivity = {progress, eta, now, anyCardNeedsInput}`，`NEUTRAL_ACTIVITY` 冻结；`trackActivityFrom` 只认四个 kind，未知 kind 静默忽略 | `fe/core/domain/track.ts:44-53,147-161` | [实测] |
+| F1.4 | `ActivityState = 'attention' \| 'working' \| 'unread' \| 'quiet'`；`.attention` 涂 `--error`，`.unread` 涂 `--accent`，`.working` 灰环 `activity-turn`；README 写「attention is red」 | `fe/web/src/ui/activity-indicator/public.tsx:3,6-9`；`activity-indicator.module.css:3-13`；`README.md:3` | [实测] |
+| F1.5 | `ChatList`：`live = isLiveConversation(state)`（= `starting ∨ running ∨ turn_pending`），`attention = state === 'failed'`，同一三元链；**行的可访问名与描述由同一组值派生**（v6 补，A-MIN1）：`description = attention ? 'Needs input' : unread ? 'Unread updates' : null`（`:46`，经 `aria-describedby` 挂到行上），`aria-label` 尾段 `(live ? ', live' : '')`（`:67`）；抽屉 `ChatThread` 另有一份 `live = pending ∨ isLiveConversation(conversation.state)`，驱动 F1.16 五处 `styles.live` 里的四处（第五处在 `QuietSyncFold`，由 `ChatThread` 以 `live={live && holdsLast}` 传入） | `fe/web/src/features/chat/list/public.tsx:43-48`；`fe/core/domain/conversation.ts:155-157`；`chat/thread/public.tsx:68` | [实测] |
+| F1.6 | 会话行的 `'failed'` 来自本地 `facts.stalled`（= planner run `phase === 'wedged'`，`:346`），不是服务端；路由对**服务端 kind** 的行在本地 in-flight 时喂 `turn_pending`，对本地 kind 喂 `running`；服务端列表 LEFT JOIN 只取四个活态，`failed` 永远不会从 `/conversations` 到达（**M8**）。**列表里有两种来源的行**（v4 补）：服务端列表只取 `role = Assistant`（`track_conversations.rs:382,389`），**不含 planner**；planner 行是路由从 `plannerCard.runtime`（`CardRuntimeView`，F1.13）**注入**的：`kind` 是 `CONVERSATION_STATE_SOURCE` 里 `'route'` 的那个 planner kind（`conversation.ts:108-114`，`:112`），`state = runtime.status`，`updatedAt = runtime.updated_at_ms ?? card.updated_at`（`:2791-2798`），放在 `rows` 首位（`:2844`）——它没有任何完成时间字段 | `fe/web/src/app/router/public.tsx:282-284,346,2791-2798,2844`；`crates/calm-server/src/routes/track_conversations.rs:366-389` | [实测] |
+| F1.7 | Today：`waiting = filter(needsUserAttention)`，`running = isRunning ∧ ¬needsUserAttention`；头部 `N waiting · N running`（`waiting.length`/`running.length`，`:254`）；**track 列表只有一节** `PanelRows title="Running"`（`:245`）——`waiting` 只是计数，「Waiting on you」列表已由 owner 拍板从阅读列移除（`:12-13`，#1253 D2）；`:397-398` 注释说「两个数概括两节」在本树只对第二个数成立（v6 补，A-MAJOR-1）；现有测试「counts running and waiting tracks with the shared predicates」读 banner 文本（`public.test.tsx:46-57`） | `fe/web/src/features/today/public.tsx:12-13,229-230,245,254,397-406` | [实测] |
+| F1.8 | sidebar：`waiting` 桶与折叠条计数用 `needsUserAttention`；`isUnread: preferences.isUnread('track', id, track.updatedAt)` | `fe/web/src/app/shell/sidebar.tsx:102,143,201-205` | [实测] |
+| F1.9 | 回执：key `read:${database ?? 'local'}:${kind}:${id}`；`createUiPreferences` **构造时**从 `DB_INSTANCE_ID_KEY` 播种 `database`（模块初始化即构造：`app/auth/production-app.tsx:69`），`setReadScope` 可改；`database === null` 时回执只在内存；`isUnread = updatedAt > receipt`；`markRead` 只在更大时写 | `fe/web/src/app/providers/ui-preferences.tsx:12-17,45-57,59-71` | [实测] |
+| F1.10 | scope 来源：`ServerCompatGate` 首次拿到 `dbInstanceId` 且本地无记录时写 `DB_INSTANCE_ID_KEY`（`:81`），id 变化则清缓存 + reload（`:77-79`；`:75` 是无 id 时的 early return，v6 订正），`ReadReceiptScopeProvider id = verdict==='same' ? id : null`（`:89`）；`UiPreferencesProvider` 用 `useLayoutEffect` 调 `setReadScope`（`ui-preferences.tsx:105-107`）；`useReadReceipt` 是 `useEffect`，deps 含 `scope`，仅在 `visibilityState==='visible'` 时 `markRead` | `fe/web/src/app/providers/public.tsx:70-89`；`ui-preferences.tsx:144-156` | [实测] |
+| F1.11 | 回执调用点：track 页 `useReadReceipt('track', track.id, track.updatedAt)`；会话抽屉 `useReadReceipt('conversation', …, openActivity.updatedAt, historyReady…)`；`ChatList unreadIds` 由 `isUnread('conversation', row.id, row.updatedAt)` 生成。`:1335`/`:1825` 读的都是 `rows` = 注入的 planner 行 + 服务端行（F1.6）；两种行的 `id` 都是卡 id（`c.id AS id`，`track_conversations.rs:367`；`plannerCard.id`，`:2792`）。rail 与 track 页共用同一条 track 回执 `read:${db}:track:${id}`（`sidebar.tsx:143`、`:2719`） | `fe/web/src/app/router/public.tsx:2719,1335,1825,2792`；`fe/web/src/app/shell/sidebar.tsx:143` | [实测] |
+| F1.12 | `overlay.set` 失效：`entity_kind ∈ {track,card}` → `['overlays', kind]`；track → `['track', id]`；card → 其 track；rail 的 overlays 查询 `overlaysByKind('track')`，`useWorkspace` 把 `trackActivityFrom` 折进每行；`harness.item.added` 只失效 `['harness-items', card_id]`，不失效会话列表 | `fe/core/events/invalidation-plan.ts:250,323-331`；`fe/web/src/app/providers/queries.ts:537-542,993` | [实测] |
+| F1.13 | Cards/Tasks 行是文字 token：卡行 `status = taskStatus ?? {token: card.runtime.status}`（`WorkerSessionState` 词表）；任务行 `token = execution?.status ?? task.status`；两个 painter 都写 `data-nc-status`；`CardRuntimeView` 有 `status/thread_status` 无 `liveness`，其 `thread_status` 是由 `(status, thread_id)` 推出的 `pending_thread_start/failed_to_spawn/started`，**不是** `last_thread_status`。**它的载体链**（v4 补）：`worker_sessions` 行 → 三条投影 SELECT（`session_projection_row.rs:12,28,62`）→ `WorkerSessionProjection`（`crates/calm-types/src/runtime.rs:44`，ts 导出）→ `runtime_view_from_runtime`（`session_projection_lookup.rs:208`）→ `CardRuntimeView`（`crates/calm-types/src/model.rs:513`；可选字段先例 `updated_at_ms`：`#[serde(default, skip_serializing_if)]` + `#[ts(optional)]`，`:517-520`；zod `z.number().optional()`，`schemas.ts:251`）；`card.added/updated` 的 golden 用同一结构（`tests/cases/event_serde_goldens.rs:321-332`，`:322` 把 `updated_at_ms` 留 `None`） | `fe/core/view/track-page.ts:157-160,215-224`；`desktop-painter.tsx:175-176,254-261`；`mobile-painter.tsx:147-156,234-236,292`；`fe/core/api/schemas.ts:246-258`；`crates/calm-truth/src/session_projection_lookup.rs:208,223-240` | [实测] |
+| F1.14 | Notifications 侧条：`cardInputNotifications` 只读 `kernel/card/status` overlay ∈ {AwaitingInput, Errored}，按 `updated_at` 倒序（`:2703`）；侧条 `role="region" aria-label="Notifications"`。**项的形状**（v6 补，A-MIN2）：`TrackInputNotification = {cardId: string, source: string, message, state, updatedAt}`（`page/public.tsx:71-77`）——`source` 已是**人读的来源标签**（Planner / 卡标题 / 卡 kind，`router/public.tsx:2688-2692`）；列表 `key={notification.cardId}`（`:817`），Review 按钮 `onOpenInputNotification(notification.cardId)`（`:830`），路由侧按卡开抽屉或跳到卡（`router/public.tsx:3411-3419`） | `fe/web/src/app/router/public.tsx:2675-2703,2975-2976,3411-3419`；`fe/web/src/features/track/page/public.tsx:71-77,786-794,817,830` | [实测] |
+| F1.15 | 终端卡头：`live = attached ∧ ¬ended ∧ status==='connected'` → `<span class="live-dot" aria-label="status Working">`（进程存活≠在干活） | `fe/web/src/systems/cards/builtins/terminal-card.tsx:46-47,62` | [实测] |
+| F1.16 | 脉冲 keyframes 实际是 **四** 份：`dot-pulse`（`styles/track-grid.css:230`，`.live-dot :221-228` 用）、`chat-pulse`（`features/chat/list/list.module.css:156`，**无任何规则引用**）、`thread-pulse`（`features/chat/thread/thread.module.css:971`，`.live :536-543`）、`quiet-sync-pulse`（`quiet-sync.module.css:83`，`.live :73-81`）；`row-pulse` 在 `fe/` 零命中（**M1**）；对话流的 `Working` 点用 `styles.live` **五处**（v5 订正，A-MIN3）：`thread/public.tsx` 四处 + `chat/thread/quiet-sync.tsx:100`（`QuietSyncFold` 自己的 `styles.live`，`quiet-sync.module.css:73-81`；`ChatThread` 在 `thread/public.tsx:659` 以 `live={live && holdsLast}` 传入） | `grep -rn "@keyframes" fe/web/src`；`grep -rn "styles.live" fe/web/src/features/chat/thread` → `public.tsx:592,604,669,979`、`quiet-sync.tsx:100` | [实测] |
+| F1.17 | 手机 track 列表只画 `lifecycleLabel`，无指示器；手机 track 页 Cards/Tasks 走 `paintMobileModule`，Conversations 是路由注入的同一 `ChatList` 槽 | `fe/web/src/app/shell/mobile-tracks.tsx:7,73`；`fe/web/src/features/track/page/public.tsx:47,69,648` | [实测] |
+| F1.18 | 页头 `TrackLifecycleBadge` 两处；`titleInHeader = compactViewport ∧ mobileHeaderTitleHost !== null`（`:211`），`:552` 只在 `!titleInHeader` 渲染，`:558` 在 `titleInHeader ∧ !boardOpen` 时不渲染 → 手机统一页头（#1707）里两处都不出现。badge 色调：`isWaitingForUser → attention`（`--warn-text`），`isRunning → running`（accent 混色，「读作活着」），其余 `neutral`；`failed` lifecycle 因此涂 `--warn-text` | `fe/web/src/features/track/page/public.tsx:211,552,558`；`features/track/lifecycle-badge/public.tsx:20-25`、`lifecycle-badge.module.css:16-28` | [实测] |
+| F1.19 | 调色 token：`--warn: oklch(49% 0.14 30)`（`:227`；dark `:524` 色相 30），`--error: oklch(51% 0.14 25)`（`:398`；dark `:539` 色相 25）——**色相差 5°、等色度、ΔL 0.02，两颗 6 px 点肉眼不可分**；`--warn*` 家族 = `--warn/--warn-soft/--warn-border/--warn-text`（light `:227,228,405,462`；dark `:524,525,542,544`）；`fe-design.md:78`「Error 与 warning 必须分开，不能都退化成琥珀色」；对比度门禁 `fe/tools/styles/check-contrast.mjs`（`npm run lint:css`，`fe/package.json:22`）对 `--warn`/`--warn-text` 有 6 组配对（`:175-180`） | `fe/web/src/styles/tokens.css`；`docs/fe-design.md:78` | [实测] |
+| F1.20 | **M2**：v0 要改写的「rail §7.5」在本树 `docs/fe-design.md`（208 行，f84dce947 #1181 精简后）**不存在**；规则只活在代码注释：`sidebar.tsx:197-198`、`shell.module.css:587`、`row.module.css:341-342`、`tokens.css:209`。历史 §7.5（71288fbdd）原文是「只有等待中的指示点能出现 `--warn`」——而 F1.4 用的是 `--error`：代码早已偏离它引用的规则 | `git show 71288fbdd:docs/fe-design.md`（历史）；上列注释 | [实测] |
+| F1.21 | 现有 `data-nc-activity` 断言：`row/public.test.tsx:131-147`（precedence 测试用 `anyCardNeedsInput: true`）、`router/track-conversation.test.tsx:2049-2065`、`chat/thread/public.test.tsx:504`；`any_card_needs_input` fixture 还在 `read-fallbacks.contract.test.tsx:354,368`、`track-conversation.test.tsx:56`、`track/page/public.test.tsx:166`。变异清单 `fe/tools/mutation/manifest.json`（71 条）每条是 `{mutation_id, defends: ['oracle:<INV id>'], target, patch, expected_red: [vitest 完整标题], selection_paths: [被跟踪的测试文件], why_more_than_one}`，路径相对 `fe/`（如 `web/src/...`）；校验器要求 `expected_red/selection_paths` 非空、路径被 git 跟踪、`defends` 的 id 存在于 `docs/oracle/*.yaml`（`fe/tools/mutation/runner.ts:500-527`；`run.mjs:70-75`）。`docs/oracle/*.yaml` 里没有任何指示器/rail 行的条目（`a11y-contract.yaml` 未钉 `running` 字样）→ S2 新登记 `INV-APP-118`（§6） | 同列 | [实测] |
+
+### 2.2 内核：会话、FSM、投影、时间戳
+
+| # | 事实 | 位置 | 核实 |
+|---|---|---|---|
+| F2.1 | `worker_sessions` 列：`provider ∈ codex/claude/terminal`、`contract ∈ planner/executor/validator`、`state ∈ starting/running/idle/turn_pending/exited/failed/superseded`、`thread_id`、`agent_session_id`、`active_turn_id`、`terminal_run_id`、`handle_state_json`、`liveness ∈ alive/idle/exited/unknown`（默认 `unknown`）、`spawn_op_id → operations(id)`（`operations.kind` 是 adapter 名）、`created_at_ms`、`updated_at_ms`、`completed_at_ms`；0053 加 `last_activity_ms/last_thread_status`；0054 加 `card_id`；0081 改 `track_id`（`tasks`/`cards` 同批改名） | `crates/calm-truth/migrations/0045_worker_sessions.sql:4-36`；`0053:7-8`；`0054:25`；`0081:47,52,55`；`0029_operations.sql:1-5` | [实测] |
+| F2.2 | **M4**：`contract` 由 kind 推出：只有 `SharedPlanner → Planner`，其余（含 assistant `CodexCard`）都是 `Executor`。**后端身份要从别的持久列读**（§4.2）：harness 行的权威判据是 `json_extract(handle_state_json,'$.mode') = 'harness'`（`HARNESS_MODE`，`crates/calm-types/src/harness.rs:13`；仓内三处同一判据：`crates/calm-truth/src/db/sqlite/read.rs:1051`、`crates/calm-server/src/shared_codex_appserver.rs:3996-3998`、`harness/snapshot.rs:674` `is_harness_snapshot_value`）；生产写者只有 harness：`crates/calm-server/src/operation/planner_harness_start_adapter.rs:1139,1648`（`harness/mod.rs:866,1065` 在 `:677` 起的测试模块里，不是生产写者）；恢复也以它为前提（`harness/mod.rs:176-178`）。`spawn_op_id → operations.kind` = `codex-worker`（`operation/codex_adapter/mod.rs:747,828`）/ `codex-isolated-worker`（`isolated_codex/adapter.rs:130`）；claude PTY worker 也带 `spawn_op_id`（`card_with_claude_worker_create_tx`，`crates/calm-truth/src/db/sqlite/card_composite.rs:559-563,654`，调用 `operation/claude_adapter/mod.rs:813`；`operation/claude_adapter/tests.rs:90-100` 钉住），但 **claude 重启出的新会话 `spawn_op_id: None`**（`operation/claude_restart_adapter.rs:237`）；交互 `codex-create` 卡的会话 `spawn_op_id = NULL`（`operation/codex_adapter/mod.rs:352-355` 传 `None`）且 `handle_state_json = NULL`；交互 claude 卡同样 `None`（`card_with_claude_create_tx`，`card_composite.rs:538`，调用 `operation/claude_adapter/mod.rs:453`）；claude 卡 `provider='claude'`；终端 `provider='terminal'`。`cards.role` 分不开交互卡与 worker 卡（`codex-create` 与 worker 都是 `CardRole::Worker`，`operation/codex_adapter/mod.rs:366,837`） | `crates/calm-truth/src/db/sqlite/session_row.rs:150-169`；上列 | [实测] |
+| F2.3 | harness（planner + assistant）写 `state` 的唯一口：`run_status_for`：`PendingThreadStart→Starting`，`Idle/TurnCompleted/Resumed→Idle`，`Issuing/TurnRunning→TurnPending`，`Wedged→Failed`；写入 `session_set_harness_observation_runtime_tx`（`run_loop.rs:5145`，不发事件）；phase 变化后另发 `harness.phase.changed`。**`TurnCompleted` 相位不等于一次完成**：`turn/start` 被拒时 phase 也回 `TurnCompleted{unknown-turn}` 并发 phase 事件（`run_loop.rs:4481-4486`）。**重启**：`state_from_snapshot` 把 `TurnRunning/IssuingInterrupt` 快照映成内存 `Resumed`（`:5201-5233`，纯函数，不落库），行保持重启前的 `turn_pending` 直到下一次 `persist_snapshot`；在 `Resumed`/`Idle` 下到达的 `TurnCompleted` 被当 stale 忽略（`:2456-2465`），不写转录行（`persist_turn_outcome` 在 `:2472`，检查之后） | `crates/calm-server/src/harness/state.rs:38-49`；`harness/run_loop.rs:5121-5152,5155-5175,4481-4486` | [实测] |
+| F2.4 | `state=running` 的写者按后端分：claude PTY worker `operation/claude_adapter/mod.rs:1291`；codex 共享 daemon 线程绑定 `pending_codex_threads.rs:419-420` 与 `operation/codex_adapter/mod.rs:1800-1801`（其前 `:1904-1905` 写 `turn_pending` = 线程注册待定）；isolated executor 在 turn 确认时写 `running` + `active_turn_id`（`isolated_codex/journal.rs:199-209,214-227`），停机写 `exited` 并发 `worker_session.status_changed`（`isolated_codex/observe.rs:113-135`）；终端 `operation/terminal_adapter.rs:550-561`。退出走 `session_commit_exit_tx`（`session_row.rs:518-548`：`state=?`, `liveness='exited'`, `completed_at_ms`），**不发 bus 事件**（`session_repo_impl.rs:124-149`） | 上列 | [实测] |
+| F2.5 | `liveness`：mint/re-arm 一律写 `Unknown`（`session_mirror.rs:75,157`；`worker_flow/mod.rs:585-595` 的 `liveness_from_runtime` 只构造 `capture` 用的临时对象，`:411,427`，不落库）；改它的只有 reaper 探测（`session_set_liveness`，30 s 对账 `DEFAULT_REAPER_RECONCILE_SECS`；对 `starting` 行也会把 `Exited` 当观测写下而不终结，`reaper/mod.rs:172-190`）和退出（F2.4）；没有别的路径会把 `unknown` 改成 `alive` | `crates/calm-server/src/reaper/mod.rs:23,172-190,225-290`；`session_row.rs:315-345` | [实测] |
+| F2.6 | 卡的「当前会话」= `cards.session_id`，由 `card_session_link_tx` 跟随；live planner 还写 `tracks.root_session_id` | `session_mirror.rs:262-278` | [实测] |
+| F2.7 | `TurnCompleted` 的持久痕迹：转录表里 `method='turn/completed'` 一行，`params` = turn 对象去掉 items（含 `status ∈ completed/failed/interrupted`，`shared_codex_appserver/preserving_recovery.rs:146`），`created_at_ms = now`，按 `(session, card, thread, turn_id)` 去重（`harness_turn_outcome_put`，`begin_immediate_tx`）；被中断的 turn 也写（`run_loop.rs:2420`），systemError 分支写行并发 `harness.item.added` 但不进 `TurnCompleted` 相位（`:2434-2453`）；写在 `persist_snapshot_stamping_issued_head`（→ `harness.phase.changed`）之前；**best-effort**：插入失败只 warn（`:4986-4989` 说明，`:5016-5025` 吞掉） | `crates/calm-truth/src/db/sqlite/out_of_domain.rs:455-478`；`run_loop.rs:2387-2480,4975-5027` | [实测] |
+| F2.8 | **M5**：`TrackConversationSummary.updated_at = COALESCE(ws.updated_at_ms, c.updated_at)`，且 `ORDER BY updated_at DESC`；`updated_at_ms` 在用户入队消息时也动 | `track_conversations.rs:366-386`；`crates/calm-types/src/model.rs:549-570`；`invalidation-plan.ts:111-113` | [实测] |
+| F2.9 | `card_fsm`：6 态 + 严重度 `AwaitingInput 5 > Errored 4 > Working 3 > Starting 2 > Idle 1 > Done 0`；`observe`：首次观测或 `target.severity ≥ cur` 立即提交（**同态再观测 `changed=false`，会丢掉挂起的降级**，`:443-450`），否则 750 ms 后降级；`commit` 不与磁盘上的 overlay 比较（`:503-560`）；只订阅 `CodexHook/ClaudeHook`，`handle(env.event)` 丢掉 envelope 的 `actor/scope`（`:357`）；map 内存态，重启清空（`:403`） | `card_fsm.rs:100-134,350-365,403,407-470,503-560` | [实测] |
+| F2.10 | codex 表：`SessionStart→Starting`，`UserPromptSubmit/PreToolUse/PostToolUse→Working`，`PermissionRequest/Stop→AwaitingInput`；claude 表另加 `PostToolUseFailure/SubagentStart/SubagentStop/TaskCreated/TaskCompleted→Working`，`PermissionDenied/Notification/Elicitation→AwaitingInput`，`StopFailure→Errored`，`SessionEnd→Done`（`SessionEnd.reason` 的文档值含 `clear/resume`，`:310-313`）；`claude_kind_to_state(kind, _payload)` 已收到 payload 但不读（`:329`） | `card_fsm.rs:149-175,230-334` | [实测] |
+| F2.11 | **M3**：FSM 无「从 X 到 Y」的边，只有「hook → 目标态」；`AwaitingInput(5) → Working(3)` 是严重度**降级**（750 ms 后提交），`Done(0) → Working` 才是升级 | `card_fsm.rs:432-458` | [实测] |
+| F2.12 | 表被三处消费：`build_claude_settings_json` 注册 hooks；`terminal_hooks()` 取 7 个子集给 Planner 终端；`parse_terminal_signal` 用表判合法事件名并解析 `notification_type`/`session_id`（`terminal_hooks.rs:218,223`；`:380` 的 `permission_prompt` 是单元测试 fixture，不是生产测量）；测试 `every_registered_hook_projects_to_its_table_state` 断言每行都投影到 `Some(h.state)` | `crates/calm-server/src/routes/claude_cards.rs:245-249`；`terminal_hooks.rs:26-34,185-190,203-224`；`card_fsm.rs:817-847` | [实测] |
+| F2.13 | Planner 开的终端卡与人建的 `terminal` 卡的 hook 走 `ingest_terminal_signal` 进渲染器信号环，不上 bus，不进 FSM | `crates/calm-server/src/routes/codex.rs:196-228,296-345` | [实测] |
+| F2.14 | `commit`：`write_with_event_typed`（`begin_immediate_tx`）写 `kernel/card/status` + `OverlaySet`（envelope scope 是 `EventScope::Card{card, track, area}`；**track 查询失败时退化为 `EventScope::System`**，`:541-547`），然后 `recompute_track_needs_input`（自动提交读 + 一个 IMMEDIATE 写） | `card_fsm.rs:503-575,597-706` | [实测] |
+| F2.15 | **M9**：FSM 对 planner 卡的 hook 也接受；「app-server 线程不发 CLI hook」是生产观测，不是代码保证。代码侧：`ingest_hook` 要求非空 `card_id`（`routes/codex.rs:150-160`），共享 daemon 的子进程 env 没有 `NEIGE_CARD_ID`（`shared_codex_appserver.rs:59-75` 透传表 + `:2145-2146` 只加 `CODEX_HOME/NEIGE_CALM_BASE_URL`），但 bridge 在没有 `NEIGE_CARD_ID` 时会用 payload `session_id` 查 `GET /api/threads/{id}/card` 反解卡（`crates/calm-codex-bridge/src/main.rs:95-128`；路由 `routes/threads.rs:18`）——所以「共享 daemon 线程结构上到不了 `ingest_hook`」不成立；成立的是观测：daemon 进程不发 hook。设计不依赖它 | `crates/calm-server/tests/cases/codex_permission_request_overlay.rs:245,259`；上列 | [实测] |
+| F2.16 | overlay 注册表：未知 kind 直接 `Ok(())`；校验只在插件 RPC 与 REST 写口调用，内核 `overlay_upsert_tx` 不校验；`KERNEL_OVERLAY_PLUGIN_ID = "kernel"` 外部不可写 | `crates/calm-truth/src/validation.rs:183,197-221,327-361`；`plugin_host/callbacks.rs:287`；`routes/overlays.rs:191` | [实测] |
+| F2.17 | overlay upsert 键 `(plugin_id, entity_kind, entity_id, kind)`，`ON CONFLICT DO UPDATE`；`overlays.updated_at` 随之更新；`Overlay.payload` 是 `serde_json::Value`；`overlay_set.json` golden 只钉外壳 | `crates/calm-truth/src/db/sqlite/overlay.rs:12-18`；`migrations/0001_init.sql:42-50`；`crates/calm-types/src/model.rs:698-710` | [实测] |
+| F2.18 | 事件 payload：`TrackLifecycleChanged{id, area_id, from, to}`；`WorkerSessionStatusChanged{worker_session_id, card_id, old_status, new_status}`；`WorkerSessionSuperseded{old, new, card_id}`；`HarnessPhaseChanged{…, track_id, old_phase, new_phase}`；`harness.item.added{…, item_db_id, item_type, turn_id, method}`（无工具名）；`TaskCompleted/TaskFailed` 只有 `idempotency_key`。`BroadcastEnvelope{id, event_version, actor, scope, event}` **没有 `at`**；`events` 表有 `at`（unix ms）、`actor`（`serde_json::to_string(&ActorId)`，如 `{"kind":"User"}`）、`scope_track`（有索引） | `crates/calm-types/src/event.rs:399-455,599-613,767-794`；`crates/calm-truth/src/event_bus.rs:76-105`；`migrations/0004_events.sql:23-32`、`0081:48,78`；`events.rs:364,387` | [实测] |
+| F2.19 | `write_with_events` 拒绝空事件批（回滚）；「无变化不发事件」只能靠写前比较 | `crates/calm-truth/src/db/sqlite/events.rs:600-628` | [实测] |
+| F2.20 | **M10**：events 表 30 d 修剪，允许名单含 `claude.hook/codex.hook/harness.phase.changed/harness.item.added/overlay.set`（后者 keep-latest）；`task.*`、`track.*` 不修剪 | `crates/calm-truth/src/events_prune.rs:78-79,112` | [实测] |
+| F2.21 | **M7**：`terminal_sweeper` 30 s tick 需要 `AppState`，在 `state.rs:1697` 起；`card_fsm::spawn(repo, events, write)` 在 `:1401` 起；`HarnessRegistry` 是 `#[derive(Clone)]` 的 `Arc` 包装（`harness/registry.rs:32-33`），在 `:1512` 构造，早于 `AppState` 组装（`:1660`）；run loop 在 `main.rs:51` `boot_harnesses` 时才装进注册表 | `terminal_sweeper.rs:132,148-161`；`state.rs:1401,1512,1660,1697`；`main.rs:51-57` | [实测] |
+| F2.22 | 任务是 **attempt 模型**：`tasks` 存所有 attempt（`0041`），`current_task_attempt_allocations`/`current_tasks` 视图只给每个 `(track, key)` 的最新代（`0097_task_attempt_allocations.sql:103,107`）；恢复只从 `failed` 出发、旧 attempt 行留在 `tasks` 里仍是 `failed`（`task_attempt.rs:205-217`）；列 `track_id, key, status ∈ pending/dispatched/running/verifying/done/failed/canceled, worker_card_id, finished_at_ms, updated_at_ms`（`0041:14-26`）。**恢复不动旧 attempt 的会话**：`task_recovery.rs:215-251` 只分配新 attempt、重建任务投影、发事件，不改 `worker_sessions`；reaper 把死 worker 的会话写成 `state='failed'`（`reaper/mod.rs:361-369`）——旧 attempt 的失败会话行留在库里。**`worker_card_id` 只在 `dispatched → running` 盖章**（v4 补）：claim SQL 不写卡（`task.rs:198-203`），`running` 写 `COALESCE(worker_card_id, ?1)`（`:264-269`），调用方是 spawn op 完成之后的 `scheduler/mod.rs:1834-1843`（`mark_running`，`:1882-1900`；op 结果就是建出的卡行，**终端任务同样**），worker 报告事务是另一侧 COALESCE（`:1836-1839` 注释）。所以 `dispatched` 行在每条生产路径上都是 `worker_card_id IS NULL` | 上列 | [实测] |
+| F2.23 | 版本常量：`WEB_COMPAT_VERSION = 28`（两处锁步）；**`min_web_compat_version` 不是独立旋钮**：`current_kernel_compatibility()` 直接填 `WEB_COMPAT_VERSION`（`version.rs:157`），测试钉住相等（`:234-249`）；`REST_API_VERSION = "8"`（`calm-types/src/compatibility.rs:9`），bump 准则见 `version.rs:17-57`（#1450：新增必填字段 → bump）与配对规则（`:129-131`）；`SYNC_EVENT_VERSION = 20`；neige-app 预检把 `api_version` 变化或 `min_web > installed web` 判为 `Breaking{WireIncompatibility}`（`crates/neige-app/src/preflight.rs:287-296`）；帘幕：bundled 客户端 `webCompatVersion < WEB` → `server-update`，`minWeb > WEB` → `app-update`；web 端 `minWeb > WEB` → `RefreshRequiredOverlay` | `routes/version.rs:1-160,234-249`；`providers/public.tsx:34,94-96` | [实测] |
+| F2.24 | OpenAPI/wire：`npm run gen:api` = ts-rs 导出 + `emit-openapi`；CI `openapi-drift` 用 `git diff --exit-code -- fe/core/api/generated/`；`web/` 目录在本树**不存在**（无 twin） | `fe/package.json:14`；`.github/workflows/ci.yml:1386-1432` | [实测] |
+| F2.25 | 共享 daemon 的持久线程状态：`liveness_feeder` 订阅共享 app-server 通知流（planner/assistant harness 与 `codex-create`/`codex-worker` 线程都在这一个 daemon 上，`harness/run_loop.rs:218,640`；isolated executor 用私有 daemon，**不在此流上**）。`stamp_status_for`（`liveness_feeder.rs:79-87`）：`thread/status/changed` → 映射 `active/waitingOnUserInput/waitingOnApproval/idle/systemError/notLoaded`；**`turn/started` 与 `turn/completed` 都盖 `active`**（`:82`）；其余丢弃。`Notification::TurnCompleted { thread_id, turn }` 带**完整 turn 对象**（含 `status`，`codex_appserver.rs:563-565,612-615`），feeder 今天用 `{ .. }` 忽略它。写口 `session_record_activity_by_thread_tx`（`session_row.rs:396-423`）：一条 UPDATE 同时写 `last_activity_ms, last_thread_status`，限 `provider='codex' ∧ state ∈ {starting,running,idle,turn_pending}`，不动 `updated_at_ms`，0 行也 `Ok`；**不发 bus 事件**。写失败只 warn 继续（`:106-116`「observational; ignored」）；`Lagged` 只 warn（`:118-127`）。与 reaper 同一 kill-switch `NEIGE_REAPER_DISABLED`（`dispatcher/mod.rs:988-999`）；关掉后**已写入的值原样留在行里**，没有清空路径。**解析失败 fail-open**（v4 补）：`status_str_from_value` 对任何解析不了的 status 形状返回 `"active"`（`:39-45`，为 reaper 写的「宁可当作活跃」）。**`last_thread_status` 的生产写者只有 feeder**（`liveness_feeder.rs:107` → `session_record_activity_by_thread`；按 id 的 `session_record_activity` 在 `crates/*/src` 无生产调用方） | `crates/calm-server/src/liveness_feeder.rs:1-14,25-63,79-131` | [实测] |
+| F2.26 | hook 入口 `ingest_provider_hook`：payload `session_id`（claude 会话 UUID / codex thread id）经 `cross_check_session_card`（`routes/codex.rs:360-397`）→ `resolve_session_for_thread` → `runtime_get_active_by_session_from_pool` 只在**活态**会话里按 `agent_session_id` 找（`crates/calm-truth/src/db/sqlite/session_projection.rs:124-142`）；找到但卡不同 → 400；找不到 → 继续，actor 退化为卡级 `AiClaude(card)/AiCodex(card)`；找到 → actor `AiClaudeSession(ws)/AiCodexSession(ws)`。claude 会话的 `agent_session_id` 在建卡时预铸并以 `--session-id` 传给 CLI（`operation/claude_adapter/mod.rs:296-308`，`card_composite.rs:535,651`）；**claude 重启复用同一个原生 UUID**：`--resume <claude_session_id>`（`operation/claude_restart_adapter.rs:171-175`），新会话行 `session_id: Some(claude_session_id)`（`:223-236`）；**旧会话只在它仍是活态时**才在同一事务里 `session_complete_tx(Exited)`（`:157-168`：`session_projection_active_for_card_tx` 只找 `state ∈ {starting, running, idle, turn_pending}`，`session_projection.rs:198`；`failed`/`exited` 的旧行不在其中，**原样留下**——v5 订正 B-MIN1）；把旧行从卡上摘掉的是新会话的 mint：`session_start_mirror_tx → session_repoint_current_links_tx → card_session_link_tx`（`session_mirror.rs:282-289`），`cards.session_id` 指向新会话——一条迟到的旧会话 hook 会解析到新会话 | `routes/codex.rs:242-284,360-397`；`crates/calm-truth/src/session_projection_lookup.rs:45-60` | [实测] |
+| F2.27 | `settings` 表是用户可写 KV：`PUT /api/settings` 接受任意 key，空串即删除（`routes/settings.rs:25-28,38`；`settings_delete`，`out_of_domain.rs:840`）；`retention_meta` 是 INTEGER 值的修剪簿记（`0060_retention_meta.sql`）。两者都不适合承载数据库身份 | 上列 | [实测] |
+| F2.28 | `calm.user.notify` 内核侧不写任何行；它以转录表 `method='item/completed' ∧ item_type='mcpToolCall'` 行落地，工具名在 `params.item.tool`，失败以 `params.item.error`/`status='failed'` 标出（FE 已按此解析） | `crates/calm-server/src/mcp_server/tools/user_notify.rs:12-18`；`fe/core/domain/conversation.ts:1258-1273` | [实测] |
+| F2.29 | **SPIKE-1（编排方 2026-09-18 18:20 CST 在 4140 生产库只读测量，本文不重跑）**：两条共享 daemon `codex-worker` 会话（`fd04fa04…`/卡 `73b0467c…`，`17faa6da…`）`state='running'`、`last_thread_status='active'`、`last_activity_ms` = 16:48:41 / 17:00:35，其任务的 `task.completed` 在 16:47:49 / 17:00:09，之后**没有** `worker_session.status_changed`，90 分钟后仍 `active`。八条 `idle` 行的 `last_activity_ms` 全在 2026-09-17 20:22:59–20:23:06——一次批量盖章（重启/恢复），不是逐 turn 的 idle。结论：在已装的 codex（0.153.4）上，**`active` 是 turn 完成后的静止值**；G8 由此关闭 | 生产测量（`rulings-r2.md` SPIKE-1） | [实测·生产] |
+| F2.30 | reaper 对 resumable（codex）会话：`probe_liveness` 报 `Exited`（`:146-160`）且非 `starting`（`:172`）时进 `:205` 分支；**busy 预门**：`last_thread_status ∈ {active, waitingOnUserInput, waitingOnApproval}` 或 `now − COALESCE(last_activity_ms, created_at_ms) ≤ deadline`（默认 900 s，`:28`）→ 只记 liveness 观测、不 reap（`:211-238`）；过了预门才问 `confirm_durable_death`，**只有 `Dead` 才 reap**，`Alive/Unknown` 不 reap（`:265-298`）；isolated 卡整个跳过（`:120-127`）。claude 是 `Ephemeral`，codex 是 `Resumable`（`crates/calm-provider/src/provider/claude.rs:30-32`、`codex.rs:93-95`） | `crates/calm-server/src/reaper/mod.rs:28,120-127,146-160,172,205-298` | [实测] |
+| F2.31 | claude PTY 退出路径：`attach_reader.rs:126-138` → `complete_ephemeral_session_from_terminal_exit`（**signalled → `Failed`**（`:127-131`），否则 `Exited`）→ `write_in_tx_typed` 内 `session_complete_tx`（仅 `Ephemeral`），**不发任何事件**（`terminal_sweeper.rs:92-119`）；boot reconcile `lib.rs:105` 同路径。内核自己的终端拆除是 SIGTERM → SIGKILL（`terminal_renderer/mod.rs:53-75`），即 signalled；只有程序自己结束（`exit`/Ctrl-D/自然退出）才是非 signalled | `crates/calm-server/src/terminal_renderer/attach_reader.rs:126-138`；`terminal_sweeper.rs:92-119`；`terminal_renderer/mod.rs:53-75` | [实测] |
+| F2.32 | `Event::WorkerSessionStatusChanged` 的生产发射者：`new_status = Running` 六处（`pending_codex_threads.rs:435`、`operation/claude_restart_adapter.rs:407`、`operation/codex_adapter/mod.rs:1828`、`operation/terminal_adapter.rs:560`、`operation/claude_adapter/mod.rs:637,1300`）+ `TurnPending` 一处（`operation/codex_adapter/mod.rs:1932`）+ `Exited` **仅** isolated executor 一处（`isolated_codex/observe.rs:113-126`）。`Event::WorkerSessionSuperseded` **零**生产发射者（只有消费者 `worker_flow/mod.rs:302`、`dispatcher/mod.rs:144,1247,1851`、`track_vcs/delta.rs:376` 与测试）。所以 claude PTY 退出、reaper 退出、supersede、restart 都**不**产生会话终态事件。**grep 注**（v6，A 附注）：isolated 的 `Exited` 发射写的是 `new_status: status`（`observe.rs:125`，`status` 在 `:113` 绑定为 `Exited`），第一条 grep 找不到它——该处事实靠读函数，不靠命令 | `grep -rn "new_status: WorkerSessionState::" crates/*/src`（七处）+ 读 `isolated_codex/observe.rs:113-126`；`grep -rn WorkerSessionSuperseded crates/*/src` | [实测] |
+| F2.33 | isolated executor：`RequestPhase` 的最后一个相位是 `TurnActive`，没有 turn 之后的相位（`dedicated_codex/session.rs:90-109`）；`journal.rs:176-182` 只在 `ThreadReady/TurnActive` 时写 `active_turn_id`，`:214-227` 在 `TurnActive` 时写 `running`——**turn 完成不清 `active_turn_id`、不改 `state`**；`stop()` 未证明静止时返回 Conflict、会话仍 `running`（`observe.rs:84-94`）；turn 完成而无任务报告只记 `failure`（`observe.rs:335-338`） | 上列 | [实测] |
+| F2.34 | `check_no_unknown_future_migrations`：库里有本二进制不认识的迁移版本时拒绝启动 | `crates/calm-truth/src/db/sqlite/infra.rs:77` | [实测] |
+| F2.35 | **转录表只有一个索引 `(card_id, id)`**（0032:29；0094:34 删掉了另一个），带 `track_id` 列（0081:49；写者 `harness_turn_outcome_put` 填它，F2.7）但**无索引**：`WHERE track_id = ?` 是全表走（内存库 `EXPLAIN QUERY PLAN` → `SCAN`）。改按 `card_id IN (SELECT id FROM cards WHERE track_id = ?1)` 后走 `(card_id, id)`；再加 `(card_id, method, created_at_ms)` 后是 `SEARCH … USING INDEX … (card_id=? AND method=?)`（同一内存库核实）。投影器读的其它表都有 `track_id`/`scope_track` 索引：`tasks_track_status_idx`（0097:84）、`idx_cards_track`（0081:75）、`ws_track_idx`（0081:99）、`idx_events_scope_track`（0081:78，部分索引）、`idx_overlays_entity`（0001:52） | 上列迁移；`/tmp` 内存库 EXPLAIN（本文不附） | [实测] |
+| F2.36 | **worker 在 turn 内报告**：`calm.task.complete`/`calm.task.fail` 是 MCP 工具（`mcp_server/tools/emit.rs:57-58`），worker 在自己的 turn **里**调用 → `decision_sink.rs:194` 写 `done`；turn 稍后才结束。F2.29 的数字就是这个形状：`task.completed` 16:47:49，同线程最后一次 feeder 盖章（`turn/completed`）16:48:41，晚 52 s | 上列 | [实测] |
+| F2.37 | **`waitingOnApproval` 在本栈没有生产来源**：共享 daemon 的每个线程都以 `approval_policy: "never"` 启动（`operation/codex_adapter/mod.rs:459`、`shared_codex_appserver.rs:1326,1376`、`planner_harness_start_adapter.rs:1446`、`codex_appserver.rs:1872,2238,2308,2347`、`dedicated_codex/session.rs:563`），共享 CODEX_HOME 配置也钉 `never`（`shared_codex_home.rs:355`），harness 丢弃 `approval/*` 通知（`run_loop.rs:2303-2311`）。`waitingOnUserInput` 未找到有引用的生产发射者 | `grep -rn approval_policy crates/*/src` | [实测] |
+| F2.38 | **子 track 任务行**（v5 补，A-MAJOR-1）：`spawn = TASK_CHILD_TRACK_ROUTE`（`crates/calm-types/src/task_recovery.rs:15`）、`child_track_id IS NOT NULL`（`current_tasks` 是 `SELECT t.*`，两列都在，`0097:107`）。子 track 的 bootstrap op 成功后 `task_mark_sub_track_running_tx` 盖 `running` 且 **`worker_card_id = NULL`**、无 running deadline（`task.rs:94-108`，UPDATE 在 `:100-101`；调用 `scheduler/mod.rs:1692,1705-1713`）。这行离开 `running` 只经 `reconcile_child_track_task`（`scheduler/mod.rs:850-996`）：子 `lifecycle='done'` ∧ 子无 in-flight/pending 任务 → `done`/`verifying`（`:906-936`；CAS `guarded_child_success_flip_tx` `:414-440`）；子 `done` ∧ 仍有 pending → `failed`（`:939-964`）；子 `failed`/`canceled`/被删 → `failed`（`:373-380,966-985`）。事件 scope 是**父** track（`:894-897`）。子 `→ done` 是 planner 独有的边（`track_lifecycle.rs:41`），而 §1/G2 的证据是 planner 停在 `planning` | 上列 | [实测] |
+| F2.39 | **子 track 父行会在父自己身上跑 gate**（v6 补，B-MAJOR-2）：子 `done` ∧ 静止 ∧ 父行 `gate_json IS NOT NULL` → `guarded_child_success_flip_tx` 盖成 `verifying`（`scheduler/mod.rs:910-922`，`finished_at_ms` 传 `None`）；该 UPDATE **保留 `child_track_id`**（只在 WHERE 里）且 `worker_card_id=NULL`（`:414-440`，SET 在 `:423-424`）。父 track 的 `schedule_track` 对每条 `Verifying` 行 `tokio::spawn(drive_gate)`（`:1052-1059`，可跑几分钟到几小时）；gate 结果经 `task_apply_gate_result_tx` 写 `done`/`failed` + `finished_at_ms`（`task.rs:551-580`，UPDATE `:562-571`）。生产路径由 `tests/scheduler.rs:8051-8077`（`acceptance_13_done_quiescent_child_routes_parent_through_gate`：`Verifying` → gate 真跑 → `Done`、`gate_attempt=1`）钉住 | 上列 | [实测] |
+| F2.40 | **会话与任务的时间列同一时钟**（v6 补，B-MAJOR-1）：`worker_sessions.created_at_ms`（0045:34）在 mint 时写 `init.now_ms`（`session_mirror.rs:82`；deferred placeholder 被 re-arm 时也**重写**为新的 `now_ms`，`:136-141` 注释「re-armed as a NEW carrier」）；claude restart 铸的 S2 传 `now_ms: crate::model::now_ms()`（`claude_restart_adapter.rs:223-241`，`:238`），**不动任务行**；S2 经 `session_start_mirror_tx → session_repoint_current_links_tx → card_session_link_tx` 成为 `cards.session_id`（`session_mirror.rs:263-290`）；替换 spawn 失败的补偿 `session_projection_complete_for_card(card, Failed)` 把**当前活态会话**（= S2）写成 `failed`（`:493-498`；`session_complete_for_card_tx`，`session_projection.rs:675-684`），`tests/claude_card_endpoint.rs:886-931` 钉住（两行：旧 `exited`、新 `failed`，按 `created_at_ms` 排序）。`tasks.finished_at_ms`（0041:26）由每个终态写者以同一 `now` 写（`task.rs:429,570,709`；子 track 成功 flip `scheduler/mod.rs:423-430` 对 `done` 传 `Some(now)`），调用方都取 `crate::model::now_ms()`（如 `decision_sink.rs:138`）；`now_ms` = `SystemTime::now()`（`calm-truth/src/model.rs:571-574`，`calm-server/src/model.rs:1` 原样再导出）。所以「会话是否在任务完成时已存在」可以按 `ws.created_at_ms <= finished_at_ms` 比较——前提是单机单时钟（同一进程写两列） | 上列 | [实测] |
+
+### 2.3 v0 与代码不一致索引（设计按代码走）
+
+M1 脉冲是四份不是五份，`row-pulse` 不存在（F1.16）· M2 §7.5 正文已不在树上，且代码本就用 `--error`（F1.20）· M3 FSM 没有边，只有「hook → 目标态」（F2.11 → §4.6 修 1 用 `Option<State>`）· M4 `contract` 分不开 assistant 与 PTY worker（F2.2 → §4.2 用持久身份列）· M5 `updated_at` 同时驱动排序，改义会动排序（F2.8 → §4.7 加列）· M6 `items` 只有 `card_id` 装不下 task/session/lifecycle（§4.1）· M7 对账不挂 sweeper（F2.21 → §4.3 自带 tick）· M8 会话行的 `failed` 从不来自服务端（F1.6）· M9 「planner 从不进 FSM」是观测不是保证（F2.15）· M10 `activity_at_ms` 的来源事件会被修剪，改为高水位（F2.20 → §4.3）· M11 `liveness = alive` 会藏掉 `unknown` 的新 worker，且 mint 只写 `unknown`（F2.5；§4.2 不用 `liveness` 判 working）· M12（v3 改，v4 按行来源重述）会话行对**服务端 kind** 的 `turn_pending` 是本地 in-flight 而非服务端状态（F1.6）：列表里的两种行——服务端列表行与路由注入的 planner 行——都改读 `activity.cards` 与 `lastTurnCompletedAt`，只有发送者本地 in-flight 保留本地 spinner，`isLiveConversation` 删（§5.3）· **M13**（v6，A-MAJOR-1）v0 的 Today 页头「N working」（运行时计数）不采用：头上的数必须等于它下面那一节的长度（`today/public.tsx:397-398` 注释的本意），而本树只有一节且 v0 自己把它定为「In progress（阶段）」——一个与它所在位置下方那一节不相等的数在这么小的空间里就是假话；运行时 `working` 在每一行的 spinner 上可见，不再另给数字（§5.3）。
+
+### 2.4 源码不变量门禁（每条：是否约束本设计、如何）
+
+| 门禁 | 位置 | 约束 |
+|---|---|---|
+| deferred-tx（#930/#1016） | `crates/calm-server/tests/cases/deferred_write_tx_invariant.rs:1-56` | **约束**。生产代码不得开 deferred 事务（允许名单为空）。投影器：整算全部用自动提交 SELECT（无共享读快照，见 §4.4），写用 `write_with_event_typed`（IMMEDIATE） |
+| boot_invariants | `boot_invariants.rs:42-224` | 不约束。投影器不改 boot fence；`database_identity` 表与 `worker_sessions.last_turn_completed_ms` 列（§4.8）走一个普通迁移；**迁移后旧二进制拒绝启动**（F2.34）→ 回滚 = 恢复数据库备份 |
+| harness_turn_start | `harness_turn_start_invariant.rs:9-40` | 不约束。本设计不发 turn |
+| fork_guard_exemption | `fork_guard_exemption_invariant.rs:8-40` | 不约束 |
+| terminology ratchet | `scripts/gate-1316-terminology-ratchet.sh:596-607` | **约束**。扫 `docs/`（含本文与八份存档）；本文避开退役词（转录表的表名及其事件的驼峰类型名一律以函数名/事件串引用） |
+| prose ratchet | `scripts/gate-prose-ratchet.sh:1-60` | 只扫 `crates/**/*.rs`；S1 的新 Rust 文件不得含 ≥4 字 CJK 串或 ≥120 字符字面量 |
+| sync-event lockstep | `scripts/gate-sync-event-version-lockstep.sh` | 不 bump：不新增/改名事件 kind（overlay payload 不透明） |
+| web-compat lockstep | `scripts/gate-web-compat-version-lockstep.sh` | **bump 28 → 29**（两处，§4.5）；`REST_API_VERSION` 8 → 9 同片 |
+| `fe/tools/architecture/*` | `no-module-runtime-state.mjs`（eslint 规则 `architecture/no-module-runtime-state`，`fe/eslint.config.js:60`，在 `npm run lint:js` 里）、`.dependency-cruiser.cjs`、`check-core-no-jsx.mjs` | **约束**。`core/domain/activity.ts` 纯函数、无模块态、无 JSX。模块级常量：`immutableConstructors` 为空（`:31`，任何 `new` 都拒），`Object.freeze({…})` 里嵌套的 `[]`/`{}` 只有自身也 `Object.freeze` 才算静态（`isStaticData`，`:99-100`，属性值 `allowContainer=false`）→ `NEUTRAL_ACTIVITY` 的写法见 §5.1 |
+| ownership inventory | `fe/module-file-inventory.yaml:42,41,43,124,130` | `fe/core/domain` 是目录条目 → 新文件不需要新行；`fe/core/api`（readonly）重生成、`fe/core/events`（readonly）若改 invalidation-plan、`fe/web/src/styles`（readonly）改 `--warn*` 与删 `dot-pulse` → 各需 `OWNERSHIP-CHANGE: <path> — … (#1722)` trailer |
+| event serde goldens | `tests/cases/event_serde_goldens.rs`；`goldens/events/overlay_set.json` | golden JSON 文件不动：overlay payload 不透明（F2.17）；`CardRuntimeView` 新字段是 `skip_serializing_if` 的可选字段（§4.7），`card_added.full.json`/`card_updated.json` 原样，只有 `event_serde_goldens.rs:321-332` 的结构体字面量加一行 `last_turn_completed_ms: None`（`:322` 先例） |
+| OpenAPI 再生成 | F2.24 | S1 加 `TrackConversationSummary.last_turn_completed_at`、`CardRuntimeView.last_turn_completed_ms`（连同 `WorkerSessionProjection`，两者都 ts 导出，F1.13）、`VersionInfo.{database_id, now_ms}` → `npm run gen:api` 并提交生成物 |
+| oracle 锚点 | `docs/oracle/*.yaml` | S2 会动的文件中被锚定的：`app/router/public.tsx`（`pages-shared.yaml:61` 的 3263/3375/3484；`capabilities-e2e.yaml:116` 的 `548-566,708-715,773-777,946-959` 与 `:394` 的 `2716-2729`——后者正是 `useReadReceipt` 那行）、`app/shell/sidebar.tsx`（`a11y-contract.yaml:25,41`：`76-78`、`425-504`）、`features/track/page/public.tsx`（`capabilities-e2e.yaml:332,354`：`293-300`，在侧条之上，不移）。S2 每片跑 `npm exec -- vitest run tools/oracle/oracle.test.ts --project platform-independent` 并按 `fe/tools/oracle/README.md` 更新锚点 |
+
+## 3. 词汇、优先级、生命周期
+
+| 状态 | 含义 | 生命周期 | 视觉 |
+|---|---|---|---|
+| `working` | **现在**有派发出去还没完成的任务（子 track 任务行在 `dispatched/running` 时不算——那是子 track 在动，G20；`verifying` 算——那是父自己在跑 gate，F2.39），或有交互/harness 卡的 turn 在飞（track = 子实体 OR） | 瞬态；无「已读」 | 灰 spinner |
+| `attention` | 没有人的动作它不会前进：permission/elicitation、daemon 线程 `waitingOn*`、lifecycle `blocked/reviewing` | 条件消失才消失；点开不清 | `--warn` 琥珀点（re-hue 后，§5.4） |
+| `failed` | 坏了要人处理：harness wedged、当前 attempt failed、线程 `systemError`、lifecycle `failed` | 同上 | `--error` 红点 |
+| `unread` | 自上次看它以来有完成类结果 | 可见即清 | `--accent` 蓝点 |
+| `quiet` | — | — | 无 |
+
+优先级只在一处：
+
+```ts
+// fe/core/domain/activity.ts
+export type ActivityState = 'failed' | 'attention' | 'working' | 'unread' | 'quiet';
+export type AttentionKind = 'none' | 'input' | 'failed';
+export function activityStateOf(s: Readonly<{ working: boolean; attention: AttentionKind; unread: boolean }>): ActivityState;
+// failed > attention > working > unread > quiet；纯函数，无模块态。输入域 2×3×2 = 12 组合，全序表穷举（§6）。
+```
+
+阶段词（`lifecycleLabel`）与任务 token（`data-nc-status`）继续表达阶段/结果；指示器只表达「要不要看 / 要不要管 / 在不在动」。`done` 不给颜色：它带来的那次结果就是一次 `unread`。**判定只在内核一处**：FE 不再从 lifecycle、`anyCardNeedsInput`、卡 overlay、会话状态或任务 token 自行推导 attention/failed/working（§5.1、§5.3）。声明的两处本地回声（都只作用于打开抽屉的那一行，§5.3）：发送者自己的 in-flight spinner；planner run `phase==='wedged'` 的本地 `failed`。
+
+## 4. 内核设计：`kernel/track/activity`
+
+### 4.1 载体与 payload
+
+`Overlay { plugin_id: "kernel", entity_kind: "track", entity_id: <track>, kind: "activity" }`（同 #254 的 `any_card_needs_input` 通道，F1.12 的失效路径零改动）：
+
+```json
+{ "schemaVersion": 1,
+  "working": true,
+  "attention": "none" | "input" | "failed",
+  "activity_at_ms": 1789460968837 | null,
+  "items": [ { "kind": "input" | "failed", "source": "card" | "task" | "session" | "lifecycle",
+               "id": "<card_id | task key | session id | track id>", "card_id": "<card_id>" | null,
+               "at_ms": 1789460968837 } ],
+  "cards": [ { "card_id": "<card_id>", "state": "working" | "input" | "failed" } ] }
+```
+
+`items` 比 v0 多 `source/id`（**M6**）：失败的任务、wedged 的会话、`failed` lifecycle 都没有 `kernel/card/status` 行。`items[].at_ms` 按来源取列：`card` → `overlays.updated_at`（F2.17）；`session` → `worker_sessions.updated_at_ms`；`task` → `current_tasks` 的 `COALESCE(finished_at_ms, updated_at_ms)`；`lifecycle` → `tracks.updated_at`。`card_id`：`source ∈ {card, session}` **总是**有（`session` 项的 `id` 是会话 id，`card_id` 是 S0 结果集里它的卡——侧条按卡渲染）；`task` 项是 `worker_card_id`（可空，F2.22）；`lifecycle` 项 `null`。侧条按 `at_ms` 倒序（F1.14）。`cards` 是每张有结论的卡一行：CARDS 行、TASKS 行（按 `worker_card_id`）、CONVERSATIONS 服务端行、终端卡头、手机 painter 都读它（§5.3），不在 TS 里复述 §4.2 的判据（「镜像代码必须调用原件」）；无结论的卡不出现。**每卡折叠**（v5，A-MIN1）：同一张卡可同时有几个结论（B1：W 给 `working`、FSM 给 `input`；C1 由 reaper 判死的 worker：W 与会话都给 `failed`），按 `failed > input > working` 取一个——§3 的顺序去掉 unread。`attention` 是 `items` 的折叠（任一 `failed` → `failed`，否则任一 `input` → `input`，否则 `none`），冗余但让 rail 不必扫 items。
+
+### 4.2 谁算、从哪些持久行算
+
+新模块 `crates/calm-server/src/track_activity.rs`（`card_fsm.rs` 已 1498 行，不再长）。一个 tokio task：`bus.subscribe()` + `tokio::time::interval(30 s)` 在同一个 `select!` 里，事件触发的整算与对账**串行**。spawn 点在 `state.rs:1512`（`HarnessRegistry::new()`）之后、`AppState` 组装之前，参数 `(repo, events, write, harness.clone())`——注册表是 `Arc` 克隆，不必等 `AppState`。启动扫描时注册表还是空的（run loop 在 `main.rs:51` 才装入），harness 行因此在首轮一律 `working=false`；`boot_harnesses` 之后注册表 Live 而行仍是重启前的 `turn_pending`（F2.3 的 `Resumed` 不落库）→ 直到 run loop 第一次 `persist_snapshot` 之前 (i) 会给出 `working=true`（崩溃后是假阳性，保存式升级时是真的，§9 G15）。
+
+每次触发对一个 track **整算**（不做增量）。三条规则，按优先级：
+
+**W 任务子句——所有派发出去的工作的唯一 `working` 来源**（共享 daemon `codex-worker`、isolated executor、任务绑定的 claude PTY worker 都走这里；会话信号对它们**不**参与 `working`）：
+
+```sql
+-- W：当前 attempt 的任务行（F2.22；一条语句读全部列，A2/E3 复用同一结果集）
+SELECT key, status, worker_card_id, child_track_id, finished_at_ms, updated_at_ms FROM current_tasks WHERE track_id = ?1;
+-- child_track_id IS NULL ∧ status ∈ {dispatched, running, verifying} → track working = true；worker_card_id 非空 → cards[worker_card_id] = 'working'
+-- child_track_id IS NOT NULL ∧ status ∈ {dispatched, running}（F2.38）→ 不 working：它的「worker」是另一条 track，真相在那条 track 自己的 overlay 里（G20）
+-- child_track_id IS NOT NULL ∧ status = 'verifying'（F2.39）         → working = true：子已 done，跑的是父自己的 gate（worker_card_id 为 NULL → 无 cards[] 条目）
+-- status = 'failed'（含子 track 行）                             → attention failed，items += {kind:failed, source:task, id:key, card_id:worker_card_id,
+--                                                                  at_ms: COALESCE(finished_at_ms, updated_at_ms)}；cards[worker_card_id] = 'failed'
+```
+
+理由：`last_thread_status='active'` 是 turn 完成后的静止值（F2.29），isolated 的 `running`/`active_turn_id` 在 turn 完成后也不变（F2.33），reaper 又跳过 isolated（F2.30）——会话行对「派发的工作现在在不在动」没有可靠答案，任务行有（B-M8、SPIKE-1、A-M2b）。**子 track 行例外**（v5，A-MAJOR-1）：它在子 track 整个生命期都是 `running`（F2.38：只有 planner 能把子 track 推到 `done`，而 G2 说 planner 停在 `planning`），计入 `working` 就是把 §1 的症状搬到每个父 track 上——子 planner `idle`、甚至子在等用户时，父还在转。最小改法是不计；子 `failed`/`canceled`/删除 ⇒ 父任务 `failed` ⇒ 红，子 `done` 且静止 ⇒ 父任务 `done` ⇒ E3 unread，两者不变；「子在干活时父什么都不显示」登记 G20。**排除只覆盖 `dispatched/running`**（v6，B-MAJOR-2）：子 `done` 且静止后，带 `gate_json` 的父行被盖成 `verifying`，`child_track_id` 保留、`worker_card_id=NULL`，父 track 的 scheduler 在父自己身上跑那个 gate（F2.39：`scheduler/mod.rs:910-922,423-430,1052-1059`；`tests/scheduler.rs:8051-8077`）——这是父的工作，不是子的，v5 的一刀切排除会让一个跑几小时的 gate 在父与（已 `done` 的）子两边都没有 spinner。`verifying` 因此不看 `child_track_id`。
+
+**S 会话资格**——会话来源的 `working`（仅交互/harness 卡）与全部会话来源的 `attention`/`failed` 只从**有资格的会话**取：卡的当前会话（`cards.session_id = ws.id`，F2.6），且卡是 harness 卡、当前 attempt 的 worker 卡、或从未绑过任务的交互卡。被超越的 attempt 的 worker 卡（其会话仍 `failed`，F2.22）三者都不是——这是 B-M5 的围栏：
+
+```sql
+-- S0：有资格的会话（每 track 一条语句，多行）
+SELECT ws.id, c.id AS card_id, ws.provider, ws.state, ws.last_thread_status, ws.last_turn_completed_ms, ws.updated_at_ms, ws.created_at_ms,  -- created_at_ms 供 G19 下界（v6）
+       json_extract(ws.handle_state_json,'$.mode') AS mode,
+       EXISTS (SELECT 1 FROM operations o WHERE o.kind = 'codex-isolated-worker'                                       -- isolated 按卡认（= is_isolated_card_tx，
+                 AND o.target_type = 'card' AND o.target_id = c.id) AS isolated                                         --   isolated_codex/lookup.rs:9-12；不按 ws.spawn_op_id）
+  FROM cards c JOIN worker_sessions ws ON ws.id = c.session_id
+ WHERE c.track_id = ?1
+   AND ( json_extract(ws.handle_state_json,'$.mode') = 'harness'                                                  -- harness 卡（F2.2）
+      OR EXISTS (SELECT 1 FROM current_tasks ct WHERE ct.track_id = ?1 AND ct.worker_card_id = c.id)              -- 当前 attempt 的 worker 卡
+      OR NOT EXISTS (SELECT 1 FROM tasks t WHERE t.track_id = ?1 AND t.worker_card_id = c.id) );                   -- 交互卡（从未绑任务）
+```
+
+`isolated` 列是 `is_isolated_card_tx` 的同一条按卡谓词（`isolated_codex/lookup.rs:9-12`；kind 常量 `isolated_codex::OPERATION_KIND`，`isolated_codex/mod.rs:25`；reaper 跳过 isolated 卡用的就是它，`reaper/mod.rs:120-127`）。v4 按 `ws.spawn_op_id → operations.kind` 认——按会话不按卡：重铸的 isolated 会话 `spawn_op_id` 可为 NULL（F2.2 的 restart 先例）就落进 (ii)（v5，A-MIN5）。S1 把这条谓词从 `lookup.rs` 抽成两处共用的 SQL 片段，不在 `track_activity.rs` 里手抄。
+
+**活会话门**：`attention` 与来自 FSM/`last_thread_status` 的 `failed` 还要求 `ws.state ∈ {starting, running, turn_pending}`（会话退出的写者都不发事件，F2.31/F2.32/F2.4；行是持久的，tick 读到就够）。`ws.state='failed'` 本身就是 `failed` 证据，不套活会话门——**一处例外（G19 关，第四轮；第五轮加时序下界）**：任务绑定的 worker 卡（S0 第二臂）若 W 结果集中 `worker_card_id = 该卡` 的行**全部 `status='done'`**，**且 `ws.created_at_ms <= MAX(这些行的 finished_at_ms)`**（会话在任务完成时已经存在——它就是干那次活的会话；两列同一进程同一 `now_ms()` 时钟，F2.40），它的 `ws.state='failed'` **不算** `failed` 证据（这条退出裁决属于已完成的执行：信号杀死，F2.31；或 reaper 在 `task_fail_from_worker_tx` CAS 0 行、当作 race-lost 放过之后写的 `session_commit_exit(Failed)`，`reaper/mod.rs:632-635,361-369`——两条路径里的会话都铸于任务完成之前）。**任务完成之后才铸出的会话是新工作，它的 `failed` 照常算红**（v6，B-MAJOR-1）：用户在 `done` 之后重启那张卡，restart 以 `now_ms()` 铸 S2、不动任务行，`cards.session_id` 跟到 S2（F2.40：`claude_restart_adapter.rs:223-241`，`session_mirror.rs:282-289`）；替换 spawn 失败时补偿把 S2 写成 `failed`（`:493-498`，`tests/claude_card_endpoint.rs:886-931`）——S0 经该卡的 done 任务放行 S2，v5 的规则会把这次失败的重启压成安静。下界不加列：`created_at_ms` 与 `finished_at_ms` 都是已有列，且 re-arm 的 placeholder 也重写 `created_at_ms`（F2.40）。只有 `done` 一种终态要判：`canceled` 行没有 `worker_card_id`（`task_cancel_tx` 只走 `pending → canceled`，`task.rs:135-146`，而盖章只在 `dispatched → running`，F2.22），`failed` 行本就由 W 判红。FSM 的 `AwaitingInput/Errored` 与 `last_thread_status ∈ {waitingOn*, systemError}` **不在例外里**，仍只受活会话门——它们只能由活会话产生，死会话到不了 G19；而 `done` 之后用户在同一张 PTY 卡里追加的工作触发的 permission prompt 或 `StopFailure` 必须仍然可见：claude worker 是交互 TUI、命令行无 `-p`（`build_claude_worker_command_line`，`operation/claude_adapter/mod.rs:362-382`，调用点 `:798-804`；v6 订正 B-MINOR-1：`:304-309` 是交互建卡 `prepare_claude_create_request` 的命令行，结论相同、证据不是它），卡就是终端卡（`systems/cards/builtins/claude.ts:3-6,17`），restart 不动任务行（`claude_restart_adapter.rs:133-175`），浏览器输入是 `InteractiveUser`（`ws/terminal.rs:228`、`input_authority.rs:31`）——两通道各自以此构造否决了「任务终态就压掉全部会话来源」的宽规则（§11 第四轮）。一条被信号杀掉的 PTY 会话（F2.31）在有资格的交互卡上就是红，直到该卡重启（F2.26：restart 不改写 `failed` 的旧行，是 `cards.session_id` 跟到新会话把它移出 S0）或删除。
+
+**派发窗口（声明）**：任务在 `dispatched` 期间 `worker_card_id IS NULL`（F2.22），刚 spawn 出的 worker 卡在 S0 里按「从未绑任务」归入交互卡，(ii)/(iv) 的交互规则可能对它给出 `cards[card]='working'`——与 W 已给出的 track 级 `working` 一致，无害；`running` 盖章后它转入「当前 attempt 的 worker 卡」，`cards[worker_card_id]` 才由 W 给出（§7 C3）。同一窗口里 E5/E6 的「从未绑任务」谓词也看不见它：一个在盖章前就结束首个 turn 且没有报告的 worker 会多亮一次 unread（报告事务另一侧也盖 `worker_card_id`，所以带报告的 turn 不会；F2.22/F2.36），登记 §9 G18。
+
+**按后端的会话规则**（在 S0 结果集上；后端由 F2.2 的持久列认出）：
+
+| 后端 | 认出（S0 列） | `working`（仅交互/harness） | `attention`（`input`，活会话门） | `failed` | 完成类证据（§4.3） |
+|---|---|---|---|---|---|
+| (i) harness codex：planner + assistant | `mode='harness'` | `state='turn_pending'` **∧ `HarnessRegistry::live_for_track(track)` 含该会话**（进程内权威，`registry.rs:221-232`）；`starting` **不算**（Q4） | — | `state='failed'`（`Wedged`，F2.3）→ `source:'session'` | E1、E2 |
+| (ii) 共享 daemon 线程：交互 `codex-create` 卡与 `codex-worker` | `provider='codex' ∧ mode IS NOT 'harness' ∧ NOT isolated` | **只对交互卡**（从未绑任务：`NOT EXISTS tasks.worker_card_id = card`；不按 `spawn_op_id`——重启后它可以是 NULL，F2.2）：`state ∈ {running, turn_pending} ∧ last_thread_status='active'`——成立的前提是 §4.2.1 的 feeder 改动（`turn/completed` 清成 `idle`）；`NULL` → 不算。任务绑定的 worker 走 W | `last_thread_status ∈ {waitingOnApproval, waitingOnUserInput}` → `source:'session'`（本栈两者都没有生产来源，F2.37：规则保留，只有 fixture 能到，§7 B′） | `last_thread_status='systemError'`（活会话门）∨ `state='failed'`† | E6（**从未绑任务的交互卡**）；E3（worker） |
+| (iii) isolated executor | `isolated`（按卡的 EXISTS，上） | 走 W（F2.33：`running` 不是「现在有 turn」） | — | `state='failed'`† | E3 |
+| (iv) claude PTY | `provider='claude'` | 任务绑定（`tasks.worker_card_id = card`）→ 走 W；交互卡（从未绑任务）→ `kernel/card/status = Working ∧ state ∈ {starting, running, turn_pending}` | `status = AwaitingInput`（§4.6 修 2 后只剩 permission/elicitation/`Notification` 白名单）→ `source:'card'` | `status = Errored`（活会话门）∨ `state='failed'`† | E5（**从未绑任务的交互卡**）；E3（worker） |
+| (v) 终端（人建 / Planner 开） | `provider='terminal'` | **永不来自会话信号**（无 turn 概念；hook 不进 FSM，F2.13）；终端任务的卡与其它 worker 一样走 W（`running` 盖章拿的是 spawn op 建出的卡 id，`scheduler/mod.rs:1834-1843`） | — | — | — |
+| validator | 无 mint 路径（`grep WorkerContract::Validator` 只在测试） | 按 (ii)–(iv) 的 provider 规则兜底 | | | |
+
+† 任务绑定、其当前 attempt 任务全部已 `done`、**且会话铸于任务完成之前**（`ws.created_at_ms <= MAX(finished_at_ms)`）的 worker 卡除外（活会话门段的例外，G19 关；`done` 之后铸的替换会话 `failed` 照常红）。
+
+`kernel/card/status` 行一条语句读全 track：`SELECT entity_id, payload, updated_at FROM overlays WHERE plugin_id='kernel' AND entity_kind='card' AND kind='status' AND entity_id IN (SELECT id FROM cards WHERE track_id=?1)`；没有 S0 里对应活会话的行**被忽略**（不改写：Q2 = (c)，无回填）。`liveness` 不进任何判据（M11）。lifecycle：`SELECT lifecycle, updated_at, archived_at FROM tracks WHERE id=?1`——`blocked/reviewing → input`，`failed → failed`（`source:'lifecycle'`）。
+
+#### 4.2.1 feeder 改动（S1 范围，`liveness_feeder.rs`）
+
+1. `stamp_status_for`（`:79-87`）：`TurnStarted ⇒ "active"`；`TurnCompleted { turn }` 按 `turn.status`（F2.25：对象在手，今天被 `{ .. }` 丢掉）：`'failed' ⇒ "systemError"`，其余（`completed/interrupted`）`⇒ "idle"`。分开 `failed` 的理由：codex 在失败的 `turn/completed` **之前**发 `systemError`（`run_loop.rs:2430-2433`），无条件 `idle` 会把它盖掉，后端 (ii) 的 `failed` 就没了。单元测试钉住三条：`[status idle, turn/completed{completed}] → idle`、`[status systemError, turn/completed{failed}] → systemError`、`[turn/started] → active`。**顺序假设（声明，v6，A-MIN3）**：这条改动让 `turn/completed` 成为一个 turn 的**最后一次**盖章，前提是 codex 在同一线程的 `turn/completed` **之后**不再发 `thread/status/changed{active}`。仓内关于顺序的证据只有 `run_loop.rs:2430-2433` 的注释（`systemError` 在失败的 `turn/completed` 之前）与 SPIKE-1 的行（F2.29：turn 完成后静止值是 `active`——它分不开「`turn/completed` 盖的 `active`」与「其后一条 `status{active}`」）。若顺序相反，(ii) 的交互 `codex-create` 卡会回到 v2 的症状（turn 完成后一直转到下一条同线程通知）；G13/G17 不覆盖这一形状。所以 §7 B′ 的交互 `codex-create` 真栈序列是 S1 **必做**的验收行，不是 fixture 可替代的；若真栈上失败，改的是这条规则（A 提的后备：同线程 `turn/completed` 之后、不带 `activeFlags` 的 `status{active}` 视为 `idle`），在 S1 内定，本文不预设。**解析失败改 fail-closed**：`status_str_from_value` 的 `Err(_) => "active"`（`:39-45`）改为 `"unknown"`——§4.2 (ii) 之后 `active` 是 `working` 判据，一次 codex 升级新增的 status 形状不该让空闲的交互卡转到下一个 turn；`"unknown"` 不在 (ii) 的任何判据里（非 working、非 attention、非 failed）。reaper 侧：`"unknown"` 不在 busy 预门的状态集合里，但同一条 UPDATE 写了 `last_activity_ms = now`，900 s 的时间预门照样挡住（F2.30 `:212-216`），过后仍由 `confirm_durable_death` 把关——与 `idle` 同一待遇。单元测试 `unknown_status_shape_stamps_unknown`（`{"type":"somethingNew"}` → `"unknown"`）。
+2. 新列 `worker_sessions.last_turn_completed_ms INTEGER NULL`（迁移 §4.8）：同一条 UPDATE 里，仅当 `turn.status = 'completed'` 时写 `MAX(COALESCE(last_turn_completed_ms, 0), ?now)`（单调；interrupted/failed 不写）。写者只有 feeder（F2.25：它就是看到 `turn/completed` 的那个消费者）；isolated executor 不在此流上，它的完成走 E3。
+3. `:106-116` 的「写失败只 warn」改为记下 `thread_id`，**下一条**同线程通知到来时先重放上一条失败的写（不加定时器、不加队列；两次连败就丢，warn）。
+
+**reaper 后果**（F2.30）：今天完成 turn 的共享线程 `last_thread_status='active'` 永远过不了 busy 预门（`:212-216`），所以从不被 reap；改后 turn 完成即 `idle`，一条 PTY 探测为 `Exited` 的会话在安静 900 s 后进入仲裁——`confirm_durable_death` 仍然把关，`Alive/Unknown` 不 reap（`:266-298`），`Dead` 才走 `converge_dead_worker → session_commit_exit`。变化只是「能被问到」，不是「会被杀」。
+
+### 4.3 触发、完成类证据、30 s 对账
+
+**事件只是唤醒**（`BroadcastEnvelope` 没有 `at`，F2.18）：每次唤醒或 tick 都整算 §4.2，并把 `activity_at_ms` 重算为 `max(现有值, 下列持久证据的 max)`——不从事件里取时间，不做「事件到了就 +1」。证据全是持久行，所以漏事件、进程崩溃、订阅 lag 都只延迟到下一次 tick；持久行本身写不上的情况登记在 §9（G16）：
+
+```sql
+-- E1 harness turn 结束（被拒的 turn/start 不写这行，F2.3；中断的 turn 排除；stale 的 TurnCompleted 不写行，G15）
+-- 经索引列 card_id 进表（F2.35：track_id 无索引），走 §4.8 的 idx_transcript_card_method_created_at：每张卡一段索引范围
+SELECT MAX(created_at_ms) FROM <转录表>
+ WHERE card_id IN (SELECT id FROM cards WHERE track_id=?1) AND method='turn/completed'
+   AND COALESCE(json_extract(params,'$.status'),'') <> 'interrupted';
+-- E2 calm.user.notify（F2.28）；同一索引
+SELECT MAX(created_at_ms) FROM <转录表>
+ WHERE card_id IN (SELECT id FROM cards WHERE track_id=?1) AND method='item/completed' AND item_type='mcpToolCall'
+   AND json_extract(params,'$.item.tool')='calm.user.notify'
+   AND json_extract(params,'$.item.error') IS NULL AND COALESCE(json_extract(params,'$.item.status'),'') <> 'failed';
+-- E3 当前 attempt 的完成/失败（从 W 的结果集算：MAX(finished_at_ms) WHERE status IN ('done','failed')；用户只能 cancel，不在名单里）
+-- E4 非用户发起的 lifecycle 变化（track.* 不修剪，F2.20；actor 列是 ActorId 的 JSON，F2.18）
+SELECT MAX(at) FROM events WHERE scope_track=?1 AND kind='track.lifecycle_changed' AND json_extract(actor,'$.kind') <> 'User';
+-- E5 从未绑任务的交互 claude/codex 卡的 stop hook 行（30 d 修剪与此无关：对账每 30 s 把它折进 overlay 里的高水位）
+-- 任务绑定的 worker 只由 E3 亮一次：worker 在 turn 内报告，turn 稍后才结束（F2.36）——不加这条谓词就是「一个结果两次 unread」
+SELECT MAX(e.at) FROM events e WHERE e.scope_track=?1 AND e.kind IN ('claude.hook','codex.hook')
+   AND json_extract(e.payload,'$.kind') IN ('hook.claude.stop','hook.codex.stop')
+   AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.track_id=?1 AND t.worker_card_id = json_extract(e.payload,'$.card_id'));
+-- E6 从未绑任务的共享 daemon 交互卡的 turn 完成：feeder 写的单调列（§4.2.1；不限会话状态——退出的会话保留它）；同一谓词
+SELECT MAX(ws.last_turn_completed_ms) FROM worker_sessions ws WHERE ws.track_id=?1 AND ws.provider='codex'
+   AND COALESCE(json_extract(ws.handle_state_json,'$.mode'),'') <> 'harness'
+   AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.track_id=?1 AND t.worker_card_id = ws.card_id);
+-- E7 报告非用户改写
+SELECT MAX(at) FROM events WHERE scope_track=?1 AND kind='track.report_edited' AND json_extract(payload,'$.author') <> 'user';
+```
+
+E7 的 `author` 取值需在 S1 对照 `EditAuthor` 的 serde 名（F2.18）。E5/E6 的 `NOT EXISTS (… tasks … worker_card_id = <卡>)` 与 S0 的「从未绑任务」是同一个谓词（hook 事件的 `card_id` 在 `payload` 顶层，`event.rs:671-685`；`worker_sessions.card_id` 见 F2.1）。三种 worker 后端因此一致：一个结果 = 一次 unread（E3）。
+
+唤醒事件与 track 解析：
+
+| 触发（bus 事件） | track 的解析 | 备注 |
+|---|---|---|
+| `overlay.set`，`plugin_id=kernel ∧ entity_kind=card ∧ kind=status` | envelope `scope.track`；scope 是 `System` 时（F2.14 的退化）`card_get` 反查 | FSM 提交后的事件，读到的是已提交行 |
+| `harness.phase.changed` / `harness.item.added`（`item_type='mcpToolCall'`） | payload `track_id` | 后者是 E2 的唤醒；`invalidation-plan.ts:250` 不失效会话列表，overlay 的失效路径补上 |
+| `worker_session.started / status_changed / superseded` | payload `card_id` → track | 只是唤醒；会话终态多数不发事件（F2.32），靠 tick |
+| `task.dispatched / task.completed / task.failed / task.execution_settled` | envelope `scope`（`task.dispatched` 在 claim 事务里追加，scope 是 `EventScope::Track`，`scheduler/mod.rs:1223-1226,1394`） | W 子句的唤醒。**`running` 盖章不发事件**（`mark_running` 是一条无事件的守卫 UPDATE，`scheduler/mod.rs:1878-1881`；spawn op 内的 `worker_session.started` 唤醒在盖章**之前**）→ `cards[worker_card_id]='working'` 只在盖章后的下一次 tick 出现（§7 C3′；v5，A-MIN2） |
+| `track.lifecycle_changed` / `track.report_edited` | payload `id`/`track_id` | 用户自己的边（`draft→planning` 等）也整算 attention，但 E4 的 actor 过滤让它不推进 `activity_at_ms` |
+| `track.deleted` | — | 无事：overlays 随 track 删（现状） |
+
+**tick 集合 = 全部未归档 track**（每 30 s；启动时先扫一遍，同一条枚举）：`SELECT id FROM tracks WHERE archived_at IS NULL`。不做「只扫活跃的」谓词：一个安静 track 的短任务在两次 tick 之间开始并结束、唤醒又丢了，任何按当前活跃度写的谓词都读不到它（B-M4）。**代价**（v4 改写，B-MAJOR-1）：每 track 11 条自动提交单语句 SELECT（W、S0、tracks 行、`kernel/card/status`、E1、E2、E4、E5、E6、E7、现有 `activity` 行；E3 与 A2 从 W 的结果集算），1000 条未归档 track ≈ 11k 语句 / 30 s。每条读多少行：W/S0/E4–E7/`kernel/card/status` 是各自表上 `track_id`/`scope_track`/`(entity_kind, entity_id)` 索引的一段范围（F2.35 列出的五个索引），再按 `kind`/`json_extract` 过滤；**E1/E2 在 v3 里按 `track_id` 过滤转录表，而它没有这个索引——每 track 一次全表走，T 个 track × 全部历史行，含别的 track 与已归档 track 的历史**（F2.35；v3 的「索引短范围读」是假话）。v4 让 E1/E2 经 `card_id` 进表并在 §4.8 加 `(card_id, method, created_at_ms)` 复合索引：每 track 的代价是它自己每张卡上 `(card_id, method)` 的一段索引范围，与其它 track 的历史无关。**不给延迟数字**——本文没测；S1 用 `EXPLAIN QUERY PLAN` 测试钉住计划形状（§6），代表性扫描时长写进 S1 的门禁报告。变化检测不变——比较 payload，只在变化时写。
+
+会话来源的状态变化**不发事件**（feeder、退出、supersede、restart：F2.25/F2.31/F2.32），全靠 tick：收敛上界是 **「≤ 30 s + 一次扫描时长」**（§9 G5）。扫描在同一 task 里串行，一个长扫描会推迟下一次 tick 与事件处理（bus 容量 1024，lag 只 warn）。
+
+`activity_at_ms` 是 overlay 里的**单调高水位**（**M10**）；首次建行时从 E1–E7 播种，都为空则 `null`（Draft → quiet）；对账永不降低它。
+
+### 4.4 事务形状（满足 deferred-tx 不变量）
+
+与 `recompute_track_needs_input` 同形（F2.14）：§4.2/§4.3 的 SELECT 全部是自动提交单语句（不开 `pool.begin()`，不用 `begin_read_tx`；它们之间**没有共享读快照**，两条语句之间的写入由下一次 tick 修正）；算出 payload 后与现有 `activity` overlay 比较（`working/attention/items/cards` 逐字段，`activity_at_ms` 取 max），无变化则返回（F2.19 不允许空事件批）；有变化才 `write_with_event_typed(… overlay_upsert_tx … Event::OverlaySet)`——`begin_immediate_tx` 一个写。
+
+### 4.5 迁移与兼容窗
+
+- **`validation.rs`** 注册 `OVERLAY_ACTIVITY_SCHEMA_VERSION = 1` + `validate_activity_overlay_payload`（`deny_unknown_fields`），进 `OVERLAY_KIND_REGISTRY`（F2.16：只挡外部写）。
+- **`any_card_needs_input` 的内核写者本版不动**（`card_fsm::commit` 里的 `recompute_track_needs_input` 原样保留），下一版连注册项、FE 读者一起删（§5.6）。它在本版**没有读者**：见下一条。
+- **`WEB_COMPAT_VERSION` 28 → 29**（`routes/version.rs:131` 与 `providers/public.tsx:34`）：新 FE 只读 overlay 判 attention/failed/working（§5.1），对旧内核会全灰；`TrackConversationSummary.last_turn_completed_at` 在 zod 里是**必填可空**（`z.number().nullable()`），旧内核的响应会被拒——所以 bundled 客户端必须被 `server-update` 帘幕挡住（`providers/public.tsx:94`）。`CardRuntimeView.last_turn_completed_ms`（§4.7）则沿 `updated_at_ms` 的先例做**可选**（`skip_serializing_if` + `#[ts(optional)]` + zod `.optional()`，F1.13）：它嵌在 `Card` 里、随 `card.added/updated` 事件持久化，必填会让旧事件快照与 golden 失效（§2.4）；planner 行缺它时 `lastTurnCompletedAt = null` → 永不 unread，安全方向。**`min_web_compat_version` 随之为 29**（不是独立常量，F2.23）：28 的 bundle 在 web 端得到 `RefreshRequiredOverlay`（`:96`）、在 bundled 端得到 `app-update`（`:95`）——旧 bundle 是被帘幕挡住，不是「降级运行」。
+- **`REST_API_VERSION` "8" → "9"**（`calm-types/src/compatibility.rs:9`）：套用 `version.rs:38-41`（#1450）的规则——响应新增必填字段（`last_turn_completed_at`；`/api/version` 的 `databaseId`/`nowMs`）时 bump，并按 `:129-131` 的配对规则与 WEB 29 同片。后果：neige-app 预检判 `Breaking{WireIncompatibility}`（F2.23），部署必须是 server+web 同一 bundle、走显式确认的升级路径（§6）。
+- `SYNC_EVENT_VERSION` 不动（§2.4）。
+
+### 4.6 `card_fsm` 三修（改的表行）
+
+v2 的「修 2：会话终态 → FSM `Done`」**删除**：它要消费的 `WorkerSessionStatusChanged{Exited/Failed/Superseded}`/`WorkerSessionSuperseded` 在 claude PTY、reaper、supersede、restart 路径上都没有发射者（F2.32），只有 isolated 会发 `Exited`；对退出会话的 stale overlay，§4.2 的活会话门让投影器直接忽略那行，boot 扫描与 tick 同样。FSM 行不被改写。
+
+1. **`SubagentStart/SubagentStop/TaskCreated/TaskCompleted` 不再投影状态**（M3：把「hook → 目标态」改为 `state: Option<State>`，这四行 `None`；它们仍留在表里当事件名词表，F2.12）。`claude_kind_to_state` 返回 `h.state`；测试 `every_registered_hook_projects_to_its_table_state`（`card_fsm.rs:817-847`）改成「投影到 `h.state`，且这四个必须 `None`」。
+2. **`Stop → Idle`**（owner 决定，推翻 #358/#367）：codex 表 `card_fsm.rs:170-173` 与 claude 表 `:300-304` 两行改 `Some(State::Idle)`；三段注释（`:180-186`、`:296-299`、`:321-326`）整段删。`PermissionDenied → AwaitingInput`（`:282`）**保留**。**`Notification` 只在白名单子类型时是 `AwaitingInput`**（关 Q3）：官方 hooks 参考（`https://code.claude.com/docs/en/hooks`，2026-09-18 读取；值域只有文档引用，仓内无 fixture）列出 `notification_type ∈ {permission_prompt, idle_prompt, auth_success, elicitation_dialog, elicitation_url_dialog, elicitation_complete, elicitation_response, agent_needs_input, agent_completed, quota_auto_resume_fired, quota_auto_resume_stale, quota_auto_resume_disabled}`；规则：`notification_type ∈ {permission_prompt, elicitation_dialog, elicitation_url_dialog, agent_needs_input}` → `AwaitingInput`，其它值或缺失 → `None`（fail-closed 到安静）。依据：`idle_prompt` 在每次 `Stop` 后 +60 s 到达一次（`docs/architecture/1548-planner-terminal-wiring.md:683` 的实测），若仍投 `AwaitingInput`，决定 (a) 对 claude worker 就被这条侧路整个抵消。`claude_kind_to_state(kind, payload)` 因此要读 payload（它已收到，F2.10）。Stop 不再是完成类事件的载体——完成类证据是 E5 的 hook 行（§4.3），与 750 ms 降级、同态再观测（F2.9）无关。
+3. **可证明过期的 hook 不进 FSM**（窄围栏）：`spawn` 把 envelope 交给 `handle`（今天只传 `event`，F2.9）；`Codex/ClaudeHook` 的 actor 是 `AiCodexSession(ws)/AiClaudeSession(ws)` 且 `ws ≠ cards.session_id`（F2.6）时**丢弃**——它解析到了一个不是卡当前会话的活态会话，可证明过期。卡级退化 actor（payload 无 `session_id`，或解析不到活态会话，F2.26）**保持今天的行为：照常投影**——不能把它当过期：claude 的 `/clear` 结束当前会话并开新会话（F2.10 的 `SessionEnd.reason=clear`），若新会话换了 `session_id`，之后每个 hook 都是卡级退化 actor，丢弃它们等于让 permission 提示从此不可见（A-MAJOR-1）。**没做的**：把挂起的 750 ms 定时器绑定到会话/turn 代际；原生 UUID 复用（F2.26 的 restart）让 s1 的迟到 hook 以 s2 的 actor 穿过围栏（§9 G14）。爆炸半径：同一会话内 `Stop` 之后迟到的 `PostToolUse` 会把卡抬回 `Working`，直到下一个 hook；对任务绑定的卡这不影响 `working`（W 子句），只影响 `cards[]`/侧条里的 FSM 结论。
+
+### 4.7 conversation 行的时间戳（M5）
+
+v0：「`updated_at` 改为最后一次 `TurnCompleted` 时间」。设计取**加列不改义**：`TrackConversationSummary` 新增 `last_turn_completed_at: Option<i64>` = `(SELECT MAX(created_at_ms) FROM <转录表> WHERE card_id = c.id AND method = 'turn/completed' AND COALESCE(json_extract(params,'$.status'),'') <> 'interrupted')`。理由：`updated_at` 同时驱动 `ORDER BY`/`byRecency`（F2.8/F1.5），改义会让刚发出消息的会话不再浮到顶。FE：`Conversation` 域类型（`conversation.ts:29-64`）加 `lastTurnCompletedAt: number | null`，`toTrackConversation`（`:1051-1060`）与 zod（`:1029-1036`）同步；`isUnread('conversation', id, lastTurnCompletedAt ?? 0)`，`useReadReceipt` 同源；`null` 永不 unread。
+
+**planner 行是第二个载体**（A-MAJOR-1，第三轮）：列表里的 planner 行不来自 `/conversations`，是路由从 `plannerCard.runtime` 注入的（F1.6），而 `CardRuntimeView` 没有完成时间（F1.13）。同一个定义、第二个载体：`CardRuntimeView` 加 `last_turn_completed_ms: Option<i64>` = **上面这条子查询按 `card_id = c.id` 求值**（不是 feeder 的 `worker_sessions.last_turn_completed_ms` 列：那列 harness 行也会被盖，但 G15 的 stale turn 会盖它而不写转录行，两个表面就会不一致；转录子查询与 E1 读同一批行，rail 与会话行永远同一个时刻）。落点：三条投影 SELECT（`session_projection_row.rs:12,28,62`）各加一个相关子查询列 → `WorkerSessionProjection`（`runtime.rs:44`）→ `runtime_view_from_runtime`（`session_projection_lookup.rs:208`）→ `CardRuntimeView`（`model.rs:513`），可选字段（§4.5）；生产路径都经 `card_runtime_from_ws_join_row`（`session_projection_row.rs:122-129`）——它从行里多取这一列交给 `card_runtime_from_session`（`:100`）填入，`WorkerSession` 结构本身不加字段。FE：注入的 planner 行 `lastTurnCompletedAt = plannerCard.runtime?.last_turn_completed_ms ?? null`（`router/public.tsx:2791-2798`）。**新鲜度**：转录行写在 `harness.phase.changed` 之前（F2.7），而该事件失效 `['track', id]`（`invalidation-plan.ts:262-268`）→ 事件触发的重取一定读到这一行；同一复合索引（§4.8）服务这条子查询。OpenAPI/wire 因此必须再生成（§2.4）。
+
+### 4.8 迁移 0110：数据库身份 `databaseId` + `last_turn_completed_ms`
+
+- **一个迁移**（编号最后定；本基线下一号是 0110）：
+  ```sql
+  CREATE TABLE database_identity (
+    singleton    INTEGER PRIMARY KEY CHECK (singleton = 1),
+    id           TEXT    NOT NULL,
+    minted_at_ms INTEGER NOT NULL
+  );
+  ALTER TABLE worker_sessions ADD COLUMN last_turn_completed_ms INTEGER NULL;   -- §4.2.1
+  CREATE INDEX idx_transcript_card_method_created_at ON <转录表>(card_id, method, created_at_ms);  -- E1/E2/§4.7（F2.35）
+  ```
+  启动时 `INSERT OR IGNORE INTO database_identity(singleton, id, minted_at_ms) VALUES (1, <uuid v4>, <now>)`，然后 `SELECT id`，读回作为 `AppState.database_id`。单行由 `CHECK (singleton = 1)` 保证：第二次启动的 `INSERT OR IGNORE` 撞主键被忽略，读回第一次的 id（v2 的 `id TEXT PRIMARY KEY` 做不到这点——每次启动的新 uuid 都能插进去，B-M1）；并发初始化由 sqlite 的写锁串行化，后到者同样被忽略。测试：同一 sqlite 文件两次 boot 读到同一 id；两个并发 boot 读到同一 id；**`database_identity_rejects_second_row`：`INSERT … VALUES (2, …)` 必须以 CHECK 违例失败**——前两条测试走的都是主键 1 的 `INSERT OR IGNORE`，去掉 CHECK 它们照样绿（内存库核实：无 CHECK 时 `singleton=2` 插入成功、两行），只有这条钉住 CHECK（B-MINOR-2，第三轮）。不用 `settings`（用户可通过 `PUT /api/settings` 覆盖/删除，F2.27），不用 `retention_meta`（INTEGER 值、修剪簿记）。
+- **索引**：`idx_transcript_card_method_created_at` 让 E1/E2（§4.3）、§4.7 的两个子查询都成为 `(card_id=?, method=?)` 的索引范围（F2.35 核实的计划形状）。测试 `e1_query_plan_uses_transcript_index`：对 E1 的 SQL 跑 `EXPLAIN QUERY PLAN`，输出必须含 `USING INDEX idx_transcript_card_method_created_at`（去掉索引 → 红）。
+- **回滚**：迁移应用后旧二进制拒绝启动（`check_no_unknown_future_migrations`，F2.34）——回滚 = 恢复迁移前的数据库备份，不是换回旧二进制。部署前备份。
+- `/api/version` 增 `databaseId`（稳定）与 `nowMs`（服务端时钟，响应本就每次生成）；`dbInstanceId` 原样保留，继续承担清缓存/重连的角色。
+- FE：`ServerVersionInfo` 增两字段；`ReadReceiptScopeProvider` 的 id 改为 `verdict==='same' ? databaseId : null`；回执与基线 key 前缀从此是 `read:${databaseId}:…`。升级当天所有设备的旧回执（旧 key 下）作废一次，由基线覆盖（§5.2）。
+
+## 5. 前端设计
+
+### 5.1 `core/domain/activity.ts` 与 `TrackActivity` 扩展
+
+- `activity.ts`：§3 的 `activityStateOf`；另导出 `attentionKindOf(items)` 供侧条复用。
+- `TrackActivity` 增 `working: boolean`、`attention: AttentionKind`、`activityAt: number | null`、`attentionItems: readonly ActivityItem[]`、`cards: Readonly<Record<string, CardActivity>>`（`CardActivity = 'working'|'input'|'failed'`；**不用 `ReadonlyMap`**：模块级 `new Map()` 被 `architecture/no-module-runtime-state` 拒，§2.4）。`NEUTRAL_ACTIVITY = Object.freeze({ …, working: false, attention: 'none', activityAt: null, attentionItems: Object.freeze([]), cards: Object.freeze({}) })`——嵌套容器各自 `Object.freeze`（`no-module-runtime-state.mjs:31,99-100`）。读法一处：`cardActivityOf(activity, cardId): CardActivity | null = activity.cards[cardId] ?? null`，下文的 `activity.cards.get(x)` 都指它。`trackActivityFrom` 加 `overlay.kind === 'activity'` 分支（zod 解析，坏行忽略；`cards[]` 数组在函数里折成 Record，不是模块态）。`anyCardNeedsInput` 字段与 `trackActivityFrom` 的读者本版保留但**不再进任何谓词**（S4 删）。
+- 域谓词（**只读 overlay，无 lifecycle OR、无 `anyCardNeedsInput` OR**）：`isWorking(track) = track.working`；`needsUserAttention(track) = track.attention === 'input'`；`hasFailed(track) = track.attention === 'failed'`；`isWaitingForUser(lifecycle)` 保持（badge 用）；`isRunning(lifecycle)` 只剩两个**阶段**用途：`lifecycleRank` 的排序（`track.ts:685`）与 Today 「In progress」一节的成员（阶段分组，v0 原话「In progress（阶段）」，§5.3；v5 曾改成 `isWorking`，v6 按 A-MAJOR-1 改回）；badge 的 `running` 色调删（§5.3），`activeTracksOn` 本就不用它（`track.ts:768`；v3 说它用是错的）——**不再进任何指示器或可访问名**。
+- `trackActivityState(track, unread) = activityStateOf({ working: isWorking(track), attention: track.attention, unread })`——四个 rail 变体、Today 行、页头、手机列表都调它。
+- `lifecycleRank`：`needsUserAttention ∨ hasFailed` → 0；sidebar `waiting` 桶与折叠计数同一谓词（F1.2）。
+
+### 5.2 回执：换源 + 首次进入 scope 的基线
+
+- 比较对象：track 用 `track.activityAt ?? 0`（`sidebar.tsx:143`、`router/public.tsx:2719`）；conversation 用 `lastTurnCompletedAt ?? 0`（`:1335`、`:1825`）。`null` → 永不 unread。
+- **构造播种**：`createUiPreferences` 构造时从**新** key `DATABASE_ID_KEY` 播种 `database`，**不再**读 `DB_INSTANCE_ID_KEY`（F1.9：那是进程身份，§4.8 换掉的正是它）；本地没有记录时播种 `null`。`ServerCompatGate` 写 `DATABASE_ID_KEY` 的规则与 `:75-81` 写 `DB_INSTANCE_ID_KEY` 相同：缺失时写（`:81`），**值变化时覆盖**（`:78-79` 的分支）——只在缺失时写会让一次数据库重置（新 `database_identity`）之后本地永远播种旧 id，每次加载先用旧 id 的回执再被 layout effect 换掉（一帧旧回执）。
+- 基线 key：`read:${databaseId}:baseline`。写入点：`setReadScope(id, nowMs)` 里，`id !== null` 且该 key 缺失时写 `nowMs`（来自 `/api/version`，服务端时钟；G3 由此消失）。读取：`receipt(key)` 返回 `max(存储回执, baseline)`。效果：每个 `(设备, databaseId)` 写且只写一次；升级后的老设备也写一次（key 前缀换了，它们也没有）——这是决定 (c) 的直接推论，**Q1 关**。
+- 与 `useReadReceipt` 的竞态：`setReadScope` 在 `useLayoutEffect`（F1.10），同一 commit 里 layout effect 先于 passive effect；scope 未定时 `database === null`，`markRead` 只进内存（F1.9）。顺序恒为「基线落盘 → 首个持久 markRead」；`setReadScope(null)` 先跑时不写基线（测试钉住）。
+- **`/api/version` 未返回的窗口**（现状，非本设计引入）：`verdict` 未定 → scope `null` → 回执是一张新的内存 map、无基线 → **每台设备的每次 web 页面加载**在这一窗口里全部 track 显示 unread（不只是首次进入的设备），版本落地后立即被持久回执与基线盖掉；bundled 客户端在 `query.data === undefined` 时不渲染路由（`providers/public.tsx:91`），看不到这一窗口。**机制**（v5，A-MIN4）：`UiPreferencesProvider` 的 layout effect 在 `verdict==='pending'` 时调 `setReadScope(null)`（`ui-preferences.tsx:105-107`、`providers/public.tsx:84-89`），盖掉构造播种的 id；`receipt()` 在 `database === null` 时读的是空的内存 map（`:51`）；本设计下几乎每条 track 都有 `activityAt`，这一窗口就是 issue 截图本身。**改法（一行）**：`isUnread` 在 `database === null` 时返回 `false`——与 `null` 时间戳「永不 unread」同一约定，方向是决定 (c) 的安全方向；`markRead` 在该窗口仍只进内存（不变）。测试 `ui-preferences.test.tsx::null_scope_is_never_unread`（§6）。
+
+### 5.3 表面映射（同一 `data-nc-activity`）
+
+| 表面 | 来源 | 文件 |
+|---|---|---|
+| rail `TrackRow` ×4 变体 | `trackActivityState`；**`aria-label` 的 `bits` 同源**：`working → 'working'`，`attention → 'waiting on you'`，`failed → 'needs attention'`；`default` 变体保留 lifecycle 文字 | `row/public.tsx:94-107` |
+| Today 头 / 分组 | **分组按阶段，指示器按活动**（v6 按 A-MAJOR-1 改回 v0；M13）：`waiting = shownTracks.filter(t => needsUserAttention(t) ∨ hasFailed(t))`（overlay 驱动，只作计数——「Waiting on you」列表是 owner 拍板移除的，`:12-13`，不加回），`inProgress = shownTracks.filter(t => isRunning(t.lifecycle) ∧ ¬needsUserAttention(t) ∧ ¬hasFailed(t))`（**阶段**：§1 的 `planning` + idle planner 仍在这一节里，只是行上没有 spinner；列表不随 planner 每个 turn 进出）；唯一的一节 `PanelRows title="In progress" tracks={inProgress}`（`:245` 改名）；页头「N waiting on you · N in progress」= `waiting.length` / `inProgress.length`（`:254`）——第二个数就是它下面那一节的长度；v0 的「N working」运行时计数**不采用**（M13）；`:397-398` 注释改为「第一个数是等你处理的 track 数（无列表，#1253 D2），第二个数是下面 In progress 一节的行数；在动与否看每行的指示器」；每行 `renderTrackRow` 的指示器仍来自 `trackActivityState` | `today/public.tsx:12-13,229-230,245,254,397-406` |
+| Track 页头（桌面） | 标题旁 `ActivityIndicator`（页面可见时 unread 立即被回执清掉，实际只显示 working/attention/failed）；**`TrackLifecycleBadge` 色调**：`running` 色调改为 `neutral`（阶段词不再「读作活着」），`failed` lifecycle 改 `--error-text`，`blocked/reviewing` 保持 `--warn-text`（F1.18） | `track/page/public.tsx:552`；`lifecycle-badge/public.tsx:20-25`、`.module.css:16-28` |
+| **手机页头** | **无指示器**（声明的手机/桌面差异：统一页头 #1707 里 `:552/:558` 都不渲染，F1.18；手机列表行有） | — |
+| CONVERSATIONS 行 | 规则按**行的来源**说，不按 `CONVERSATION_STATE_SOURCE` 的 kind 说（F1.6）：列表里的行只有两种来源——**服务端列表行**（`/conversations`，`row.id` = 卡 id）与**路由注入的 planner 行**（`router/public.tsx:2791-2798`，`row.id = plannerCard.id`）——两者都读 `activity.cards.get(row.id)` → working/input/failed（harness 卡在 `cards[]` 里，§4.2 (i)），unread = `row.lastTurnCompletedAt > receipt`（服务端行：§4.7 列；planner 行：`CardRuntimeView.last_turn_completed_ms`，§4.7）；`isLiveConversation`、`runtime.status`、`updatedAt` **不再进**这些行（M12）。被打开的那一行由 `describeConversation(facts)` 覆盖：只有**发送者自己的本地 in-flight**（`facts.working`）保留本地 spinner；`facts.stalled → 'failed'`（`:282`，planner run `phase==='wedged'`）**保留并声明**为打开行的本地 `failed`——它是抽屉自己的 wedge 检测，与内核 (i) 的 `state='failed'` 同源不同时。抽屉 `ChatThread` 的 `live`（`chat/thread/public.tsx:68`）改为路由传入的 `live = pending ∨ activity.cards.get(conversation.id) === 'working'`；`isLiveConversation` 自此无消费者，删。**行的可访问名与描述同源**（v6，A-MIN1；F1.5 的 `:46`/`:67` 是第三个载体）：由 `activityStateOf` 的结果映射——`aria-label` 尾段 `working → ', working'`（原 `', live'`），其它态不加尾段；`aria-describedby` 文本 `input → 'Needs input'`，`failed → 'Needs attention'`，`unread → 'Unread updates'`，`working/quiet → null`（不挂 `aria-describedby`）——一条失败的会话行不再被读成「Needs input」 | `chat/list/public.tsx:43-48,46,67` 换 `activityStateOf`；`router/public.tsx:282-284` 把 `facts.working` 单独传下去；`conversation.ts:155-157` 删 |
+| CARDS 行 / 终端卡头 | `activity.cards.get(card.id)`（内核结论；无条目 → 无指示器）；unread **不做**（卡级没有回执，§9 G4） | `core/view/track-page.ts` 加 `activity: ActivityState \| null`；两个 painter 在 `data-nc-status` 旁画；`terminal-card.tsx:62` 换 `ActivityIndicator` |
+| TASKS 行 | `activity.cards.get(task.workerCardId)`（W 子句在内核算好，§4.2）；没有 worker 卡的任务 → 无指示器；unread 不做（`ReportTaskRow` 无 `*_ms` 字段，G4）；token 保留 | 同上 |
+| Track 页 Notifications 侧条 | `activity.items` 全集（含 task/session/lifecycle 来源），按 `at_ms` 倒序。**键与打开动作**（v6，A-MIN2）：overlay 的 `items[].source` 落到新字段 `origin: 'card' \| 'task' \| 'session' \| 'lifecycle'`（`TrackInputNotification.source` 已被人读标签占用，F1.14），`cardId: string \| null`；列表 `key = '${origin}:${id}'`（`:817` 今天按 `cardId`——同一张卡可有两项，§4.1 C1 的 reaper 判死 worker 就是 `task` + `session` 各一项，两项都列出）；Review 按钮的目标 = `cardId ?? track`：有卡按今天的路由逻辑（`router/public.tsx:3411-3419`：会话卡开抽屉，网格卡跳到卡），`cardId === null`（lifecycle 项、无 worker 卡的 task 项）→ 打开 track 页本身/planner 抽屉 | `router/public.tsx:2675-2703` 改读 `detailActivity.attentionItems`；`page/public.tsx:71-77,817,830` |
+| 手机 track 列表 / 卡 / 任务 | 同一 painter，尾槽同一指示器 | `mobile-tracks.tsx:73`；`mobile-painter.tsx` |
+| 对话流 `Working` 点（五处） | 用原语 `ActivityIndicator state="working"`（Q5：先换原语，尺寸由真机签核定）；第五处 `QuietSyncFold` 同片换掉——§5.6 删 `quiet-sync.module.css` 的 `.live` 后它的 `styles.live` 会是 undefined class、点悄悄消失；a11y 契约见 §6 | `chat/thread/public.tsx:592,604,669,979`；`chat/thread/quiet-sync.tsx:100` |
+
+### 5.4 调色与 §7.5 改写文本（决定 (b)）
+
+- `activity-indicator.module.css`：`.attention { background: var(--warn) }`，新增 `.failed { background: var(--error) }`；`ActivityState` 加 `'failed'`；README 改为「working spins grey, unread is accent, attention is warn, failed is error」。
+- **`--warn` 家族 re-hue**（F1.19：今天与 `--error` 只差 5° 色相，决定 (b) 不可见）：light `--warn/--warn-soft/--warn-border/--warn-text`（`tokens.css:227,228,405,462`）与 dark（`:524,525,542,544`）全部改到 OKLCH 色相 75–85 的真琥珀，明度/色度以 `node tools/styles/check-contrast.mjs`（`npm run lint:css`）的 6 组 warn 配对全绿为准；`fe/web/src/styles` 是 readonly → `OWNERSHIP-CHANGE` trailer。**这会改变每个 `--warn` 消费者的外观**（lifecycle badge、shell、settings、login、report source/series、context ring：`grep -rl 'var(--warn' fe/web/src`）→ 预览签核项（§6）。
+- 浏览器测试：读 `.attention` 与 `.failed` 的 computed `background-color`，断言两者 OKLCH 色相差 > 30°（把「`.failed` 换回 `--warn`」的变异钉红）。
+- §7.5 在本树没有正文可改（M2），改写落在四处注释与 `fe-design.md`：
+
+> rail 的颜色只属于指示器词表（`ui/activity-indicator`：warn = 等你，error = 坏了，accent = 未读，灰 = 在动）与当前位置（`--accent-soft`）；标题永不带状态色；area 身份不进 rail。
+
+`sidebar.tsx:197-198`、`shell.module.css:587`、`row.module.css:341-342`、`tokens.css:209` 四段注释**整段替换**为上句；`docs/fe-design.md` §「Shell 与页面」加同一句。
+
+### 5.5 `ui/activity-indicator` 与 oracle
+
+`data-nc-activity` 值域扩到五个；`fe/tools/oracle`、`ui-primitives.yaml` 若登记了 `ActivityState` 值域需同步（S2 跑 oracle 测试即知）。S2 新登记 `INV-APP-118`（`docs/oracle/app-dataflow.yaml`，`owner_slice: core/domain/overlay`，statement：「指示器状态只从 `kernel/track/activity` overlay 推导，不从 lifecycle / `anyCardNeedsInput` / 会话状态 / 任务 token 推导；声明例外：打开抽屉那一行的本地 in-flight spinner 与 `phase==='wedged'` 的本地 `failed`（§5.3）」；`authoritative_test` = `core/domain/activity.test.ts` 与 `row/public.test.tsx` 的改写测试）——§6 的 S2 变异 `defends: ['oracle:INV-APP-118']`。
+
+### 5.6 删除清单
+
+`dot-pulse` + `.live-dot`（`track-grid.css:221-233`，readonly → trailer）、`chat-pulse`（孤儿）、`thread-pulse` + `.live`（`thread.module.css:536-543,971,1005`）、`quiet-sync-pulse` + `.live`（`quiet-sync.module.css:73-93`）、`isLiveConversation`（`conversation.ts:155-157`，§5.3 后无消费者）——S2；`any_card_needs_input` 的内核写者 + 注册项 + FE 字段/fixture（F1.21）——**S4**。
+
+## 6. 切片
+
+| 切片 | 内容 | 文件 |
+|---|---|---|
+| S1 内核 | `track_activity.rs`（W/S0/按后端规则 + E1–E7 + 全量 tick + 播种 + 高水位 + `cards`）；`state.rs` spawn（`:1512` 后）；`validation.rs` 注册；**feeder 三改**（§4.2.1：`stamp_status_for`、`last_turn_completed_ms`、失败重放）+ `session_record_activity_by_thread_tx` 加参；`card_fsm.rs` 三修；`Notification` 白名单；迁移 0110（`database_identity` 单行表 + 新列 + 转录表复合索引）+ `/api/version` 两字段；`track_conversations.rs` + `model.rs` 加列；`CardRuntimeView.last_turn_completed_ms`（三条投影 SELECT + `WorkerSessionProjection` + `runtime_view_from_runtime` + golden 字面量一行，§4.7/§2.4）；WEB 29 + API 9；`npm run gen:api` | `crates/calm-server/src/{track_activity.rs,card_fsm.rs,liveness_feeder.rs,state.rs,routes/version.rs,routes/track_conversations.rs}`、`crates/calm-truth/{migrations,src/validation.rs,src/db/sqlite/session_row.rs,src/session_projection_row.rs,src/session_projection_lookup.rs}`、`crates/calm-types/src/{model.rs,runtime.rs,compatibility.rs}`、`crates/calm-server/tests/cases/event_serde_goldens.rs`、`fe/web/src/app/providers/public.tsx:34`、`fe/core/api/generated/*` |
+| S2 FE core + 桌面 | `activity.ts`、`track.ts` 谓词、`conversation.ts`（`lastTurnCompletedAt`；删 `isLiveConversation`）、`ui-preferences.tsx` 换源（`DATABASE_ID_KEY` 播种）+ 基线（`nowMs`）、`ServerCompatGate` 用 `databaseId`（缺失写、变化覆盖）、rail（含 aria）/Today（分组保持阶段、一节改名、计数 = 节长，M13）/页头 + badge 色调/`ChatList`（含可访问名/描述映射）+ 注入 planner 行 + `ChatThread` `live`/侧条（`origin` 键 + `cardId ?? track`）/`track-page.ts` + 两 painter/终端卡头/侧条/`--warn` re-hue/注释改写/`fe-design.md`；删 `.live` 三处脉冲与 `chat-pulse`；对话流 `Working` 点五处换原语（含 `quiet-sync.tsx:100`）+ 终端卡头，按下段 a11y 契约改断言；`docs/oracle/app-dataflow.yaml` 加 `INV-APP-118`；`manifest.json` 登记变异 | §5 所列 |
+| S3 FE 手机 | `mobile-tracks.tsx` 尾槽；`mobile-painter.tsx` 指示器；`mobile-projection.test.tsx` 同源扫描（页头除外，已声明） | `fe/web/src/app/shell/mobile-tracks.tsx`、`fe/web/src/features/track/page/mobile-painter.tsx` |
+| S4 后续（单开 issue） | 删 `any_card_needs_input`（内核写者 + 注册 + FE 字段 + `dot-pulse`）；服务端回执；planner 阶段推进 nudge 或允许 User `planning → done` | — |
+
+**S2 的 a11y 契约**（v5，A-MIN3）：`ActivityIndicator` 保持 `aria-hidden`（`ui/activity-indicator/public.tsx:8`：「可访问名由拥有它的控件提供」），不给它包一层带 `aria-label="Working"` 的 span。现有 **14 条** `Working` 可访问名断言（`chat/thread/public.test.tsx:95,184,216,423,426,633,644,655,660`、`quiet-sync.test.tsx:211`、`router/track-conversation.test.tsx:1018,1061,1065,1068`；[实测] `grep -rn "LabelText('Working')\|aria-label=\"Working\"\]" fe/web/src --include='*.test.tsx'`，A 数的「七条」少了后两组）改查 `[data-nc-activity="working"]`；「在动」的可访问事实放在行/summary 的可访问名里（rail 的 `bits` 已如此，§5.3）。§5.3 已定的 `terminal-card.tsx:62` 换原语连带 `role="img" aria-label="status Working"` 的 **11 条**断言（`terminal-lifecycle.test.tsx`、`terminal-layout.browser.test.tsx`、`terminal-reconnect.browser.test.tsx`；[实测] `grep -rn "'status Working'" fe/web/src --include='*.test.tsx'`）：同一契约同一改法，事实由 `CardHead` 的 `status` 槽以文字承载（它已这样承载 `Disconnected`，`terminal-card.tsx:63-64`）。
+
+部署：API 9 + WEB 29 让 neige-app 预检判 breaking（F2.23）→ server+web 同 bundle、显式确认；迁移前备份数据库（§4.8 回滚）。runbook：「升级后 4140 上还在 `status=Working`/`AwaitingInput` 的 claude PTY 卡（§1 的 6 条）：会话仍活着的会继续按 FSM 行显示，直到会话结束。**怎么结束决定颜色**（F2.31）：在那个终端里让程序自己退出（`exit`/Ctrl-D，或等它结束）→ 非 signalled → 会话行 `exited`（无事件）→ 投影器在 ≤30 s 的下一次 tick 忽略那条 FSM 行 → 安静；**用内核的终端拆除或任何信号杀它** → signalled → 会话行 `failed`（`attach_reader.rs:127-131`）→ 交互卡按设计是红（`state='failed'` 是 `failed` 证据，不套活会话门，§4.2），只有重启（`cards.session_id` 跟到新会话把旧 `failed` 行移出 S0，旧行不被改写，F2.26）或删除那张卡才清；任务绑定且任务已 `done` 的 worker 卡是安静（G19 关：那条会话铸于任务完成之前）——但 `done` 之后重启它而替换 spawn 失败，新会话的 `failed` 是红（§4.2 例外的时序下界）。FSM 行本身不改写」（Q2 = (c)：不做 SQL、不做事件化修复；爆炸半径 = 这几条 dev track 在结束前继续显示；§7 D 两个用例）。预览签核项：`--warn` 全站外观、`TrackLifecycleBadge` 三色调、对话流 6 px 灰环尺寸（Q5）。
+
+每片门禁（从工作树根跑；本机 nextest 必须带 `--test-threads`）：
+
+- S1：`cargo fmt --all --check`；`cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings`；`env -u NEIGE_CODEX_BIN cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci --test-threads 8`；`scripts/gate-prose-ratchet.sh`；`scripts/gate-1316-terminology-ratchet.sh`；`scripts/gate-sync-event-version-lockstep.sh`；`scripts/gate-web-compat-version-lockstep.sh`（两处都是 29）；`(cd fe && npm run gen:api && git diff --exit-code -- core/api/generated/)`。
+- S2/S3：`cd fe && npm run lint && npm run build && npm test && npm run test:browser && npm run e2e`（`ci.yml:929-935,968,1285`；`npm run lint` 已含 `lint:css`，`fe/package.json:20`，不必再单独跑）；`npm exec -- vitest run tools/oracle/oracle.test.ts --project platform-independent`；变异清单校验 + 跑新条目：先 `npm run test:mutation:fixtures`（CI 在 plan 之前跑它，`ci.yml:1030`；= `fixture-e2e.mjs` + `plan-purity.mjs`，`fe/package.json:18`；v6 补，A-MIN4），再 `npm run test:mutation:plan` 与 `npm run test:mutation:run`（CI 同命令：`ci.yml:1039,1151`；`expected_red` 的标题必须存在且真的红；**在脱离的私有工作树里跑**——runner 就地改工作树）；`scripts/gate-1316-terminology-ratchet.sh`。
+
+必红变异（stub 后必须有**指名**的测试红；绿=零覆盖）：
+
+| 切片 | 变异 | 必红测试 |
+|---|---|---|
+| S1 | 把 `SubagentStop` 行的 `state` 从 `None` 改回 `Some(Working)`；或把 `Notification` 的白名单去掉 | 新 `card_fsm::tests::stop_then_idle_prompt_then_subagent_stop_ends_idle`：序列 `user_prompt_submit → stop → notification{notification_type:'idle_prompt'} → subagent_stop`，>750 ms 后 `status = Idle`，过程中从未回到 `Working`、从未到 `AwaitingInput`；正向孪生 `notification_permission_prompt_is_awaiting_input`；改后的 `every_registered_hook_projects_to_its_table_state` |
+| S1 | 把 codex/claude 任一 `Stop` 行改回 `AwaitingInput` | 改写的 `codex_kind_mapping`（`card_fsm.rs:705-732`）与新 `claude_stop_is_idle_not_attention` |
+| S1 | 修 3 去掉 actor 校验；或把卡级退化 actor 也丢掉 | 新 `card_fsm::tests::hook_from_other_active_session_is_ignored`（卡 `session_id=s2`，actor `AiClaudeSession(s1)` 的 `pre_tool_use` 不产生 overlay）；孪生 `card_level_hook_still_projects`（actor `AiClaude(card)` 的 `permission_request` → `AwaitingInput`） |
+| S1 | `stamp_status_for` 把 `turn/completed` 改回 `active`；或 `failed` 分支改成 `idle`；或解析失败改回 `"active"` | 新 `liveness_feeder::tests::turn_completed_stamps_idle`（`[status idle, turn/completed{completed}] → idle`）、`failed_turn_keeps_system_error`（`[status systemError, turn/completed{failed}] → systemError`）、`turn_started_stamps_active`、`unknown_status_shape_stamps_unknown` |
+| S1 | `last_turn_completed_ms` 对 `interrupted` 也写；或不取 MAX | 新 `…::last_turn_completed_only_on_completed_and_monotone`（`completed@t2` 后 `completed@t1` 不降；`interrupted@t3` 不写） |
+| S1 | W 子句去掉；或 (ii) worker 的 `working` 改回读 `last_thread_status` | 新 `tests/cases/track_activity_projection.rs::dispatched_task_is_working_without_session_signal`：两步，按生产写法（F2.22）——`status='dispatched'`、`worker_card_id NULL`、会话 `starting`/`last_thread_status NULL` → `working=true` 且 `cards` 无该卡；`task_mark_running_tx`（`task.rs:256`）盖章 `running` + `worker_card_id` → `cards[worker]='working'`；`completed_worker_with_stale_active_status_is_not_working`（任务 `done`，会话 `running`+`active`（F2.29 的形状）→ `working=false`） |
+| S1 | W 对 `child_track_id IS NOT NULL ∧ running` 的行也给 `working`；或把排除写宽到 `verifying` | 新 `…::sub_track_parent_running_with_idle_child_is_not_working`（父 track 一条 `child_track_id` 非空的任务，用生产写者 `task_mark_sub_track_running_tx` 盖成 `running`+`worker_card_id NULL`（F2.38），子 track 的 planner 会话 `idle`、子无在飞任务 → 父 `working=false`、`cards` 空）；孪生 `sub_track_child_failed_marks_parent_failed`（子 lifecycle `failed` → 经 `reconcile_child_track_task` 父任务 `failed` → 父 `attention='failed'`，1 项 `source:task`、`card_id null`）；**`parent_gate_verifying_is_working`**（v6，B-MAJOR-2：同一父行带 `gate_json`，子 `done` 且静止，经生产写者 `reconcile_child_track_task` → `guarded_child_success_flip_tx` 盖成 `verifying`、`worker_card_id NULL`、`child_track_id` 仍非空（F2.39） → 父 `working=true`、`cards` 空；把排除写宽到 `verifying` 这条就红） |
+| S1 | 交互 (ii) 卡去掉 `last_thread_status` 条件 | 新 `…::interactive_codex_card_active_is_working`（卡无任何 `tasks` 行，`running`+`active` → `working=true`）；`…::waiting_on_approval_is_input`（fixture 直接 `UPDATE last_thread_status`，本栈无生产来源，F2.37）；`…::null_thread_status_is_quiet`；`…::unknown_thread_status_is_quiet`（`"unknown"` → 非 working） |
+| S1 | E5/E6 去掉「从未绑任务」谓词 | 新 `…::worker_turn_end_after_task_done_does_not_relight`（任务 `done@t1`、`worker_card_id` 已盖章，其 worker 会话随后 `last_turn_completed_ms = t2 > t1`，另有一条 `hook.claude.stop@t3 > t1` 挂在 worker 卡上 → `activity_at_ms == t1`）；孪生 `interactive_card_turn_end_lights_unread`（从未绑任务的卡，同样的列 → `activity_at_ms == t2`） |
+| S1 | 去掉 `idx_transcript_card_method_created_at`；或 E1 改回 `WHERE track_id=?1` | 新 `…::e1_query_plan_uses_transcript_index`（`EXPLAIN QUERY PLAN` 输出含 `USING INDEX idx_transcript_card_method_created_at`；两种变异都让它变成 `SCAN`/别的索引） |
+| S1 | harness `working` 去掉注册表条件 | 新 `…::turn_pending_row_without_live_harness_is_not_working`（行 `turn_pending`、注册表空 → `working=false`）；`planning_track_with_idle_planner_is_not_working`（`state='idle'` → false）；`starting_harness_is_not_working` |
+| S1 | 活会话门去掉（`attention` 不看 `ws.state`） | 新 `…::awaiting_input_overlay_with_exited_session_is_quiet`：先有 `AwaitingInput` overlay，直接 `UPDATE worker_sessions SET state='exited'`（不发事件），`reconcile()` 后 `attention='none'`、`cards` 无该卡；孪生 `awaiting_input_overlay_with_running_session_is_input` |
+| S1 | 活会话门段的例外去掉（done 任务的 worker 卡 `state='failed'` 仍算红）；或例外写宽到 FSM/`last_thread_status`；**或去掉 `created_at_ms <= finished_at_ms` 下界** | 新 `…::done_task_worker_signal_killed_is_quiet`（任务 `done@t1`、`worker_card_id` 已盖章，其会话 `created_at_ms = t0 < t1`，按 F2.31 写成 `state='failed'` → `attention='none'`、`cards` 无该卡）；孪生 `done_task_worker_permission_prompt_is_input`（任务 `done`，会话 `running`，overlay `AwaitingInput` → `attention='input'`、`cards[card]='input'`）；**`done_task_replacement_session_failure_is_failed`**（v6，B-MAJOR-1：任务 `done@t1`，之后以生产 restart 路径铸 S2（`created_at_ms = t2 > t1`，`cards.session_id = S2`，F2.40），补偿把 S2 写成 `failed` → `attention='failed'`、`cards[card]='failed'`、1 项 `source:session`；去掉下界这条就红） |
+| S1 | S0 去掉「当前 attempt / 从未绑任务」条件 | 新 `…::superseded_failed_attempt_session_is_not_actionable`：attempt A 的 worker 会话保留为 `state='failed'`（真实 reaper 写法，F2.22），recovery 出 B、B `done` → `attention='none'`，`activity_at` = B 的 `finished_at_ms`；孪生 `interactive_card_failed_session_is_failed`（从未绑任务的卡，会话 `failed` → `failed`） |
+| S1 | S0 的 isolated 判据改回按 `ws.spawn_op_id → operations.kind` | 新 `…::reminted_isolated_session_is_not_shared_daemon`（isolated 卡：`operations` 有 `kind='codex-isolated-worker' ∧ target_type='card' ∧ target_id=卡` 行，会话 `spawn_op_id NULL`，fixture `UPDATE last_thread_status='waitingOnApproval'`（仅 fixture 可到，同 B′）→ `attention='none'`：(iii) 没有 attention 规则；按 `spawn_op_id` 判会把它落进 (ii) 而给出 `input`） |
+| S1 | E4 去掉 actor 过滤 | 新 `…::user_lifecycle_edge_does_not_advance_activity`（`draft→planning` by `User` → `activity_at_ms` 不变）；正向孪生 `kernel_lifecycle_edge_advances_activity`：`working → reviewing` by `KernelDispatcher`，经生产写者 `auto_transition_if_current_in_tx`（`reaper/mod.rs:607-615` 的调用形状；`KernelDispatcher` 归 PlannerAgent 类，`track_lifecycle.rs:104-112`）→ 推进（v5，A-MIN6） |
+| S1 | tick 枚举加回活跃谓词；或对账 tick 去掉 | 新 `…::quiet_track_short_task_completed_between_ticks_is_unread`（无 overlay 的 track，任务 `dispatched→done` 期间不投递任何事件，一次 `reconcile()` 后 `activity_at_ms` = `finished_at_ms`）；`…::reconcile_clears_stale_working_after_session_exit` |
+| S1 | `activity_at_ms` 改成整算（不取 max） | 新 `…::activity_at_is_monotone`（播种大值，再触发一次无完成类证据的整算，值不变） |
+| S1 | `database_identity` 改成每次启动新铸（`INSERT OR REPLACE`） | 新 `…::database_id_survives_reboot`（同一 sqlite 文件两次 `AppState::boot` → 相同 `databaseId`，不同 `dbInstanceId`）；`…::database_id_concurrent_boot_reads_one_id` |
+| S1 | `database_identity` 去掉 `CHECK (singleton = 1)` | 新 `…::database_identity_rejects_second_row`（`INSERT INTO database_identity VALUES (2, …)` 必须以 CHECK 违例失败）——上一行的两条测试对这个变异**照样绿**（都走主键 1 的 `INSERT OR IGNORE`，§4.8） |
+| S2 | `trackActivityState` 里把 `isWorking` 换回 `isRunning(lifecycle)` | 改写的 `row/public.test.tsx`「navigation activity markers」：fixture `lifecycle:'planning', working:false` 必须 `quiet`；`lifecycle:'done', working:true` 必须 `working`。manifest 条目 1：`defends: ['oracle:INV-APP-118']`，`target: 'core/domain/track.ts'`，`expected_red` 写这两条的完整 vitest 标题，`selection_paths: ['web/src/features/track/row/public.test.tsx']` |
+| S2 | rail 的 `bits` 换回 `isRunning` | 同一测试文件：`lifecycle:'planning', working:false` 的 `aria-label` 不含 `running`；`lifecycle:'done', working:true` 的 label 含 `working`。manifest 条目 2（**另一条**：`runner.ts:504` 要求 patch 目标 == `target`）：`target: 'web/src/features/track/row/public.tsx'`，其余同上 |
+| S2 | `needsUserAttention` 加回 lifecycle OR | 新 `track.test.ts`：`lifecycle:'reviewing', attention:'none'` → 不 attention（内核未算出时保持安静） |
+| S2 | `activityStateOf` 把 `failed` 排到 `attention` 之后 | 新 `core/domain/activity.test.ts` 全序表（12 组合穷举）；manifest 同上 |
+| S2 | 基线不写；或构造时仍读 `DB_INSTANCE_ID_KEY` | 新 `ui-preferences.test.tsx::first_scope_entry_marks_everything_read`（fresh storage → `setReadScope('db1', now)` → `isUnread('track','t', now-1)` 为 false，`now+1` 为 true；`setReadScope(null)` 先跑时不写 key）；`construction_seeds_from_database_id_key`（storage 只有 `DB_INSTANCE_ID_KEY` → `database === null`） |
+| S2 | `isUnread` 去掉 `database === null ⇒ false` | 新 `ui-preferences.test.tsx::null_scope_is_never_unread`（构造播种 `'db1'` 后 `setReadScope(null)` → `isUnread('track','t', now)` 为 false；再 `setReadScope('db1', now)` 后 `now+1` 为 true） |
+| S2 | `.failed` 换回 `--warn`；或 badge `running` 色调加回 | 新浏览器测试 `activity-indicator.browser.test.tsx`：两色 computed 值色相差 > 30°；`lifecycle-badge.test.tsx`：`planning` 的 class 是 `neutral`，`failed` 的 color 等于 `--error-text` |
+| S2 | 侧条仍读 `kernel/card/status`；CARDS/TASKS 行自行推导 | `track/page/public.test.tsx` 新增「notifications sidebar lists activity items from every source」（`activity.items` 含 `source:'task'` 的项出现在侧条）、「card and task rows paint activity.cards, not runtime status」（`activity.cards` 有 `working` 的卡行 `data-nc-activity=working`；无条目的 `running` 卡行无属性；任务行 `execution.status='running'` 但 `cards` 无其 worker 卡 → 无属性） |
+| S2 | CONVERSATIONS 行（服务端行或注入的 planner 行）自行推导 | `router/track-conversation.test.tsx` 新增「conversation rows read activity.cards, not session state」（服务端行 `state='turn_pending'` 且 `cards` 无条目 → 无 `working`）、「the injected planner row reads activity.cards and last_turn_completed_ms」（`plannerCard.runtime.status='turn_pending'`、`cards` 无条目 → 无 `working`；`cards[planner]='working'` → `working`；`last_turn_completed_ms > receipt` → `unread`，`updated_at_ms` 再大也不 unread）；**可访问名/描述同源**（v6，A-MIN1）：同一测试对 `cards[row]='failed'` 的 fixture 断言行的 `aria-label` 不含 `', live'`/`', working'` 且 `aria-describedby` 指向的文本是 `Needs attention`（不是 `Needs input`）；`cards[row]='working'` → label 以 `', working'` 结尾、无 `aria-describedby`；`chat/thread/public.test.tsx` 新增「thread live mark follows activity.cards」 |
+| S2 | Today 分组换成 `isWorking`；或页头第二个数改成运行时计数 | 改写的 `today/public.test.tsx`「counts running and waiting tracks with the shared predicates」（`:46-57`）：fixture `lifecycle:'planning', working:false` 出现在「In progress」一节且页头第二个数 = 该节行数；`lifecycle:'done', working:true` 不在节里、不计数；`attention:'failed'` 计入第一个数、不在节里 |
+| S3 | 手机 painter 不画指示器 | `mobile-projection.test.tsx` 新增「mobile and desktop paint the same data-nc-activity set」：同一 view 的 desktop/mobile `data-nc-activity` 集合相等（页头除外） |
+
+## 7. 真栈验收 oracle（`data-nc-activity` 逐步可观测值；每步括号里是 §4 的哪条规则）
+
+**A. 股票持仓表（planning + idle planner）**
+
+| 步 | 动作 | rail 行 | 页头 | CONVERSATIONS 行 | Today（v6，A-MAJOR-1） |
+|---|---|---|---|---|---|
+| A0 | 升级后打开新浏览器 | 无属性（基线已读；(i) `state='idle'` → `working=false`）；aria-label 不含 running | 无 | 无（`cards` 无条目） | 在「In progress」一节里（阶段 `planning`），行无属性；页头第二个数计入它 |
+| A1 | 给 planner 发一句 | `working`（(i)：`turn_pending` ∧ 注册表命中；`harness.phase.changed` 唤醒） | `working` | `working`（发送者本地 in-flight；之后注入的 planner 行读 `cards[planner]='working'` 接手，§5.3） | 同一行、同一节，`working`；计数不变（M13） |
+| A2 | `turn/completed` 落盘 | **停在这一页时**：无（至多一闪——rail 与页头共用同一条 track 回执，F1.11；`overlay.set` 失效 `['track', id]`，重取后 `useReadReceipt` 立即把新 `activityAt` 记为已读）；**在别的 track 上时**：`unread`（E1 推进 > 基线；`harness.phase.changed` 唤醒） | 无（页面可见 → 回执立即清） | `unread`（抽屉未开；`lastTurnCompletedAt` 来自 `CardRuntimeView.last_turn_completed_ms`，随 `harness.phase.changed` 失效的 `['track', id]` 重取到达，§4.7） | 仍在同一节；`unread`（Today 不是 track 页，回执不清；E1 推进） |
+| A3 | 切到别的 track 再回来 / 新标签页 / **重启 calm-server 后刷新** | 无 | 无 | 无（`databaseId` 稳定，回执还在） | 无（去过 track 页后回执已写） |
+
+**B. worker 卡 permission request（claude PTY，任务绑定）**
+
+| 步 | 动作 | rail 行 | CARDS 行 | 侧条 |
+|---|---|---|---|---|
+| B1 | worker `PermissionRequest` hook | `attention`（琥珀；(iv) `AwaitingInput` ∧ 会话 `running` ∧ 卡是当前 attempt 的 worker；`overlay.set` 唤醒） | `input`（每卡折叠 `failed > input > working`：W 同时给的 `working` 被压住，§4.1） | 1 项 `source:card` |
+| B2 | 打开 track 页、再离开 | 仍 `attention` | 仍 | 仍 1 项 |
+| B3 | 批准 → `PreToolUse` | `working`（W：任务 `running`——在 B1 时就已成立，被 `attention` 压住；FSM 750 ms 降级只影响 `cards[]`） | `working` | 空 |
+| B4 | worker `Stop`，+60 s `Notification{idle_prompt}` | 任务仍 `running` → 仍 `working`；任务 `done` 后 `unread`（**只由 E3**：这张卡绑了任务，E5 的谓词排除它，一个结果亮一次），60 s 后**仍** `unread`，不回 `attention`（修 2 白名单） | 无 | 空 |
+
+**B′. 共享 daemon 线程 `waitingOnApproval`——仅 fixture，不是真栈步**：本栈每个共享 daemon 线程都以 `approval_policy: "never"` 启动，`waitingOnApproval` 没有生产来源，`waitingOnUserInput` 也没找到有引用的发射者（F2.37）。规则保留在 (ii) 里，由 `track_activity_projection.rs` 的 fixture 覆盖（直接 `UPDATE worker_sessions SET last_thread_status='waitingOnApproval'`，§6 `waiting_on_approval_is_input`）：worker 卡、任务 `running` → rail `attention`、CARDS `input`、侧条 1 项 `source:session`（`card_id` 总是有，§4.1）；改回 `active` → `working`（W：任务仍 `running`）；`task.completed` → `unread`（E3）。真栈上能观察的只有它的**时序形状**：feeder 写行**不发事件**，任何 (ii) 的状态变化都是下一次 tick（≤30 s + 扫描）才可见（G5）。**交互 `codex-create` 卡**（从未绑任务）的真栈序列——**S1 必做的真栈验收行，不是 fixture 可替代的**（v6，A-MIN3；它是 §4.2.1 顺序假设唯一的真栈检验）：发一句 → 下一次 tick `working`（(ii) 的 `active`）→ `turn/completed{completed}` 由 feeder 写 `last_turn_completed_ms`，`last_thread_status` 落到 `idle` 并**停在 `idle`**（查行：完成后 ≥ 2 个 tick 不回 `active`）→ 下一次 tick `unread`（E6）、spinner 消失。通过标准写进 S1 的门禁报告；不通过 → §4.2.1 第 1 条改（那里写了后备），本文不预设。
+
+**C. 任务失败**
+
+| 步 | 动作 | rail 行 | TASKS 行 | 侧条 |
+|---|---|---|---|---|
+| C1 | `task.failed` | `failed`（红；W：`current_tasks.status='failed'`） | `failed`（`cards[worker]='failed'`） | 1 项 `source:task`——这是 worker 自己 `calm.task.fail`、会话仍活的形状；由 reaper 判死的 worker（`converge_dead_worker` 判任务 `failed` 后 `session_commit_exit(Failed)`，`reaper/mod.rs:544-638,361-369`）另多 1 项 `source:session`（S0 有资格、`state='failed'`，任务不是 `done` 所以不在 † 例外里），TASKS 行仍一个 `failed`（每卡折叠） |
+| C2 | 打开/离开 | 仍 `failed` | 仍 | 仍 1 项 |
+| C3 | 重试（真实 recovery 路径，新 attempt） → `dispatched` | `working`（W：新 attempt `dispatched`；唤醒是 claim 事务里的 `task.dispatched`，§4.3；旧 attempt 出了 `current_tasks`，其 `failed` 会话被 S0 排除） | **无指示器**（`dispatched` 行 `worker_card_id IS NULL`，F2.22 → W 不产生 `cards[]` 条目；派发窗口，§4.2） | 空 |
+| C3′ | spawn op 完成 → `running`（`worker_card_id` 盖章） | 仍 `working`（spawn op 内的 `worker_session.started` 唤醒在盖章之前，那次整算读到的仍是 `dispatched`） | `working`（`cards[新 worker]='working'`）——**下一次 tick**（≤30 s）才出现：盖章不发事件（`scheduler/mod.rs:1878-1881`，§4.3） | 空 |
+| C4 | `task.completed` | `unread`（E3） | `done`（token；G4） | 空 |
+
+**D. 保存升级 3 天后的烂尾 `Working`/`AwaitingInput` 卡**：Q2 = (c)。会话仍 `running` 的卡：任务绑定的按 W（任务早已 `done` → 不 `working`；`AwaitingInput` 行因活会话门仍显示 `input`，直到会话结束）。会话怎么结束决定结果（F2.31）：
+
+| 步 | 动作 | rail 行 | 侧条 |
+|---|---|---|---|
+| D-exit | 在那个终端里让程序自己退出（`exit`/Ctrl-D/自然结束）→ 非 signalled → 会话行 `exited`（无事件） | 下一次 tick（≤30 s）忽略那条 FSM 行 → 无 | 空 |
+| D-signal | 用内核的终端拆除（SIGTERM→SIGKILL）或任何信号杀它 → signalled → 会话行 `failed`（`attach_reader.rs:127-131`） | 下一次 tick → **交互卡（从未绑任务）**：`failed`（红，按设计：`state='failed'` 是 `failed` 证据，不套活会话门，§4.2），打开 track 不清；**任务绑定且任务已 `done` 的 worker 卡**：**无**（G19 关：这条会话铸于任务完成之前，退出裁决属于已完成的执行，† 例外；它的 `AwaitingInput` 行也因会话不再活而被忽略） | 交互卡 1 项 `source:session`；done 任务的 worker 卡 空 |
+| D-restart-fail | `done` 之后重启那张 worker 卡，替换 spawn 失败 → 补偿把新会话 S2 写成 `failed`（F2.40：S2 `created_at_ms` > 任务 `finished_at_ms`，`cards.session_id = S2`） | 下一次 tick → **`failed`**（红：S2 不在 † 例外里——它铸于任务完成之后，是新工作的失败，v6 B-MAJOR-1）；再重启成功或删卡才清 | 1 项 `source:session` |
+| D-signal′ | 重启那张卡或删除它 | 下一次 tick → 无。**清掉它的是指针不是改写**（v5 订正，B-MIN1）：restart 只把仍活态的旧会话写成 `Exited`（`claude_restart_adapter.rs:157-168`；活态查找排除 `failed`，`session_projection.rs:198`），D-signal 留下的 `failed` 行原样不动；新会话 mint 时 `cards.session_id` 跟到 s2（`session_mirror.rs:282-289`），旧行因 `c.session_id = ws.id` 不再成立而出了 S0 | 空 |
+
+runbook（§6）因此写明两条路：不承诺「关掉终端就安静」。
+
+## 8. 开放问题
+
+全部关闭：Q1 → §5.2（每个 `(设备, databaseId)` 写一次基线，老设备也写）；Q2 → (c)，机制是投影器的活会话门而非 FSM 改写，§6 runbook；Q3 → §4.6 修 2 白名单（值域只有文档引用）；Q4 → `starting` 不算，§4.2 (i)；Q5 → 先换原语，尺寸真机签核。G19（第三轮遗留）→ 窄规则：只对 done 任务的 worker 卡、且只对铸于任务完成之前的会话（`ws.created_at_ms <= finished_at_ms`）压掉 `ws.state='failed'`，两通道以同一构造否决宽规则（§4.2、§11 第四轮），第五轮 B 以「done 之后重启失败」的构造加上时序下界（§11 第五轮）。
+
+## 9. 已知缺口（登记，不加固）
+
+- **G1 跨设备回执**：回执与基线都在 `localStorage`，第二台设备各有一套；服务端回执是 S4。
+- **G2 planner 永远停在 `planning`**：边表只让 planner 推进（`track_lifecycle.rs:32-47`）；本设计只让指示器不再撒谎；阶段词照旧显示 Planning（S4）。
+- **G4 卡级/任务级 unread**：只有 track/conversation 有回执且任务行不带完成时间。
+- **G5 事件漏收与 tick 上界**：bus 是 `broadcast`（容量 1024），lag 只 warn；对账是唯一补偿，上界 = 30 s + 一次扫描时长（§4.3）。**后端 (ii) 的全部状态变化（feeder 写行）与除 isolated 外的所有会话退出都不发事件**（F2.25/F2.31/F2.32），所以 B′ 的 `attention`、批准后回 `working`、退出后清 `input` 一律 tick 级延迟。
+- **G6 播种精度**：被 `harness.transcript.cleared` 删过转录的会话丢失 E1 行，播种偏早 → 偏向「已读」，方向安全。
+- **G7 750 ms 降级**：hook 驱动的 `cards[]` 结论在 `AwaitingInput → Working` 时晚 750 ms。
+- **G8 已关**：SPIKE-1（F2.29）测得 `active` 是静止值；§4.2.1 改 feeder 后 E6 不再依赖「codex 是否发 idle」。
+- **G9 feeder 依赖**：后端 (ii) 交互卡的 `working`、全部 (ii) 的 `attention/failed` 与 E6 都来自 `liveness_feeder`；`NEIGE_REAPER_DISABLED` 下它不起，**已写入的值原样留在行里**（F2.25）——不是全灰，是停在最后一次盖章的值，直到会话退出（活会话门）。
+- **G10 定时器/会话代际未绑定**：`Stop` 后迟到的 `PostToolUse` 把卡抬回 `Working`（§4.6 修 3 的爆炸半径）；漏掉的 `Stop` 让交互 claude 卡 `Working` 到下一个 hook 或退出；重启后 map 为空、磁盘上 `status=Working` 的卡：首个新 hook 以首次观测重新提交，并且即使值不变也发一次 `overlay.set`——一次多余的整算，`activity_at_ms` 不受影响。**跨代际**：一个挂起的 750 ms 降级定时器可以跨过会话替换（restart/supersede）落到新会话的卡上；由下一个 hook 或活会话门修正，不围栏。
+- **G11 手机页头无指示器**（§5.3，声明的差异）。
+- **G12 读快照**：§4.4 的多条自动提交 SELECT 之间没有共享快照；两条之间落地的写由下一次 tick 修正。
+- **G13 共享 daemon 通知丢失即陈旧**：feeder 是 `broadcast` 消费者，lag 与写失败都只 warn（F2.25；§4.2.1 只补一次重放）。丢掉最后一条 `idle`/`turn/completed`，行停在 `active`，**30 s tick 重读的是同一列**——交互 (ii) 卡 `working` 持续到下一条同线程通知或会话退出；反过来丢掉 `waitingOnApproval` 就看不到 `attention`。没有 daemon 状态探针，也不发明一个。
+- **G14 原生 UUID 复用穿过修 3 的围栏**：claude restart 用 `--resume` 复用 s1 的 UUID 建 s2（F2.26），s1 在途的 hook 解析到 s2、actor 是 `AiClaudeSession(s2)`，围栏放行：旧 `Stop` 盖掉新工作的 `Working`、旧 `PostToolUse` 把已 idle 的卡抬回 `Working`；由下一个 hook 或 ≤30 s tick（W/活会话门）修正。不绑代际。
+- **G15 harness 重启的两处**：`Resumed` 不落库（F2.3），`boot_harnesses` 后到第一次 `persist_snapshot` 之间 (i) 读到 `turn_pending` ∧ 注册表命中 → `working=true`（崩溃后是假阳性，保存式升级时正确）；`Resumed`/`Idle` 下到达的 `TurnCompleted` 被当 stale，不写转录行 → 那一 turn 不产生 E1/unread。
+- **G16 持久证据写不上**：E1 的转录行插入失败只 warn（F2.7），那次完成没有 unread；E3 的旧 attempt 结果在 recovery 分配新 attempt 后就出了 `current_tasks`——若唤醒丢失且 tick 没赶在分配之前跑到，它不进高水位。两者都不由「再算一次 max」恢复。
+- **G17 交互 codex 卡 turn 中崩溃**：`last_thread_status` 的写者只有 feeder（F2.25）；calm-server 在一个交互 `codex-create` 卡的 turn 中崩溃，行留在 `running` + `active`。重启后它能否愈合取决于 daemon 在恢复时是否发 `thread/status/changed`——**未核实**（F2.29 的八条 `idle` 行同一秒被盖章是观测，不是机制，本文不把它当保证）。若不发，(ii) 让该卡 `working` 到下一条同线程通知或会话退出（与 G13 同一形状）。
+- **G18 派发窗口**（§4.2 已声明）：`dispatched` 期间刚 spawn 的 worker 卡在 S0/E5/E6 里都算「从未绑任务」；`cards[]` 可能多一条与 W 一致的 `working`（无害），一个在盖章前结束首个 turn 且不报告的 worker 会多亮一次 unread（极窄：报告事务另一侧也盖章）。不围栏。
+- **G19 已关**（第四轮；第五轮加下界）：v4 登记的构造（任务已 `done`，其 worker 的 PTY 之后被信号杀掉，或 reaper 在 CAS 0 行、race-lost 放过之后 `session_commit_exit(Failed)`，`reaper/mod.rs:632-635,361-369`）按 §4.2 活会话门段的 † 例外处理：只压掉 `ws.state='failed'`，且只对 `created_at_ms <= finished_at_ms` 的会话——`done` 之后重启失败的替换会话（F2.40）不在例外里，照常红（§7 D-restart-fail）。v4 提的宽规则（任务终态就压掉全部会话来源）被两通道各自的构造否决（§4.2）。**残余（接受）**：`done` 之后仍活着的 (ii) worker 线程报 `systemError`、或 (iv) 的 FSM `Errored`（`StopFailure`）仍红——它是活会话自述坏了，与「done 之后追加的工作要可见」是同一条理由。
+- **G20 子 track 工作期间父不显示**（第四轮，A-MAJOR-1 的最小形式；第五轮收窄到 `dispatched/running`）：W 把 `child_track_id IS NOT NULL ∧ status ∈ {dispatched, running}` 的行排除在 `working` 外（F2.38），父 track 在子 track 干活期间没有 spinner，真相在子 track 自己的 overlay 里；父行 `verifying`（父自己跑 gate，F2.39）**不在**缺口里，它算 `working`；子 `failed`/`canceled`/删除 ⇒ 父任务 `failed` ⇒ 红，子 `done` 且静止 ⇒ 父任务 `done` ⇒ E3 unread（不变）。传播规则——父 `working` ∨= 子 `activity.working`，唤醒 = 子的 `overlay.set kind=activity` → 重算 `tasks.child_track_id` 指向它的父，加深度上界——是 S4 材料，本版不做。
+
+## 10. 参考
+
+issue #1722（v0）；#254（`any_card_needs_input`）；#358/#367（被推翻的 `Stop → AwaitingInput`）；#679（会话状态机）；#741（durable liveness feeder）；#930/#1016（deferred-tx）；#1450（必填字段 → API bump 先例）；#1548（Claude Code hook 时序实测）；#1714（rail 蓝点）；`docs/architecture/1628-report-chart-series.md`（本文格式的先例）。
+
+## 11. 处置历史（自包含：发现 → 结论 → 改了什么 / 证据）
+
+通道 A = subagent（产品/FE），通道 B = Codex（内核）。存档见文首。
+
+### 第一轮（v1 → v2）
+
+| 发现 | 结论 | 改了什么 / 证据 |
+|---|---|---|
+| A-B1 `Notification(idle_prompt)` 抵消 `Stop → Idle` | 接受 | §4.6 白名单（官方值域 + `1548:683`）；订正：`terminal_hooks.rs:380` 是测试 fixture 不是测量（F2.12） |
+| A-B2 共享 daemon 卡的 working/attention 不可达 | 结论接受，机制驳回 | v2 用 `last_thread_status`（v3 改：见第二轮 SPIKE-1）。机制：bridge 无 `NEIGE_CARD_ID` 时按 `session_id` 反解卡（`calm-codex-bridge/src/main.rs:95-128`、`routes/threads.rs:18`），「结构上到不了 `ingest_hook`」不成立（F2.15）；`CardRuntimeView.thread_status` 不是 `last_thread_status`（F1.13） |
+| A-M1 `--warn` ≈ `--error` | 接受 | §5.4 re-hue 全家族 + 对比度门禁 + 浏览器测试 + 预览签核 |
+| A-M2 用户 lifecycle 边推进 `activity_at_ms` | 接受 | §4.3 E4 按 `events.actor` 过滤；E3 由 `status IN (done,failed)` 天然排除用户 cancel |
+| A-M3 attention/working 双重推导 | 接受 | §5.1 只读 overlay；§4.1 `cards[]` |
+| A-M4 rail aria-label 仍说 running | 接受 | §5.3 `bits` 同源，变异连带 label（§6）；`a11y-contract.yaml` 未钉该字样（F1.21） |
+| A-M5 手机页头无指示器位置 | 接受 | §5.3 + G11；S3 扫描排除页头 |
+| A-M6 无 live harness 的 `turn_pending` 行永远转 | 接受 | §4.2 (i) 注册表条件；`starting` 不算；必红测试 |
+| A-MIN1 会话终态臂给终端/planner 卡写 `Done` 行 | 接受（该臂 v3 整个删除） | 见第二轮 A-BLOCKER-1 |
+| A-MIN2 `calm.user.notify` 被丢 | 接受（加触发） | §4.3 E2 + `harness.item.added` 唤醒；证据持久（F2.28） |
+| A-MIN3 `failed` 的 sidebar/`lifecycleRank` 消费者 | 接受 | §5.1 |
+| A-MIN4 基线用服务端时钟；`setReadScope(null)` 不写 | 接受 | §4.8 `nowMs`、§5.2、§6 测试 |
+| A-MIN5 `session_commit_exit` 无事件、tick 漏 | 接受 | v2 tick 集合含 `failed` 会话；v3 改为全量 tick（第二轮 B-M4） |
+| A-MIN6 六条小订正 | 部分 | scope 带 track、中断 turn 过滤、tick 范围、manifest 登记、重启后多余 `overlay.set`（G10）：接受。zod `.nullable().optional()`：**驳回**——改为必填可空 + WEB 29（§4.5），旧内核由帘幕挡（`providers/public.tsx:94`） |
+| B-M1 被超越的失败 attempt 永远可操作 | 接受 | §4.2 W 用 `current_tasks`（F2.22）；§7 C3 走真实 recovery；必红测试 |
+| B-M2 后端身份未枚举（isolated 缺） | 接受 | §4.2 表按持久身份（F2.2） |
+| B-M3 高水位无法从丢失中恢复；envelope 无 `at` | 接受（v3 收窄） | §4.3：每次触发与 tick 都从持久行重算 `max`，事件只唤醒；**持久行本身写不上的情况不由此恢复**——登记 G16（第二轮 B-MIN1） |
+| B-M4 `TurnCompleted` 相位不是完成回执 | 接受 | §4.3 E1 用转录行（被拒的 `turn/start` 不写行，F2.3/F2.7） |
+| B-M5 FSM 缺会话/turn 围栏 | 部分 | §4.6 修 3 围栏（v3 收窄到「可证明过期」）；定时器代际绑定不做，G10/G14 |
+| B-M6 修 3 经 750 ms 降级丢完成 | 接受 | 完成类证据不再骑在 overlay 上（§4.3 E5 hook 行） |
+| B-M7 重启修复无范围/无证据 | 部分 | Q2 = (c)：不做 SQL 也不做事件化修复；§6 runbook + 爆炸半径 |
+| B-M8 旧 `any_card_needs_input` OR 压过新投影 | 接受 | §5.1 去掉 OR；写者保留到 S4 且本版无读者（§4.5） |
+| B-M9 启动枚举漏掉不活跃的失败 | 接受 | v2 启动全量 + 集合含失败；v3 tick 也全量（第二轮 B-M4） |
+| B-M10 `starting` 没有有界的卡死出口 | 接受 | §4.2 (i) `starting` 不算；watchdog 不覆盖 `PendingThreadStart`（`run_loop.rs:4705-4730`） |
+| B-M11 兼容只看一个方向 | 接受 | §4.5 WEB 29 + API 9；**订正**：`min_web_compat_version` 不是独立常量（`version.rs:157,234-249`） |
+| B-MIN1 30 s 是间隔不是上界 | 接受 | §4.3/G5：「≤30 s + 一次扫描时长」 |
+| B-Q1 `dbInstanceId` 每次启动轮换 | 接受 | §1 生产发现 + §4.8 `database_identity`；不用 `settings`（F2.27） |
+| B-Q2/A-Q2；B-Q4/A-Q4；B-Q5/A-Q5 | (c)；不算；换原语 | §6；§4.2；§5.3 |
+| B 事实订正 F2.4/F2.5/F2.7/F2.22 | 接受 | §2.2 各行；A 的 `capabilities-e2e.yaml:116` 引用错位订正（§2.4） |
+
+### 第二轮（v2 → v3）；编排方裁决 + SPIKE-1
+
+| 发现 | 结论 | 改了什么 / 证据 |
+|---|---|---|
+| **SPIKE-1**（编排方，4140 生产库只读测量） | 接受，关 G8 | F2.29；§1 新根因；§4.2 W 子句成为派发工作的唯一 `working` 来源；§4.2.1 feeder 改 `turn/completed ⇒ idle`；E6 改单调列。本文未重跑测量 |
+| A-BLOCKER-1 = B-M6 修 2 无发射者；`AwaitingInput` 卡会话退出后永远琥珀 | 接受，**修 2 删除** | F2.31/F2.32（核实：`Exited` 只有 isolated 发，`WorkerSessionSuperseded` 零发射者）；§4.2 活会话门；§4.6 头段；§7 D、§6 runbook、修 3 爆炸半径改写（v3 的 runbook 只写了 `exited` 一路，signalled → `failed` 一路在第三轮 B-MIN1 补上）；必红 `awaiting_input_overlay_with_exited_session_is_quiet` |
+| A-BLOCKER-2 (ii) 押在 `active` 上；codex 源码顺序 | 结论接受（由 SPIKE-1 实测坐实，不靠源码推断） | 同 SPIKE-1。A 引用的 codex 源码顺序未在本仓核实，设计不再依赖它 |
+| A-MAJOR-1 v2 修 4（v3 修 3）围栏对 `/clear` 换 id 后冻结 FSM | 接受，围栏收窄 | §4.6 修 3：只丢「解析到别的活态会话」的 hook，卡级退化 actor 照常投影；F2.10 `:310-313`；不做 `/clear` spike；残余登记 G14 |
+| A-MAJOR-2 (a) CONVERSATIONS 服务端行仍本地推导 (b) TASKS 行 TS 推导、C3 不可推 (c) badge 色调 | 全部接受 | (a) F1.6 订正（`:282-284`：服务端 kind 喂 `turn_pending`），M12 改写，§5.3；(b) §4.2 W 子句 + `cards[worker_card_id]`，§5.3 TASKS 行，§7 C3 可推；(c) F1.18，§5.3 页头行 |
+| A-MIN1 `Resumed` 不落库；stale `TurnCompleted` 无 E1 | 接受 | F2.3 补两句（`:5201-5233`、`:2456-2465`、`persist_turn_outcome` 在 `:2472`）；§4.2 首段改写；G15 |
+| A-MIN2 harness 判据用原件 | 接受 | F2.2：`json_extract(handle_state_json,'$.mode')='harness'`（`read.rs:1051`、`shared_codex_appserver.rs:3996-3998`、`snapshot.rs:674`、`HARNESS_MODE`） |
+| A-MIN3 构造播种与 pending 窗口 | 接受 | F1.9；§5.2 `DATABASE_ID_KEY` 播种 + 窗口行为登记；必红 `construction_seeds_from_database_id_key` |
+| A-MIN4 `items[].at_ms` 列 | 接受 | §4.1 四个来源各一列 |
+| A-MIN5 (ii) 变化 tick 级延迟 | 接受 | G5、§7 B′ |
+| A-MIN6 `overlay.set` scope 可能是 `System` | 接受 | F2.14 `:541-547`；§4.3 唤醒表 `card_get` 回查 |
+| A-MIN7 12 组合；`PermissionDenied`；白名单只有文档 | 接受 | §3、§4.6 修 2、§6 |
+| A 事实订正 F1.21 / F2.2 路径 / F2.3 写者 / F2.26 首引 | 接受 | F1.21 重写（`runner.ts:500-527`、`run.mjs:70-75`；新 `INV-APP-118`）；F2.2 加 `operation/` 前缀；F2.3 `session_set_harness_observation_runtime_tx`（`:5145`）；F2.26 `crates/calm-truth/src/db/sqlite/session_projection.rs:124-142` |
+| B-M1 `database_identity` 不是单行 | 接受 | §4.8 `singleton INTEGER PRIMARY KEY CHECK (singleton = 1)`；写锁串行化；两条必红测试（v3 把「去掉 CHECK」的变异也挂在这两条上是错的——它们对该变异照样绿，第三轮 B-MIN2 补第三条） |
+| B-M2 共享 daemon 提示无法对账 | 接受为缺口，不造探针 | G13 原文；G9 改写（关 feeder 不是全灰，是停在最后值，F2.25）；§4.2.1 第 3 条：写失败改「下一条同线程通知先重放」。**订正裁决引用**：被忽略的写错误在 `liveness_feeder.rs:106-116`，`:118` 是 `Lagged` 臂 |
+| B-M3 E6 既非完成史也非边 | 接受，持久列 | §4.8 `last_turn_completed_ms`；§4.2.1 只在 `turn.status='completed'` 写、取 MAX；E6 改 `MAX(last_turn_completed_ms)`；删 `last_thread_status='idle'` 启发式。**feeder 看得到 turn 状态**：`Notification::TurnCompleted { turn }` 带完整 turn 对象（`codex_appserver.rs:565,612-615`），今天被 `{ .. }` 丢掉（`liveness_feeder.rs:82`）——写者就是 feeder |
+| B-M4 tick 枚举漏掉安静完成 | 接受，最简形式 | §4.3 全量 `archived_at IS NULL`；删谓词 SQL；代价模型 11 条/track、1000 track ≈ 11k 语句/30 s（v3 称「全是索引短范围读」是错的：E1/E2 当时按无索引的 `track_id` 全表走，第三轮 B-MAJOR-1）；必红 `quiet_track_short_task_completed_between_ticks_is_unread` |
+| B-M5 历史失败会话保持红 | 接受 | F2.22 补 `task_recovery.rs:215-251`（不动会话）与 `reaper/mod.rs:361-369`（写 `failed`）；§4.2 S0 资格（harness / 当前 attempt worker / 从未绑任务）；必红用真实保留的失败会话 |
+| B-M6 = A-BLOCKER-1 | 同上 | 活会话门对 `working` 与 `attention/failed` 一致要求 `ws.state ∈ {starting, running, turn_pending}`；FSM 行不改写 |
+| B-M7 原生 UUID 复用穿过 v2 修 4（v3 修 3）| 接受为缺口 | F2.26 补 restart 复用（`claude_restart_adapter.rs:171-175,223-236`，`session_projection.rs:124-142`）；G14 含构造与爆炸半径；不绑代际 |
+| B-M8 isolated `running` ≠ 当前 turn | 接受 | F2.33：`RequestPhase` 无 turn 后相位（`dedicated_codex/session.rs:90-109`），`journal.rs:176-182,214-227` 不清 `active_turn_id`——**因此不用 `active_turn_id IS NOT NULL` 方案**，(iii) 走 W 子句 |
+| B-MIN1 恢复保证过宽；跨代际定时器 | 接受 | F2.7 补 `:5016-5025`；G16；G10 跨代际一句 |
+| B 事实订正 `D:49`、`D:390/415`、`D:305/366`、`D:381`、`D:410/412` | 接受 | F2.2 去掉测试模块行（`harness/mod.rs:677` 起是测试）；§11 重写为自包含、无 R 标签；§7 D / §6 runbook 改写（v3 这次改写仍不完整：漏了 signalled → `failed`，第三轮 B-MIN1 补）；G9 改写；第一轮 B-M1/B-M3 行按 v3 收窄 |
+| 裁决 B-M3/SPIKE-1「`turn/completed ⇒ idle`」 | 接受并**细化一处** | 无条件 `idle` 会盖掉 codex 在失败 turn 之前发的 `systemError`（`run_loop.rs:2430-2433`），(ii) 的 `failed` 就丢了 → `turn.status='failed' ⇒ systemError`，其余 `⇒ idle`（§4.2.1 第 1 条，三条单元测试） |
+
+### 第三轮（v3 → v4）；编排方裁决，每条在改动前对照引用行重新核实
+
+两通道都没有 BLOCKER；A 三 MAJOR 七 MINOR，B 一 MAJOR 两 MINOR + 三条事实订正。核实结果：全部引用行都说了评审说的话；两处引用位置需订正（B 的 0032:28、A 的 `scheduler/mod.rs:1875-1900`，各行内注明），一处评审附带说法被驳回（A「机制攻击」段里的 `activeTracksOn`），v3 自己的三处假话（B 三条事实订正）确认为假。
+
+| 发现 | 结论 | 改了什么 / 证据 |
+|---|---|---|
+| **B-MAJOR-1** E1/E2 全表走：转录表只有 `card_id` 索引 | 接受 | F2.35（核实：唯一索引 `(card_id, id)` 在 0032:**29**——B 引的 `:28` 是 0094:34 已删掉的那个；`track_id` 列 0081:49 无索引；内存库 EXPLAIN：v3 写法 `SCAN`，改写 + 复合索引后 `SEARCH … USING INDEX (card_id=? AND method=?)`）；§4.3 E1/E2 改经 `card_id IN (SELECT id FROM cards WHERE track_id=?1)`；§4.8 迁移加 `idx_transcript_card_method_created_at(card_id, method, created_at_ms)`；§4.3 代价段按裁决改写（每 track = 自己每张卡的索引范围，不给延迟数字，留给 S1 门禁报告）；必红 `e1_query_plan_uses_transcript_index` |
+| **B-MIN1** signalled 退出 → `failed` → 红 | 接受 | F2.31 补 `:127-131` 与内核拆除是 SIGTERM→SIGKILL（`terminal_renderer/mod.rs:53-75`）；§4.2 活会话门段补「`failed` 会话在有资格的交互卡上就是红，直到重启/删除」；§6 runbook 两条路；§7 D 拆成 D-exit / D-signal / D-signal′ |
+| **B-MIN2** 去掉 CHECK 没有测试红 | 接受 | 内存库核实：无 CHECK 时两次 `INSERT OR IGNORE (1, …)` 仍一行、`(2, …)` 插入成功；§4.8/§6 加 `database_identity_rejects_second_row`，CHECK 变异只挂它；reboot/并发两条留给 `INSERT OR IGNORE` 路径 |
+| B 事实订正 `D:240` / `D:347,411,482,503` / `D:371` | 全部接受（v3 三处假话） | 代价段改写（上）；runbook/§7 D/§11 第二轮 A-BLOCKER-1 与「B 事实订正」两行补注；§6 CHECK 变异行拆成两行 |
+| **A-MAJOR-1** planner 会话行是路由注入的，没有完成时间 | 接受 (a)+(b)+(c) | 核实：`router/public.tsx:2791-2798` 从 `plannerCard.runtime` 造行、`:2844` 放首位；`:1335`/`:1825` 都读 `rows`；服务端列表 `role = Assistant`（`track_conversations.rs:382,389`）不含 planner；`CardRuntimeView`（`model.rs:513`）无完成时间。(a) §4.7：`CardRuntimeView.last_turn_completed_ms` = §4.7 同一条转录子查询按 `card_id` 求值（不是 feeder 列：G15 的 stale turn 会盖列不写行，两个表面会分叉），落点是三条投影 SELECT → `WorkerSessionProjection` → `runtime_view_from_runtime`；可选字段（`updated_at_ms` 先例；golden 字面量加一行 `None`，§2.4）；§4.5 列入 wire bump。(b) §5.3 按**行的来源**说规则：服务端行与注入 planner 行都读 `activity.cards.get(row.id)` + `lastTurnCompletedAt`，只有发送者本地 in-flight 保留 spinner。(c) F1.6/F1.11 补注入行；F1.13 补载体链。新鲜度：转录行写在 `harness.phase.changed` 之前（F2.7）且该事件失效 `['track', id]`（`invalidation-plan.ts:262-268`）；必红「the injected planner row reads activity.cards and last_turn_completed_ms」 |
+| **A-MAJOR-2** E5/E6 让任务绑定的 worker 双亮 | 接受 | F2.36（核实：`calm.task.complete` 是 MCP 工具 `emit.rs:57`，turn 内调用 → `decision_sink.rs:194`；F2.29 的 52 s 就是它）；§4.3 E5/E6 加 `NOT EXISTS (tasks.worker_card_id = <卡>)`（与 S0 同一谓词；hook 事件 `card_id` 在 payload 顶层，`event.rs:671-685`）；§4.2 表 (ii)/(iv) 完成类证据列对齐；必红 `worker_turn_end_after_task_done_does_not_relight` + 孪生 |
+| **A-MAJOR-3** §7 A2/C3/B′ 与一条必红测试不可从 §4/§5 推出 | 三条全接受 | (1) A2 rail 拆「停在这一页」/「在别的 track 上」（核实：`sidebar.tsx:143` 与 `router/public.tsx:2719` 同一回执 key）。(2) F2.22 补 `worker_card_id` 只在 `dispatched→running` 盖章（`task.rs:198-203,264-269`；`scheduler/mod.rs:1834-1843,1882-1900`）；§7 C3 拆 C3（`dispatched`：TASKS 行无指示器）/ C3′（`running`：`cards[worker]`）；`dispatched_task_is_working_without_session_signal` 改成两步、按生产写法；§4.2 声明派发窗口 + G18。(3) B′ 改「仅 fixture」：F2.37 列全部 `approval_policy: "never"` 生产写者（比 A 引的三处多五处 + `shared_codex_home.rs:355`），`waitingOnUserInput` 无有引用的发射者 |
+| A-MIN1 抽屉 `live` 与 `facts.stalled` 两处本地推导 | 接受 | 核实 `chat/thread/public.tsx:68`、`router/public.tsx:282,346`；§5.3：`ChatThread.live = pending ∨ cards.get(id)==='working'`（路由传入）；`facts.stalled → 'failed'` 保留并声明为打开行的本地 wedge 检测；`isLiveConversation` 无消费者 → 删（F1.5 补） |
+| A-MIN2 `NEUTRAL_ACTIVITY` 过不了 `no-module-runtime-state` | 接受 | 核实 `:31`（`immutableConstructors` 空）、`:99-100`（嵌套容器要自身 freeze）；§5.1 改 `Object.freeze([])` + 冻结的 `Readonly<Record<string, CardActivity>>`，`cardActivityOf` 读；§2.4 补规则在 eslint（`eslint.config.js:60`） |
+| A-MIN3 feeder 解析失败 fail-open 成 `active` | 接受 | F2.25 补 `:39-45`；§4.2.1 `Err(_) ⇒ "unknown"`（非 working），reaper 预门由同一 UPDATE 的 `last_activity_ms` 兜 900 s；单元测试 `unknown_status_shape_stamps_unknown` + 投影 `unknown_thread_status_is_quiet` |
+| A-MIN4 `DATABASE_ID_KEY` 只在缺失时写 | 接受 | 核实 `providers/public.tsx:75-81`（变化时 `:78-79` 覆盖）；§5.2 同规则 |
+| A-MIN5 pending 窗口写窄了 | 接受 | §5.2：每台设备每次加载、bundled 由 `:91` 挡住 |
+| A-MIN6 (ii) 重启愈合靠未引用的观测 | 接受 | 核实：`last_thread_status` 生产写者只有 feeder（F2.25 补）；G17 登记，不把批量盖章当机制 |
+| A-MIN7 七条小项 | 全部接受；**一条附带说法驳回** | Today：分组与计数改为 `working` 数组及其 `.length`（§5.3；**第五轮 A-MAJOR-1 撤回**：分组回到阶段，见第五轮）；(v) 终端改「永不来自会话信号；终端任务的卡走 W」（`scheduler/mod.rs:1834-1843`）；§6 门禁加 `npm run e2e`（`ci.yml:1285`）与 `test:mutation:plan/run`（`:1039,1151`）；S2 首行拆两条 manifest（`runner.ts:504`）；每条必红行都写测试标题；§4.1 `session` 项 `card_id` 总是有。**驳回**：A「机制攻击」段顺带说 `isRunning` 仍在 `activeTracksOn` 里——`track.ts:768` 不调它（消费者只有 `:685`、badge `:23`、row `:95`、today `:230`）；v3 §5.1 也这么写过，一并订正 |
+| A 事实订正 F2.22 / F1.6·F1.11 / F2.25·§4.2 (ii) | 接受（三行不完整） | 各行补齐（上）；A 引 `scheduler/mod.rs:1875-1900` 处是 `mark_running` 的定义（`:1882-1900`），调用点在 `:1834-1843`，一并写入 |
+| 两通道 §8 答复 | 一致 | Q1–Q5 保持关闭；Q2 的 runbook 按 B-MIN1 加了退出语义 |
+| **v4 核实时的新发现**（不在两通道里）：done 任务的 worker 会话事后 `failed` → 红 | 登记，不改规则 | 核实 B-MIN1 时沿 D-signal 推到任务绑定卡：S0 有资格 + `state='failed'` 不套活会话门 → 红；reaper 路径同样（`reaper/mod.rs:317-369,544-638`）。G19 + §7 D-signal 注；候选修法写在 G19，留第四轮（第四轮以窄规则关闭，见下） |
+
+### 第四轮（v4 → v5）；编排方裁决，每条在改动前对照引用行重新核实
+
+A：REVISE，两 MAJOR 六 MINOR，一条事实不完整（F1.16）；B：APPROVE（v4 as written），一 MINOR + 一条事实订正（v4 三处假话），并明确**不清** v4 在 G19 提出的宽规则。核实结果：两通道全部引用行都说了评审说的话；A 的一处计数与一处前提需订正（A-MIN3「七条断言」实为 14 条；A-MIN6「内核没有生产写者走 `draft→planning`」不成立）；一处引用范围订正（A 的 `scheduler/mod.rs:850-910` 是函数开头，函数是 `:850-996`）。
+
+| 发现 | 结论 | 改了什么 / 证据 |
+|---|---|---|
+| **A-MAJOR-1** 子 track 父任务在 W 下整个子 track 生命期都转 | 接受，最小形式（不传播） | 核实：`TASK_CHILD_TRACK_ROUTE`（`task_recovery.rs:15`）；`task_mark_sub_track_running_tx` 盖 `running` + `worker_card_id=NULL`（`task.rs:94-108`，调用 `scheduler/mod.rs:1692,1705-1713`）；离开 `running` 只经 `reconcile_child_track_task`（`:850-996`：三条臂 `:906-936/:939-964/:966-985`，`from_lifecycle` `:373-380`，scope 是父 `:894-897`）；`→ done` planner 独有（`track_lifecycle.rs:41`）。F2.38；§4.2 W 读 `child_track_id`，`IS NOT NULL` 的行永不 `working`，`failed`/E3 不变；§3 一句；G20 登记「子在干活时父不显示」+ 传播规则（S4 材料）；必红 `sub_track_parent_task_is_not_working` + 孪生 `sub_track_child_failed_marks_parent_failed` |
+| **A-MAJOR-2** = B on G19：宽规则会压掉 `done` 之后的真实 permission prompt | 接受 A 的窄规则；两通道同一构造 | 核实：claude worker 是交互 TUI、命令行无 `-p`（v5 引 `operation/claude_adapter/mod.rs:304-309`——那是交互建卡的命令行；worker 的是 `:362-382`，调用 `:798-804`，第五轮 B-MINOR-1 订正，结论不变）；卡就是终端卡（`claude.ts:3-6,17`）；restart 不动任务行（`claude_restart_adapter.rs:133-175`）；浏览器输入 `InteractiveUser`（`ws/terminal.rs:228`、`input_authority.rs:31`）；`task_cancel_tx` 只 `pending → canceled`（`task.rs:135-146`）；reaper race-lost 放过后 `session_commit_exit(Failed)`（`reaper/mod.rs:632-635,361-369`）。§4.2 活会话门段：只对「W 结果集中 `worker_card_id=卡` 的行全部 `done`」的 worker 卡压掉 `ws.state='failed'`，FSM/`last_thread_status` 仍只受活会话门；§4.2 表 †；§7 D-signal 拆交互卡/done 任务的 worker 卡；§6 runbook；§8 一句；G19 关，残余登记（活 (ii) 线程 `done` 后 `systemError`、FSM `Errored` 仍红——接受）；必红 `done_task_worker_signal_killed_is_quiet` / `done_task_worker_permission_prompt_is_input` |
+| A-MIN1 每卡折叠未写，§7 B1/C1 不可推 | 接受 | §4.1 `failed > input > working`；§7 B1 注；C1 注：「1 项 `source:task`」只对 worker 自报的失败成立，reaper 判死的 worker 多 1 项 `source:session`（`reaper/mod.rs:544-638,361-369`） |
+| A-MIN2 C3/C3′ 时序不可推：盖章无事件、`task.dispatched` 不是唤醒 | 接受 | 核实 `mark_running` 无事件（`scheduler/mod.rs:1878-1881`）；`task.dispatched` 在 claim 事务里、scope `EventScope::Track`（`:1223-1226,1394`）。§4.3 唤醒表加 `task.dispatched` + 盖章无事件注；§7 C3 注唤醒、C3′ 注「下一次 tick」 |
+| A-MIN3 第五处 `styles.live`；换原语后可访问名断言 | 接受；**计数订正** | 核实 `quiet-sync.tsx:100`、`quiet-sync.module.css:73-81`、`thread/public.tsx:659`、`ui/activity-indicator/public.tsx:8`。F1.5/F1.16/§5.3 五处；§6「S2 的 a11y 契约」：原语保持 `aria-hidden`，断言改查 `[data-nc-activity="working"]`，可访问事实在行/summary 名里。**订正**：`Working` 可访问名断言不是七条，是 **14** 条（`chat/thread/public.test.tsx` 9 条 + `quiet-sync.test.tsx:211` + `router/track-conversation.test.tsx:1018,1061,1065,1068`，命令在 §6）；§5.3 已定的 `terminal-card.tsx:62` 换原语连带 `'status Working'` 的 11 条断言（三个测试文件），同一契约写进 §6 |
+| A-MIN4 pending 窗口全蓝 | 接受 | 核实 `ui-preferences.tsx:51,64-66,105-107`、`providers/public.tsx:84-89`；§5.2 改「`isUnread` 在 `database === null` 时 false」（一行），删「登记为已知行为」；必红 `null_scope_is_never_unread` |
+| A-MIN5 (ii)/(iii) 判据复述 `spawn_op_id` | 接受 | 核实 `is_isolated_card_tx` 按卡（`isolated_codex/lookup.rs:9-12`；`OPERATION_KIND` `isolated_codex/mod.rs:25`；reaper `reaper/mod.rs:120-127`）。S0 去掉 `operations` JOIN，改同一条按卡的 EXISTS 列 `isolated`；(ii)/(iii) 认出列改写；必红 `reminted_isolated_session_is_not_shared_daemon`（仅 fixture 可到） |
+| A-MIN6 E4 正向孪生的边/actor 组合没有生产写者 | 接受裁决；**前提订正** | 裁决：孪生改 `working → reviewing` by `KernelDispatcher` 经 `auto_transition_if_current_in_tx`（`reaper/mod.rs:607-615`；`KernelDispatcher` 归 PlannerAgent 类，`track_lifecycle.rs:104-112`）。**订正 A 的前提**：内核在生产里**有**写者走 `draft → planning`——`auto_promote_draft_in_tx`（actor `ActorId::Kernel`，`crates/calm-server/src/track_lifecycle.rs:27-39`；调用 `decision_sink.rs:341`、`mcp_server/tools/plan.rs:666`、`track_report/write.rs:894,958`），「内核走不到这条边」不成立；v4 那条测试错在 actor（该边的生产 actor 是 `Kernel` 不是 `KernelDispatcher`）。裁决的替换边是 reaper 自己的写者，采用 |
+| **B-MIN1** 重启清红的机制说错（`D:74,182,438`） | 接受（v4 三处假话） | 核实 `claude_restart_adapter.rs:157-168`（只 `Exited` 活态会话）、`session_projection.rs:198`（活态集合不含 `failed`）、`session_mirror.rs:282-289`（新会话 mint 时 `card_session_link_tx`）。F2.26、§4.2 活会话门段、§7 D-signal′、§6 runbook 全部改成「指针移动把旧 `failed` 行移出 S0」 |
+| B on G19：宽规则不清 | 与 A-MAJOR-2 一致 | B 的构造（restart 后提交新工作、`InteractiveUser`）与 A 的构造（`done` 后在 TUI 里追加、`PermissionRequest`/`StopFailure`）都写进 §4.2 活会话门段 |
+| 基线漂移（A 附注） | 接受，不变基 | §2 首段登记 `3dbb96c84` 与三个文件；[实测] `git diff --stat b2341b871 origin/main`（21 文件）；`3dbb96c84` 上 `thread/public.tsx` 四处 `styles.live` 在 `:683,695,790,1164`（首处 `showLive && last`）、`validation.rs` 注册表在 `:330`、`capabilities-e2e.yaml:116/:394` 已重排；新增的 `activity-groups.tsx` 无 live 点 |
+| 两通道 §8 答复 | 一致 | Q1–Q5 保持关闭；G19 按窄规则关（§8 补一句） |
+| 两通道门禁 | 一致 | A 附了两条 ratchet 的输出（exit 0）；v5 提交前重跑两条 ratchet，绿 |
+
+### 第五轮（v5 → v6）；编排方裁决，每条在改动前对照引用行重新核实
+
+A：REVISE，一 MAJOR 四 MINOR + 两条事实小订正；B：REVISE，两 MAJOR 一 MINOR（B 在内存库上套用了迁移 + 本文 DDL，跑了 E1/E2/S0 的计划、单行 CHECK、单调时间戳与 lockstep 门禁，均如本文所述）。核实结果：两通道全部引用行都说了评审说的话；**一条裁决的前提需按代码收窄**（A-MAJOR-1 裁决假定 Today 有「两节」，本树只有一节，见下）；本轮核实时另发现一处 v5 命名冲突（`TrackInputNotification.source` 已存在），一并订正。
+
+| 发现 | 结论 | 改了什么 / 证据 |
+|---|---|---|
+| **B-MAJOR-1** G19 窄规则仍会压掉替换会话的失败 | 接受；加时序下界，不加列 | 核实：restart 铸 S2 以 `now_ms()` 写 `created_at_ms`、不动任务行（`claude_restart_adapter.rs:223-241`，`:238`）；`session_start_mirror_tx → session_repoint_current_links_tx → card_session_link_tx` 让 `cards.session_id = S2`（`session_mirror.rs:263-290`）；补偿 `session_projection_complete_for_card(Failed)` 只写当前活态会话 = S2（`:493-498`；`session_projection.rs:675-684`）；`tests/claude_card_endpoint.rs:886-931` 钉住「旧 `exited`、新 `failed`」；两列都存在（0045:34、0041:26）且由同一进程的 `now_ms()`（`calm-truth/src/model.rs:571-574`）写（`task.rs:429,570,709`、`scheduler/mod.rs:423-430`）；re-arm 的 placeholder 也重写 `created_at_ms`（`session_mirror.rs:136-141`）。F2.40；§4.2 活会话门段的例外加 `ws.created_at_ms <= MAX(finished_at_ms)`（会话在任务完成时已存在）并声明单机单时钟假设；§4.2 表 †；§6 runbook；§7 新增 D-restart-fail；§8/G19 补下界；必红 `done_task_replacement_session_failure_is_failed`（S2 `created_at_ms = t2 > t1` → `failed`），现有 `done_task_worker_signal_killed_is_quiet` 写明会话 `created_at_ms = t0 < t1` |
+| **B-MAJOR-2** 子 track 排除藏掉父自己的 gate | 接受；排除只覆盖 `dispatched/running` | 核实：子 `done` ∧ 静止 ∧ `gate_json` → `verifying`（`scheduler/mod.rs:910-922`，`finished_at` 传 `None`）；`guarded_child_success_flip_tx` 保留 `child_track_id`（只在 WHERE）、`worker_card_id=NULL`（`:414-440`，SET `:423-424`）；父 `schedule_track` 对 `Verifying` 行 `spawn(drive_gate)`（`:1052-1059`）；`tests/scheduler.rs:8051-8077` 让 gate 真跑（`gate_attempt=1`）。F2.39；§3 一句；§4.2 W 三行注释拆开（`dispatched/running` 不算、`verifying` 算）+ 理由段一句；G20 收窄；必红 `parent_gate_verifying_is_working`，与之并列的 v5 `sub_track_parent_task_is_not_working` 按裁决**改名** `sub_track_parent_running_with_idle_child_is_not_working`（§6；第四轮行里保留旧名不改史） |
+| **B-MINOR-1** worker 命令行引错产者 | 接受（v5 两处假引用） | 核实：`:304-309` 在 `prepare_claude_create_request`（交互建卡），worker 的是 `build_claude_worker_command_line`（`:362-382`，无 `-p`），调用 `:798-804`。§4.2 活会话门段与 §11 第四轮 A-MAJOR-2 行都改引；结论不变 |
+| **A-MAJOR-1** Today「In progress」成员在 v5 悄悄从阶段改成运行时 | 接受，改回阶段；**裁决前提按代码收窄** | 核实：`today/public.tsx:229-230`（`waiting`/`running` 两个数组）、`:245`（**唯一**的一节 `PanelRows title="Running"`）、`:254`（页头数 = 两个 `.length`）、`:397-398`（注释「两节」）；**`:12-13` 注释：「the former Waiting-on-you list was removed from the reading column by owner call」（#1253 D2）**——裁决写的「Today sections: Waiting on you / In progress，页头数 = 两节长度」在本树只对第二个数成立，「Waiting on you」列表是 owner 拍板移除的，不加回；折法：唯一一节改名 In progress、成员回到 `isRunning(lifecycle) ∧ ¬waiting`（阶段，§1 的 planning track 有家），第二个数 = 该节长度，第一个数保持今天的计数（判据换成 overlay 的 `needsUserAttention ∨ hasFailed`）。v0 的「N working」运行时计数**不采用**，登记 **M13**（§2.3）；`:397-398` 注释改写（§5.3）；§5.1 `isRunning` 的两个阶段用途；F1.7 补 `:12-13,:254` 与现有测试 `public.test.tsx:46-57`；§7 A 表加 Today 列（A0 在节里无属性 / A1 `working` / A2 `unread` / A3 无）；必红：改写「counts running and waiting tracks with the shared predicates」（§6 S2 新行） |
+| A-MIN1 `ChatList` 可访问名/描述是第三个载体 | 接受 | 核实 `chat/list/public.tsx:46`（`description` 三元）、`:67`（`', live'` 尾段）。F1.5 补两行；§5.3 CONVERSATIONS 行：由 `activityStateOf` 结果映射——label 尾段 `working → ', working'`，`aria-describedby` 文本 `input → 'Needs input'`、`failed → 'Needs attention'`、`unread → 'Unread updates'`、其它不挂；§6 必红行加 `cards[row]='failed'` fixture 的 label/描述断言 |
+| A-MIN2 侧条 key / 打开动作未定 | 接受；**一处命名冲突订正** | 核实 `page/public.tsx:71-77`（类型）、`:817`（`key={cardId}`）、`:830`（`onOpenInputNotification(cardId)`）、`router/public.tsx:3411-3419`（会话卡开抽屉 / 网格卡跳卡）。**`TrackInputNotification.source: string` 已存在且是人读标签**（`router/public.tsx:2688-2692`：Planner / 卡标题 / kind），v5 写的「加 `source`」会撞名——overlay 的 `source` 落到新字段 `origin`。§5.3 侧条行：key = `${origin}:${id}`、两项同卡都列出、`cardId: string \| null`、目标 = `cardId ?? track`；F1.14 补 |
+| A-MIN3 §4.2.1 押在未声明的通知顺序上 | 接受 | 核实 `run_loop.rs:2430-2433` 注释是仓内唯一的顺序证据；SPIKE-1 分不开两种 `active`。§4.2.1 第 1 条声明假设 + 失败时的改动方向（A 的后备，S1 内定）；§7 B′ 交互 `codex-create` 序列改为 **S1 必做真栈验收行**，加「完成后 ≥ 2 个 tick 停在 `idle`」的查行标准 |
+| A-MIN4 §6 门禁少 `test:mutation:fixtures`；`lint:css` 重复 | 接受 | 核实 `ci.yml:1030`（plan 之前跑 fixtures）、`fe/package.json:18,20`（fixtures 脚本；`lint` 已含 `lint:css`）。§6 S2/S3 门禁行加 fixtures、去掉重复的 `lint:css`（注明原因） |
+| A 事实小订正 F1.10 / F2.32 | 接受 | F1.10：id 变化分支是 `providers/public.tsx:77-79`（`:75` 是 early return）；F2.32：isolated `Exited` 发射写 `new_status: status`（`observe.rs:125`），grep 命令找不到它，改为「命令（七处）+ 读函数」 |
+| 两通道 §8 答复 | 一致 | Q1–Q5 保持关闭；G19 按窄规则 + 时序下界关（§8 补一句） |
+| 两通道门禁 | 一致 | A 附了两条 ratchet 的输出（exit 0）；B 的只读检查见首段；v6 提交前重跑两条 ratchet，绿 |
