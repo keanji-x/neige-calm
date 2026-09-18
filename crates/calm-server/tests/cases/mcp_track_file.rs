@@ -2173,7 +2173,7 @@ async fn report_md_matches_report_read_body() {
     let report = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .expect("report read works");
-    let report_body = report["body"].as_str().expect("report body");
+    let report_body = report["text"].as_str().expect("report text");
 
     let file = call_tool(
         &boot,

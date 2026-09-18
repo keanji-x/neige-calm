@@ -428,6 +428,24 @@ pub(crate) async fn call_tool(
         .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
+/// #1727 S2 — the wire shape of a tool result (`content` + `structuredContent`),
+/// for assertions about what the model is actually handed; `call_tool` above
+/// projects to `structuredContent` and hides the text block.
+pub(crate) async fn call_tool_raw(
+    boot: &Boot,
+    name: &str,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    let handler = boot
+        .registry
+        .lookup(name)
+        .unwrap_or_else(|| panic!("tool not registered: {name}"));
+    handler(boot.ctx.clone(), identity, args)
+        .await
+        .map(|result| serde_json::to_value(&result).expect("serialize tool result"))
+}
+
 async fn current_doc_rev(boot: &Boot) -> u64 {
     calm_server::track_report_read::load_report_read_snapshot(
         boot.repo.as_ref(),
@@ -549,7 +567,7 @@ async fn read_returns_initial_seeded_body() {
         .await
         .expect("planner can read the report");
     assert_eq!(
-        out.get("body").and_then(Value::as_str),
+        out.get("text").and_then(Value::as_str),
         Some(TrackReportPayload::initial().body.as_str())
     );
     assert_eq!(out.get("summary").and_then(Value::as_str), Some(""));
@@ -611,7 +629,7 @@ async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_planner_writ
     let read = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .unwrap();
-    assert_eq!(read["body"], "# First\n", "stale writer must not win");
+    assert_eq!(read["text"], "# First\n", "stale writer must not win");
 }
 
 #[tokio::test]
@@ -2112,4 +2130,295 @@ async fn planner_from_different_track_cannot_reach_this_track_report() {
     // Use track_id to silence unused-variable lints — referenced for
     // potential future per-track-id assertions.
     let _ = boot.track_id.clone();
+}
+
+// ---------------------------------------------------------------------------
+// #1727 S2 — calm.report.read diet: summary envelope, no `body`, `select`,
+// and rev-conflict `data`.
+// ---------------------------------------------------------------------------
+
+/// A prose body of at least 80 KB (three blocks), written through the
+/// planner's whole-document write.
+async fn seed_large_body(boot: &Boot) -> String {
+    let paragraph = "lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(40);
+    let body = format!(
+        "# One\n\n{paragraph}\n\n# Two\n\n{paragraph}\n\n# Three\n\n{paragraph}\n",
+        paragraph = (0..12)
+            .map(|i| format!("para {i}: {paragraph}"))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+    assert!(
+        body.len() >= 80 * 1024,
+        "fixture body is {} bytes",
+        body.len()
+    );
+    call_tool(
+        boot,
+        TOOL_REPORT_WRITE,
+        planner_identity(boot),
+        json!({
+            "body": body,
+            "summary": "a large report",
+            "message": "seed large body",
+            "if_doc_rev": current_doc_rev(boot).await
+        }),
+    )
+    .await
+    .expect("planner writes the large body");
+    body
+}
+
+#[tokio::test]
+async fn full_read_delivers_the_document_once_behind_a_one_line_summary() {
+    let boot = boot().await;
+    let body = seed_large_body(&boot).await;
+    let wire = call_tool_raw(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
+        .await
+        .expect("planner reads the report");
+    let content = wire["content"].as_array().expect("content array");
+    assert_eq!(content.len(), 1, "{wire}");
+    let line = content[0]["text"].as_str().expect("text block");
+    assert!(
+        line.len() < 300,
+        "content[0].text must be a one-line summary, got {} bytes: {line}",
+        line.len()
+    );
+    assert!(!line.contains('\n'), "{line}");
+    assert!(
+        line.ends_with("; full state in structuredContent"),
+        "{line}"
+    );
+    let doc_rev = current_doc_rev(&boot).await;
+    assert!(
+        line.starts_with(&format!("docRev {doc_rev} · 3 blocks · ")),
+        "{line}"
+    );
+    assert!(
+        line.contains(&format!(" · {} bytes · a large report;", body.len())),
+        "{line}"
+    );
+    let structured = &wire["structuredContent"];
+    assert!(
+        structured.get("body").is_none(),
+        "the legacy `body` alias must be gone: {}",
+        structured
+            .as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
+            .unwrap_or_default()
+    );
+    assert_eq!(structured["text"].as_str(), Some(body.as_str()));
+    assert_eq!(structured["docRev"].as_u64(), Some(doc_rev));
+    assert_eq!(structured["blocks"].as_array().map(Vec::len), Some(3));
+    assert!(structured.get("taskDiagnostics").is_some(), "{structured}");
+}
+
+#[tokio::test]
+async fn select_index_returns_anchors_without_text() {
+    let boot = boot().await;
+    seed_large_body(&boot).await;
+    let wire = call_tool_raw(
+        &boot,
+        TOOL_REPORT_READ,
+        planner_identity(&boot),
+        json!({"select": "index"}),
+    )
+    .await
+    .expect("planner reads the index");
+    let out = &wire["structuredContent"];
+    assert!(
+        out.get("text").is_none(),
+        "index must not carry text: {out}"
+    );
+    assert!(out.get("body").is_none(), "{out}");
+    assert_eq!(out["docRev"].as_u64(), Some(current_doc_rev(&boot).await));
+    let blocks = out["blocks"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 3);
+    for block in blocks {
+        assert!(block["id"].is_string() && block["kind"].is_string() && block["rev"].is_u64());
+    }
+    assert_eq!(out["summary"], "a large report");
+    assert!(out.get("taskDiagnostics").is_some(), "{out}");
+    let line = wire["content"][0]["text"].as_str().unwrap();
+    assert!(line.contains(" · index only · "), "{line}");
+    assert!(line.len() < 300, "{line}");
+    // `"full"` spelled out is today's shape.
+    let full = call_tool(
+        &boot,
+        TOOL_REPORT_READ,
+        planner_identity(&boot),
+        json!({"select": "full"}),
+    )
+    .await
+    .unwrap();
+    assert!(full["text"].is_string());
+}
+
+#[tokio::test]
+async fn select_blocks_returns_only_those_blocks_in_document_order_with_markers() {
+    let boot = boot().await;
+    seed_large_body(&boot).await;
+    let index = call_tool(
+        &boot,
+        TOOL_REPORT_READ,
+        planner_identity(&boot),
+        json!({"select": "index"}),
+    )
+    .await
+    .unwrap();
+    let ids: Vec<String> = index["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["id"].as_str().unwrap().to_string())
+        .collect();
+    let (b1, b2, b3) = (&ids[0], &ids[1], &ids[2]);
+
+    // Requested out of order; delivered in document order, each behind its
+    // marker, and nothing from the block that was not asked for.
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_READ,
+        planner_identity(&boot),
+        json!({"select": {"blocks": [b2, b1]}}),
+    )
+    .await
+    .expect("planner reads two blocks");
+    let text = out["text"].as_str().expect("text");
+    let m1 = calm_types::report_blocks::marker_line(b1);
+    let m2 = calm_types::report_blocks::marker_line(b2);
+    assert!(text.starts_with(&m1), "{text:.200}");
+    let second = text.find(&m2).expect("b2 marker present");
+    assert!(text[..second].contains("# One"), "{text:.200}");
+    assert!(
+        text[second..].contains("# Two"),
+        "{}",
+        &text[second..second + 200]
+    );
+    assert!(!text.contains("# Three"), "b3 must not be delivered");
+    assert!(!text.contains(&calm_types::report_blocks::marker_line(b3)));
+    assert_eq!(text.matches("<!-- neige:b_").count(), 2, "{text:.300}");
+    assert_eq!(
+        out["blocks"].as_array().map(Vec::len),
+        Some(3),
+        "the index stays whole"
+    );
+    assert_eq!(out["docRev"].as_u64(), Some(current_doc_rev(&boot).await));
+    // `with_markers` is a no-op on this form (markers are already on).
+    let again = call_tool(
+        &boot,
+        TOOL_REPORT_READ,
+        planner_identity(&boot),
+        json!({"select": {"blocks": [b1, b2]}, "with_markers": true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["text"], out["text"]);
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_READ,
+        planner_identity(&boot),
+        json!({"select": {"blocks": [b1, "b_doesnotexist"]}}),
+    )
+    .await
+    .expect_err("unknown block id must be refused");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS, "{err:?}");
+    assert!(err.message.contains("b_doesnotexist"), "{err:?}");
+
+    for bad in [
+        json!({"select": "everything"}),
+        json!({"select": {"blocks": []}}),
+        json!({"select": {"blocks": [1]}}),
+        json!({"select": {"blocks": [b1], "extra": true}}),
+        json!({"select": 7}),
+    ] {
+        let err = call_tool(
+            &boot,
+            TOOL_REPORT_READ,
+            planner_identity(&boot),
+            bad.clone(),
+        )
+        .await
+        .expect_err("malformed select must be refused");
+        assert_eq!(err.code, RpcError::INVALID_PARAMS, "{bad} → {err:?}");
+        assert!(err.message.contains("select"), "{bad} → {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
+    use calm_server::mcp_server::tools::track_report_blocks::{
+        RPC_REV_CONFLICT, TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_COMMIT,
+    };
+    let boot = boot().await;
+    seed_large_body(&boot).await;
+    let current = current_doc_rev(&boot).await;
+    assert!(current > 0);
+
+    // Stale `if_doc_rev` on the three whole-document carriers.
+    for (tool, args) in [
+        (
+            TOOL_REPORT_COMMIT,
+            json!({"if_doc_rev": current - 1, "message": "stale commit", "summary": "stale"}),
+        ),
+        (
+            TOOL_REPORT_WRITE,
+            json!({"body": "# stale\n", "message": "stale write", "if_doc_rev": current - 1}),
+        ),
+        (
+            TOOL_REPORT_EDIT,
+            json!({"old_string": "# One", "new_string": "# Uno", "message": "stale edit", "if_doc_rev": current - 1}),
+        ),
+    ] {
+        let err = call_tool(&boot, tool, planner_identity(&boot), args)
+            .await
+            .expect_err("stale if_doc_rev must conflict");
+        assert_eq!(err.code, RPC_REV_CONFLICT, "{tool}: {err:?}");
+        assert!(
+            err.message
+                .contains(&format!("current doc_rev is {current}")),
+            "{tool}: {err:?}"
+        );
+        assert_eq!(
+            err.data.as_ref().and_then(|d| d["docRev"].as_u64()),
+            Some(current),
+            "{tool}: data.docRev must be the current doc rev: {err:?}"
+        );
+    }
+
+    // Stale block `if_rev` through `blocks.upsert`.
+    let index = call_tool(
+        &boot,
+        TOOL_REPORT_READ,
+        planner_identity(&boot),
+        json!({"select": "index"}),
+    )
+    .await
+    .unwrap();
+    let block = &index["blocks"][0];
+    let (id, rev) = (
+        block["id"].as_str().unwrap(),
+        block["rev"].as_u64().unwrap(),
+    );
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&boot),
+        json!({"id": id, "kind": "prose", "markdown": "# stomp\n", "if_rev": rev + 41}),
+    )
+    .await
+    .expect_err("stale if_rev must conflict");
+    assert_eq!(err.code, RPC_REV_CONFLICT, "{err:?}");
+    assert!(
+        err.message.contains(&format!("current rev is {rev}")),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.data.as_ref().and_then(|d| d["rev"].as_u64()),
+        Some(rev),
+        "data.rev must be the block's current rev: {err:?}"
+    );
+    // Nothing was written: the anchors a retry would use are unchanged.
+    assert_eq!(current_doc_rev(&boot).await, current);
 }

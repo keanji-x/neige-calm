@@ -157,7 +157,7 @@ async fn block_write_invalidates_previously_read_whole_document_revision() {
     assert!(conflict.message.contains("current doc_rev is 1"));
     let after = read(&boot, json!({})).await;
     assert_eq!(after["docRev"], 1);
-    assert_ne!(after["body"], "# stale rewrite\n");
+    assert_ne!(after["text"], "# stale rewrite\n");
 }
 
 #[tokio::test]
@@ -189,7 +189,7 @@ async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("if_doc_rev"));
     assert_ne!(
-        read(&boot, json!({})).await["body"],
+        read(&boot, json!({})).await["text"],
         "# accidental overwrite\n"
     );
 }
@@ -514,10 +514,9 @@ async fn read_returns_blocks_index_and_clean_text_by_default() {
     let boot = boot().await;
     let out = read(&boot, json!({})).await;
     assert_eq!(out.get("text").and_then(Value::as_str), Some(seed_body()));
-    assert_eq!(
-        out.get("body").and_then(Value::as_str),
-        Some(seed_body()),
-        "legacy `body` alias carries the same value as `text`",
+    assert!(
+        out.get("body").is_none(),
+        "#1727 S2: the legacy `body` alias is gone; got {out}",
     );
     // `<!-- neige:b_` is the marker shape (`marker_line_id`); the birth body's
     // first line is the `<!-- neige:contract … -->` header (#1635 D2), which

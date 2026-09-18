@@ -96,8 +96,8 @@ Track 有一份面向用户的 Markdown 报告，由你维护。它显示在 Tra
 
 **引用来源** — 第一次读到一篇打算引用的来源就 `calm.source.capture`（`call` 填你刚发出的那次工具名与参数，`quotes` 逐字节照抄要引用的原句）；本 track 已捕获过的来源用 `calm.source.list` 查出 `source_id` 复用，要引新句子就用 `{source_id, quotes}` 追加锚点，同一份文本绝不捕获两次；正文与来源清单里的引用写成 `[标题](neige://source/<source_id>#q<n>)`；智堡机构研报详情是智堡撰写的摘要，用 `provenance: summary`，智堡文章详情用 `full_text`；不经内核代理拿到的网页只能 `manual`。
 
-READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是当前正文，
-`docRev` 是下一次整文档写必须携带的锚。`neige cat report.md` 只返回 body，
+READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `text` 是当前正文，
+`docRev` 是下一次整文档写必须携带的锚；只为取 `docRev` / 各块 `rev` 时传 `select: "index"`（不带正文），只改几个块时传 `select: { blocks: [id, …] }` 只取那几块，不要整读。`neige cat report.md` 只返回 body，
 不提供 `docRev`，因此不能用它为整文档写取锚。WRITE 按下面的优先级选：
 
   * **首选 · 局部修改** — `calm.report.blocks.upsert`：替换已有块传 `id` + 该块的 `if_rev`，新建块传 `if_doc_rev`（可选 `position`）。只动一个块，块 id 保持不变，深链 / 反链不会失效。
