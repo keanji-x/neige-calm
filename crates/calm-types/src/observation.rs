@@ -390,6 +390,10 @@ impl Observation {
                         (None, None) => "FAILED".to_string(),
                     }
                 };
+                // #1727 S1 — the tail is rendered with runs of identical
+                // consecutive lines folded (`<line> (×N)`); the stored
+                // observation and the log file keep every line.
+                let log_tail = collapse_repeated_lines(log_tail);
                 format!(
                     "Task {key} gate {verdict} (attempt {attempt}). Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
                 )
@@ -466,9 +470,111 @@ impl Observation {
     }
 }
 
+/// #1727 S1 — rewrite runs of two or more identical consecutive lines as one
+/// `<line> (×N)` line (a run of blank lines as `(blank ×N)`; a single blank
+/// line stays blank). Pure text folding for rendered wake text (the gate
+/// result's `log_tail`, up to 8 KiB of which was one repeated warning in the
+/// #1727 forensics). Lines are split with `str::lines`, so every line
+/// terminator comes back as `\n` — `"a\r\nb\r\n"` renders as `"a\nb\n"`;
+/// apart from that normalisation, unrepeated text is returned unchanged,
+/// including a trailing newline. Never applied to stored payloads or files
+/// on disk.
+pub fn collapse_repeated_lines(text: &str) -> String {
+    let trailing_newline = text.ends_with('\n');
+    let mut out = String::with_capacity(text.len());
+    let mut first = true;
+    let mut run: Option<(&str, usize)> = None;
+    let mut flush = |out: &mut String, run: Option<(&str, usize)>| {
+        if let Some((line, count)) = run {
+            if !std::mem::take(&mut first) {
+                out.push('\n');
+            }
+            out.push_str(line);
+            if count > 1 {
+                if line.is_empty() {
+                    out.push_str(&format!("(blank ×{count})"));
+                } else {
+                    out.push_str(&format!(" (×{count})"));
+                }
+            }
+        }
+    };
+    for line in text.lines() {
+        match run {
+            Some((current, count)) if current == line => run = Some((current, count + 1)),
+            _ => {
+                flush(&mut out, run);
+                run = Some((line, 1));
+            }
+        }
+    }
+    flush(&mut out, run);
+    if trailing_newline && !text.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collapse_repeated_lines_leaves_unrepeated_text_identical() {
+        let text = "a\nb\nc\na";
+        assert_eq!(collapse_repeated_lines(text), text);
+        assert_eq!(collapse_repeated_lines("single"), "single");
+    }
+
+    #[test]
+    fn collapse_repeated_lines_folds_a_run_into_a_count() {
+        let text = "start\nNot implemented: Window's scrollTo()\nNot implemented: Window's scrollTo()\nNot implemented: Window's scrollTo()\nend";
+        assert_eq!(
+            collapse_repeated_lines(text),
+            "start\nNot implemented: Window's scrollTo() (×3)\nend"
+        );
+        // A run of exactly two folds too; non-adjacent repeats do not.
+        assert_eq!(collapse_repeated_lines("x\nx\ny\nx"), "x (×2)\ny\nx");
+    }
+
+    #[test]
+    fn collapse_repeated_lines_preserves_trailing_newline_and_empty_input() {
+        assert_eq!(collapse_repeated_lines("x\nx\n"), "x (×2)\n");
+        assert_eq!(collapse_repeated_lines("x\ny\n"), "x\ny\n");
+        assert_eq!(collapse_repeated_lines(""), "");
+        assert_eq!(collapse_repeated_lines("\n"), "\n");
+        // Blank lines are lines too: a run of them folds to a labelled
+        // count (fix round 1 F4 — not a bare ` (×3)`), while a single blank
+        // line, leading or between lines, stays blank.
+        assert_eq!(collapse_repeated_lines("a\n\n\n\nb"), "a\n(blank ×3)\nb");
+        assert_eq!(collapse_repeated_lines("a\n\nb"), "a\n\nb");
+        assert_eq!(collapse_repeated_lines("\na"), "\na");
+    }
+
+    /// Fix round 1 F4 — `str::lines` strips `\r\n` as one terminator, so
+    /// CRLF input comes back LF-terminated; the doc comment says so rather
+    /// than promising "unchanged".
+    #[test]
+    fn collapse_repeated_lines_normalises_crlf_to_lf() {
+        assert_eq!(collapse_repeated_lines("a\r\nb\r\n"), "a\nb\n");
+        assert_eq!(collapse_repeated_lines("w\r\nw\r\nw"), "w (×3)");
+    }
+
+    #[test]
+    fn gate_result_turn_text_renders_a_collapsed_log_tail() {
+        let obs = Observation::TaskGateResult {
+            idempotency_key: "w:k".into(),
+            key: "k".into(),
+            passed: true,
+            failing_step: None,
+            exit_code: Some(0),
+            log_tail: "ok\nwarn\nwarn\nwarn\n".into(),
+            attempt: 1,
+        };
+        let text = obs.to_turn_text();
+        assert!(text.contains("Log tail:\nok\nwarn (×3)\n"), "{text}");
+        assert!(!text.contains("warn\nwarn"), "{text}");
+    }
 
     #[test]
     fn user_message_is_hard_fire() {

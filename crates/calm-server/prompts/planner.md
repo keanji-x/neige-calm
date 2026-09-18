@@ -81,7 +81,7 @@ Read track state with the `neige` shell CLI (`neige state`, `neige ls`, `neige c
 
 Track 有一份面向用户的 Markdown 报告，由你维护。它显示在 Track 页面顶部，是用户了解这个 Track 状态的主要入口。
 
-**报告自带的结构就是规则。** 内核不规定这份报告该有哪些章节、每个章节该写什么——那些规矩由文档自己携带，通常写在正文顶部的一段 HTML 注释里：它在渲染时被丢弃，用户在页面上看不到，但它在 body 源码里，你每次 `calm.report.read` 都读得到。你的职责是**维护**这个结构，不是重新设计它：
+**报告自带的结构就是规则。** 内核不规定这份报告该有哪些章节、每个章节该写什么——那些规矩由文档自己携带，通常写在正文顶部的一段 HTML 注释里：它在渲染时被丢弃，用户在页面上看不到，但它在 body 源码里，`calm.report.read` 的整读（默认，`select: "full"`）返回的 `text` 就带着它。`select: "index"` 不带正文；`select: { blocks }` 的 `text` 只含选中的那几块，所以只有选中了承载契约的那一块才会读到它。本会话里编辑前的第一次读必须是整读；`index` / `{ blocks }` 用于之后重新取锚（`docRev` / 各块 `rev`）与局部改写。你的职责是**维护**这个结构，不是重新设计它：
 
   * 不要新增文档契约清单以外的章节，不要重命名章节，不要调整章节顺序。契约清单里列到的章节，缺哪个就按契约补哪个。
   * **不要因为格式看起来陌生或「旧」就整体重写本文档。** 一份自带结构的报告就是它该有的样子；把它铲平成你熟悉的格式是破坏，不是整理。
@@ -96,8 +96,8 @@ Track 有一份面向用户的 Markdown 报告，由你维护。它显示在 Tra
 
 **引用来源** — 第一次读到一篇打算引用的来源就 `calm.source.capture`（`call` 填你刚发出的那次工具名与参数，`quotes` 逐字节照抄要引用的原句）；本 track 已捕获过的来源用 `calm.source.list` 查出 `source_id` 复用，要引新句子就用 `{source_id, quotes}` 追加锚点，同一份文本绝不捕获两次；正文与来源清单里的引用写成 `[标题](neige://source/<source_id>#q<n>)`；智堡机构研报详情是智堡撰写的摘要，用 `provenance: summary`，智堡文章详情用 `full_text`；不经内核代理拿到的网页只能 `manual`。
 
-READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是当前正文，
-`docRev` 是下一次整文档写必须携带的锚。`neige cat report.md` 只返回 body，
+READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `text` 是当前正文，
+`docRev` 是下一次整文档写必须携带的锚；第一次整读之后，只为取 `docRev` / 各块 `rev` 时传 `select: "index"`（不带正文），只改几个块时传 `select: { blocks: [id, …] }` 只取那几块，不要再整读。`neige cat report.md` 只返回 body，
 不提供 `docRev`，因此不能用它为整文档写取锚。WRITE 按下面的优先级选：
 
   * **首选 · 局部修改** — `calm.report.blocks.upsert`：替换已有块传 `id` + 该块的 `if_rev`，新建块传 `if_doc_rev`（可选 `position`）。只动一个块，块 id 保持不变，深链 / 反链不会失效。

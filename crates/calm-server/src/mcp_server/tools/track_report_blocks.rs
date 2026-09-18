@@ -92,6 +92,42 @@ pub const TOOL_REPORT_COMMIT: &str = "calm.report.commit";
 /// conflict (kernel-extension range; see framing.rs).
 pub const RPC_REV_CONFLICT: i64 = -32001;
 
+/// #1727 S2 (#1678 B2) — the one `-32001` constructor for every report
+/// write (`calm.report.write` / `.edit` / `.write_markdown` / `.blocks.*` /
+/// `.commit`). `message` is the caller's fully formatted text, unchanged;
+/// `data` carries the current revisions that text names — `docRev` from
+/// `current doc_rev is N`, `rev` from `current rev is N` — so a retry can
+/// re-anchor without a full `calm.report.read`. Parsed here rather than
+/// threaded through `CalmError::Conflict(String)`: the producers
+/// (`track_report::check_doc_rev` / `check_rev`) run inside the persist
+/// transaction and only speak `CalmError`, and this is the single site
+/// where those strings become RPC errors.
+///
+/// A block-rev conflict names both: `check_rev` appends `current doc_rev is
+/// N` so a `blocks.upsert{id}` retry (which takes no `if_doc_rev`) and a
+/// `commit` retry (which does) each find their anchor here. A
+/// document-rev conflict names only `docRev` — no block was compared.
+pub(crate) fn rev_conflict_error(message: String) -> RpcError {
+    let mut data = serde_json::Map::new();
+    if let Some(doc_rev) = number_after(&message, "current doc_rev is ") {
+        data.insert("docRev".into(), Value::from(doc_rev));
+    }
+    if let Some(rev) = number_after(&message, "current rev is ") {
+        data.insert("rev".into(), Value::from(rev));
+    }
+    let mut error = RpcError::custom(RPC_REV_CONFLICT, message);
+    if !data.is_empty() {
+        error.data = Some(Value::Object(data));
+    }
+    error
+}
+
+fn number_after(text: &str, marker: &str) -> Option<u64> {
+    let rest = &text[text.find(marker)? + marker.len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(kinds_descriptor(), wrap(blocks_kinds));
     registry.register(upsert_descriptor(), wrap(blocks_upsert));
@@ -733,7 +769,7 @@ fn reject_duplicate_block_ids(ops: &[BatchBlockOp], tool: &str) -> Result<(), Rp
 ///   * anything else → internal.
 fn map_commit_err(tool: &str, e: CalmError) -> RpcError {
     match e {
-        CalmError::Conflict(m) => RpcError::custom(RPC_REV_CONFLICT, format!("{tool}: {m}")),
+        CalmError::Conflict(m) => rev_conflict_error(format!("{tool}: {m}")),
         CalmError::BadRequest(m) => RpcError::invalid_params(format!("{tool}: {m}")),
         CalmError::Forbidden(m) => RpcError::custom(-32403, format!("{tool}: forbidden: {m}")),
         other => RpcError::internal(format!("{tool}: {other}")),
@@ -823,5 +859,47 @@ fn optional_index(
                     "{tool}: `{key}` must be a non-negative integer index"
                 ))
             }),
+    }
+}
+
+#[cfg(test)]
+mod rev_conflict_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// #1727 S2 — the exact producer strings from `track_report::check_doc_rev`
+    /// / `check_rev`, as each mapping site hands them over.
+    #[test]
+    fn rev_conflict_error_parses_the_current_revisions_it_names() {
+        let doc = rev_conflict_error(
+            "calm.report.commit: document revision conflict: current doc_rev is 12, expected \
+             if_doc_rev 11 — re-read the report and retry with the current docRev"
+                .into(),
+        );
+        assert_eq!(doc.code, RPC_REV_CONFLICT);
+        assert!(
+            doc.message
+                .starts_with("calm.report.commit: document revision conflict")
+        );
+        assert_eq!(doc.data, Some(json!({"docRev": 12})));
+
+        let block = rev_conflict_error(
+            "calm.report.blocks.upsert: rev conflict on block b_1: current rev is 7, expected \
+             if_rev 3; current doc_rev is 12 — re-read the report and retry with the current rev"
+                .into(),
+        );
+        assert_eq!(block.data, Some(json!({"docRev": 12, "rev": 7})));
+
+        // The edit precheck's message has no tool prefix; still parsed.
+        let edit = rev_conflict_error(
+            "document revision conflict: current doc_rev is 3, expected if_doc_rev 2".into(),
+        );
+        assert_eq!(edit.data, Some(json!({"docRev": 3})));
+
+        // A conflict that names no revision carries no `data` at all rather
+        // than an empty object a retry might misread as "rev 0".
+        let bare = rev_conflict_error("track_report: something else conflicted".into());
+        assert_eq!(bare.data, None);
+        assert_eq!(bare.message, "track_report: something else conflicted");
     }
 }

@@ -71,6 +71,68 @@ fn supervisor_sock_for_provider_registry(daemon: &DaemonClient) -> PathBuf {
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock"))
 }
+/// The event kinds `event_warrants_planner_push_with_role` can answer `true`
+/// for under SOME actor / author / role — exactly the rows the boot catch-up
+/// (`harness::catch_up::observations_since`) reads back from the events
+/// table. Any kind outside this list is a constant `false` in the predicate,
+/// so reading it at boot would be wasted I/O; any kind inside it that the
+/// predicate could never push would be a silent catch-up/live divergence.
+/// `dispatcher::tests::planner_catch_up_kinds_equal_the_push_capable_kinds`
+/// pins the equivalence against the per-kind predicate table.
+pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
+    "task.completed",
+    "task.failed",
+    "task.execution_settled",
+    "task.file_publication_settled",
+    "task.candidate_verification_settled",
+    // Issue #644 PR-C (§6.5/§8) — gate verdicts that landed while the
+    // kernel was down replay like live pushes.
+    "task.gate_result",
+    "track.report_edited",
+    // #1727 S1 — `workspace.leased/released`, `worktree.provisioned/committed`
+    // and `review.round` are no longer wakes (the predicate returns false
+    // for them), so they are absent here and from the live subscription.
+    "forge.scan.completed",
+    "forge.pr.opened",
+    "forge.pr.checks",
+    "forge.issue.closed",
+    "forge.pr.merged",
+    "ratify.requested",
+    "ratify.resolved",
+    "codex.hook",
+    "claude.hook",
+];
+
+/// The kinds the dispatcher subscribes to that never enter the push branch:
+/// they only poke the plan scheduler or the task-context monitor
+/// (`Inner::handle_envelope`'s scheduler-only arms — Issue #644 PR-B §5.1
+/// triggers 1 + 4, round-2 review F4 for `track.updated`, and the deletion
+/// sweeps). Disjoint from `PLANNER_CATCH_UP_KINDS` by construction: a kind
+/// in both would be a push-capable kind the catch-up list already owns.
+/// `dispatcher::tests::dispatcher_subscription_is_push_kinds_plus_scheduler_kinds`
+/// pins the union against the live subscription and the handler arms.
+pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
+    "plan.updated",
+    "track.lifecycle_changed",
+    "track.updated",
+    "track.deleted",
+    "area.deleted",
+];
+
+/// The ONE kind list the dispatcher's `SubscribeFilter` is built from:
+/// `PLANNER_CATCH_UP_KINDS ⊕ SCHEDULER_TRIGGER_KINDS`, in that order. The
+/// spawn site (`Dispatcher::spawn`) and the filter test read this same
+/// function, so a kind dropped from either const disappears from the live
+/// subscription and from the test in the same edit — there is no second
+/// hand-written copy to go stale (#1727 S1 fix H4).
+pub(crate) fn dispatcher_subscription_kinds() -> Vec<String> {
+    PLANNER_CATCH_UP_KINDS
+        .iter()
+        .chain(SCHEDULER_TRIGGER_KINDS.iter())
+        .map(|kind| (*kind).to_string())
+        .collect()
+}
+
 pub(crate) fn event_warrants_planner_push(
     event: &Event,
     actor: &ActorId,
@@ -115,17 +177,32 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // leaving the planner unaware that its report changed under it is a
         // worse failure than one extra wake-up.
         Event::TrackReportEdited { author, .. } => PLANNER_WAKE_AUTHORS.contains(author),
-        Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
         Event::ForgePrMerged { .. }
-        | Event::ReviewRound { .. }
         | Event::RatifyRequested { .. }
         | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }
         | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
-        | Event::ForgeIssueClosed { .. }
+        | Event::ForgeIssueClosed { .. } => true,
+        // #1727 S1 — workspace / worktree lifecycle notices and
+        // `review.round` no longer wake the planner. The facts stay in the
+        // `workspace_leases` and `events` rows and are read back on demand:
+        // `calm.plan.list` renders the worker's lease path / slice branch /
+        // the last commit the kernel recorded for the card as `worktree`
+        // (`operation::workspace_lease::facts::worker_worktree_facts_tx`);
+        // each of these used to cost a whole turn that ended in one
+        // `calm.plan.list`. `review.round` can only be written by the
+        // planner author (`calm-truth::role_gate`), so pushing it is pure
+        // self-echo. A successful `worktree.committed` needs no wake either.
+        // KNOWN GAP (#1615 A): a FAILED auto commit writes only its
+        // operation row — no event, tasks row untouched — and
+        // `worktree.last_commit` shows only the last SUCCESSFUL kernel
+        // commit, so the failure is invisible.
+        Event::WorkspaceLeased { .. }
+        | Event::WorkspaceReleased { .. }
         | Event::WorktreeProvisioned { .. }
-        | Event::WorktreeCommitted { .. } => true,
+        | Event::WorktreeCommitted { .. }
+        | Event::ReviewRound { .. } => false,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
             let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
@@ -224,6 +301,41 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
                 idempotency_key = %idempotency_key,
                 error = %e,
                 "dispatcher push: gated-self-report lookup failed; pushing self-report (fail-open)"
+            );
+            false
+        }
+    }
+}
+
+/// #1727 S1 — the stale-worker-stop consultation shared by the live
+/// `CodexHook | ClaudeHook` push arm and the boot catch-up
+/// (`harness::catch_up::observations_since`), run AFTER the sync
+/// predicate said the hook is a worker stop. A worker card's stop hook is
+/// only a wake while its tasks row is still `dispatched | running`: once
+/// the row moved on (`verifying`, or terminal) the gate result / task
+/// terminal event IS the wake, and the stop hook would cost the planner
+/// an extra turn that ends in one `calm.plan.list`. Returns `true` when
+/// the push must be suppressed.
+///
+/// No tasks row for the card (ungated / legacy worker cards) → push.
+/// Lookup error → push (fail-open, same shape as `is_gated_self_report`:
+/// a spurious wake is benign, a silently lost one is not).
+pub(crate) async fn is_stale_worker_stop_hook(repo: &dyn crate::db::Repo, event: &Event) -> bool {
+    let card_id = match event {
+        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => card_id,
+        _ => return false,
+    };
+    match repo.task_for_worker_card(card_id.as_str()).await {
+        Ok(Some(task)) => !matches!(
+            task.status,
+            crate::model::TaskStatus::Dispatched | crate::model::TaskStatus::Running
+        ),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(
+                card_id = %card_id,
+                error = %e,
+                "dispatcher push: stale-worker-stop lookup failed; pushing stop hook (fail-open)"
             );
             false
         }
@@ -840,48 +952,18 @@ impl Dispatcher {
         // scheduler trigger events poke the plan scheduler. Hook events
         // are coarse-filtered by `kind_tag()` here; the exact turn-ending
         // hook discriminators are checked synchronously in the push branch
-        // below.
-        let kinds: Vec<String> = vec![
-            "task.completed".into(),
-            "task.failed".into(),
-            "task.execution_settled".into(),
-            "task.file_publication_settled".into(),
-            "task.candidate_verification_settled".into(),
-            // Issue #644 PR-C — the gate runner's verdict: pushed to
-            // the planner (hard-fire) and a scheduler trigger (a gate
-            // verdict terminalizes the task — budget freed / deps
-            // satisfiable).
-            "task.gate_result".into(),
-            "track.report_edited".into(),
-            "track.deleted".into(),
-            "area.deleted".into(),
-            "workspace.leased".into(),
-            "workspace.released".into(),
-            "forge.scan.completed".into(),
-            "forge.pr.opened".into(),
-            "forge.pr.checks".into(),
-            "forge.issue.closed".into(),
-            "worktree.provisioned".into(),
-            "worktree.committed".into(),
-            "forge.pr.merged".into(),
-            "review.round".into(),
-            "ratify.requested".into(),
-            "ratify.resolved".into(),
-            "codex.hook".into(),
-            "claude.hook".into(),
-            // Issue #644 PR-B — scheduler triggers (§5.1). These
-            // only poke the scheduler; they never enter the push branch.
-            // `track.updated` (round-2 review
-            // F4) covers budget-changing PATCHes, which emit no
-            // lifecycle event when the lifecycle is unchanged.
-            "plan.updated".into(),
-            "track.lifecycle_changed".into(),
-            "track.updated".into(),
-        ];
+        // below. The kind list is `PLANNER_CATCH_UP_KINDS` (every
+        // push-capable kind — Issue #644 PR-C's `task.gate_result` is both
+        // a push and a scheduler trigger and lives there) plus
+        // `SCHEDULER_TRIGGER_KINDS` (Issue #644 PR-B §5.1 scheduler pokes
+        // and the deletion sweeps); nothing is listed here by hand. #1727
+        // S1 — `workspace.leased/released`, `worktree.provisioned/committed`
+        // and `review.round` are in neither: the push predicate is a
+        // constant `false` for them and they poke nothing else.
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
             include_descendants: true,
-            kinds: Some(kinds),
+            kinds: Some(dispatcher_subscription_kinds()),
         };
         let mut rx = events.subscribe_filtered();
 
@@ -1186,22 +1268,13 @@ impl Inner {
                     }
                 });
             }
-            Event::WorkspaceLeased { track_id, .. } | Event::WorkspaceReleased { track_id, .. } => {
-                if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write) {
-                    self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
-                        .await;
-                }
-            }
             Event::ForgePrMerged { track_id, .. }
-            | Event::ReviewRound { track_id, .. }
             | Event::RatifyRequested { track_id, .. }
             | Event::RatifyResolved { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
             | Event::ForgePrOpened { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
-            | Event::ForgeIssueClosed { track_id, .. }
-            | Event::WorktreeProvisioned { track_id, .. }
-            | Event::WorktreeCommitted { track_id, .. } => {
+            | Event::ForgeIssueClosed { track_id, .. } => {
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
                         .await;
@@ -1218,7 +1291,14 @@ impl Inner {
                 // worker cards should notify the planner. Stop hooks carry no
                 // result/artifacts, so the pushed observation is a light
                 // wake-up that asks the planner to re-read track state.
-                if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write) {
+                //
+                // #1727 S1 — and only while the card's task is still
+                // `dispatched | running`: past that the gate result / task
+                // terminal event is the wake (`is_stale_worker_stop_hook`,
+                // the same consultation the boot catch-up runs).
+                if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write)
+                    && !is_stale_worker_stop_hook(self.repo.as_ref(), &envelope.event).await
+                {
                     if let Some(track_id) = envelope.scope.track_id().cloned() {
                         self.observe_harness(track_id, &envelope.event, envelope.id)
                             .await;
@@ -1270,6 +1350,13 @@ impl Inner {
             // not in the dispatcher's kind filter.
             | Event::ProposalSubmitted { .. }
             | Event::ProposalResolved { .. }
+            // #1727 S1 — the five quiet kinds: not subscribed, never
+            // pushed (`PLANNER_CATCH_UP_KINDS`), nothing else to do.
+            | Event::WorkspaceLeased { .. }
+            | Event::WorkspaceReleased { .. }
+            | Event::WorktreeProvisioned { .. }
+            | Event::WorktreeCommitted { .. }
+            | Event::ReviewRound { .. }
             | Event::WorktreeRemoved { .. } => {
                 tracing::warn!(
                     kind = envelope.event.kind_tag(),

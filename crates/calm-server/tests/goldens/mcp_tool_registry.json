@@ -169,7 +169,7 @@
   },
   {
     "name": "calm.plan.list",
-    "description_sha256": "9b8cd5d0ab79f1a9cc9545ef6e4df5bacd6388ab0bbc33d9dce34c20f951a139",
+    "description_sha256": "e9c0329b127b42a9a4a116712d1fdd327abd1d76757e90a864020e861b7b1dd1",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -794,7 +794,7 @@
   },
   {
     "name": "calm.report.read",
-    "description_sha256": "d4a03b47f209968f85c15b6f8b6f5d3550e0215ad456997c15e1c03863214bdd",
+    "description_sha256": "564ff6a4ec2b32f9b5d40c80fcca9dee593f9f04c0b1ff712d78cc8bd667a1cd",
     "input_schema": {
       "properties": {
         "resolve": {
@@ -808,8 +808,36 @@
           "description": "Per-block hydration override for `chart.series` and live `table` blocks: `{ [block_id]: \"full\" | \"none\" }`. Default (no entry) is the summary.",
           "type": "object"
         },
+        "select": {
+          "description": "What to return: \"full\" (default; `text` + index), \"index\" (`docRev`, `summary`, `blocks`, `taskDiagnostics` — no `text`), or `{ \"blocks\": [\"b_x\", …] }` (index + `text` holding only those blocks in document order, each preceded by its `<!-- neige:b_x -->` marker line; an unknown id is an error).",
+          "oneOf": [
+            {
+              "enum": [
+                "full",
+                "index"
+              ],
+              "type": "string"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "blocks": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "blocks"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "with_markers": {
-          "description": "Inject a `<!-- neige:b_xxxx -->` marker line before each block in `text` (default false).",
+          "description": "Inject a `<!-- neige:b_xxxx -->` marker line before each block in `text` (default false; always on for `select.blocks`).",
           "type": "boolean"
         }
       },

@@ -10,7 +10,7 @@
 //!
 //! | Tool | Shape | Notes |
 //! |---|---|---|
-//! | `calm.report.read`  | `{}` | Returns `{ body, summary, schemaVersion, updated_at }`. |
+//! | `calm.report.read`  | `{ select?, with_markers?, resolve? }` | Returns `{ text, summary, schemaVersion, docRev, updated_at, blocks, taskDiagnostics }`; `select` picks `"full"` / `"index"` / `{ blocks }` (#1727 S2). |
 //! | `calm.report.write` | `{ body: String, summary?: String }` | Wholesale replace (like codex `Write`). |
 //! | `calm.report.edit`  | `{ old_string: String, new_string: String, replace_all?: bool }` | Like codex `Edit` — `old_string` must be unique unless `replace_all = true`. |
 //!
@@ -65,6 +65,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, require_role, require_role_any, role_gated_write_annotations,
 };
+use crate::mcp_server::result::ToolResult;
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
@@ -80,7 +81,7 @@ pub const TOOL_REPORT_WRITE: &str = "calm.report.write";
 pub const TOOL_REPORT_EDIT: &str = "calm.report.edit";
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(read_descriptor(), wrap(report_read));
+    registry.register(read_descriptor(), wrap_with(report_read, read_result));
     registry.register(write_descriptor(), wrap(report_write));
     registry.register(edit_descriptor(), wrap(report_edit));
 }
@@ -91,14 +92,70 @@ where
     F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Value, RpcError>> + Send + 'static,
 {
+    wrap_with(f, ToolResult::structured)
+}
+
+/// `wrap` with the envelope constructor chosen by the caller. #1727 S2 —
+/// `calm.report.read` uses [`read_result`] so its `content[0].text` is one
+/// summary line instead of a second copy of the whole report.
+fn wrap_with<F, Fut>(f: F, envelope: fn(Value) -> ToolResult) -> ToolHandler
+where
+    F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<Value, RpcError>> + Send + 'static,
+{
     Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
         let result = f(ctx, identity, args);
-        Box::pin(async move {
-            result
-                .await
-                .map(crate::mcp_server::result::ToolResult::structured)
-        })
+        Box::pin(async move { result.await.map(envelope) })
     })
+}
+
+/// #1727 S2 — the read's envelope: one summary line in `content[0].text`
+/// (`docRev · blocks · bytes · summary; full state in structuredContent`,
+/// the convention `tools/terminal.rs` set), the document itself only in
+/// `structuredContent`. Before this the 190 KB report the #1727 forensics
+/// measured was delivered as `text` + the `body` alias + both again inside
+/// the JSON text block — four copies per read.
+fn read_result(value: Value) -> ToolResult {
+    let summary = read_summary_line(&value);
+    ToolResult::structured_with_summary(value, summary)
+}
+
+/// Longest prefix of the report summary rendered on the one-line receipt,
+/// in BYTES (the receipt's size bound is a byte bound, and the summary is
+/// Chinese by `planner.md`'s rule — 120 chars of it would be ~360 bytes).
+const SUMMARY_LINE_BYTES: usize = 120;
+
+/// The longest prefix of `text` that fits `budget` bytes, cut on a char
+/// boundary; `None` when the whole text fits.
+fn clip_to_bytes(text: &str, budget: usize) -> Option<&str> {
+    if text.len() <= budget {
+        return None;
+    }
+    let cut = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= budget)
+        .last()
+        .unwrap_or(0);
+    Some(&text[..cut])
+}
+
+fn read_summary_line(value: &Value) -> String {
+    let doc_rev = &value["docRev"];
+    let blocks = value["blocks"].as_array().map_or(0, Vec::len);
+    let payload = match value.get("text").and_then(Value::as_str) {
+        Some(text) => format!("{} bytes", text.len()),
+        None => "index only".to_string(),
+    };
+    let summary = value["summary"].as_str().unwrap_or_default();
+    let summary = summary.split(['\n', '\r']).next().unwrap_or_default();
+    let summary = match clip_to_bytes(summary, SUMMARY_LINE_BYTES) {
+        Some(prefix) => format!("{prefix}…"),
+        None => summary.to_string(),
+    };
+    format!(
+        "docRev {doc_rev} · {blocks} blocks · {payload} · {summary}; full state in structuredContent"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -114,9 +171,32 @@ fn read_descriptor() -> ToolDescriptor {
         input_schema: json!({
             "type": "object",
             "properties": {
+                "select": {
+                    "description": concat!(
+                        "What to return: \"full\" (default; `text` + index), \"index\" ",
+                        "(`docRev`, `summary`, `blocks`, `taskDiagnostics` — no `text`), or ",
+                        "`{ \"blocks\": [\"b_x\", …] }` (index + `text` holding only those blocks ",
+                        "in document order, each preceded by its `<!-- neige:b_x -->` marker line; ",
+                        "an unknown id is an error)."
+                    ),
+                    "oneOf": [
+                        { "type": "string", "enum": ["full", "index"] },
+                        {
+                            "type": "object",
+                            "required": ["blocks"],
+                            "properties": {
+                                "blocks": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                            },
+                            "additionalProperties": false
+                        }
+                    ]
+                },
                 "with_markers": {
                     "type": "boolean",
-                    "description": "Inject a `<!-- neige:b_xxxx -->` marker line before each block in `text` (default false)."
+                    "description": concat!(
+                        "Inject a `<!-- neige:b_xxxx -->` marker line before each block in ",
+                        "`text` (default false; always on for `select.blocks`)."
+                    )
                 },
                 "resolve": {
                     "type": "object",
@@ -146,6 +226,7 @@ pub(crate) async fn report_read(
     // write channel (`calm.report.write` / `.edit`, which can carry
     // lifecycle) stays Planner-only — that is the §3.2 dividing line.
     require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
+    let select = parse_select_arg(&args, "calm.report.read")?;
     let with_markers = match args.get("with_markers") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -167,50 +248,124 @@ pub(crate) async fn report_read(
     )
     .await
     .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
-    let text = if with_markers {
-        let mut text = String::new();
-        for block in &snapshot.blocks {
-            calm_types::report_blocks::append_block_text(
-                &mut text,
-                &format!(
-                    "{}{}",
-                    calm_types::report_blocks::marker_line(&block.id),
-                    calm_types::report_blocks::flat_text(block)
-                ),
-            );
+    // #1727 S2 — `select` decides whether `text` is delivered at all and,
+    // for `{ blocks }`, which blocks it holds. The index is always present;
+    // it is what a `docRev` / `if_rev` retry needs.
+    let text = match &select {
+        ReadSelect::Index => None,
+        ReadSelect::Blocks(ids) => {
+            // Document order, each block behind its marker line (markers
+            // are unconditional here: a partial text is only addressable
+            // through them). An id the document does not hold is the
+            // caller's mistake, not an empty section.
+            for id in ids {
+                if !snapshot.blocks.iter().any(|block| &block.id == id) {
+                    return Err(RpcError::invalid_params(format!(
+                        "calm.report.read: select.blocks: unknown block id `{id}`"
+                    )));
+                }
+            }
+            let mut text = String::new();
+            for block in snapshot
+                .blocks
+                .iter()
+                .filter(|block| ids.contains(&block.id))
+            {
+                calm_types::report_blocks::append_block_text(
+                    &mut text,
+                    &format!(
+                        "{}{}",
+                        calm_types::report_blocks::marker_line(&block.id),
+                        calm_types::report_blocks::flat_text(block)
+                    ),
+                );
+            }
+            Some(text)
         }
-        text
-    } else {
-        snapshot.body.clone()
+        ReadSelect::Full if with_markers => {
+            let mut text = String::new();
+            for block in &snapshot.blocks {
+                calm_types::report_blocks::append_block_text(
+                    &mut text,
+                    &format!(
+                        "{}{}",
+                        calm_types::report_blocks::marker_line(&block.id),
+                        calm_types::report_blocks::flat_text(block)
+                    ),
+                );
+            }
+            Some(text)
+        }
+        ReadSelect::Full => Some(snapshot.body.clone()),
     };
     // #1628 S2 (D4) — `resolved` on `chart.series` and live `table` blocks:
     // rows and overlays only. This read never calls a plugin and never
     // writes; a series block without a fresh row is enqueued in memory.
     let index: Vec<Value> =
         hydrated_block_index(&ctx, track.id.as_str(), &snapshot.blocks, &resolve_modes).await;
+    // #1727 S2 — the `body` alias (same value as `text`) is gone: it doubled
+    // every read for consumers that no longer exist.
     let mut response = json!({
-        "text": text,
-        // Legacy alias — same value as `text`, kept so existing
-        // consumers keyed on `body` keep working.
-        "body": text,
         "summary": snapshot.summary,
         "schemaVersion": snapshot.schema_version,
         "docRev": snapshot.doc_rev,
         "updated_at": snapshot.updated_at,
         "blocks": index,
     });
+    if let Some(text) = text {
+        response["text"] = Value::String(text);
+    }
     // #1189 review round 2 — `taskDiagnostics` is NOT report content. It
     // is the read-time task/track-tree projection (`status`, `statusDetail`,
     // `gateResult`, `workerCardId`, `childTrackId`), i.e. exactly the class
     // of dispatched-task runtime state `calm.plan.list` is kept Planner-only
     // to withhold. Opening `report.read` to the assistant must not become a
     // side door onto it, so the assistant gets the document (`text` /
-    // `body` / `summary` / `schemaVersion` / `docRev` / `updated_at` /
-    // `blocks`) and nothing else. Planner keeps the full payload.
+    // `summary` / `schemaVersion` / `docRev` / `updated_at` / `blocks`)
+    // and nothing else. Planner keeps the full payload.
     if identity.role == CardRole::Planner {
         response["taskDiagnostics"] = json!(snapshot.task_diagnostics);
     }
     Ok(response)
+}
+
+/// #1727 S2 — the `select` argument of `calm.report.read`.
+#[derive(Debug, PartialEq, Eq)]
+enum ReadSelect {
+    /// Today's shape: the whole `text` plus the index.
+    Full,
+    /// The index and the document metadata; no `text`.
+    Index,
+    /// The index plus a `text` of exactly these blocks, in document order.
+    Blocks(Vec<String>),
+}
+
+fn parse_select_arg(args: &Value, tool: &str) -> Result<ReadSelect, RpcError> {
+    const SHAPE: &str = "must be \"full\", \"index\" or { \"blocks\": [block id, …] } if provided";
+    match args.get("select") {
+        None | Some(Value::Null) => Ok(ReadSelect::Full),
+        Some(Value::String(mode)) if mode == "full" => Ok(ReadSelect::Full),
+        Some(Value::String(mode)) if mode == "index" => Ok(ReadSelect::Index),
+        Some(Value::Object(map)) if map.len() == 1 && map.contains_key("blocks") => {
+            let ids = map["blocks"]
+                .as_array()
+                .filter(|ids| !ids.is_empty())
+                .and_then(|ids| {
+                    ids.iter()
+                        .map(|id| id.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .ok_or_else(|| {
+                    RpcError::invalid_params(format!(
+                        "{tool}: `select.blocks` must be a non-empty array of block ids"
+                    ))
+                })?;
+            Ok(ReadSelect::Blocks(ids))
+        }
+        Some(_) => Err(RpcError::invalid_params(format!(
+            "{tool}: `select` {SHAPE}"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -367,13 +522,12 @@ async fn report_edit(
     .await
     .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
     if snapshot.doc_rev != if_doc_rev {
-        return Err(RpcError::custom(
-            crate::mcp_server::tools::track_report_blocks::RPC_REV_CONFLICT,
-            format!(
+        return Err(
+            crate::mcp_server::tools::track_report_blocks::rev_conflict_error(format!(
                 "document revision conflict: current doc_rev is {}, expected if_doc_rev {if_doc_rev}",
                 snapshot.doc_rev
-            ),
-        ));
+            )),
+        );
     }
 
     // Issue #247 PR2 review: removed the `old_string == new_string`
@@ -612,10 +766,11 @@ async fn commit_report_write_for_identity(
         Err(CalmError::BadRequest(msg)) => {
             Err(RpcError::invalid_params(format!("track_report: {msg}")))
         }
-        Err(CalmError::Conflict(msg)) => Err(RpcError::custom(
-            crate::mcp_server::tools::track_report_blocks::RPC_REV_CONFLICT,
-            format!("track_report: {msg}"),
-        )),
+        Err(CalmError::Conflict(msg)) => Err(
+            crate::mcp_server::tools::track_report_blocks::rev_conflict_error(format!(
+                "track_report: {msg}"
+            )),
+        ),
         Err(e) => Err(RpcError::internal(format!("track_report: {e}"))),
     }
 }
@@ -640,6 +795,76 @@ fn required_doc_rev(obj: &serde_json::Map<String, Value>, tool: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1727 S2 — the `select` argument, every accepted spelling and the
+    /// refusals around them.
+    #[test]
+    fn parse_select_arg_accepts_the_three_forms_and_refuses_the_rest() {
+        let parse = |args: Value| parse_select_arg(&args, "t");
+        assert_eq!(parse(json!({})).unwrap(), ReadSelect::Full);
+        assert_eq!(parse(json!({"select": null})).unwrap(), ReadSelect::Full);
+        assert_eq!(parse(json!({"select": "full"})).unwrap(), ReadSelect::Full);
+        assert_eq!(
+            parse(json!({"select": "index"})).unwrap(),
+            ReadSelect::Index
+        );
+        assert_eq!(
+            parse(json!({"select": {"blocks": ["b_2", "b_1"]}})).unwrap(),
+            ReadSelect::Blocks(vec!["b_2".into(), "b_1".into()])
+        );
+        for bad in [
+            json!({"select": "all"}),
+            json!({"select": 1}),
+            json!({"select": {}}),
+            json!({"select": {"blocks": []}}),
+            json!({"select": {"blocks": "b_1"}}),
+            json!({"select": {"blocks": [1]}}),
+            json!({"select": {"blocks": ["b_1"], "with_markers": true}}),
+        ] {
+            let err = parse(bad.clone()).expect_err("must be refused");
+            assert_eq!(err.code, RpcError::INVALID_PARAMS, "{bad}");
+            assert!(err.message.contains("select"), "{bad}: {}", err.message);
+        }
+    }
+
+    /// #1727 S2 — the one-line receipt: counts, the payload size, the
+    /// summary clipped to one line of at most `SUMMARY_LINE_BYTES` bytes
+    /// (fix round 1 F2: bytes, cut on a char boundary — the bound the size
+    /// assertion in `mcp_track_report.rs` measures is a byte bound).
+    #[test]
+    fn read_summary_line_is_one_short_line() {
+        let line = read_summary_line(&json!({
+            "docRev": 12,
+            "blocks": [{"id": "b_1"}, {"id": "b_2"}],
+            "text": "héllo",
+            "summary": "first line\nsecond line",
+        }));
+        assert_eq!(
+            line,
+            "docRev 12 · 2 blocks · 6 bytes · first line; full state in structuredContent"
+        );
+        let index = read_summary_line(&json!({"docRev": 0, "blocks": [], "summary": ""}));
+        assert_eq!(
+            index,
+            "docRev 0 · 0 blocks · index only · ; full state in structuredContent"
+        );
+        // 200 three-byte chars → the longest whole-char prefix within the
+        // byte budget (40 chars = 120 bytes), then the ellipsis.
+        let long = "字".repeat(200);
+        let clipped = read_summary_line(&json!({"docRev": 1, "blocks": [], "summary": long}));
+        assert!(
+            clipped.contains(&format!("· {}…;", "字".repeat(SUMMARY_LINE_BYTES / 3))),
+            "{clipped}"
+        );
+        assert!(!clipped.contains('\n'));
+        assert!(clipped.len() < SUMMARY_LINE_BYTES + 80, "{}", clipped.len());
+        // A budget that lands mid-char backs off to the char boundary; a
+        // summary that fits is not clipped at all.
+        assert_eq!(clip_to_bytes("字字", 4), Some("字"));
+        assert_eq!(clip_to_bytes("字字", 6), None);
+        assert_eq!(clip_to_bytes("abc", 2), Some("ab"));
+        assert_eq!(clip_to_bytes("", 0), None);
+    }
 
     #[test]
     fn count_matches_empty_needle_returns_zero() {

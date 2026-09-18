@@ -228,12 +228,18 @@ async fn queued_commit_before_done_is_consumed_without_a_turn_and_later_user_inp
     assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 1);
 }
 
+/// #1727 S1 — a `worktree.committed` row is no longer a wake, so boot
+/// catch-up replays nothing for it. An OLD snapshot that still holds a
+/// queued commit entry (persisted before this slice) is consumed on
+/// rehydrate without a turn — `consume_completed_worktree_commits` stays —
+/// and the row does not come back on the next replay either.
 #[tokio::test]
-async fn replayed_commit_after_done_is_consumed_and_does_not_replay_again() {
+async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once() {
     let fx = Fixture::new().await;
     fx.lifecycle(TrackLifecycle::Done).await;
-    let (event_id, _) = fx.commit().await;
+    let (event_id, commit) = fx.commit().await;
     let mut snapshot = fx.stored().await;
+    let watermark_before = snapshot.push_watermark;
     crate::harness::replay_harness_events_since(
         fx.repo.clone(),
         fx.harness.inner.card_id.as_str(),
@@ -243,8 +249,17 @@ async fn replayed_commit_after_done_is_consumed_and_does_not_replay_again() {
     )
     .await
     .unwrap();
-    assert_eq!(snapshot.pending_entries().len(), 1);
-    assert_eq!(snapshot.push_watermark, event_id);
+    assert!(
+        snapshot.pending_entries().is_empty(),
+        "#1727 S1: worktree.committed must not replay into the queue"
+    );
+    assert_eq!(
+        snapshot.push_watermark, watermark_before,
+        "nothing replayed, so the watermark is untouched"
+    );
+    // Old-snapshot shape: the commit entry was queued before this slice.
+    snapshot.set_pending_entries(vec![commit]);
+    snapshot.push_watermark = event_id;
     // Rehydrate through the same constructor used by a recovered harness.
     let inner = &fx.harness.inner;
     let (recovered, _receiver) = PlannerHarness::run_unstarted_for_test(
@@ -278,6 +293,19 @@ async fn replayed_commit_after_done_is_consumed_and_does_not_replay_again() {
     .await
     .unwrap();
     assert!(stored.pending_entries().is_empty());
+    // Positive control (fix round 1 F5): the SAME recovered harness still
+    // issues a turn for real input, so a harness with turn issuance broken
+    // could not have passed the "no turn" assertion above vacuously.
+    recovered
+        .observe_user_message_durable("please explain the result".into(), vec![])
+        .await
+        .unwrap();
+    maybe_issue_turn(&recovered.inner).await.unwrap();
+    assert_eq!(
+        inner.daemon.turn_start_count_for_test(),
+        1,
+        "the recovered harness must issue a turn for a queued user message"
+    );
 }
 
 #[tokio::test]

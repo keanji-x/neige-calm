@@ -570,7 +570,7 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user
     let read = call_mcp(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .expect("planner reads back the user's edit");
-    let read_body = read["body"].as_str().expect("body is a string");
+    let read_body = read["text"].as_str().expect("text is a string");
     assert_eq!(
         read_body, user_body,
         "planner's report.read must see the user's edited body verbatim; got: {read_body}",

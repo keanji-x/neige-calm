@@ -18,6 +18,8 @@ use crate::proc_identity::read_boot_id;
 use super::forge_action_adapter::FORGE_ACTION_KIND;
 use super::{PhaseTag, TimestampMs, Tx};
 
+pub(crate) mod facts;
+
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceLease {
     pub lease_id: String,
