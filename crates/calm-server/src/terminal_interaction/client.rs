@@ -1,6 +1,6 @@
 use crate::terminal_renderer::{
     ClaimOutcome, ClientInputScope, ClientPumpContext, INPUT_REVOKED_BEFORE_WRITE, PumpCommand,
-    RendererEntry, run_client_pump_with_commands,
+    RendererEntry, WriteShape, run_client_pump_with_commands,
 };
 use anyhow::{Result, ensure};
 use calm_session::terminal_session::INPUT_REQUIRES_OWNER_ROLE;
@@ -320,6 +320,20 @@ impl Client {
     }
     pub async fn send(&self, message: ClientMsg) -> Result<()> {
         self.incoming.send(message).await.map_err(Into::into)
+    }
+    /// #1725 — one input request with its write shape, through the pump's
+    /// command channel: the same `ClientMsg::Input` pass as [`Self::send`]
+    /// (authorization, one sequence, one ack), with the `PtyWrite` stamped
+    /// `shape` so a `submit` reaches the PTY as text, then the CR.
+    pub async fn send_input(&self, data: Vec<u8>, input_seq: u64, shape: WriteShape) -> Result<()> {
+        self.commands
+            .send(PumpCommand::Input {
+                data,
+                input_seq,
+                shape,
+            })
+            .await
+            .map_err(Into::into)
     }
     /// #1620 — ask the pump to claim control only if no other client holds
     /// it (decided under the owner-registry lock). The pump's own verdict

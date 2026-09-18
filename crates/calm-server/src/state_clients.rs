@@ -99,6 +99,7 @@ impl DaemonClient {
                         data: bytes.to_vec(),
                         input_seq: 1,
                         ack: Some(ack_tx),
+                        shape: crate::terminal_renderer::WriteShape::Verbatim,
                     },
                 ))
                 .map_err(|_| anyhow::anyhow!("renderer supervisor writer is closed"))?;

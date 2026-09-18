@@ -2,11 +2,55 @@ use calm_session::control::{
     ControlMsg, ControlReply, ResizePtyRequest, SignalRequest, WriteStdinRequest,
 };
 use calm_session::{DaemonMsg, read_frame, write_frame};
+use std::time::Duration;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::{PtyWrite, SupervisorControl};
+
+/// #1725 — the gap between the two physical writes of a
+/// [`WriteShape::SplitTrailingCr`] item: after the supervisor acknowledged
+/// the text, the writer sleeps this long before it sends the CR. Claude
+/// Code classifies one stdin run of more than ~62 characters as a paste and
+/// keeps a CR inside the run as part of it; a CR that arrives as its own
+/// read is an Enter. Measured floor 2 ms; the issue asks for at least 20 ms.
+/// The `wait_plan.rs` const assert keeps it well under the default settle.
+pub const SUBMIT_CR_GAP: Duration = Duration::from_millis(40);
+
+/// How the writer hands a [`PtyWrite`]'s bytes to the supervisor (#1725).
+/// Set by the kernel's encoder for `submit` only; every wire frame and every
+/// other action is [`WriteShape::Verbatim`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteShape {
+    /// One `WriteStdin` carrying every byte as sent.
+    Verbatim,
+    /// The bytes before the trailing CR as one `WriteStdin`, then after
+    /// [`SUBMIT_CR_GAP`] the CR as a second one: one admission, one input
+    /// sequence, one acknowledgement after the last `WriteAck`. A payload
+    /// that does not end with a CR, or is the lone CR, is written verbatim.
+    SplitTrailingCr,
+}
+
+/// The physical writes of one item: the bytes as sent, or text then CR.
+/// Never loses or invents a byte.
+fn write_parts(data: Vec<u8>, shape: WriteShape) -> Vec<Vec<u8>> {
+    match shape {
+        WriteShape::Verbatim => vec![data],
+        WriteShape::SplitTrailingCr if data.len() >= 2 && data.ends_with(b"\r") => {
+            let mut text = data;
+            let cr = text.split_off(text.len() - 1);
+            vec![text, cr]
+        }
+        WriteShape::SplitTrailingCr => {
+            tracing::warn!(
+                len = data.len(),
+                "split-trailing-CR write without a trailing CR; writing verbatim"
+            );
+            vec![data]
+        }
+    }
+}
 
 /// Message of the `NotOwner` protocol error an admitted-then-revoked input
 /// receives from the writer (the input's lease or scope went away before the
@@ -31,6 +75,7 @@ pub fn spawn_supervisor_control_writer(
                         input_seq,
                         ack,
                         authority,
+                        shape,
                     } = write;
                     let Some(mut guard) = authority.admit().await else {
                         if let Some(ack) = ack {
@@ -42,27 +87,38 @@ pub fn spawn_supervisor_control_writer(
                         }
                         continue;
                     };
-                    let Some(next) = physical_sequence.checked_add(1) else {
+                    // #1725 — one admitted item may be two physical writes
+                    // (text, gap, CR); both sequence numbers are reserved
+                    // before the first byte, and the one 5 s budget, the one
+                    // guard and the one InputAck span both round trips.
+                    let parts = write_parts(data, shape);
+                    let first = physical_sequence;
+                    let Some(last) = physical_sequence.checked_add(parts.len() as u64) else {
                         break;
                     };
-                    physical_sequence = next;
+                    physical_sequence = last;
                     guard.started();
-                    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                        write_frame(
-                            &mut control_conn,
-                            &ControlMsg::WriteStdin(WriteStdinRequest {
-                                proc_id: proc_id.clone(),
-                                bytes: data,
-                                write_seq: Some(next),
-                            }),
-                        )
-                        .await?;
-                        match read_frame::<ControlReply, _>(&mut control_conn).await? {
-                            ControlReply::WriteAck { write_seq } if write_seq == next => {
-                                Ok::<_, anyhow::Error>(())
+                    let result = tokio::time::timeout(Duration::from_secs(5), async {
+                        for (index, bytes) in parts.into_iter().enumerate() {
+                            if index > 0 {
+                                tokio::time::sleep(SUBMIT_CR_GAP).await;
                             }
-                            _ => anyhow::bail!("supervisor did not acknowledge terminal write"),
+                            let next = first + index as u64 + 1;
+                            write_frame(
+                                &mut control_conn,
+                                &ControlMsg::WriteStdin(WriteStdinRequest {
+                                    proc_id: proc_id.clone(),
+                                    bytes,
+                                    write_seq: Some(next),
+                                }),
+                            )
+                            .await?;
+                            match read_frame::<ControlReply, _>(&mut control_conn).await? {
+                                ControlReply::WriteAck { write_seq } if write_seq == next => {}
+                                _ => anyhow::bail!("supervisor did not acknowledge terminal write"),
+                            }
                         }
+                        Ok::<_, anyhow::Error>(())
                     })
                     .await;
                     match result {

@@ -22,7 +22,7 @@ mod attach_reader;
 mod child_ready;
 mod client_pump;
 mod control_writer;
-pub use control_writer::INPUT_REVOKED_BEFORE_WRITE;
+pub use control_writer::{INPUT_REVOKED_BEFORE_WRITE, SUBMIT_CR_GAP, WriteShape};
 mod input_authority;
 mod model_view;
 pub use input_authority::{ClientInputScope, InputBarrier, WriteAuthority};
@@ -125,6 +125,8 @@ pub struct PtyWrite {
     pub data: Vec<u8>,
     pub input_seq: u64,
     pub ack: Option<mpsc::UnboundedSender<DaemonMsg>>,
+    /// #1725 — one physical write, or text then CR (a kernel `submit`).
+    pub shape: WriteShape,
 }
 
 pub enum SupervisorControl {

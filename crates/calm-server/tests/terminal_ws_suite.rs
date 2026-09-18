@@ -22,6 +22,8 @@ mod terminal_replace;
 mod terminal_sequence;
 #[path = "cases/terminal_signals.rs"]
 mod terminal_signals;
+#[path = "cases/terminal_submit_split.rs"]
+mod terminal_submit_split;
 #[path = "cases/terminal_sweeper.rs"]
 mod terminal_sweeper;
 #[path = "cases/terminal_text_conditions.rs"]

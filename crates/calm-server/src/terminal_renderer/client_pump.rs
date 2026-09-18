@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::{
     ClientInputScope, InputBarrier, PtyWrite, SharedExitState, SharedOwnerRegistry,
-    SharedRenderPlane, SupervisorControl, WriteAuthority,
+    SharedRenderPlane, SupervisorControl, WriteAuthority, WriteShape,
 };
 use crate::terminal_renderer::snapshot::{rebuild_server_hello_snapshot, scrollback_request};
 
@@ -32,6 +32,16 @@ pub enum PumpCommand {
     /// still queued.
     ClaimIfUnowned {
         reply: oneshot::Sender<ClaimOutcome>,
+    },
+    /// #1725 — an input with a write shape: applied exactly like the wire
+    /// `ClientMsg::Input { data, input_seq }` (same `on_client_frame`, same
+    /// authorization, same acknowledgement), except that the `PtyWrite` the
+    /// pump queues carries `shape`. A wire frame is always
+    /// [`WriteShape::Verbatim`]: only this channel can ask for a split.
+    Input {
+        data: Vec<u8>,
+        input_seq: u64,
+        shape: WriteShape,
     },
 }
 
@@ -305,13 +315,20 @@ pub async fn run_client_pump_with_commands(
         // client's control (#1620 open+claim) and carries the caller's
         // outcome channel; an ordinary `OwnerClaim` keeps its
         // deliberate-takeover semantics.
-        let (msg, mut claim_reply) = tokio::select! {
+        let (msg, mut claim_reply, shape) = tokio::select! {
             msg = incoming_rx.recv() => match msg {
-                Some(msg) => (msg, None),
+                Some(msg) => (msg, None, WriteShape::Verbatim),
                 None => break,
             },
             command = next_command(&mut commands) => match command {
-                PumpCommand::ClaimIfUnowned { reply } => (ClientMsg::OwnerClaim, Some(reply)),
+                PumpCommand::ClaimIfUnowned { reply } => {
+                    (ClientMsg::OwnerClaim, Some(reply), WriteShape::Verbatim)
+                }
+                PumpCommand::Input {
+                    data,
+                    input_seq,
+                    shape,
+                } => (ClientMsg::Input { data, input_seq }, None, shape),
             },
         };
         let only_if_unowned = claim_reply.is_some();
@@ -429,6 +446,7 @@ pub async fn run_client_pump_with_commands(
                             data,
                             input_seq,
                             ack,
+                            shape,
                         }))
                         .is_err()
                     {
@@ -482,6 +500,7 @@ pub async fn run_client_pump_with_commands(
                             data: b"\x1b[I".to_vec(),
                             input_seq: 0,
                             ack: None,
+                            shape: WriteShape::Verbatim,
                         }))
                         .is_err()
                     {
@@ -519,6 +538,7 @@ pub(crate) fn apply_broadcaster_effects(
                     data,
                     input_seq,
                     ack: None,
+                    shape: WriteShape::Verbatim,
                 }));
             }
             Effect::SendToClient(_)
