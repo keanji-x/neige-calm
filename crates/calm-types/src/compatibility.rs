@@ -11,6 +11,7 @@
 // on `GET /api/tracks/{id}/conversations` rows and `databaseId` / `nowMs` on
 // `GET /api/version`. A bundle whose row parser requires the first rejects
 // every conversation list from an older kernel; preflight refuses the pairing.
-// Revision 9 (#1712 S5) adds scan-only enrollment creation and claim/redeem.
-// The new Settings/mobile bundle must not be paired with a kernel lacking them.
-pub const REST_API_VERSION: &str = "9";
+// Revision 10 combines those fields with #1712 scan-only enrollment creation
+// and claim/redeem. Both branches used revision 9 for different contracts;
+// preflight must reject either incomplete revision rather than alias the union.
+pub const REST_API_VERSION: &str = "10";

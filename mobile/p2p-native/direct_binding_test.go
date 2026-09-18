@@ -38,7 +38,7 @@ func directDNS(t *testing.T) *directDNSFixture {
 		f.hosts = append(f.hosts, r.Host)
 		f.cookies = append(f.cookies, r.Header.Get("Cookie"))
 		f.mu.Unlock()
-		fmt.Fprint(w, `{"webCompatVersion":30,"apiVersion":"9","kernelVersion":"fixture"}`)
+		fmt.Fprint(w, `{"webCompatVersion":30,"apiVersion":"10","kernelVersion":"fixture"}`)
 	}))
 	t.Cleanup(server.Close)
 	if err := server.Certificate().VerifyHostname("example.com"); err != nil {

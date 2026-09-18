@@ -50,7 +50,7 @@ class DirectConfirmationEditInstrumentationTest {
           check(headers.none { it.startsWith("Cookie:", ignoreCase = true) })
           enteredAt = SystemClock.elapsedRealtime(); entered.countDown()
           check(release.await(10, TimeUnit.SECONDS)) { "Fixture response was not released" }
-          val body = """{"webCompatVersion":30,"apiVersion":"9","kernelVersion":"held-proof-fixture"}"""
+          val body = """{"webCompatVersion":30,"apiVersion":"10","kernelVersion":"held-proof-fixture"}"""
           // Edit cancellation may already have closed the real native socket.
           runCatching { peer.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.toByteArray().size}\r\nConnection: close\r\n\r\n$body").toByteArray()) }
         }

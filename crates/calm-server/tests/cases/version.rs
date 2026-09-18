@@ -141,7 +141,7 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "9",
+        "10",
         "#1722 S1b: conversation rows gained the required `lastTurnCompletedAt` \
          and this response gained `databaseId` / `nowMs`; \
          #1712 scan-only enrollment needs the new API capability revision"
