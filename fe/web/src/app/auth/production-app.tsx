@@ -3,6 +3,7 @@ import { RouterProvider, type AnyRouter } from '@tanstack/react-router';
 import { StrictMode, type ReactNode } from 'react';
 import { RecoveryGate } from './recovery-gate.tsx';
 import { RecoverySession } from '../../systems/recovery/session.ts';
+import { createScanPairingPort, takeScanInput } from '../../systems/recovery/scan.ts';
 import { createRecoveryUnauthorizedChannel } from '../../systems/recovery/unauthorized.ts';
 import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
@@ -92,7 +93,7 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     version: (signal) => runOperation(probe, { ...serverVersionOperation(), signal }, unauthorized),
     logout: (signal) => runOperation(probe, { ...logoutOperation(), signal }, undefined),
     clear: () => clearSessionArtifacts(client, cursorStore, runtime), online: () => navigator.onLine, visible: () => !document.hidden,
-  }) : undefined;
+  }, { input: takeScanInput(window, window.location.origin, Date.now()), pairing: createScanPairingPort(base) }) : undefined;
   const router = createAppRouter({
     transport,
     unauthorized,
@@ -111,7 +112,8 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   createRoot(root).render(<ProductionApp transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={cursorStore} router={router} recovery={recovery}
     renderLogin={() => __NC_BUNDLED__
-      ? <BundledLoginPage message={recovery?.access.read().detail}
+      ? recovery?.scanOnly ? <BundledConnectionNotice kind="pairing"><p role="alert">{recovery.access.read().detail}</p></BundledConnectionNotice>
+      : <BundledLoginPage message={recovery?.access.read().detail}
         onManualEntry={() => recovery!.cancelAuthentication()}
         verifyPairing={recovery?.blocked() ? () => { void recovery.verifyNewSession(); } : undefined}
         login={(username, password, signal) => loginForRecovery(probe, recovery!, username, password, signal)}

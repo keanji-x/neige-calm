@@ -101,9 +101,10 @@ def main():
         run(BUILD_TOOLS / 'zipalign', '-c', '-P', '16', '4', apk)
         adb('install', '-r', apk)
         assert 'Success' in adb('shell', 'pm', 'clear', app_id)
-        # Tailscale login needs the real control plane and stays a manual check;
-        # the IP route below still crosses the minified Tauri/JNI/Go bridge.
         launch(app_id)
+        text_node('扫码授权')
+        assert not any(n.get('text') == '登录 Tailscale' for n in hierarchy().iter('node'))
+        print('PASS: minified release offers scanning without interactive Tailscale login', flush=True)
         tap(text_node('连接方式'))
         tap(text_node('IP 连接'))
         entry = wait_node(lambda n: n.get('class') == 'android.widget.EditText' and

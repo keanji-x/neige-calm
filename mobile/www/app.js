@@ -1,6 +1,9 @@
 import { bindServer } from './server-binding.js';
 
 const login = document.querySelector('#login');
+const resetNetwork = document.querySelector('#reset-network');
+const tailnetTarget = document.querySelector('#tailnet-target');
+const tailnetSettings = document.querySelector('#tailnet-settings');
 const scan = document.querySelector('#scan');
 const mode = document.querySelector('#connection-mode');
 const ip = document.querySelector('#ip-origin');
@@ -11,7 +14,6 @@ const error = document.querySelector('#error');
 const loginLabel = document.querySelector('#login-label');
 let config;
 let generation = 0;
-let waitingForLogin = false;
 const invoke = (command, args) => {
   const call = window.__TAURI__?.core?.invoke;
   if (!call) return Promise.reject(new Error('请在 Neige 安卓 App 中连接。'));
@@ -21,12 +23,18 @@ const message = (cause) => typeof cause === 'string' ? cause : cause?.message ??
 
 function idle() {
   login.disabled = false;
-  loginLabel.textContent = !config ? '重试读取配置' : mode.value === 'ip' ? '保存并连接 IP' : '登录 Tailscale';
+  loginLabel.textContent = !config ? '重试读取配置' : mode.value === 'ip' ? '保存并连接 IP' : '重新连接工作区';
   mode.disabled = !config; ip.disabled = !config;
   ipSettings.hidden = mode.value !== 'ip';
+  resetNetwork.hidden = mode.value !== 'tailscale';
   scan.hidden = mode.value === 'ip';
-  scan.disabled = !config?.tailscaleEnabled;
+  scan.disabled = !config;
   document.body.dataset.mode = mode.value;
+  tailnetSettings.hidden = mode.value !== 'tailscale' || (config?.tailnetOrigins?.length ?? 0) < 2;
+  tailnetTarget.replaceChildren(...(config?.tailnetOrigins ?? []).map(origin => {
+    const option = document.createElement('option'); option.value = origin; option.textContent = new URL(origin).host;
+    option.selected = origin === config.tailnetOrigin; return option;
+  }));
 }
 
 async function save(attempt, useDraft = mode.value === 'ip') {
@@ -52,7 +60,7 @@ async function connect(manual = false) {
     if (attempt !== generation) return;
     if (!result.connected) {
       const failures = result.failures.map(item => `${item.mode === 'ip' ? 'IP' : 'Tailscale'}：${item.message}`).join('；');
-      throw new Error(failures ? `连接超时或不可用，请重新配置。${failures}` : '尚未配置可用连接，请填写 IP 或登录 Tailscale。');
+      throw new Error(failures ? `连接超时或不可用，请重新配置。${failures}` : '扫描电脑上的添加手机二维码，即可加入网络并配对。');
     }
     status.dataset.state = 'ready';
     text.textContent = result.mode === 'ip' ? 'IP 已连接' : 'Tailscale 已连接';
@@ -74,8 +82,21 @@ async function connect(manual = false) {
   } finally { if (attempt === generation) idle(); }
 }
 
+resetNetwork.addEventListener('click', async () => {
+  const attempt = ++generation; resetNetwork.disabled = true;
+  try { const saved = await invoke('reset_enrollment'); if (attempt === generation) { config = saved; error.textContent = ''; idle(); } }
+  catch (cause) { if (attempt === generation) error.textContent = message(cause); }
+  finally { resetNetwork.disabled = false; }
+});
+
+tailnetTarget.addEventListener('change', async () => {
+  const attempt = ++generation;
+  try { const saved = await invoke('select_saved_tailnet', { origin: tailnetTarget.value }); if (attempt === generation) { config = saved; idle(); await connect(true); } }
+  catch (cause) { if (attempt === generation) { error.textContent = message(cause); idle(); } }
+});
+
 mode.addEventListener('change', async () => {
-  const attempt = ++generation; waitingForLogin = false; error.textContent = ''; idle();
+  const attempt = ++generation; error.textContent = ''; idle();
   try { await save(attempt, true); if (attempt === generation) idle(); }
   catch (cause) {
     if (attempt !== generation) return;
@@ -97,22 +118,13 @@ login.addEventListener('click', async () => {
     await save(attempt);
     if (attempt !== generation) return;
     if (mode.value === 'ip') { await connect(true); return; }
-    loginLabel.textContent = '正在登录…';
-    waitingForLogin = true;
-    config.tailscaleEnabled = true;
-    const result = await invoke('login_tailscale');
-    if (attempt !== generation) return;
-    config.tailscaleEnabled = true;
-    if (result.state === 'Running') { waitingForLogin = false; await connect(true); }
+    if (config.tailscaleEnabled) await connect(true);
+    else { idle(); scan.click(); }
   } catch (cause) {
-    if (attempt === generation) { waitingForLogin = false; error.textContent = message(cause); }
+    if (attempt === generation) { error.textContent = message(cause); }
   } finally { if (attempt === generation) idle(); }
 });
-scan.addEventListener('click', () => { ++generation; waitingForLogin = false; });
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && waitingForLogin) { waitingForLogin = false; connect(true); }
-});
-
+scan.addEventListener('click', () => { ++generation; });
 async function initialize() {
   const attempt = ++generation;
   login.disabled = true; mode.disabled = true;
@@ -131,7 +143,8 @@ async function initialize() {
       location.replace(`${origin}${route}`);
       return;
     }
-    await connect();
+    if (config.ipOrigin || config.tailscaleEnabled) await connect();
+    else { status.dataset.state = 'waiting'; text.textContent = '扫描电脑上的添加手机二维码'; }
   } catch (cause) { if (attempt === generation) { error.textContent = message(cause); idle(); } }
 }
 initialize();

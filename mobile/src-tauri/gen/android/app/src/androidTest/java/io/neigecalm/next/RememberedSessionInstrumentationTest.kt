@@ -17,6 +17,7 @@ class RememberedSessionInstrumentationTest {
     val profiles = ConnectionProfiles(instrumentation.targetContext)
     val phase = InstrumentationRegistry.getArguments().getString("phase")
     if (phase == "seed") {
+      profiles.selectTailnet(P2PConnection.ORIGIN)
       profiles.save("ip", direct, true)
       val done = CountDownLatch(1)
       instrumentation.runOnMainSync {
@@ -34,7 +35,7 @@ class RememberedSessionInstrumentationTest {
       assertTrue(done.await(10, TimeUnit.SECONDS))
     } else {
       assertEquals("check", phase)
-      assertEquals(ConnectionSettings("ip", direct, true), profiles.read())
+      assertEquals(ConnectionSettings("ip", direct, true, P2PConnection.ORIGIN), profiles.read())
       instrumentation.runOnMainSync {
         assertTrue("Saved authorization was lost after force-stop", RememberedSession.hasCookie())
         assertTrue("IP authorization was lost after force-stop", RememberedSession.hasCookie(direct))

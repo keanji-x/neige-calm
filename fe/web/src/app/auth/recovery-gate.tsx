@@ -32,8 +32,11 @@ export function RecoveryGate({ children, transport, unauthorized, client, runtim
     const unsubscribe = unauthorized.subscribe(session.unauthorized);
     const releaseQueries = coordinateRecoveryQueries(session.access, client);
     const unobserve = observeRecoveryLifecycle(session);
-    session.start();
-    return () => { unsubscribe(); unobserve(); session.stop(); releaseQueries(); };
+    let disposed = false;
+    let started = false;
+    // StrictMode's discarded setup must not consume a one-document scan grant.
+    queueMicrotask(() => { if (!disposed) { started = true; session.start(); } });
+    return () => { disposed = true; unsubscribe(); unobserve(); if (started) session.stop(); releaseQueries(); };
   }, [client, session, unauthorized]);
   const hasScope = session.identity !== null && session.version !== null && transport.recovery !== undefined;
   const privateVisible = hasScope && state.phase !== 'login' && state.phase !== 'update';

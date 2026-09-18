@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
       if (command.endsWith('|connection_settings')) return { ...window.settings };
       if (command.endsWith('|save_connection')) { window.settings = { ...args }; return { ...window.settings }; }
       if (command.endsWith('|attempt_connection')) return window.attemptResult;
-      if (command.endsWith('|login_tailscale')) { window.settings.tailscaleEnabled = true; return { state: 'Running' }; }
+      if (command.endsWith('|request_permissions')) return { camera: 'denied' };
       if (command.endsWith('|bind_server')) return { origin: args.origin };
       throw new Error('Unexpected native command');
     } } };
@@ -22,7 +22,7 @@ test.beforeEach(async ({ page }) => {
 test('shows the brand and persistent mode selector without annotation copy', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('combobox', { name: '连接方式' })).toHaveValue('tailscale');
-  await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /重新连接工作区/ })).toBeEnabled();
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
@@ -73,12 +73,13 @@ test('editing mode preserves both configurations through the native save contrac
   await page.getByLabel('服务器地址').fill(direct);
   await page.getByRole('combobox').selectOption('tailscale');
   await expect.poll(() => page.evaluate(() => window.settings)).toEqual({ mode: 'tailscale', ipOrigin: direct, tailscaleEnabled: false });
-  await page.getByRole('button', { name: '登录 Tailscale' }).click();
+  await page.getByRole('button', { name: '重新连接工作区' }).click();
   await expect(page.getByRole('button', { name: '扫码授权' })).toBeEnabled();
 });
 
 test('old connection results cannot navigate after the user starts editing', async ({ page }) => {
   await page.addInitScript(() => {
+    window.settings.ipOrigin = 'http://192.168.1.8:4140';
     const original = window.__TAURI__.core.invoke;
     window.__TAURI__.core.invoke = (command, args) => command.endsWith('|attempt_connection')
       ? new Promise(resolve => { window.completeOldAttempt = resolve; }) : original(command, args);
@@ -105,7 +106,7 @@ test('returning from an IP workspace stays on the configuration homepage', async
   await expect(page).toHaveURL(`${direct}/next/`);
 });
 
-test('an unfinished IP draft does not block Tailscale login', async ({ page }) => {
+test('an unfinished IP draft does not block Tailscale scanning', async ({ page }) => {
   await page.addInitScript(() => {
     const original = window.__TAURI__.core.invoke;
     window.__TAURI__.core.invoke = (command, args) => command.endsWith('|save_connection') && args.ipOrigin === 'broken'
@@ -116,7 +117,7 @@ test('an unfinished IP draft does not block Tailscale login', async ({ page }) =
   await page.getByLabel('服务器地址').fill('broken');
   await page.getByRole('combobox').selectOption('tailscale');
   await expect(page.locator('#error')).toContainText('请输入合法的服务器地址');
-  await page.getByRole('button', { name: '登录 Tailscale' }).click();
+  await page.getByRole('button', { name: '重新连接工作区' }).click();
   await expect(page.getByRole('button', { name: '扫码授权' })).toBeEnabled();
 });
 

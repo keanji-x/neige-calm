@@ -9,6 +9,7 @@ const error = document.querySelector('#scan-error');
 let candidate = null;
 let generation = 0;
 let settleCancel = null;
+let enrolling = false;
 
 function restoreLauncher() {
   delete scan.dataset.active;
@@ -40,14 +41,26 @@ scan.addEventListener('click', async () => {
       cancelled,
     ]);
     if (attempt !== generation || result === null) return;
+    if (typeof result.content === 'string' && result.content.startsWith('neige-enroll:')) {
+      if (result.content.length > 2048) throw new Error('入网二维码过长。');
+      document.documentElement.classList.remove('scanning');
+      error.textContent = '正在加入网络并配对工作区…';
+      enrolling = true;
+      const operation = invoke('plugin:bundled-frontend|enroll_from_scan', { payload: result.content });
+      result.content = '';
+      await operation;
+      if (attempt !== generation) return;
+      error.textContent = '';
+      return;
+    }
     candidate = pairingDestination(result.content);
     if (candidate.origin !== defaultServer) { candidate = null; throw new Error('请扫描当前电脑工作区的连接二维码。'); }
     document.querySelector('#pair-host').textContent = candidate.host;
     confirm.hidden = false;
   } catch (cause) {
-    if (attempt === generation) error.textContent = cause instanceof Error ? cause.message : '扫码未完成，请重试。';
+    if (attempt === generation) error.textContent = typeof cause === 'string' ? cause : cause instanceof Error ? cause.message : '扫码未完成，请重试。';
   } finally {
-    if (attempt === generation) { settleCancel = null; restoreLauncher(); }
+    if (attempt === generation) { enrolling = false; settleCancel = null; restoreLauncher(); }
   }
 });
 
@@ -61,7 +74,9 @@ cancelScan.addEventListener('click', async () => {
   settle?.();
   cancelScan.disabled = true;
   try {
-    await window.__TAURI__?.core?.invoke('plugin:barcode-scanner|cancel');
+    if (enrolling) await window.__TAURI__?.core?.invoke('plugin:bundled-frontend|cancel_enrollment');
+    else await window.__TAURI__?.core?.invoke('plugin:barcode-scanner|cancel');
+    enrolling = false;
     if (attempt === generation) {
       // Plugin 2.4.6 can destroy its saved invocation without rejecting scan.
       // Settle our operation independently and fence any late native result.

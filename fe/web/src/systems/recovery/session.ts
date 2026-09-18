@@ -1,5 +1,7 @@
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import type { ScanContext, ScanInput } from '../../../../core/domain/recovery/scan.ts';
+import type { ScanPairingPort } from './scan.ts';
 import type { SessionIdentity } from '../../../../core/api/auth.ts';
 import { RecoveryAccess, recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { logoutMarkerKey, recoveryContextKey, decodeRecoveryContext, recoveryPage, type RecoveryContext, type RecoveryScroll } from '../../../../core/domain/recovery/context.ts';
@@ -33,8 +35,14 @@ export class RecoverySession {
   private marker: string | null = null;
   private storageFault = false;
   private readonly ports: RecoverySessionPorts;
-  constructor(ports: RecoverySessionPorts) {
+  private scan: Readonly<{ context: ScanContext; pairing: ScanPairingPort }> | null = null;
+  private scanRequired = false;
+  readonly scanOnly: boolean;
+  constructor(ports: RecoverySessionPorts, scan?: Readonly<{ input: ScanInput; pairing: ScanPairingPort }>) {
     this.ports = ports; this.access = ports.access;
+    this.scanOnly = scan !== undefined && scan.input.kind !== 'absent';
+    this.scanRequired = this.scanOnly;
+    if (scan?.input.kind === 'scan') this.scan = { context: scan.input.context, pairing: scan.pairing };
     try {
       const raw = ports.storage.getItem(logoutMarkerKey());
       if (raw !== null) {
@@ -43,9 +51,9 @@ export class RecoverySession {
         this.marker = record.fingerprint;
       }
     } catch { this.storageFault = true; }
-    if (this.blocked()) this.access.change('login', this.storageFault ? '无法读取退出状态，请检查设备存储。' : '已在本机退出。配对后请明确验证本次会话。');
+    if (this.blocked()) this.access.change('login', this.storageFault ? '无法读取退出状态，请检查设备存储。' : this.scanOnly ? '正在完成本次扫码配对。' : '已在本机退出。配对后请明确验证本次会话。');
   }
-  blocked(): boolean { return this.marker !== null || this.storageFault; }
+  blocked(): boolean { return this.marker !== null || this.storageFault || this.scanRequired; }
   private cancel(): void {
     this.releaseCancellation?.(); this.releaseCancellation = null;
     this.controller?.abort(); this.controller = null;
@@ -71,6 +79,7 @@ export class RecoverySession {
   beginAuthentication(signal?: AbortSignal) {
     signal?.throwIfAborted();
     if (this.stopped) throw new Error('恢复会话已停止。');
+    if (this.scanOnly && this.scanRequired) throw new Error('本次扫码证明未完成，请重新扫码。');
     const attempt = this.beginAttempt(true, signal);
     const owns = () => this.controller === attempt.controller && this.access.read().generation === attempt.generation;
     return Object.freeze({
@@ -80,10 +89,15 @@ export class RecoverySession {
       cancel: () => { if (owns()) this.cancelAuthentication(); },
     });
   }
-  cancelAuthentication = (): void => { this.cancel(); this.access.invalidate('login'); };
-  start(): void { this.stopped = false; if (!this.blocked()) this.retry(); }
-  stop(): void { this.stopped = true; this.cancel(); this.access.invalidate(this.blocked() ? 'login' : 'paused'); }
-  pause(): void { this.cancel(); this.access.invalidate(this.blocked() ? 'login' : 'paused'); }
+  cancelAuthentication = (): void => { this.scan = null; this.cancel(); this.access.invalidate('login'); };
+  start(): void {
+    this.stopped = false;
+    const scan = this.scan; this.scan = null;
+    if (scan !== null) { void this.probe(true, undefined, this.beginAttempt(false), scan); return; }
+    if (!this.blocked()) this.retry();
+  }
+  stop(): void { this.stopped = true; this.scan = null; this.cancel(); this.access.invalidate(this.blocked() ? 'login' : 'paused'); }
+  pause(): void { this.scan = null; this.cancel(); this.access.invalidate(this.blocked() ? 'login' : 'paused'); }
   retry = (): void => {
     if (this.stopped || this.blocked() || this.access.read().phase === 'update' || this.access.read().phase === 'login') return;
     // A retry button joins the current flight; lifecycle invalidation cancels it first.
@@ -102,17 +116,21 @@ export class RecoverySession {
     this.ports.clear();
     try { this.ports.storage.removeItem(recoveryContextKey()); } catch { /* presentation is best effort */ }
   }
-  private async deadline<T>(operation: (signal: AbortSignal) => Promise<T>, controller: AbortController): Promise<T> {
+  private async deadline<T>(operation: (signal: AbortSignal) => Promise<T>, controller: AbortController, notAfter = Infinity): Promise<T> {
+    const remaining = Math.min(8000, notAfter - Date.now());
+    if (remaining <= 0 || controller.signal.aborted) throw new Error('扫码已取消或过期，请重新扫码。');
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
     try {
       return await Promise.race([operation(controller.signal), new Promise<never>((_, reject) => {
-        const abort = () => reject(new Error('恢复已取消'));
+        abort = () => reject(new Error('恢复已取消'));
         controller.signal.addEventListener('abort', abort, { once: true });
-        timer = setTimeout(() => { controller.abort(); reject(new Error('服务器暂不可达')); }, 8000);
+        timer = setTimeout(() => { controller.abort(); reject(new Error('服务器暂不可达')); }, remaining);
       })]);
-    } finally { if (timer !== undefined) clearTimeout(timer); }
+    } finally { if (timer !== undefined) clearTimeout(timer); if (abort !== undefined) controller.signal.removeEventListener('abort', abort); }
   }
-  private async probe(explicit: boolean, expectedSession?: string, attempt?: RecoveryAttempt): Promise<SessionIdentity | null> {
+  private async probe(explicit: boolean, expectedSession?: string, attempt?: RecoveryAttempt,
+    scan?: Readonly<{ context: ScanContext; pairing: ScanPairingPort }>): Promise<SessionIdentity | null> {
     const { controller, generation } = attempt ?? this.beginAttempt(explicit);
     if (this.stopped || controller.signal.aborted || this.controller !== controller) return null;
     let identityAccepted = false;
@@ -122,16 +140,30 @@ export class RecoverySession {
         this.ports.storage.removeItem(logoutMarkerKey());
         this.marker = null;
       }
-      identityAccepted = true;
+      identityAccepted = true; this.scanRequired = false;
       // Rendering the accepted session unmounts its form; that is not cancellation.
       this.releaseCancellation?.(); this.releaseCancellation = null;
     };
     const current = () => !this.stopped && !controller.signal.aborted && this.access.read().generation === generation;
     try {
-      const identity = await this.deadline(this.ports.identity, controller);
+      let expectedFingerprint: string | undefined;
+      const pairingDeadline = scan?.context.deadline ?? Infinity;
+      const checkDeadline = () => { if (Date.now() >= pairingDeadline) throw new Error('二维码已过期，请重新扫码。'); };
+      if (scan !== undefined) {
+        if (this.storageFault) throw new Error('无法读取退出状态，请检查设备存储。');
+        await this.deadline(signal => scan.pairing.claim(scan.context, signal), controller, pairingDeadline);
+        if (!current()) return null;
+        checkDeadline();
+        expectedFingerprint = await this.deadline(signal => scan.pairing.redeem(scan.context, signal), controller, pairingDeadline);
+        if (!current()) return null;
+        checkDeadline();
+      }
+      const identity = await this.deadline(this.ports.identity, controller, pairingDeadline);
       if (!current()) return null;
+      checkDeadline();
       if (explicit) {
         if (this.storageFault) throw new Error('无法读取退出状态，请检查设备存储。');
+        if (expectedFingerprint !== undefined && fingerprint(identity.sessionId) !== expectedFingerprint) throw new Error('实际会话与本次扫码配对不符，请重新扫码。');
         if (expectedSession !== undefined && identity.sessionId !== expectedSession) throw new Error('登录会话已改变，请重新登录。');
         if (this.marker !== null && fingerprint(identity.sessionId) === this.marker) throw new Error('仍是已退出的旧会话，请重新配对。');
       }
@@ -193,13 +225,14 @@ export class RecoverySession {
     }
   }
   async verifyNewSession(expectedSession?: string, signal?: AbortSignal): Promise<SessionIdentity | null> {
-    if (this.stopped || signal?.aborted) return null;
+    if (this.stopped || signal?.aborted || (this.scanOnly && this.scanRequired)) return null;
     const attempt = this.beginAuthentication(signal);
     try { return await attempt.verify(expectedSession); }
     finally { attempt.cancel(); }
   }
   async signOut(): Promise<void> {
     const identity = this.identity;
+    this.scan = null;
     this.cancel(); this.access.invalidate('login');
     let message = '已在本机退出。';
     if (identity !== null) {

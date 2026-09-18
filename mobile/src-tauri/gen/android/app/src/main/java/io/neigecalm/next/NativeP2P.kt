@@ -7,8 +7,9 @@ internal object NativeP2P {
   external fun status(): String
   external fun direct(origin: String): String
   external fun stopDirect()
-  external fun check(): String
-  external fun probe(): String
-  external fun login(): String
-  external fun proxy(): String
+  external fun check(origin: String): String
+  external fun enroll(payload: String): String
+  external fun cancelEnrollment(): String
+  external fun resetEnrollment(): String
+  external fun tailnet(origin: String): String
 }

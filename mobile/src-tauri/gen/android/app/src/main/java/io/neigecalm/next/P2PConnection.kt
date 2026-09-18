@@ -57,7 +57,7 @@ internal object P2PConnection {
   fun execute(operation: () -> JSONObject, done: (Result<JSONObject>) -> Unit) {
     worker.execute { done(runCatching { checked(NativeP2P.configure(AndroidNetworkSnapshot.read())); operation() }) }
   }
-  fun awaitReadyAndReachable(cancellation: ConnectionAttempt.Cancellation) {
+  fun awaitReadyAndReachable(origin: String, cancellation: ConnectionAttempt.Cancellation) {
     val result = CompletableFuture<Result<JSONObject>>()
     execute({
       cancellation.check()
@@ -67,9 +67,9 @@ internal object P2PConnection {
         cancellation.check(); Thread.sleep(100); state = checked(NativeP2P.status())
       }
       check(state.getString("state") == "Running") { "Tailscale 尚未登录或未连接" }
-      cancellation.check(); checked(NativeP2P.check())
+      cancellation.check(); checked(NativeP2P.check(origin))
     }) { result.complete(it) }
-    try { result.get(7, TimeUnit.SECONDS).getOrThrow() }
+    try { result.get(12, TimeUnit.SECONDS).getOrThrow() }
     finally { if (!result.isDone) { cancellation.cancel(); result.cancel(false) } }
   }
   fun checked(raw: String): JSONObject = JSONObject(raw).also {

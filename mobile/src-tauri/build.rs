@@ -3,9 +3,12 @@ fn main() {
         "bundled-frontend",
         tauri_build::InlinedPlugin::new().commands(&[
             "bind_server",
-            "login_tailscale",
+            "enroll_from_scan",
+            "cancel_enrollment",
+            "reset_enrollment",
             "connection_settings",
             "save_connection",
+            "select_saved_tailnet",
             "attempt_connection",
         ]),
     ))

@@ -8,26 +8,18 @@ import "C"
 import (
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
-
-const targetHost = "pivot-neige.tail328551.ts.net:10000"
-const targetIP = "100.123.126.35"
-const targetAddress = targetIP + ":10000"
-const targetURL = "https://" + targetHost
 
 var instance struct {
 	sync.Mutex
@@ -35,16 +27,22 @@ var instance struct {
 }
 
 type engine struct {
-	mu       sync.Mutex
-	dir      string
-	hostname string
-	starting bool
-	ready    bool
-	startErr error
-	node     *tsnet.Server
-	proxy    net.Listener
-	started  time.Time
-	client   *http.Client
+	mu                   sync.Mutex
+	dir                  string
+	hostname             string
+	starting             bool
+	ready                bool
+	startErr             error
+	node                 *tsnet.Server
+	started              time.Time
+	transport            tailnetRuntime
+	identityClaimed      atomic.Bool
+	tlsRoots             *x509.CertPool
+	enrollmentMu         sync.Mutex
+	enrollmentGeneration uint64
+	resetting            bool
+	enrollmentCancel     context.CancelFunc
+	tunnel               *tailnetTunnel
 }
 
 func encoded(value any) string { b, _ := json.Marshal(value); return string(b) }
@@ -95,17 +93,13 @@ func start(dir string) string {
 	if err != nil {
 		return failure(err)
 	}
-	// Local assets may navigate as soon as this closed proxy is bound. No
-	// DNS, control-plane login, or peer dial is performed on the JNI caller.
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
+	// Reopening never reconstructs a scan grant from disk. A pending record
+	// contains secrets only until native hands it to its unique document.
+	if err := clearPending(dir); err != nil {
 		return failure(err)
 	}
-	e := &engine{dir: dir, hostname: string(name), proxy: listener, started: time.Now()}
-	e.client = &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{DialContext: e.dial, ForceAttemptHTTP2: true}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	e := &engine{dir: dir, hostname: string(name), started: time.Now()}
 	instance.engine = e
-	server := &http.Server{Handler: e, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8192}
-	go server.Serve(listener)
 	e.startNode()
 	return encoded(map[string]any{"ok": true})
 }
@@ -121,7 +115,7 @@ func (e *engine) startNode() {
 	}
 	e.starting = true
 	e.startErr = nil
-	node := &tsnet.Server{Dir: e.dir, Hostname: e.hostname, Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
+	node := privateTailnetNode(e.dir, e.hostname)
 	e.mu.Unlock()
 	go func() {
 		err := node.Start()
@@ -133,8 +127,16 @@ func (e *engine) startNode() {
 		e.starting = false
 		e.startErr = err
 		if err == nil {
+			client, clientErr := node.LocalClient()
+			if clientErr != nil {
+				e.startErr = clientErr
+				node.Close()
+				return
+			}
 			e.node = node
+			e.transport = &realTailnetRuntime{node: node, local: client}
 			e.ready = true
+			go e.watchTargets(client)
 		}
 	}()
 }
@@ -148,17 +150,6 @@ func (e *engine) readyNode() (*tsnet.Server, error) {
 		return nil, fmt.Errorf("连接正在恢复")
 	}
 	return e.node, nil
-}
-
-func (e *engine) dial(ctx context.Context, network, address string) (net.Conn, error) {
-	if network != "tcp" || address != targetHost {
-		return nil, fmt.Errorf("只允许连接已指定的工作区")
-	}
-	node, err := e.readyNode()
-	if err != nil {
-		return nil, err
-	}
-	return node.Dial(ctx, "tcp", targetAddress)
 }
 
 func status() string {
@@ -186,174 +177,25 @@ func status() string {
 	if err != nil {
 		return failure(err)
 	}
-	result := map[string]any{"ok": true, "state": s.BackendState, "authURL": s.AuthURL, "origin": targetURL, "elapsedMs": time.Since(e.started).Milliseconds(), "path": "unknown", "health": s.Health}
+	result := map[string]any{"ok": true, "state": s.BackendState, "elapsedMs": time.Since(e.started).Milliseconds(), "path": "unknown", "health": s.Health}
 	return encoded(result)
 }
 
-// An explicit user action can retry enrollment when automatic startup has not
-// produced an authorization URL. Never log or persist the one-time URL.
-func login() string {
+func checkConnection(origin string) string {
 	e, err := current()
 	if err != nil {
 		return failure(err)
 	}
-	node, err := e.readyNode()
+	binding, err := savedTarget(e.dir, origin)
 	if err != nil {
 		return failure(err)
 	}
-	lc, err := node.LocalClient()
-	if err != nil {
-		return failure(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	state, err := lc.Status(ctx)
-	if err != nil {
+	if err := e.verifyTargetTLS(ctx, binding); err != nil {
 		return failure(err)
-	}
-	if state.BackendState == "Running" {
-		return status()
-	}
-	if state.AuthURL == "" {
-		if err := lc.StartLoginInteractive(ctx); err != nil {
-			return failure(err)
-		}
-	}
-	for {
-		state, err = lc.Status(ctx)
-		if err != nil {
-			return failure(fmt.Errorf("获取登录链接失败，请检查当前网络后重试：%w", err))
-		}
-		if state.AuthURL != "" || state.BackendState == "Running" {
-			return status()
-		}
-		select {
-		case <-ctx.Done():
-			return failure(fmt.Errorf("暂时无法获取登录链接（%s）。请检查现有 VPN 是否允许本 App 联网，再点登录重试。", state.BackendState))
-		case <-time.After(300 * time.Millisecond):
-		}
-	}
-}
-
-func checkConnection() string {
-	e, err := current()
-	if err != nil {
-		return failure(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL+"/api/version", nil)
-	if err != nil {
-		return failure(err)
-	}
-	response, err := e.client.Do(request)
-	if err != nil {
-		return failure(err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		return failure(fmt.Errorf("服务器返回 HTTP %d", response.StatusCode))
-	}
-	var version struct {
-		WebCompatVersion int    `json:"webCompatVersion"`
-		APIVersion       string `json:"apiVersion"`
-		KernelVersion    string `json:"kernelVersion"`
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, 65537))
-	if err != nil {
-		return failure(err)
-	}
-	if len(body) > 65536 {
-		return failure(fmt.Errorf("服务器响应异常"))
-	}
-	if err = json.Unmarshal(body, &version); err != nil {
-		return failure(err)
-	}
-	if version.WebCompatVersion <= 0 || version.APIVersion == "" || version.KernelVersion == "" {
-		return failure(fmt.Errorf("这个地址不是 Neige 服务器"))
 	}
 	return encoded(map[string]any{"ok": true})
-}
-
-func probe() string {
-	e, err := current()
-	if err != nil {
-		return failure(err)
-	}
-	begin := time.Now()
-	response, err := e.client.Get(targetURL + "/api/version")
-	if err != nil {
-		return failure(err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 65537))
-	if err != nil {
-		return failure(err)
-	}
-	if len(body) > 65536 {
-		return failure(fmt.Errorf("接口返回超过试验上限"))
-	}
-	var version map[string]any
-	if response.StatusCode != 200 {
-		return failure(fmt.Errorf("服务器返回 HTTP %d", response.StatusCode))
-	}
-	if err = json.Unmarshal(body, &version); err != nil {
-		return failure(err)
-	}
-	result := map[string]any{"ok": true, "requestMs": time.Since(begin).Milliseconds(), "bytes": len(body), "webCompatVersion": version["webCompatVersion"], "path": "unknown"}
-	node, err := e.readyNode()
-	if err != nil {
-		return failure(err)
-	}
-	lc, err := node.LocalClient()
-	if err != nil {
-		return failure(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	ping, err := lc.Ping(ctx, netip.MustParseAddr(targetIP), tailcfg.PingDisco)
-	if err == nil && ping.Err == "" {
-		result["latencyMs"] = ping.LatencySeconds * 1000
-		if ping.Endpoint != "" {
-			result["path"] = "direct"
-		} else if ping.DERPRegionID != 0 {
-			result["path"] = "relay"
-			result["relay"] = ping.DERPRegionCode
-		}
-	}
-	return encoded(result)
-}
-
-func (e *engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodConnect || r.Host != targetHost || r.URL.Host != targetHost {
-		http.Error(w, "Target denied", http.StatusForbidden)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	upstream, err := e.dial(ctx, "tcp", r.Host)
-	if err != nil {
-		http.Error(w, "Workspace connection unavailable", http.StatusBadGateway)
-		return
-	}
-	defer upstream.Close()
-	local, buffer, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		return
-	}
-	defer local.Close()
-	if _, err = buffer.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		return
-	}
-	if err = buffer.Flush(); err != nil {
-		return
-	}
-	done := make(chan struct{})
-	go func() { io.Copy(upstream, buffer); upstream.Close(); local.Close(); close(done) }()
-	io.Copy(local, upstream)
-	local.Close()
-	upstream.Close()
-	<-done
 }
 
 //export p2pConfigure
@@ -367,8 +209,55 @@ func p2pStart(dir *C.char) *C.char { return C.CString(start(C.GoString(dir))) }
 //export p2pStatus
 func p2pStatus() *C.char { return C.CString(status()) }
 
-//export p2pLogin
-func p2pLogin() *C.char { return C.CString(login()) }
+//export p2pEnroll
+func p2pEnroll(raw *C.char) *C.char {
+	e, err := current()
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	result, err := e.enroll(C.GoString(raw))
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	return C.CString(string(result))
+}
+
+//export p2pCancelEnrollment
+func p2pCancelEnrollment() *C.char {
+	e, err := current()
+	if err != nil {
+		return C.CString(encoded(map[string]any{"ok": true}))
+	}
+	if err := e.cancelEnrollment(); err != nil {
+		return C.CString(failure(err))
+	}
+	return C.CString(encoded(map[string]any{"ok": true}))
+}
+
+//export p2pResetEnrollment
+func p2pResetEnrollment() *C.char {
+	e, err := current()
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	if err := e.resetEnrollment(); err != nil {
+		return C.CString(failure(err))
+	}
+	return C.CString(encoded(map[string]any{"ok": true}))
+}
+
+//export p2pTailnet
+func p2pTailnet(origin *C.char) *C.char {
+	e, err := current()
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	proxy, err := e.bindTailnet(C.GoString(origin))
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	return C.CString(encoded(map[string]any{"ok": true, "proxy": proxy}))
+}
 
 //export p2pDirect
 func p2pDirect(origin *C.char) *C.char { return C.CString(configureDirect(C.GoString(origin))) }
@@ -377,17 +266,5 @@ func p2pDirect(origin *C.char) *C.char { return C.CString(configureDirect(C.GoSt
 func p2pStopDirect() { stopDirect() }
 
 //export p2pCheck
-func p2pCheck() *C.char { return C.CString(checkConnection()) }
-
-//export p2pProbe
-func p2pProbe() *C.char { return C.CString(probe()) }
-
-//export p2pProxy
-func p2pProxy() *C.char {
-	e, err := current()
-	if err != nil {
-		return C.CString("")
-	}
-	return C.CString("http://" + e.proxy.Addr().String())
-}
-func main() {}
+func p2pCheck(origin *C.char) *C.char { return C.CString(checkConnection(C.GoString(origin))) }
+func main()                           {}

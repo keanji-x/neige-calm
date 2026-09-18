@@ -43,6 +43,7 @@ class MainActivity : TauriActivity() {
     super.onCreate(savedInstanceState)
     connectionBack = object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
+        if (BundledFrontendPlugin.handleWorkspaceBack()) return
         val view = findWebView(findViewById(android.R.id.content))
         val uri = runCatching { java.net.URI(view?.url ?: "") }.getOrNull()
         // Keep the native runtime alive when leaving the root screen.

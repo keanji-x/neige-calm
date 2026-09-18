@@ -182,3 +182,30 @@ v2 试图补文档许可和按响应推进的 native 请求闸；root 源级复�
 v3 选择唯一最小替代：v2 配对与 gate 同处一个 APK 本地文档，只有一次单向 scan context 注入；FE 负责同代际协议排序，native 只负责真实的目标、连接和文档生命周期。删去跨文档导航、receipt API 与 sessionStorage nonce，以新 session 指纹和 whoami 保留原 cookie 绑定目的。
 同时将 pending 清理点前移至交付前，明确 profile 提交只证明目标、取消不回滚服务器/cookie、进程死亡需重新明确配对；不扩大持久认证、离线正文或原生 IPC。v1 审批及已接受的 issuer/key TTL/管理员来源/QR 权限与非原子合同保留。
 官方公开 OpenAPI 的秒数参数事实与云端 300 秒行为仍分开记录，未作账户操作或声称实测成功。v3 已经两路 fresh 全文复核批准：[A](../_1712-scan-design-review-subagent-v3.md)、[B](../_1712-scan-design-review-codex-v3.md)。复核内容 SHA-256 为 `423f91ff5fc3f0bc67f821cc2978405a3c79c46c018e92bd853bea16dd3abfc3`；批准后仅补状态及归档说明，未改合同。
+
+Implementation note (S4): the existing BundledFrontendPlugin owns a native-created workspace WebView for the scan document. It reuses BundledFrontendAssets, CookieManager, ConnectionProfiles and ResumeEntry, and registers no JavaScript interface or Tauri IPC in that view. MainActivity explicitly dispatches Back and lifecycle to the active workspace. Leaving/cancelling closes its immutable Go proxy generation and sockets before destroying that WebView; the packaged launcher then becomes visible. Activity/process replacement uses ordinary S1 recovery from the saved origin/route, never recreating the one-shot scan context. This fulfills the required document destruction without breaking the Tauri launcher's process-owned plugin lifecycle.
+
+### S4 implementation dispositions (2026-09-18)
+
+- The pinned SDK's `LocalClient.Start(AuthKey)` alone does not initiate fresh
+  registration. The supported CLI path in
+  `tailscale v1.102.3/cmd/tailscale/cli/up.go` supplies explicit preferences and
+  calls `StartLoginInteractive` when `HaveNodeKey` is false; `tsnet.Start` also
+  invokes it internally. S4 uses that supported, native-only auth-key path on
+  the same node. This narrows the earlier method-name prohibition: the product
+  prohibition is browser login, not an SDK registration method. No AuthURL or
+  BrowseToURL is consumed, returned to JS, or sent to an Android Intent. A real
+  SDK/local-control/DERP test pins StartAuth -> Running -> Logout -> no identity;
+  this is not evidence of cloud policy or device acceptance.
+- Confirmed restart-enrollment is a separate launcher action with a native
+  confirmation dialog and bounded SDK Logout. A secret-free reset marker blocks
+  both scan and old-target binding across process death until success is
+  confirmed. Then old target bindings and the selected Tailnet/resume pointer
+  are invalidated. Failed/unknown logout preserves the block and SDK state.
+- Uncertain registration retains only enrollment/origin, SHA-256 key and ticket
+  digests, and the original deadlines after the attempted operation. Only an
+  identical valid QR can retry; no new authority can be inferred from a state
+  file, a pending record or a process restart.
+- The document's nonce/strict-dynamic CSP is intersected with an APK asset-path
+  script policy. The authenticated API origin is not itself a script source.
+  Unlisted resources fail locally, and a scan document has no native bridge.

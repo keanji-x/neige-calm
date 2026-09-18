@@ -15,4 +15,4 @@ export CC="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$compiler-clang"
 export CXX="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$compiler-clang++"
 output="../src-tauri/gen/android/app/src/main/jniLibs/$abi"
 mkdir -p "$output"
-go build -p 4 -buildmode=c-shared -trimpath -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o "$output/libneige_p2p.so" .
+go build -p 2 -tags=ts_omit_logtail -buildmode=c-shared -trimpath -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o "$output/libneige_p2p.so" .

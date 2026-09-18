@@ -20,6 +20,7 @@ internal class ResumeEntry(context: Context) {
     require(route == safeRoute(URI(origin + route)))
     SavedEntry(origin, route)
   }.getOrNull()
+  fun clear() { check(preferences.edit().remove("entry").commit()) { "无法清除上次页面，请重试" } }
   fun remember(profiles: ConnectionProfiles, origin: BundledOrigin, url: String) {
     val uri = runCatching { URI(url) }.getOrNull() ?: return
     if (!origin.matches(uri)) return

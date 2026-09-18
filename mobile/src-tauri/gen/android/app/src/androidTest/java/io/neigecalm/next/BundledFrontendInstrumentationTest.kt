@@ -164,7 +164,7 @@ class BundledFrontendInstrumentationTest {
     waitFor("Native bridge must exist for an actual ACL check", "typeof window.__TAURI__?.core?.invoke==='function'")
     for (command in listOf("plugin:bundled-frontend|bind_server", "plugin:bundled-frontend|connection_settings",
       "plugin:bundled-frontend|save_connection", "plugin:bundled-frontend|attempt_connection",
-      "plugin:bundled-frontend|login_tailscale", "plugin:barcode-scanner|request_permissions")) {
+      "plugin:bundled-frontend|enroll_from_scan", "plugin:bundled-frontend|cancel_enrollment", "plugin:barcode-scanner|request_permissions")) {
       val result = asyncValue("window.__TAURI__.core.invoke(" + JSONObject.quote(command) + ",{origin:" + JSONObject.quote(otherOrigin) + "})")
       assertFalse("Remote page invoked " + command, result.getBoolean("ok"))
       assertTrue("Expected the permission fence, not a missing bridge or handler: " + result, result.getString("error").contains("not allowed"))

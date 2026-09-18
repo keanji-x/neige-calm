@@ -5,16 +5,15 @@ import java.net.InetAddress
 import java.net.URI
 
 internal data class ConnectionRoute(val mode: String, val origin: String)
-internal data class ConnectionSettings(val mode: String, val ipOrigin: String, val tailscaleEnabled: Boolean) {
+internal data class ConnectionSettings(val mode: String, val ipOrigin: String, val tailscaleEnabled: Boolean, val tailnetOrigin: String) {
   fun candidates(): List<ConnectionRoute> = buildList {
     if (ipOrigin.isNotEmpty()) add(ConnectionRoute("ip", ipOrigin))
-    if (tailscaleEnabled) add(ConnectionRoute("tailscale", P2PConnection.ORIGIN))
+    if (tailscaleEnabled && tailnetOrigin.isNotEmpty()) add(ConnectionRoute("tailscale", tailnetOrigin))
   }
 }
 
-internal class ConnectionProfiles(context: Context) {
-  private val legacyTailIdentity = java.io.File(context.noBackupFilesDir, "p2p-node").isDirectory
-  private val preferences = context.getSharedPreferences("connection-profiles", Context.MODE_PRIVATE)
+internal class ConnectionProfiles(private val preferences: android.content.SharedPreferences) {
+  constructor(context: Context) : this(context.getSharedPreferences("connection-profiles", Context.MODE_PRIVATE))
   init {
     if (!preferences.contains("schema-version")) check(preferences.edit().putInt("schema-version", 1)
       .putString("profile-id", java.util.UUID.randomUUID().toString()).putLong("config-revision", 1).commit()) { "无法保存连接配置" }
@@ -30,29 +29,65 @@ internal class ConnectionProfiles(context: Context) {
   }
   fun profileId(): String = identity().id
   fun revision(): Long = identity().revision
-  fun read(): ConnectionSettings { identity(); return readSettings() }
+  fun read(): ConnectionSettings { identity(); tailnetOrigins(); return readSettings() }
   private fun readSettings(): ConnectionSettings {
     val result = ConnectionSettings(preferences.getString("mode", "tailscale")!!,
-      preferences.getString("ip-origin", "")!!, preferences.getBoolean("tailscale-enabled", legacyTailIdentity))
+      preferences.getString("ip-origin", "")!!, preferences.getBoolean("tailscale-enabled", false), selectedTailnet())
     require(result.mode in listOf("ip", "tailscale"))
     if (result.ipOrigin.isNotEmpty()) require(parseDirect(result.ipOrigin).value == result.ipOrigin)
+    if (result.tailnetOrigin.isNotEmpty()) require(BundledOrigin.parse(result.tailnetOrigin) { false }.value == result.tailnetOrigin)
     return result
   }
+  private fun selectedTailnet(): String = (preferences.getString("tailnet-origin", null)
+    ?: if (preferences.getBoolean("tailscale-enabled", false)) P2PConnection.ORIGIN else "").also {
+      if (it.isNotEmpty()) require(BundledOrigin.parse(it) { false }.value == it)
+    }
+  fun tailnetOrigins(): List<String> {
+    val encoded = preferences.getString("tailnet-origins", "[]")!!
+    val array = org.json.JSONArray(encoded)
+    require(array.length() <= 8) { "工作区配置无效" }
+    return (0 until array.length()).map { (array.get(it) as String).also { raw -> require(BundledOrigin.parse(raw) { false }.value == raw) } }.distinct()
+  }
+  // Only explicit save/verified-scan/reset may repair storage. Passive reads
+  // remain strict; preserve each independently valid configuration field.
+  private fun repairableDirect(): String = runCatching {
+    val value = preferences.getString("ip-origin", "")!!
+    if (value.isNotEmpty()) require(parseDirect(value).value == value)
+    value
+  }.getOrDefault("")
+  fun selectTailnet(origin: String): ConnectionSettings {
+    require(BundledOrigin.parse(origin) { false }.value == origin)
+    val known = runCatching { tailnetOrigins() }.getOrDefault(emptyList())
+    require(origin in known || known.size < 8) { "已保存的工作区达到上限" }
+    return saveSelected("tailscale", repairableDirect(), true, origin, (known + origin).distinct())
+  }
+  fun disableTailnet(): ConnectionSettings = saveSelected("tailscale", repairableDirect(), false, "", emptyList())
+  fun selectSavedTailnet(origin: String): ConnectionSettings {
+    require(origin in tailnetOrigins()) { "请扫描这个工作区的二维码" }
+    val old = read()
+    return saveSelected("tailscale", old.ipOrigin, true, origin, tailnetOrigins())
+  }
   fun save(mode: String, ipOrigin: String, tailscaleEnabled: Boolean): ConnectionSettings {
+    val selected = runCatching { selectedTailnet() }.getOrDefault("")
+    val known = runCatching { tailnetOrigins() }.getOrDefault(emptyList())
+    return saveSelected(mode, ipOrigin, tailscaleEnabled && selected.isNotEmpty(), selected, known)
+  }
+  private fun saveSelected(mode: String, ipOrigin: String, tailscaleEnabled: Boolean, tailnetOrigin: String, known: List<String>): ConnectionSettings {
     require(mode in listOf("ip", "tailscale")) { "请选择 IP 或 Tailscale" }
     val origin = if (ipOrigin.isBlank()) "" else parseDirect(ipOrigin.trim()).value
-    val settings = ConnectionSettings(mode, origin, tailscaleEnabled)
+    val settings = ConnectionSettings(mode, origin, tailscaleEnabled, tailnetOrigin)
     // Read untrusted metadata once. An explicit save repairs invalid identity
     // atomically with the settings, so an old ResumeEntry cannot become valid.
     val previous = runCatching { identity() }.getOrNull()
-    val changed = runCatching { readSettings() }.getOrNull() != settings
+    val changed = runCatching { read() }.getOrNull() != settings
     val next = if (previous == null || (changed && previous.revision == Long.MAX_VALUE))
       Identity(java.util.UUID.randomUUID().toString(), 1)
     else Identity(previous.id, previous.revision + if (changed) 1 else 0)
     check(preferences.edit().putInt("schema-version", 1)
       .putString("profile-id", next.id).putLong("config-revision", next.revision)
       .putString("mode", mode).putString("ip-origin", origin)
-      .putBoolean("tailscale-enabled", tailscaleEnabled).commit()) { "保存连接配置失败，请重试" }
+      .putBoolean("tailscale-enabled", tailscaleEnabled).putString("tailnet-origin", tailnetOrigin)
+      .putString("tailnet-origins", org.json.JSONArray(known).toString()).commit()) { "保存连接配置失败，请重试" }
     return settings
   }
   companion object {

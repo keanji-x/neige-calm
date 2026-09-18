@@ -18,7 +18,7 @@ test('scan result requires server confirmation before navigation', async ({ page
   await page.getByRole('button', { name: '继续配对' }).click();
   await expect(page).toHaveURL(destination);
   await page.goto('http://127.0.0.1:5197/');
-  await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /重新连接工作区/ })).toBeVisible();
 });
 
 test('camera denial preserves the connection page', async ({ page }) => {
@@ -26,7 +26,7 @@ test('camera denial preserves the connection page', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: /扫码授权/ }).click();
   await expect(page.getByText('请允许相机权限后重试。')).toBeVisible();
-  await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /重新连接工作区/ })).toBeEnabled();
   await expect(page.getByRole('button', { name: /扫码授权/ })).toBeEnabled();
 });
 
@@ -63,7 +63,7 @@ test('cancel settles locally when native scan remains pending and ignores its la
   await page.getByRole('button', { name: /扫码授权/ }).click();
   await page.getByRole('button', { name: '取消扫码' }).click();
   await expect(page.getByRole('button', { name: /扫码授权/ })).toBeEnabled();
-  await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /重新连接工作区/ })).toBeVisible();
   await page.getByRole('button', { name: /扫码授权/ }).click();
   await expect(page.getByRole('region', { name: '确认配对服务器' })).toContainText('pivot-neige.tail328551.ts.net:10000');
   await page.evaluate(() => window.finishOldScan({ content: `https://pivot-neige.tail328551.ts.net:10000/mobile/pair#v1.${'a'.repeat(64)}` }));

@@ -9,7 +9,7 @@ import test from 'node:test';
 
 const verifier = fileURLToPath(new URL('../scripts/verify-bundled-apk.mjs', import.meta.url));
 
-async function verify(t, libraries) {
+async function verify(t, libraries, omitLogtail = true) {
   const root = await mkdtemp(join(tmpdir(), 'neige-apk-verifier-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const contents = join(root, 'contents');
@@ -29,8 +29,15 @@ async function verify(t, libraries) {
       path, mime, size: Buffer.byteLength(body), sha256: createHash('sha256').update(body).digest('hex'),
     })),
   }));
-  // The production verifier checks archive membership, not ELF contents.
-  for (const path of libraries) await put(`lib/${path}`, 'synthetic native library');
+  // Build real Go metadata; the verifier must inspect the archived binary,
+  // not a manifest or a hand-written claim about build tags.
+  await put('native-fixture.go', 'package main\nimport "C"\nfunc main() {}\n');
+  const built = join(root, 'native-fixture.so');
+  execFileSync('go', ['build', '-p', '2', '-buildmode=c-shared', ...(omitLogtail ? ['-tags=ts_omit_logtail'] : []), '-o', built, join(contents, 'native-fixture.go')]);
+  const { readFile } = await import('node:fs/promises');
+  const binary = await readFile(built);
+  for (const path of libraries) await put(`lib/${path}`, path.endsWith('libneige_p2p.so') ? binary : 'synthetic app library');
+
   const apk = join(root, 'fixture.apk');
   execFileSync('python3', ['-c',
     'import pathlib,sys,zipfile\nroot=pathlib.Path(sys.argv[1])\nwith zipfile.ZipFile(sys.argv[2],"w") as archive:\n for file in sorted(root.rglob("*")):\n  if file.is_file(): archive.write(file,file.relative_to(root).as_posix())',
@@ -60,4 +67,10 @@ test('APK verifier rejects a Go library missing from any Rust ABI', async (t) =>
     assert.notEqual(result.status, 0, `Go networking for the other ABI must not satisfy ${missing}`);
     assert.match(result.stderr, new RegExp(`Missing userspace networking for ${missing}`));
   }
+});
+
+test('APK verifier rejects a real networking build that includes logtail', async t => {
+  const result = await verify(t, ['arm64-v8a/libapp_lib.so', 'arm64-v8a/libneige_p2p.so'], false);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must omit logtail from its actual build/);
 });
