@@ -293,6 +293,19 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
     .await
     .unwrap();
     assert!(stored.pending_entries().is_empty());
+    // Positive control (fix round 1 F5): the SAME recovered harness still
+    // issues a turn for real input, so a harness with turn issuance broken
+    // could not have passed the "no turn" assertion above vacuously.
+    recovered
+        .observe_user_message_durable("please explain the result".into(), vec![])
+        .await
+        .unwrap();
+    maybe_issue_turn(&recovered.inner).await.unwrap();
+    assert_eq!(
+        inner.daemon.turn_start_count_for_test(),
+        1,
+        "the recovered harness must issue a turn for a queued user message"
+    );
 }
 
 #[tokio::test]

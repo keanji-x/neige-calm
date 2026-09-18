@@ -471,10 +471,14 @@ impl Observation {
 }
 
 /// #1727 S1 — rewrite runs of two or more identical consecutive lines as one
-/// `<line> (×N)` line. Pure text folding for rendered wake text (the gate
+/// `<line> (×N)` line (a run of blank lines as `(blank ×N)`; a single blank
+/// line stays blank). Pure text folding for rendered wake text (the gate
 /// result's `log_tail`, up to 8 KiB of which was one repeated warning in the
-/// #1727 forensics); the input is otherwise returned unchanged, including a
-/// trailing newline. Never applied to stored payloads or files on disk.
+/// #1727 forensics). Lines are split with `str::lines`, so every line
+/// terminator comes back as `\n` — `"a\r\nb\r\n"` renders as `"a\nb\n"`;
+/// apart from that normalisation, unrepeated text is returned unchanged,
+/// including a trailing newline. Never applied to stored payloads or files
+/// on disk.
 pub fn collapse_repeated_lines(text: &str) -> String {
     let trailing_newline = text.ends_with('\n');
     let mut out = String::with_capacity(text.len());
@@ -487,7 +491,11 @@ pub fn collapse_repeated_lines(text: &str) -> String {
             }
             out.push_str(line);
             if count > 1 {
-                out.push_str(&format!(" (×{count})"));
+                if line.is_empty() {
+                    out.push_str(&format!("(blank ×{count})"));
+                } else {
+                    out.push_str(&format!(" (×{count})"));
+                }
             }
         }
     };
@@ -535,10 +543,21 @@ mod tests {
         assert_eq!(collapse_repeated_lines("x\ny\n"), "x\ny\n");
         assert_eq!(collapse_repeated_lines(""), "");
         assert_eq!(collapse_repeated_lines("\n"), "\n");
-        // Blank lines are lines too: a run of them folds like any other,
-        // and a single leading blank line survives.
-        assert_eq!(collapse_repeated_lines("a\n\n\n\nb"), "a\n (×3)\nb");
+        // Blank lines are lines too: a run of them folds to a labelled
+        // count (fix round 1 F4 — not a bare ` (×3)`), while a single blank
+        // line, leading or between lines, stays blank.
+        assert_eq!(collapse_repeated_lines("a\n\n\n\nb"), "a\n(blank ×3)\nb");
+        assert_eq!(collapse_repeated_lines("a\n\nb"), "a\n\nb");
         assert_eq!(collapse_repeated_lines("\na"), "\na");
+    }
+
+    /// Fix round 1 F4 — `str::lines` strips `\r\n` as one terminator, so
+    /// CRLF input comes back LF-terminated; the doc comment says so rather
+    /// than promising "unchanged".
+    #[test]
+    fn collapse_repeated_lines_normalises_crlf_to_lf() {
+        assert_eq!(collapse_repeated_lines("a\r\nb\r\n"), "a\nb\n");
+        assert_eq!(collapse_repeated_lines("w\r\nw\r\nw"), "w (×3)");
     }
 
     #[test]
