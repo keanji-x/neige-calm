@@ -193,7 +193,10 @@ fn read_descriptor() -> ToolDescriptor {
                 },
                 "with_markers": {
                     "type": "boolean",
-                    "description": "Inject a `<!-- neige:b_xxxx -->` marker line before each block in `text` (default false; always on for `select.blocks`)."
+                    "description": concat!(
+                        "Inject a `<!-- neige:b_xxxx -->` marker line before each block in ",
+                        "`text` (default false; always on for `select.blocks`)."
+                    )
                 },
                 "resolve": {
                     "type": "object",

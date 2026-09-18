@@ -2244,7 +2244,8 @@ async fn full_read_summary_line_stays_short_for_a_long_cjk_summary() {
         "content[0].text must stay one short line for a CJK summary, got {} bytes: {line}",
         line.len()
     );
-    assert!(line.contains("报报报报…;"), "{line}");
+    let clipped_tail = format!("{}…;", "报".repeat(4));
+    assert!(line.contains(&clipped_tail), "{line}");
     assert!(
         line.contains(&format!(" · {} bytes · ", body.len())),
         "{line}"
