@@ -26,6 +26,7 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteTransactionManager,
 };
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::Repo;
@@ -57,6 +58,7 @@ pub const SQLITE_ACQUIRE_TIMEOUT_MS: u64 = 30_000;
 mod area;
 mod card;
 mod card_composite;
+mod database_identity;
 mod events;
 mod infra;
 mod out_of_domain;
@@ -255,6 +257,11 @@ pub struct SqlxRepo {
     /// `pool_memory_anchor_tests`), so `SqlxRepo` stays shareable as
     /// `Arc<SqlxRepo>` with no lock around this field.
     _memory_cache_anchor: Option<SqliteConnection>,
+    /// #1722 S1b — the stable database identity, read once in `open()` from
+    /// the one-row `database_identity` table (migration 0110; minted there on
+    /// the first open). Served as `databaseId` by `GET /api/version` next to
+    /// the per-boot `db_instance_id`; see [`Repo::database_id`].
+    database_id: Arc<String>,
 }
 
 impl SqlxRepo {
@@ -402,11 +409,16 @@ impl SqlxRepo {
         let track_area_cache = TrackAreaCache::new();
         track_area_cache.seed_from_db(&pool).await?;
 
+        // #1722 S1b — after migrations (the table is 0110's), before the repo
+        // is handed out: every boot on this file reads the same id.
+        let database_id = Arc::new(database_identity::ensure_database_identity(&pool).await?);
+
         Ok(Self {
             pool,
             card_role_cache,
             track_area_cache,
             _memory_cache_anchor: memory_cache_anchor,
+            database_id,
         })
     }
 
@@ -538,6 +550,10 @@ impl Repo for SqlxRepo {
     fn sqlite_pool(&self) -> Option<SqlitePool> {
         Some(self.pool.clone())
     }
+
+    fn database_id(&self) -> Arc<String> {
+        self.database_id.clone()
+    }
 }
 
 #[cfg(test)]
@@ -614,6 +630,13 @@ mod deadlock_semantics_tests;
 
 #[cfg(test)]
 mod pool_memory_anchor_tests;
+
+// #1722 S1b — the one-row database identity and the transcript index of
+// migration 0110.
+#[cfg(test)]
+mod database_identity_tests;
+#[cfg(test)]
+mod transcript_index_tests;
 
 #[cfg(test)]
 mod task_projection_snapshot_tests;

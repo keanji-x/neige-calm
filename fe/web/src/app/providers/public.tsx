@@ -30,9 +30,19 @@ import styles from './preflight-status.module.css';
  * bundle's event union rejects the frame and `reduceEventFrame` skips a
  * rejected frame without invalidating the queue, so it keeps showing a
  * restored entry as sent; the curtain is what stops it.
+ * 28 -> 29: #1722 S1b makes `lastTurnCompletedAt` a required conversation-row
+ * field (API v9). A v29 bundle's row parser rejects every list from a v8
+ * kernel, so a bundled client ahead of its kernel must sit behind the
+ * `server-update` curtain; the raised floor keeps a v28 bundle off this kernel.
  */
-export const WEB_COMPAT_VERSION = 28;
-export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
+export const WEB_COMPAT_VERSION = 29;
+/**
+ * `databaseId` / `nowMs` (#1722 S1b): the database's stable id and the server
+ * clock at response time. Optional here like `conversationCreateModel`: this
+ * slice only decodes them; the reader (read-receipt scope keyed on
+ * `databaseId`) lands with S2, which is where requiring them earns its keep.
+ */
+export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string; nowMs?: number }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;
   reload(): void;

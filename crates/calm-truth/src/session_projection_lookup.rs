@@ -217,6 +217,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
         session_id: non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned),
         source: (runtime.kind == WorkerSessionKind::SharedPlanner).then(|| "shared".to_string()),
         thread_status: projected_thread_status(runtime).map(ToOwned::to_owned),
+        last_turn_completed_ms: runtime.last_turn_completed_ms,
     }
 }
 

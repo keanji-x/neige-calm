@@ -4,7 +4,10 @@
 //!
 //! API, sync-event, web, MCP, plugin MCP, supervisor, and kernel versions may
 //! evolve independently. `dbInstanceId` changes on every process boot so the
-//! browser can discard state that belongs to a replaced database.
+//! browser can discard state that belongs to a replaced database; `databaseId`
+//! (#1722 S1b) is the database's own stable id so the browser can keep
+//! per-database state across boots; `nowMs` is the server clock at response
+//! time, the baseline a client stamps when it first meets a database.
 
 use crate::event::SYNC_EVENT_VERSION;
 use crate::mcp_server::transport::KERNEL_MCP_PROTOCOL_VERSION;
@@ -56,6 +59,15 @@ use utoipa::ToSchema;
 /// kernel the answer is a 404 the client reads as "the entry is gone" — so a
 /// web-only update onto such a kernel must be refused, not left to fail in
 /// the composer.
+///
+/// #1722 S1b bumps `"8"` -> `"9"`: two responses gain required fields — the
+/// #1450 shape. `GET /api/tracks/{id}/conversations` rows carry
+/// `lastTurnCompletedAt` (nullable, always present) and `GET /api/version`
+/// carries `databaseId` and `nowMs`. A newer bundle's row parser requires the
+/// first, so against an older kernel every conversation list is rejected;
+/// preflight must refuse that pairing instead of letting the list go blank.
+/// `CardRuntimeView.last_turn_completed_ms` rides along optional and needs no
+/// bump of its own.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor.
@@ -128,7 +140,14 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // against this kernel keeps showing a restored entry as sent. The curtain
 // is what stops it. (The same slice also bumped API v7 -> v8 for the steer
 // route itself; that is the REST side of the same pairing rule.)
-pub const WEB_COMPAT_VERSION: u32 = 28;
+//
+// #1722 S1b bumps 28 -> 29 with API v9: the v29 bundle's conversation-row
+// parser requires `lastTurnCompletedAt`, which a v8 kernel does not send, so
+// a bundled client ahead of its kernel must sit behind the `server-update`
+// curtain rather than fail every conversation list; and the raised floor
+// keeps a v28 bundle — which keys its read receipts on the per-boot
+// `dbInstanceId` instead of `databaseId` — off this kernel.
+pub const WEB_COMPAT_VERSION: u32 = 29;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]
@@ -187,9 +206,15 @@ pub struct VersionInfo {
     pub build_sha: Option<String>,
     /// UUID v4 minted once per process boot. See module doc.
     pub db_instance_id: String,
+    /// #1722 S1b — the database's stable id: minted once into the one-row
+    /// `database_identity` table (migration 0110) and read back on every
+    /// boot, so it survives restarts where `db_instance_id` does not.
+    pub database_id: String,
+    /// #1722 S1b — the server clock (unix ms) when this response was built.
+    pub now_ms: i64,
 }
 
-pub fn current_version_info(db_instance_id: String) -> VersionInfo {
+pub fn current_version_info(db_instance_id: String, database_id: String) -> VersionInfo {
     let compatibility = current_kernel_compatibility();
     VersionInfo {
         area_create_idempotency: true,
@@ -204,6 +229,8 @@ pub fn current_version_info(db_instance_id: String) -> VersionInfo {
         supervisor_control_version: compatibility.supervisor_control_version,
         build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
         db_instance_id,
+        database_id,
+        now_ms: crate::model::now_ms(),
     }
 }
 
@@ -216,7 +243,10 @@ pub fn current_version_info(db_instance_id: String) -> VersionInfo {
     ),
 )]
 pub(crate) async fn get_version(State(state): State<RouteState>) -> Json<VersionInfo> {
-    Json(current_version_info((*state.db_instance_id).clone()))
+    Json(current_version_info(
+        (*state.db_instance_id).clone(),
+        (*state.database_id).clone(),
+    ))
 }
 
 #[cfg(test)]
@@ -245,6 +275,8 @@ mod tests {
             supervisor_control_version: SUPERVISOR_CONTROL_VERSION,
             build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
             db_instance_id: "test-id".to_string(),
+            database_id: "test-database-id".to_string(),
+            now_ms: 0,
         };
         assert_eq!(body.min_web_compat_version, WEB_COMPAT_VERSION);
         assert_eq!(body.web_compat_version, WEB_COMPAT_VERSION);

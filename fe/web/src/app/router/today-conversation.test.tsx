@@ -43,7 +43,7 @@ const TRACK = {
 function conversationRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'conv-summary', trackId: 'lp', title: null, kind: 'track-assistant',
-    state: 'idle', updatedAt: 50, ...overrides,
+    state: 'idle', updatedAt: 50, lastTurnCompletedAt: null, ...overrides,
   };
 }
 
@@ -183,7 +183,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
   it('keeps another track’s conversations off Today, however recently they were visited', async () => {
     const { router } = renderApp({
       launchpadRows: () => [conversationRow({ title: 'Today’s progress' })],
-      trackRows: [{ id: 'conv-other', trackId: 'w1', title: 'Other chat', kind: 'track-assistant', state: 'idle', updatedAt: 90 }],
+      trackRows: [{ id: 'conv-other', trackId: 'w1', title: 'Other chat', kind: 'track-assistant', state: 'idle', updatedAt: 90, lastTurnCompletedAt: null }],
     });
     await screen.findByRole('button', { name: /Conversation Today’s progress/ });
     await router.navigate({ to: '/track/w1' });
