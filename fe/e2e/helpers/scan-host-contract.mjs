@@ -40,7 +40,7 @@ try {
       attemptId: mismatch ? 'browser-mismatch' : 'browser-success', attemptSecret: 'a'.repeat(64),
       pairTicket: qr.pairTicket, deadline: qr.pairExpiresAt };
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' });
-    /** @type {{ path: string, method: string, hasCookie: boolean }[]} */
+    /** @type {{ path: string, method: string, hasCookie: boolean, status?: number }[]} */
     const seen = [];
     /** @type {string[]} */
     const errors = [];
@@ -56,13 +56,16 @@ try {
         if (url.origin !== config.origin) { await route.abort(); return; }
         if (url.pathname.startsWith('/api/')) {
           const requestHeaders = await request.allHeaders();
-          seen.push({ path: url.pathname, method: request.method(), hasCookie: Boolean(requestHeaders.cookie) });
+          /** @type {{ path: string, method: string, hasCookie: boolean, status?: number }} */
+          const observed = { path: url.pathname, method: request.method(), hasCookie: Boolean(requestHeaders.cookie) };
+          seen.push(observed);
           const response = await globalThis.fetch(`${config.public}${url.pathname}${url.search}`, {
             method: request.method(), headers: { 'Content-Type': 'application/json', 'Accept-Encoding': 'identity',
               ...(requestHeaders.cookie ? { Cookie: requestHeaders.cookie } : {}) },
             ...(request.postData() === null ? {} : { body: request.postData() ?? '' }), redirect: 'manual',
           });
           const body = Buffer.from(await response.arrayBuffer());
+          observed.status = response.status;
           /** @type {Record<string, string>} */
           const headers = {};
           response.headers.forEach((value, key) => { headers[key] = value; });
@@ -97,12 +100,13 @@ try {
         passed.push('stale-cookie-rejected');
       } else {
         await expect(page.getByText('已连接', { exact: true })).toBeVisible();
-        await expect.poll(() => seen.some(entry => entry.path === '/api/areas')).toBe(true);
+        await expect.poll(() => seen.find(entry => entry.path === '/api/areas')?.status).toBe(200);
         assert.deepEqual(seen.slice(0, 4).map(entry => entry.path), [
           '/api/mobile/enrollments/claim', '/api/mobile/enrollments/redeem', '/api/auth/whoami', '/api/version',
         ]);
         assert.ok(seen.find(entry => entry.path === '/api/auth/whoami')?.hasCookie);
         assert.ok(seen.find(entry => entry.path === '/api/areas')?.hasCookie);
+        assert.ok(seen.slice(0, 4).every(entry => entry.status === 200));
         retainedCookies = (await context.cookies()).filter(cookie => cookie.name === config.cookieName);
         assert.equal(retainedCookies.length, 1);
         assert.ok(retainedCookies[0].secure && retainedCookies[0].httpOnly);
