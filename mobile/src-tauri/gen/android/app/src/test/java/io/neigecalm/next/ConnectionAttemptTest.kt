@@ -4,7 +4,7 @@ import org.junit.Test
 import org.junit.Assert.*
 
 class ConnectionAttemptTest {
-  private val settings = ConnectionSettings("tailscale", "http://192.168.1.8:4140", true, P2PConnection.ORIGIN)
+  private val settings = ConnectionSettings("tailscale", "http://192.168.1.8:4140", true, P2PConnection.ORIGIN, false)
 
   @Test fun ipIsPreferredEvenWhenTheEditorShowsTailscale() {
     val attempted = mutableListOf<String>()
@@ -62,7 +62,7 @@ class ConnectionAttemptTest {
     var attempts = 0
     val result = ConnectionAttempt.firstAvailable(settings) { attempts++; throw java.net.SocketTimeoutException("timeout") }
     assertNull(result.route); assertEquals(2, attempts); assertEquals(2, result.failures.size)
-    val empty = ConnectionAttempt.firstAvailable(ConnectionSettings("ip", "", false, "")) { fail("No configured route") }
+    val empty = ConnectionAttempt.firstAvailable(ConnectionSettings("ip", "", false, "", false)) { fail("No configured route") }
     assertNull(empty.route); assertTrue(empty.failures.isEmpty())
   }
   @Test fun cancellationStopsBeforeStartingAnotherRoute() {

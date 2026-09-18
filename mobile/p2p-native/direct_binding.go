@@ -32,7 +32,45 @@ type directNetwork struct {
 }
 
 func systemDirectNetwork() directNetwork {
-	return directNetwork{lookup: net.DefaultResolver.LookupNetIP, dial: (&net.Dialer{Timeout: 5 * time.Second}).DialContext}
+	// Preserve platform DNS routing, including Android's cgo/private-DNS path.
+	// StrictErrors helps the Go backend, but does not enforce cgo completeness.
+	resolver := &net.Resolver{PreferGo: net.DefaultResolver.PreferGo, StrictErrors: true, Dial: net.DefaultResolver.Dial}
+	return directNetwork{lookup: func(ctx context.Context, network, host string) ([]netip.Addr, error) {
+		if network != "ip" {
+			return nil, errors.New("需要完整的地址族解析")
+		}
+		return lookupDirectFamilies(ctx, resolver.LookupNetIP, verifyDirectAbsence, host)
+	}, dial: (&net.Dialer{Timeout: 5 * time.Second}).DialContext}
+}
+
+// A combined lookup may return A while AAAA failed, on both Go and cgo.
+// In cgo these select AF_INET/AF_INET6, never AF_UNSPEC aggregation. Android
+// additionally requires status-preserving evidence before accepting absence.
+func lookupDirectFamilies(ctx context.Context, lookup func(context.Context, string, string) ([]netip.Addr, error), absence func(context.Context, string, string) error, host string) ([]netip.Addr, error) {
+	var addresses []netip.Addr
+	for _, family := range []string{"ip4", "ip6"} {
+		answers, err := lookup(ctx, family, host)
+		if err != nil {
+			var dns *net.DNSError
+			if errors.As(err, &dns) && dns.IsNotFound && !dns.IsTemporary && !dns.IsTimeout && ctx.Err() == nil {
+				if err := absence(ctx, family, host); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, err
+		}
+		if len(answers) == 0 {
+			if err := absence(ctx, family, host); err != nil {
+				return nil, err
+			}
+		}
+		addresses = append(addresses, answers...)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return addresses, nil
 }
 
 func allowedDirectAddress(address netip.Addr) bool {

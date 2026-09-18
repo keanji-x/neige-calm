@@ -88,7 +88,32 @@ class ConnectionProfilesRepairTest {
     val outcome = ConnectionAttempt.firstAvailable(selected, nextOrigin) { attempted.add(it) }
     assertEquals(listOf(ConnectionRoute("tailscale", nextOrigin)), attempted)
     assertEquals(nextOrigin, outcome.route?.origin)
+    assertEquals(nextOrigin, ConnectionAttempt.firstAvailable(profiles.read()) {}.route?.origin)
+    profiles.save("tailscale", direct, true, clearSelection = true)
     assertEquals("ip", ConnectionAttempt.firstAvailable(profiles.read()) {}.route?.mode)
+  }
+  @Test fun explicitSavedIntentSurvivesRetryAndReopenUntilAnExplicitModeChoice() {
+    val store = Store(); val profiles = ConnectionProfiles(store.preferences)
+    profiles.selectTailnet(oldOrigin); profiles.selectTailnet(nextOrigin); profiles.save("ip", direct, true)
+    profiles.selectSavedTailnet(nextOrigin)
+    store.values.remove("explicit-tailnet")
+    assertTrue("An older saved B record must not silently fall through to A",profiles.read().explicitTailnet)
+    val revision = profiles.revision()
+    profiles.save("tailscale", direct, true)
+    assertEquals(revision, profiles.revision())
+    val reopened = ConnectionProfiles(store.preferences)
+    assertTrue(reopened.read().explicitTailnet)
+    val failed = ConnectionAttempt.firstAvailable(reopened.read()) { throw java.net.SocketTimeoutException("chosen unavailable") }
+    assertNull(failed.route)
+    assertEquals(listOf(ConnectionFailure("tailscale", "chosen unavailable")), failed.failures)
+    assertEquals(nextOrigin, ConnectionAttempt.firstAvailable(reopened.read()) {}.route?.origin)
+    reopened.disableTailnet()
+    reopened.save("tailscale", direct, false)
+    assertTrue(reopened.read().explicitTailnet)
+    assertTrue(reopened.read().candidates().isEmpty())
+    reopened.save("ip", direct, true)
+    assertFalse(reopened.read().explicitTailnet)
+    assertEquals("ip", ConnectionAttempt.firstAvailable(reopened.read()) {}.route?.mode)
   }
   private fun corruptions(): List<Pair<String, Any>> = listOf(
     "tailnet-origin" to 7, "tailnet-origin" to "http://untrusted.example",

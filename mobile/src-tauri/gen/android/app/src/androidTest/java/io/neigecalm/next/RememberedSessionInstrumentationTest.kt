@@ -35,7 +35,7 @@ class RememberedSessionInstrumentationTest {
       assertTrue(done.await(10, TimeUnit.SECONDS))
     } else {
       assertEquals("check", phase)
-      assertEquals(ConnectionSettings("ip", direct, true, P2PConnection.ORIGIN), profiles.read())
+      assertEquals(ConnectionSettings("ip", direct, true, P2PConnection.ORIGIN, false), profiles.read())
       instrumentation.runOnMainSync {
         assertTrue("Saved authorization was lost after force-stop", RememberedSession.hasCookie())
         assertTrue("IP authorization was lost after force-stop", RememberedSession.hasCookie(direct))

@@ -12,6 +12,7 @@ test.beforeEach(async ({ page }) => {
       if (command.endsWith('|connection_settings')) return { ...window.settings };
       if (command.endsWith('|save_connection')) { window.settings = { ...args }; return { ...window.settings }; }
       if (command.endsWith('|attempt_connection')) return window.attemptResult;
+      if (command.endsWith('|cancel_connection')) return {};
       if (command.endsWith('|request_permissions')) return { camera: 'denied' };
       if (command.endsWith('|bind_server')) return { origin: args.origin };
       throw new Error('Unexpected native command');
@@ -99,7 +100,7 @@ test('editing mode preserves both configurations through the native save contrac
   await page.getByRole('combobox').selectOption('ip');
   await page.getByLabel('服务器地址').fill(direct);
   await page.getByRole('combobox').selectOption('tailscale');
-  await expect.poll(() => page.evaluate(() => window.settings)).toEqual({ mode: 'tailscale', ipOrigin: direct, tailscaleEnabled: false });
+  await expect.poll(() => page.evaluate(() => window.settings)).toEqual({ mode: 'tailscale', ipOrigin: direct, tailscaleEnabled: false, clearSelection: true });
   await page.getByRole('button', { name: '重新连接工作区' }).click();
   await expect(page.getByRole('button', { name: '扫码授权' })).toBeEnabled();
 });
@@ -145,9 +146,9 @@ test('only explicit save-and-connect IP grants direct address confirmation', asy
   }, 'https://direct.example');
   await page.goto('/');
   await expect(page.getByRole('button', { name: '保存并连接 IP' })).toBeEnabled();
-  expect(await page.evaluate(() => window.attemptArguments)).toEqual([{}]);
+  expect(await page.evaluate(() => window.attemptArguments)).toEqual([{ intentId: expect.any(String) }]);
   await page.getByRole('button', { name: '保存并连接 IP' }).click();
-  await expect.poll(() => page.evaluate(() => window.attemptArguments)).toEqual([{}, { confirmDirect: true }]);
+  await expect.poll(() => page.evaluate(() => window.attemptArguments)).toEqual([{ intentId: expect.any(String) }, { intentId: expect.any(String), confirmDirect: true }]);
 });
 
 test('an unfinished IP draft does not block Tailscale scanning', async ({ page }) => {

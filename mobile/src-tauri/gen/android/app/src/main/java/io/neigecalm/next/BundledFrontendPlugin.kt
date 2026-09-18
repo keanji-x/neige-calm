@@ -18,9 +18,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 
 @InvokeArg class EnrollFromScanArgs { lateinit var payload: String }
-@InvokeArg class BindFrontendArgs { lateinit var origin: String }
-@InvokeArg class AttemptConnectionArgs { var tailnetOrigin: String? = null; var confirmDirect: Boolean = false }
-@InvokeArg class SaveConnectionArgs { lateinit var mode: String; lateinit var ipOrigin: String; var tailscaleEnabled: Boolean by kotlin.properties.Delegates.notNull() }
+@InvokeArg class BindFrontendArgs { lateinit var origin: String; var intentId: String? = null }
+@InvokeArg class AttemptConnectionArgs { var tailnetOrigin: String? = null; var confirmDirect: Boolean = false; var intentId: String? = null }
+@InvokeArg class CancelConnectionArgs { lateinit var intentId: String }
+@InvokeArg class SaveConnectionArgs { lateinit var mode: String; lateinit var ipOrigin: String; var tailscaleEnabled: Boolean by kotlin.properties.Delegates.notNull(); var clearSelection: Boolean = false }
 
 @TauriPlugin
 class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
@@ -32,7 +33,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
   private val profiles by lazy { ConnectionProfiles(host.applicationContext) }
   @Volatile private var generation = 0
   private var deadlines = Executors.newSingleThreadScheduledExecutor()
-  private class Pending(val invoke: Invoke) {
+  private class Pending(val invoke: Invoke, val connectionIntent: String?) {
     val cancellation = ConnectionAttempt.Cancellation()
     val settled = java.util.concurrent.atomic.AtomicBoolean(false)
     var future: java.util.concurrent.Future<*>? = null
@@ -96,9 +97,9 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
     pending = null
   }
 
-  private fun startPending(invoke: Invoke, seconds: Long = 15, native: Boolean = false): Pending {
+  private fun startPending(invoke: Invoke, seconds: Long = 15, native: Boolean = false, connectionIntent: String? = null): Pending {
     cancelPending()
-    val job = Pending(invoke)
+    val job = Pending(invoke, connectionIntent)
     if (native) job.nativeOperation = NativeOperation.reserve()
     pending = job
     job.timeout = deadlines.schedule({ host.runOnUiThread {
@@ -134,6 +135,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
   private fun settingsJson(settings: ConnectionSettings, known: List<String> = profiles.tailnetOrigins()) = JSObject().also {
     it.put("mode", settings.mode); it.put("ipOrigin", settings.ipOrigin); it.put("tailscaleEnabled", settings.tailscaleEnabled)
     it.put("tailnetOrigin", settings.tailnetOrigin); it.put("tailnetOrigins", org.json.JSONArray(known))
+    it.put("explicitTailnet", settings.explicitTailnet)
     it.put("legacyTailnet", runCatching { profiles.needsLegacyConfirmation() }.getOrDefault(false))
   }
 
@@ -141,7 +143,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
     try {
       launcher()
       val read = runCatching { profiles.read() }
-      val result = read.fold({ settingsJson(it) }, { settingsJson(ConnectionSettings("tailscale", "", false, ""), emptyList()) })
+      val result = read.fold({ settingsJson(it) }, { settingsJson(ConnectionSettings("tailscale", "", false, "", false), emptyList()) })
       if (read.isFailure) result.put("configurationError", "已保存的连接配置无效，请重新填写并保存。")
       if (read.isSuccess && !resumeConsumed) resume.read(profiles)?.let { entry ->
         result.put("resumeEntry", JSObject().also { it.put("origin", entry.origin); it.put("route", entry.route) })
@@ -169,11 +171,21 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
       try {
         launcher()
         generation++; cancelPending(); closeScanWorkspace()
-        val saved = profiles.save(args.mode, args.ipOrigin, args.tailscaleEnabled)
+        val saved = profiles.save(args.mode, args.ipOrigin, args.tailscaleEnabled, args.clearSelection)
         candidate = null; selectedOrigin.set(null)
         invoke.resolve(settingsJson(saved))
       } catch (error: Exception) { invoke.reject(error.message ?: "保存配置失败") }
     }
+  }
+
+  @Command fun cancelConnection(invoke: Invoke) = host.runOnUiThread {
+    try {
+      launcher()
+      val args = invoke.parseArgs(CancelConnectionArgs::class.java)
+      require(args.intentId.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "连接操作标识无效" }
+      if (pending?.connectionIntent == args.intentId) { generation++; cancelPending(); candidate = null }
+      invoke.resolve()
+    } catch (error: Exception) { invoke.reject(error.message ?: "无法取消连接") }
   }
 
   private fun checkRoute(route: ConnectionRoute, cancellation: ConnectionAttempt.Cancellation, operation: NativeOperation?, binding: String, confirmDirect: Boolean = false): String? {
@@ -192,12 +204,15 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
       launcher()
       val args = invoke.parseArgs(AttemptConnectionArgs::class.java)
       require(!args.confirmDirect || args.tailnetOrigin == null) { "不能同时确认不同的连接目标" }
+      require(args.intentId == null || args.intentId!!.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "连接操作标识无效" }
+      require(!args.confirmDirect || args.intentId != null) { "确认连接需要操作标识" }
       closeScanWorkspace()
       val attempt = ++generation
       val settings = profiles.read()
+      require(!args.confirmDirect || (settings.mode == "ip" && !settings.explicitTailnet)) { "请明确选择 IP 后确认连接" }
       val binding = profiles.directBinding(settings.ipOrigin)
       candidate = null
-      val job = startPending(invoke, native = args.tailnetOrigin == null && settings.ipOrigin.isNotEmpty())
+      val job = startPending(invoke, native = args.tailnetOrigin == null && !settings.explicitTailnet && settings.ipOrigin.isNotEmpty(), connectionIntent = args.intentId)
       job.future = network.submit {
         val checked = runCatching {
           var verifiedBinding: String? = null
@@ -339,6 +354,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
     host.runOnUiThread {
       try {
         launcher()
+        require(args.intentId == null || args.intentId!!.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "连接操作标识无效" }
         closeScanWorkspace()
         val settings = profiles.read()
         val allowed = settings.candidates()
@@ -349,7 +365,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
         val localResume = !resumeConsumed && resume.read(profiles)?.origin == route.origin
         val fresh = candidate == route && android.os.SystemClock.elapsedRealtime() - checkedAt < 10000
         val binding = profiles.directBinding(route.origin)
-        val job = startPending(invoke, native = route.mode == "ip" && !fresh && !localResume)
+        val job = startPending(invoke, native = route.mode == "ip" && !fresh && !localResume, connectionIntent = args.intentId)
         job.future = network.submit {
           val checked = runCatching {
             job.cancellation.check()

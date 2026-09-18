@@ -5,8 +5,9 @@ import java.net.InetAddress
 import java.net.URI
 
 internal data class ConnectionRoute(val mode: String, val origin: String)
-internal data class ConnectionSettings(val mode: String, val ipOrigin: String, val tailscaleEnabled: Boolean, val tailnetOrigin: String) {
+internal data class ConnectionSettings(val mode: String, val ipOrigin: String, val tailscaleEnabled: Boolean, val tailnetOrigin: String, val explicitTailnet: Boolean) {
   fun candidates(): List<ConnectionRoute> = buildList {
+    if (explicitTailnet) { if (tailscaleEnabled && tailnetOrigin.isNotEmpty()) add(ConnectionRoute("tailscale", tailnetOrigin)); return@buildList }
     if (ipOrigin.isNotEmpty()) add(ConnectionRoute("ip", ipOrigin))
     if (tailscaleEnabled && tailnetOrigin.isNotEmpty()) add(ConnectionRoute("tailscale", tailnetOrigin))
   }
@@ -32,9 +33,16 @@ internal class ConnectionProfiles(private val preferences: android.content.Share
   fun needsLegacyConfirmation(): Boolean = read().let { it.tailscaleEnabled && it.tailnetOrigin == P2PConnection.ORIGIN }
   fun read(): ConnectionSettings { identity(); tailnetOrigins(); return readSettings() }
   private fun readSettings(): ConnectionSettings {
-    val result = ConnectionSettings(preferences.getString("mode", "tailscale")!!,
-      preferences.getString("ip-origin", "")!!, preferences.getBoolean("tailscale-enabled", false), selectedTailnet())
+    val mode = preferences.getString("mode", "tailscale")!!
+    val selected = selectedTailnet()
+    // Older saved-workspace records had no intent bit. Retain their known
+    // Tailnet choice conservatively; an explicit mode choice writes false.
+    val explicit = if (preferences.contains("explicit-tailnet")) preferences.getBoolean("explicit-tailnet", false)
+      else mode == "tailscale" && selected.isNotEmpty() && selected in tailnetOrigins()
+    val result = ConnectionSettings(mode, preferences.getString("ip-origin", "")!!,
+      preferences.getBoolean("tailscale-enabled", false), selected, explicit)
     require(result.mode in listOf("ip", "tailscale"))
+    require(!result.explicitTailnet || result.mode == "tailscale")
     if (result.ipOrigin.isNotEmpty()) require(parseDirect(result.ipOrigin).value == result.ipOrigin)
     if (result.tailnetOrigin.isNotEmpty()) require(BundledOrigin.parse(result.tailnetOrigin) { false }.value == result.tailnetOrigin)
     return result
@@ -60,13 +68,13 @@ internal class ConnectionProfiles(private val preferences: android.content.Share
     require(BundledOrigin.parse(origin) { false }.value == origin)
     val known = runCatching { tailnetOrigins() }.getOrDefault(emptyList())
     require(origin in known || known.size < 8) { "已保存的工作区达到上限" }
-    return saveSelected("tailscale", repairableDirect(), true, origin, (known + origin).distinct())
+    return saveSelected("tailscale", repairableDirect(), true, origin, (known + origin).distinct(), true)
   }
-  fun disableTailnet(): ConnectionSettings = saveSelected("tailscale", repairableDirect(), false, "", emptyList())
+  fun disableTailnet(): ConnectionSettings = saveSelected("tailscale", repairableDirect(), false, "", emptyList(), runCatching { read().explicitTailnet }.getOrDefault(false))
   fun selectSavedTailnet(origin: String): ConnectionSettings {
     require(origin in tailnetOrigins()) { "请扫描这个工作区的二维码" }
     val old = read()
-    return saveSelected("tailscale", old.ipOrigin, true, origin, tailnetOrigins())
+    return saveSelected("tailscale", old.ipOrigin, true, origin, tailnetOrigins(), true)
   }
   fun directBinding(origin: String): String = runCatching {
     val raw = preferences.getString("direct-binding", "")!!
@@ -76,17 +84,19 @@ internal class ConnectionProfiles(private val preferences: android.content.Share
   fun confirmDirectBinding(origin: String, binding: String) {
     val old = read()
     require(old.ipOrigin == origin && binding.length <= 8192 && org.json.JSONObject(binding).getString("origin") == origin) { "连接配置已改变" }
-    saveSelected(old.mode, old.ipOrigin, old.tailscaleEnabled, old.tailnetOrigin, tailnetOrigins(), binding)
+    saveSelected(old.mode, old.ipOrigin, old.tailscaleEnabled, old.tailnetOrigin, tailnetOrigins(), old.explicitTailnet, binding)
   }
-  fun save(mode: String, ipOrigin: String, tailscaleEnabled: Boolean): ConnectionSettings {
+  fun save(mode: String, ipOrigin: String, tailscaleEnabled: Boolean, clearSelection: Boolean = false): ConnectionSettings {
     val selected = runCatching { selectedTailnet() }.getOrDefault("")
     val known = runCatching { tailnetOrigins() }.getOrDefault(emptyList())
-    return saveSelected(mode, ipOrigin, tailscaleEnabled && selected.isNotEmpty(), selected, known)
+    // A failed/disabled target does not imply consent to a different server.
+    val retained = !clearSelection && mode == "tailscale" && runCatching { read().explicitTailnet }.getOrDefault(false)
+    return saveSelected(mode, ipOrigin, tailscaleEnabled && selected.isNotEmpty(), selected, known, retained)
   }
-  private fun saveSelected(mode: String, ipOrigin: String, tailscaleEnabled: Boolean, tailnetOrigin: String, known: List<String>, confirmedDirectBinding: String? = null): ConnectionSettings {
+  private fun saveSelected(mode: String, ipOrigin: String, tailscaleEnabled: Boolean, tailnetOrigin: String, known: List<String>, explicitTailnet: Boolean, confirmedDirectBinding: String? = null): ConnectionSettings {
     require(mode in listOf("ip", "tailscale")) { "请选择 IP 或 Tailscale" }
     val origin = if (ipOrigin.isBlank()) "" else parseDirect(ipOrigin.trim()).value
-    val settings = ConnectionSettings(mode, origin, tailscaleEnabled, tailnetOrigin)
+    val settings = ConnectionSettings(mode, origin, tailscaleEnabled, tailnetOrigin, explicitTailnet)
     // Read untrusted metadata once. An explicit save repairs invalid identity
     // atomically with the settings, so an old ResumeEntry cannot become valid.
     val previous = runCatching { identity() }.getOrNull()
@@ -101,6 +111,7 @@ internal class ConnectionProfiles(private val preferences: android.content.Share
       .putString("mode", mode).putString("ip-origin", origin)
       .putString("direct-binding", binding)
       .putBoolean("tailscale-enabled", tailscaleEnabled).putString("tailnet-origin", tailnetOrigin)
+      .putBoolean("explicit-tailnet", explicitTailnet)
       .putString("tailnet-origins", org.json.JSONArray(known).toString()).commit()) { "保存连接配置失败，请重试" }
     return settings
   }

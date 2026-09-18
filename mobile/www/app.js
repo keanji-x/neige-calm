@@ -14,6 +14,7 @@ const error = document.querySelector('#error');
 const loginLabel = document.querySelector('#login-label');
 let config;
 let generation = 0;
+let pendingConnection = null;
 const invoke = (command, args) => {
   const call = window.__TAURI__?.core?.invoke;
   if (!call) return Promise.reject(new Error('请在 Neige 安卓 App 中连接。'));
@@ -37,9 +38,10 @@ function idle() {
   }));
 }
 
-async function save(attempt, useDraft = mode.value === 'ip') {
+async function save(attempt, useDraft = mode.value === 'ip', clearSelection = false) {
   const saved = await invoke('save_connection', {
     mode: mode.value, ipOrigin: useDraft ? ip.value.trim() : config.ipOrigin, tailscaleEnabled: config?.tailscaleEnabled ?? false,
+    ...(clearSelection ? { clearSelection: true } : {}),
   });
   if (attempt !== generation) return;
   config = saved;
@@ -47,8 +49,10 @@ async function save(attempt, useDraft = mode.value === 'ip') {
   return config;
 }
 
-async function connect(manual = false, tailnetOrigin = null, confirmDirect = false) {
+async function connect(manual = false, tailnetOrigin = config?.explicitTailnet ? config.tailnetOrigin : null, confirmDirect = false) {
   const attempt = ++generation;
+  const intentId = crypto.randomUUID();
+  pendingConnection = intentId;
   login.disabled = true;
   scan.disabled = true;
   loginLabel.textContent = '连接中…';
@@ -56,7 +60,7 @@ async function connect(manual = false, tailnetOrigin = null, confirmDirect = fal
   status.dataset.state = 'waiting';
   text.textContent = tailnetOrigin === null ? '正在连接，优先尝试 IP…' : '正在连接所选工作区…';
   try {
-    const result = await invoke('attempt_connection', tailnetOrigin !== null ? { tailnetOrigin } : confirmDirect ? { confirmDirect: true } : undefined);
+    const result = await invoke('attempt_connection', { intentId, ...(tailnetOrigin !== null ? { tailnetOrigin } : confirmDirect ? { confirmDirect: true } : {}) });
     if (attempt !== generation) return;
     if (!result.connected) {
       const failures = result.failures.map(item => `${item.mode === 'ip' ? 'IP' : 'Tailscale'}：${item.message}`).join('；');
@@ -68,7 +72,7 @@ async function connect(manual = false, tailnetOrigin = null, confirmDirect = fal
     status.dataset.state = 'ready';
     text.textContent = result.mode === 'ip' ? 'IP 已连接' : 'Tailscale 已连接';
     if ((result.mode === 'ip' && (manual || result.entryAvailable)) || result.resumeAvailable) {
-      await bindServer(result.origin);
+      await bindServer(result.origin, false, intentId);
       if (attempt !== generation) return;
       location.replace(`${result.origin}/next/`);
     } else if (result.mode === 'tailscale') {
@@ -82,7 +86,7 @@ async function connect(manual = false, tailnetOrigin = null, confirmDirect = fal
       error.textContent = message(cause);
       text.textContent = '连接超时，请重新配置';
     }
-  } finally { if (attempt === generation) idle(); }
+  } finally { if (pendingConnection === intentId) pendingConnection = null; if (attempt === generation) idle(); }
 }
 
 resetNetwork.addEventListener('click', async () => {
@@ -101,16 +105,21 @@ tailnetTarget.addEventListener('change', async () => {
 
 mode.addEventListener('change', async () => {
   const attempt = ++generation; error.textContent = ''; idle();
-  try { await save(attempt, true); if (attempt === generation) idle(); }
+  try { await save(attempt, true, true); if (attempt === generation) idle(); }
   catch (cause) {
     if (attempt !== generation) return;
     if (mode.value === 'tailscale') {
-      try { await save(attempt, false); } catch (failure) { cause = failure; }
+      try { await save(attempt, false, true); } catch (failure) { cause = failure; }
     }
     if (attempt === generation) { error.textContent = message(cause); idle(); }
   }
 });
-ip.addEventListener('input', () => { ++generation; error.textContent = ''; ip.removeAttribute('aria-invalid'); idle(); });
+ip.addEventListener('input', () => {
+  const attempt = ++generation;
+  const intentId = pendingConnection; pendingConnection = null;
+  error.textContent = ''; ip.removeAttribute('aria-invalid'); idle();
+  if (intentId !== null) void invoke('cancel_connection', { intentId }).catch(cause => { if (attempt === generation) error.textContent = message(cause); });
+});
 
 login.addEventListener('click', async () => {
   if (login.disabled) return;
@@ -148,6 +157,7 @@ async function initialize() {
     if (config.configurationError) { error.textContent = config.configurationError; return; }
     if (config.resumeEntry) {
       const { origin, route } = config.resumeEntry;
+      if (config.explicitTailnet && origin !== config.tailnetOrigin) throw new Error('保存的页面不是所选工作区，请重新连接。');
       await bindServer(origin);
       if (attempt !== generation) return;
       location.replace(`${origin}${route}`);

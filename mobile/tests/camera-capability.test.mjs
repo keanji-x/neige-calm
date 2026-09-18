@@ -23,7 +23,7 @@ test('server binding capability is confined to the packaged Android launcher', a
   assert.equal(Object.hasOwn(capability, 'remote'), false);
   assert.deepEqual(capability.windows, ['main']);
   assert.deepEqual(capability.platforms, ['android']);
-  assert.deepEqual(capability.permissions, ['bundled-frontend:allow-bind-server', 'bundled-frontend:allow-enroll-from-scan', 'bundled-frontend:allow-cancel-enrollment', 'bundled-frontend:allow-reset-enrollment', 'bundled-frontend:allow-connection-settings', 'bundled-frontend:allow-save-connection', 'bundled-frontend:allow-select-saved-tailnet', 'bundled-frontend:allow-attempt-connection', 'bundled-frontend:allow-confirm-legacy-tailnet']);
+  assert.deepEqual(capability.permissions, ['bundled-frontend:allow-bind-server', 'bundled-frontend:allow-enroll-from-scan', 'bundled-frontend:allow-cancel-enrollment', 'bundled-frontend:allow-reset-enrollment', 'bundled-frontend:allow-connection-settings', 'bundled-frontend:allow-save-connection', 'bundled-frontend:allow-select-saved-tailnet', 'bundled-frontend:allow-attempt-connection', 'bundled-frontend:allow-cancel-connection', 'bundled-frontend:allow-confirm-legacy-tailnet']);
 });
 
 test('scan enrollment replaces every reachable phone browser-login command and JNI entry', async () => {

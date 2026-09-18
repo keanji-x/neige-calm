@@ -11,6 +11,7 @@ fn main() {
             "select_saved_tailnet",
             "confirm_legacy_tailnet",
             "attempt_connection",
+            "cancel_connection",
         ]),
     ))
     .expect("failed to build the mobile application permissions");

@@ -25,7 +25,7 @@ class ConnectionProfilesRepairInstrumentationTest {
     val edit = preferences.edit(); corrupt(edit); assertTrue(edit.commit())
     assertTrue("Corrupt metadata must not be accepted as an existing profile", runCatching { profiles.read() }.isFailure)
     profiles.save("ip", origin, false)
-    assertEquals(ConnectionSettings("ip", origin, false, ""), profiles.read())
+    assertEquals(ConnectionSettings("ip", origin, false, "", false), profiles.read())
     assertTrue(profiles.revision() > 0)
     java.util.UUID.fromString(profiles.profileId())
     assertNotEquals("Repair must retire the old profile namespace", oldId, profiles.profileId())
