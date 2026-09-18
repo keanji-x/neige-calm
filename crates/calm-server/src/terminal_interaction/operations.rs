@@ -6,6 +6,7 @@ use super::receipts::{
 use super::replace_plan::ReplacePlan;
 use super::screen_diff::{CursorSnapshot, ScreenDiff, Tolerance, row_hashes};
 use super::*;
+use crate::terminal_renderer::WriteShape;
 
 /// Per-request switches of an input: the #1618 drift opt-in, and the #1666
 /// below-cursor tolerance and control steps. All four enter the request
@@ -173,6 +174,7 @@ impl TerminalInteraction {
             .map_err(|error| note_claim(error, claim.as_ref()))?;
         let Ready {
             bytes,
+            shape,
             input_revision,
             signal_seq,
             tolerated,
@@ -231,8 +233,15 @@ impl TerminalInteraction {
         receipts.attach(claim.as_ref());
         // 4. Write: reserve, cache the unknown receipt (already carrying
         //    `release: requested` when a release follows), send, await the ack.
-        let mut result =
-            write_action(&client, key.clone(), fingerprint.clone(), bytes, receipts).await?;
+        let mut result = write_action(
+            &client,
+            key.clone(),
+            fingerprint.clone(),
+            bytes,
+            shape,
+            receipts,
+        )
+        .await?;
         // 5. Release (#1666 S3): after the write's outcome is known and
         //    cached; never clears `pending`, never rewrites the outcome. A
         //    call cancelled here leaves `requested` in the cached receipt and
@@ -383,15 +392,18 @@ impl TerminalInteraction {
         // the revision (or a tolerance) admitted the write, so a stale
         // observation is reported before any lookup; its refusals are RPC
         // errors like an invalid action's.
-        let (bytes, replace) = match encoded {
-            Encoded::Bytes(bytes) => (bytes, None),
+        let (bytes, shape, replace) = match encoded {
+            Encoded::Bytes(bytes) => (bytes, WriteShape::Verbatim, None),
+            // #1725 — the writer hands the PTY the text, then the CR.
+            Encoded::Submit(bytes) => (bytes, WriteShape::SplitTrailingCr, None),
             Encoded::Replace { from, to } => {
                 let plan = ReplacePlan::derive(&frame, &from, &to)?;
-                (plan.bytes(&now)?, Some(plan))
+                (plan.bytes(&now)?, WriteShape::Verbatim, Some(plan))
             }
         };
         Ok(Fence::Ready(Ready {
             bytes,
+            shape,
             input_revision: current,
             signal_seq,
             tolerated,
@@ -445,6 +457,8 @@ fn note_claim(error: anyhow::Error, claim: Option<&ClaimStep>) -> anyhow::Error 
 }
 struct Ready {
     bytes: Vec<u8>,
+    /// #1725 — how the writer hands `bytes` to the PTY (`submit` splits).
+    shape: WriteShape,
     input_revision: u64,
     /// Signal seq read before the write.
     signal_seq: u64,
@@ -463,6 +477,7 @@ async fn write_action(
     key: String,
     fingerprint: String,
     bytes: Vec<u8>,
+    shape: WriteShape,
     receipts: WriteReceipts,
 ) -> Result<Value> {
     let sequence = {
@@ -476,14 +491,7 @@ async fn write_action(
         sequence
     };
     cache(client, &key, &fingerprint, &receipts.unknown).await;
-    let result = if client
-        .send(ClientMsg::Input {
-            data: bytes,
-            input_seq: sequence,
-        })
-        .await
-        .is_err()
-    {
+    let result = if client.send_input(bytes, sequence, shape).await.is_err() {
         receipts.unknown
     } else {
         match client

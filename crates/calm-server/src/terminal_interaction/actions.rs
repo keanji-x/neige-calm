@@ -26,11 +26,14 @@ pub const SEQUENCE_KEYS: [&str; 9] = [
     "Ctrl+U",
 ];
 
-/// What one action writes: its bytes, or (#1677) a `replace` whose bytes
-/// are derived from the live cursor row at the pre-write fences.
+/// What one action writes: its bytes, a `submit` (#1725: the text plus one
+/// CR, which the writer hands to the PTY as two physical writes), or (#1677)
+/// a `replace` whose bytes are derived from the live cursor row at the
+/// pre-write fences.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Encoded {
     Bytes(Vec<u8>),
+    Submit(Vec<u8>),
     Replace { from: String, to: String },
 }
 impl Encoded {
@@ -38,7 +41,7 @@ impl Encoded {
     #[cfg(test)]
     fn bytes(self) -> Vec<u8> {
         match self {
-            Self::Bytes(bytes) => bytes,
+            Self::Bytes(bytes) | Self::Submit(bytes) => bytes,
             Self::Replace { .. } => panic!("replace carries no bytes before the plan"),
         }
     }
@@ -184,14 +187,15 @@ pub fn encode(action: &Value, surface: &InputSurface) -> Result<Encoded> {
         Some("replace") => return replace_arguments(action, object),
         Some("text") => Ok(printable_text(action, object, "text")?.as_bytes().to_vec()),
         Some("submit") => {
-            // #1620 — text followed by CR in ONE physical write: one receipt,
-            // one barrier. Explicit opt-in; `text` alone never submits and
+            // #1620/#1725 — one request, one receipt, one barrier; the
+            // writer hands the CR to the PTY as a second write after the
+            // text. Explicit opt-in; `text` alone never submits and
             // `submit` never repeats.
             let mut bytes = printable_text(action, object, "submit")?
                 .as_bytes()
                 .to_vec();
             bytes.push(b'\r');
-            Ok(bytes)
+            return Ok(Encoded::Submit(bytes));
         }
         Some("key") => encode_key(action, object, surface, None),
         Some("click") => {

@@ -9,6 +9,12 @@ use serde::Deserialize;
 pub const WAIT_MS_MAX: u64 = 20_000;
 pub const SETTLE_MS_MAX: u64 = 2_000;
 pub const SETTLE_MS_DEFAULT: u64 = 150;
+/// #1725 — a `submit` is two PTY writes `SUBMIT_CR_GAP` apart; the default
+/// settle of a `wait_for=change` readback must cover the CR's effect too.
+const _: () = assert!(
+    crate::terminal_renderer::SUBMIT_CR_GAP.as_millis() * 3 <= SETTLE_MS_DEFAULT as u128,
+    "SUBMIT_CR_GAP must stay at most a third of the default settle (#1725)"
+);
 /// Budget when `wait_ms` is omitted in change mode. Elapsed mode keeps 0 so an
 /// observation without waiting arguments stays an immediate read.
 pub const CHANGE_WAIT_MS_DEFAULT: u64 = 2_000;
