@@ -15,6 +15,7 @@ export type RecoverySessionPorts = Readonly<{
   adoptScope(scope: string): void;
 }>;
 function fingerprint(sessionId: string): string { return bytesToHex(sha256(utf8ToBytes(sessionId))); }
+type RecoveryAttempt = Readonly<{ controller: AbortController; generation: number }>;
 
 /** Owns one cancelable identity→version attempt. Neither timers nor network callbacks grant authority. */
 export class RecoverySession {
@@ -24,6 +25,7 @@ export class RecoverySession {
   scopeRevision = 0;
   private presentation: RecoveryContext | null = null;
   private controller: AbortController | null = null;
+  private releaseCancellation: (() => void) | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stable: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
@@ -45,11 +47,40 @@ export class RecoverySession {
   }
   blocked(): boolean { return this.marker !== null || this.storageFault; }
   private cancel(): void {
+    this.releaseCancellation?.(); this.releaseCancellation = null;
     this.controller?.abort(); this.controller = null;
     if (this.timer !== null) clearTimeout(this.timer);
     if (this.stable !== null) clearTimeout(this.stable);
     this.timer = null; this.stable = null;
   }
+  private beginAttempt(explicit: boolean, signal?: AbortSignal): RecoveryAttempt {
+    this.cancel(); this.access.invalidate(explicit ? 'login' : 'recovering');
+    const controller = new AbortController(); this.controller = controller;
+    const generation = this.access.read().generation;
+    const cancel = () => {
+      if (this.controller !== controller || this.access.read().generation !== generation) return;
+      this.cancelAuthentication();
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
+    this.releaseCancellation = () => signal?.removeEventListener('abort', cancel);
+    if (signal?.aborted) cancel();
+    return { controller, generation };
+  }
+  /** Retire the previous explicit intent before any login POST or pairing proof.
+   * The capability retains this owner's exact attempt through POST and proof. */
+  beginAuthentication(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (this.stopped) throw new Error('恢复会话已停止。');
+    const attempt = this.beginAttempt(true, signal);
+    const owns = () => this.controller === attempt.controller && this.access.read().generation === attempt.generation;
+    return Object.freeze({
+      signal: attempt.controller.signal,
+      verify: (expectedSession?: string) => owns() && !attempt.controller.signal.aborted
+        ? this.probe(true, expectedSession, attempt) : Promise.resolve(null),
+      cancel: () => { if (owns()) this.cancelAuthentication(); },
+    });
+  }
+  cancelAuthentication = (): void => { this.cancel(); this.access.invalidate('login'); };
   start(): void { this.stopped = false; if (!this.blocked()) this.retry(); }
   stop(): void { this.stopped = true; this.cancel(); this.access.invalidate(this.blocked() ? 'login' : 'paused'); }
   pause(): void { this.cancel(); this.access.invalidate(this.blocked() ? 'login' : 'paused'); }
@@ -81,27 +112,19 @@ export class RecoverySession {
       })]);
     } finally { if (timer !== undefined) clearTimeout(timer); }
   }
-  private async probe(explicit: boolean, expectedSession?: string, signal?: AbortSignal): Promise<SessionIdentity | null> {
-    if (signal?.aborted) return null;
-    this.cancel(); this.access.invalidate(explicit ? 'login' : 'recovering');
-    const generation = this.access.read().generation;
-    const controller = new AbortController(); this.controller = controller;
+  private async probe(explicit: boolean, expectedSession?: string, attempt?: RecoveryAttempt): Promise<SessionIdentity | null> {
+    const { controller, generation } = attempt ?? this.beginAttempt(explicit);
+    if (this.stopped || controller.signal.aborted || this.controller !== controller) return null;
     let identityAccepted = false;
     let identityVerified = false;
-    const cancelAttempt = () => {
-      if (this.controller !== controller || this.access.read().generation !== generation) return;
-      this.cancel(); this.access.invalidate('login');
-    };
-    signal?.addEventListener('abort', cancelAttempt, { once: true });
     const acceptIdentity = () => {
-      signal?.throwIfAborted();
       if (explicit) {
         this.ports.storage.removeItem(logoutMarkerKey());
         this.marker = null;
       }
       identityAccepted = true;
       // Rendering the accepted session unmounts its form; that is not cancellation.
-      signal?.removeEventListener('abort', cancelAttempt);
+      this.releaseCancellation?.(); this.releaseCancellation = null;
     };
     const current = () => !this.stopped && !controller.signal.aborted && this.access.read().generation === generation;
     try {
@@ -140,7 +163,6 @@ export class RecoverySession {
       this.stable = setTimeout(() => { if (current()) this.attempt = 0; }, 30_000);
       return identity;
     } catch (error) {
-      if (signal?.aborted) return null;
       if (!current() && this.access.read().generation !== generation) return null;
       if (this.stopped) return null;
       const unauthorized = typeof error === 'object' && error !== null && 'failure' in error &&
@@ -164,14 +186,18 @@ export class RecoverySession {
       if (this.ports.online() && this.ports.visible()) this.timer = setTimeout(this.retry, delay);
       return null;
     } finally {
-      signal?.removeEventListener('abort', cancelAttempt);
-      if (this.controller === controller) this.controller = null;
+      if (this.controller === controller) {
+        this.releaseCancellation?.(); this.releaseCancellation = null;
+        this.controller = null;
+      }
     }
   }
-  verifyNewSession = async (expectedSession?: string, signal?: AbortSignal): Promise<SessionIdentity | null> => {
-    if (this.controller !== null || this.stopped) return null;
-    return this.probe(true, expectedSession, signal);
-  };
+  async verifyNewSession(expectedSession?: string, signal?: AbortSignal): Promise<SessionIdentity | null> {
+    if (this.stopped || signal?.aborted) return null;
+    const attempt = this.beginAuthentication(signal);
+    try { return await attempt.verify(expectedSession); }
+    finally { attempt.cancel(); }
+  }
   async signOut(): Promise<void> {
     const identity = this.identity;
     this.cancel(); this.access.invalidate('login');

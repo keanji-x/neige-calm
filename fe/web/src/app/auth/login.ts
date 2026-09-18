@@ -21,7 +21,9 @@ export async function loginWithTransport(
 /** The form's cancellation spans the login POST and the same session owner's proof. */
 export async function loginForRecovery(transport: ApiTransportPort, session: RecoverySession,
   username: string, password: string, signal: AbortSignal): Promise<SessionIdentity | null> {
-  const identity = await loginWithTransport(transport, username, password, signal);
-  signal.throwIfAborted();
-  return identity === null ? null : session.verifyNewSession(identity.sessionId, signal);
+  const attempt = session.beginAuthentication(signal);
+  try {
+    const identity = await loginWithTransport(transport, username, password, attempt.signal);
+    return identity === null ? null : await attempt.verify(identity.sessionId);
+  } finally { attempt.cancel(); }
 }

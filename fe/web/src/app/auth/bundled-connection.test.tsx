@@ -41,10 +41,12 @@ it('requests a server update when an independently updated APK is newer than its
 });
 
 it('offers re-pairing first while retaining manual login for servers that support it', async () => {
-  render(<BundledLoginPage login={vi.fn()} reload={vi.fn()} />);
+  const onManualEntry = vi.fn();
+  render(<BundledLoginPage login={vi.fn()} reload={vi.fn()} onManualEntry={onManualEntry} />);
   expect(screen.getByRole('heading', { name: '扫码连接你的工作区' })).toBeTruthy();
   expect(screen.queryByLabelText('Password')).toBeNull();
   await userEvent.click(screen.getByRole('button', { name: '使用账号登录' }));
+  expect(onManualEntry).toHaveBeenCalledOnce();
   expect(screen.getByLabelText('Password')).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: '返回扫码连接' }));
   expect(screen.getByRole('heading', { name: '扫码连接你的工作区' })).toBeTruthy();

@@ -112,6 +112,7 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     runtime={runtime} cursorStore={cursorStore} router={router} recovery={recovery}
     renderLogin={() => __NC_BUNDLED__
       ? <BundledLoginPage message={recovery?.access.read().detail}
+        onManualEntry={() => recovery!.cancelAuthentication()}
         verifyPairing={recovery?.blocked() ? () => { void recovery.verifyNewSession(); } : undefined}
         login={(username, password, signal) => loginForRecovery(probe, recovery!, username, password, signal)}
         reload={() => { /* verified session mounts directly */ }} />
