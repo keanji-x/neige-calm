@@ -6,7 +6,7 @@ import type { SessionIdentity } from '../../../../core/api/auth.ts';
 import { RecoveryAccess, recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { logoutMarkerKey, recoveryContextKey, decodeRecoveryContext, recoveryPage, type RecoveryContext, type RecoveryScroll } from '../../../../core/domain/recovery/context.ts';
 
-export type RecoveryVersion = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
+export type RecoveryVersion = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string; nowMs?: number }>;
 export type RecoveryStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 export type RecoverySessionPorts = Readonly<{
   access: RecoveryAccess; storage: RecoveryStorage; origin: string; compatibleVersion: number;

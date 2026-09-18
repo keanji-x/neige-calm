@@ -338,8 +338,11 @@
   }
 
   /* "On" is expressed by staying put, not by a heavier glyph. One tone step is
-     all the extra it gets — the rail is greyscale apart from the current
-     location and the waiting section (§7.5). */
+     all the extra it gets. The rail's colours belong only to the indicator
+     vocabulary (`ui/activity-indicator`: warn = waiting on you, error =
+     broken, accent = unread, grey = in motion) and to the current location
+     (`--accent-soft`); titles never carry a state colour; area identity does
+     not enter the rail. */
   .pinOn {
     opacity: 1;
     pointer-events: auto;

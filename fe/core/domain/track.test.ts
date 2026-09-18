@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
-  createTrackOperation, deleteCardOperation, isBlankForKernel, isRunning, isWaitingForUser,
-  lifecycleLabel, toTrack, trackDetailSchema, updateTrackOperation,
+  createTrackOperation, deleteCardOperation, hasFailed, isBlankForKernel, isRunning, isWaitingForUser,
+  isWorking, lifecycleLabel, lifecycleRank, needsUserAttention, toTrack, trackActivityFrom,
+  trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
   trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload,
   type Track, type OverlayWire,
@@ -177,6 +178,117 @@ describe('lifecycle predicates', () => {
   it('falls back to a single untitled label', () => {
     expect(trackDisplayTitle('   ')).toBe(UNTITLED_TRACK_LABEL);
     expect(trackDisplayTitle(' Ship ')).toBe('Ship');
+  });
+});
+
+describe('activity predicates read only the kernel activity overlay (INV-APP-118)', () => {
+  it('does not derive attention from the lifecycle phase', () => {
+    // A track in a waiting *phase* whose kernel verdict is "none": the badge
+    // still says "In review", but no indicator lights up and no "waiting on
+    // you" bucket claims it. Restoring the lifecycle OR reddens this.
+    const reviewing = track({ lifecycle: 'reviewing', attention: 'none' });
+    expect(needsUserAttention(reviewing)).toBe(false);
+    expect(hasFailed(reviewing)).toBe(false);
+    expect(trackActivityState(reviewing, false)).toBe('quiet');
+    const blocked = track({ lifecycle: 'blocked', attention: 'none' });
+    expect(needsUserAttention(blocked)).toBe(false);
+    const failedPhase = track({ lifecycle: 'failed', attention: 'none' });
+    expect(hasFailed(failedPhase)).toBe(false);
+  });
+
+  it('does not derive attention from the retired any_card_needs_input flag', () => {
+    const flagged = track({ lifecycle: 'working', anyCardNeedsInput: true, attention: 'none' });
+    expect(needsUserAttention(flagged)).toBe(false);
+    expect(trackActivityState(flagged, false)).toBe('quiet');
+  });
+
+  it('does not derive working from a running lifecycle phase', () => {
+    expect(isWorking(track({ lifecycle: 'planning', working: false }))).toBe(false);
+    expect(trackActivityState(track({ lifecycle: 'planning', working: false }), false)).toBe('quiet');
+    expect(isWorking(track({ lifecycle: 'done', working: true }))).toBe(true);
+    expect(trackActivityState(track({ lifecycle: 'done', working: true }), false)).toBe('working');
+  });
+
+  it('reads attention and failure from the overlay verdict', () => {
+    expect(needsUserAttention(track({ lifecycle: 'draft', attention: 'input' }))).toBe(true);
+    expect(hasFailed(track({ lifecycle: 'draft', attention: 'input' }))).toBe(false);
+    expect(hasFailed(track({ lifecycle: 'done', attention: 'failed' }))).toBe(true);
+    expect(needsUserAttention(track({ lifecycle: 'done', attention: 'failed' }))).toBe(false);
+    expect(trackActivityState(track({ attention: 'input', working: true }), true)).toBe('attention');
+    expect(trackActivityState(track({ attention: 'failed', working: true }), true)).toBe('failed');
+    expect(trackActivityState(track({ attention: 'none', working: false }), true)).toBe('unread');
+  });
+
+  it('ranks a failed track with the waiting ones, and a running phase in the middle', () => {
+    expect(lifecycleRank(track({ lifecycle: 'done', attention: 'failed' }))).toBe(0);
+    expect(lifecycleRank(track({ lifecycle: 'done', attention: 'input' }))).toBe(0);
+    // Phase, not motion: the middle bucket is the lifecycle's, on purpose.
+    expect(lifecycleRank(track({ lifecycle: 'planning', working: false }))).toBe(1);
+    expect(lifecycleRank(track({ lifecycle: 'done', working: true }))).toBe(2);
+    expect(lifecycleRank(track({ lifecycle: 'reviewing', attention: 'none' }))).toBe(2);
+  });
+});
+
+describe('trackActivityFrom: the kernel activity overlay', () => {
+  const overlay = (payload: unknown, over: Partial<OverlayWire> = {}): OverlayWire => ({
+    id: 'a1', plugin_id: 'kernel', entity_kind: 'track', entity_id: 't1', kind: 'activity',
+    payload, updated_at: 1, ...over,
+  });
+  const payload = {
+    schemaVersion: 1, working: true, attention: 'failed', activity_at_ms: 1_789_460_968_837,
+    items: [
+      { kind: 'failed', source: 'task', id: 'task-1', card_id: 'worker-1', at_ms: 20 },
+      { kind: 'input', source: 'card', id: 'planner', card_id: 'planner', at_ms: 10 },
+      { kind: 'failed', source: 'lifecycle', id: 't1', card_id: null, at_ms: 5 },
+    ],
+    cards: [{ card_id: 'worker-1', state: 'failed' }, { card_id: 'planner', state: 'input' }, { card_id: 'w2', state: 'working' }],
+  };
+
+  it('decodes working, attention, the high-water mark, the items and the per-card verdicts', () => {
+    const activity = trackActivityFrom('t1', [overlay(payload)]);
+    expect(activity.working).toBe(true);
+    expect(activity.attention).toBe('failed');
+    expect(activity.activityAt).toBe(1_789_460_968_837);
+    expect(activity.attentionItems).toEqual([
+      { origin: 'task', id: 'task-1', cardId: 'worker-1', atMs: 20, kind: 'failed' },
+      { origin: 'card', id: 'planner', cardId: 'planner', atMs: 10, kind: 'input' },
+      { origin: 'lifecycle', id: 't1', cardId: null, atMs: 5, kind: 'failed' },
+    ]);
+    expect(activity.cards).toEqual({ 'worker-1': 'failed', planner: 'input', w2: 'working' });
+    // The older overlay kinds are untouched by the new one.
+    expect(activity.progress).toBe(0);
+    expect(activity.anyCardNeedsInput).toBe(false);
+  });
+
+  it('keeps the neutral values for a track the kernel has not written yet', () => {
+    const activity = trackActivityFrom('t2', [overlay(payload)]);
+    expect(activity).toEqual(NEUTRAL_ACTIVITY);
+    expect(activity.activityAt).toBeNull();
+  });
+
+  it('drops a malformed row and keeps the rest of the payload', () => {
+    const activity = trackActivityFrom('t1', [overlay({
+      ...payload,
+      items: [{ kind: 'input', source: 'card' }, ...payload.items],
+      cards: [{ card_id: 'w9', state: 'sleeping' }, { card_id: 'w2', state: 'working' }],
+    })]);
+    expect(activity.attentionItems).toHaveLength(3);
+    expect(activity.cards).toEqual({ w2: 'working' });
+    expect(activity.working).toBe(true);
+  });
+
+  it('ignores a payload that is not the v1 shape at all', () => {
+    for (const junk of [null, 'working', { schemaVersion: 2, working: true }, { working: 'yes' }]) {
+      expect(trackActivityFrom('t1', [overlay(junk)])).toEqual(NEUTRAL_ACTIVITY);
+    }
+  });
+
+  it('is a plain per-track object, not a shared container', () => {
+    const first = trackActivityFrom('t1', [overlay(payload)]);
+    const second = trackActivityFrom('t1', [overlay({ ...payload, cards: [] })]);
+    expect(first.cards).not.toBe(second.cards);
+    expect(second.cards).toEqual({});
+    expect(NEUTRAL_ACTIVITY.cards).toEqual({});
   });
 });
 

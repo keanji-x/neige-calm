@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 
-import { createStorageKey, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
+import { createStorageKey, DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { useState } from '../../ui/state/public.ts';
 
 type Preference = boolean | string | null;
@@ -13,8 +13,14 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
   const memory = new Map<string, Preference>();
   const listeners = new Set<() => void>();
   let revision = 0;
+  /*
+   * Seeded from the database's *stable* identity (#1722 §5.2), never from the
+   * per-boot `DB_INSTANCE_ID_KEY`: receipts keyed by a process id were thrown
+   * away on every kernel restart, which is what turned a whole rail blue.
+   * `null` until the compat gate has confirmed the id for this load.
+   */
   let database: string | null = null;
-  try { database = storage?.getItem(DB_INSTANCE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }
+  try { database = storage?.getItem(DATABASE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }
   const notify = () => {
     revision += 1;
     for (const listener of listeners) listener();
@@ -47,26 +53,48 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     notify();
   };
   const receiptKey = (kind: 'track' | 'conversation', id: string) => `read:${database ?? 'local'}:${kind}:${id}`;
+  /*
+   * #1722 §5.2 / owner decision (c): a device's first entry into a database
+   * scope marks everything read. The baseline is written once per
+   * `(device, databaseId)`, with the *server's* clock from `/api/version`, and
+   * every receipt reads as at least that. Older activity than the baseline is
+   * therefore never unread on this device; only what completes after the first
+   * look is.
+   */
+  const baselineKey = (databaseId: string) => `read:${databaseId}:baseline`;
+  const stampOf = (value: unknown) => {
+    const stamp = typeof value === 'string' ? Number(value) : 0;
+    return Number.isFinite(stamp) && stamp > 0 ? stamp : 0;
+  };
   const receipt = (key: string): number => {
-    const stampOf = (value: unknown) => {
-      const stamp = typeof value === 'string' ? Number(value) : 0;
-      return Number.isFinite(stamp) && stamp > 0 ? stamp : 0;
-    };
     if (database === null) return stampOf(memory.get(key));
+    const baseline = stampOf(read(baselineKey(database)));
     const cached = stampOf(read(key));
     try {
       // Re-read before acknowledging: another tab may already have seen a newer update.
-      return Math.max(cached, stampOf(JSON.parse(storage?.getItem(storageKey(key)) ?? 'null')));
-    } catch { return cached; }
+      return Math.max(baseline, cached, stampOf(JSON.parse(storage?.getItem(storageKey(key)) ?? 'null')));
+    } catch { return Math.max(baseline, cached); }
   };
   return Object.freeze({
     readScope: () => database,
-    setReadScope(id: string | null): void {
+    /**
+     * `nowMs` is the server time the scope was confirmed at; it becomes the
+     * baseline the first time this device sees `id`. A `null` scope (compat
+     * verdict still pending, or an older server without a database identity)
+     * writes nothing and keeps receipts in memory.
+     */
+    setReadScope(id: string | null, nowMs: number | null = null): void {
+      if (id !== null && nowMs !== null && Number.isFinite(nowMs) && nowMs > 0 && read(baselineKey(id)) === null) {
+        write(baselineKey(id), String(nowMs), false);
+      }
       if (database === id) return;
       database = id;
       notify();
     },
     isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {
+      // No scope, no verdict: an unscoped receipt map is empty, and "everything
+      // is unread until /api/version answers" is a lie on every page load.
+      if (database === null) return false;
       return updatedAt > receipt(receiptKey(kind, id));
     },
     markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {
@@ -100,19 +128,26 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
 }
 
 const UiPreferencesContext = createContext<UiPreferences | null>(null);
-// Undefined means a standalone preferences host. Null means the compatibility
-// gate has not yet confirmed which backend owns the visible data.
-const ReadReceiptScopeContext = createContext<string | null | undefined>(undefined);
+/** The database the visible data belongs to, and the server time that was confirmed at. */
+export type ReadReceiptScope = Readonly<{ id: string | null; nowMs: number | null }>;
+// Undefined means a standalone preferences host. A null `id` means the
+// compatibility gate has not yet confirmed which database owns the visible
+// data — or the server predates database identity, in which case nothing is
+// ever unread rather than everything.
+const ReadReceiptScopeContext = createContext<ReadReceiptScope | undefined>(undefined);
 
-export function ReadReceiptScopeProvider({ id, children }: { id: string | null; children: ReactNode }) {
-  return <ReadReceiptScopeContext.Provider value={id}>{children}</ReadReceiptScopeContext.Provider>;
+export function ReadReceiptScopeProvider({ id, nowMs = null, children }: { id: string | null; nowMs?: number | null; children: ReactNode }) {
+  const scope = useMemo<ReadReceiptScope>(() => ({ id, nowMs }), [id, nowMs]);
+  return <ReadReceiptScopeContext.Provider value={scope}>{children}</ReadReceiptScopeContext.Provider>;
 }
 
 export function UiPreferencesProvider({ preferences, children }: { preferences: UiPreferences; children: ReactNode }) {
-  const instanceId = useContext(ReadReceiptScopeContext);
+  const scope = useContext(ReadReceiptScopeContext);
+  // Layout, not passive: the baseline has to be on disk before the first
+  // `useReadReceipt` (a passive effect in the same commit) persists a receipt.
   useLayoutEffect(() => {
-    if (instanceId !== undefined) preferences.setReadScope(instanceId);
-  }, [instanceId, preferences]);
+    if (scope !== undefined) preferences.setReadScope(scope.id, scope.nowMs);
+  }, [scope, preferences]);
   return <UiPreferencesContext.Provider value={preferences}>{children}</UiPreferencesContext.Provider>;
 }
 

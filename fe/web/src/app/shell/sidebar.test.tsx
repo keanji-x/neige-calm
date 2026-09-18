@@ -468,14 +468,44 @@ describe('collapse toggle', () => {
 
   it('shows the waiting count as the strip\'s only figure, with no dot beside it', () => {
     const { update } = renderSidebar({
-      tracks: [track({ id: 'a', lifecycle: 'blocked' }), track({ id: 'b', lifecycle: 'draft' })],
+      // The count is the kernel's verdict (input or failed), not the lifecycle
+      // phase: a `blocked` track the kernel has said nothing about is not
+      // waiting on anyone (#1722 §5.1).
+      tracks: [
+        track({ id: 'a', lifecycle: 'blocked' }),
+        track({ id: 'b', lifecycle: 'draft', attention: 'input' }),
+        track({ id: 'c', lifecycle: 'done', attention: 'failed' }),
+      ],
     });
     update({ collapsed: true });
-    const count = screen.getByLabelText('1 waiting on you');
-    expect(count.textContent).toBe('1');
+    const count = screen.getByLabelText('2 waiting on you');
+    expect(count.textContent).toBe('2');
   });
 });
 
+
+it('reads the track receipt against the activity high-water mark, not updatedAt', () => {
+  /*
+   * #1722 §5.2 — `updatedAt` moves on a rename or a pin; the receipt has to
+   * compare the kernel's completion-class high-water mark, and a track with no
+   * completion recorded (`activityAt: null`) is never unread however recently
+   * its row changed. The scope is entered at server time 100 (the baseline).
+   */
+  const preferences = createUiPreferences(memoryStorage());
+  preferences.setReadScope('db1', 100);
+  renderSidebar({
+    tracks: [
+      track({ id: 'fresh', title: 'Fresh', updatedAt: 1, activityAt: 150 }),
+      track({ id: 'seen', title: 'Seen', updatedAt: 1_000, activityAt: 50 }),
+      track({ id: 'never', title: 'Never', updatedAt: 1_000, activityAt: null }),
+    ],
+  }, preferences);
+  const marker = (title: string) => screen.getByRole('button', { name: new RegExp(`^Track ${title}`) })
+    .parentElement?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
+  expect(marker('Fresh')).toBe('unread');
+  expect(marker('Seen')).toBeNull();
+  expect(marker('Never')).toBeNull();
+});
 
 it('restores Area disclosure after the shell is remounted', async () => {
   const storage = memoryStorage();

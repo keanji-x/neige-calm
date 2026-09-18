@@ -26,8 +26,9 @@ import { useCompactViewport } from '../../../ui/viewport/public.ts';
 import { independentTaskUnavailableReason } from '../../../../../core/domain/independent-task.ts';
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import {
-  UNTITLED_TRACK_LABEL, trackDisplayTitle, type CardWire, type Track,
+  UNTITLED_TRACK_LABEL, trackActivityState, trackDisplayTitle, type CardWire, type Track,
 } from '../../../../../core/domain/track.ts';
+import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { DELETE_TRACK_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle, type EditableTitleProps } from '../../../ui/editable-title/public.tsx';
@@ -550,6 +551,14 @@ export function TrackPage({
         <div className={styles.mobileTitleReadHost} hidden={!titleInHeader}
           ref={(node) => { if (node !== null && mobileTitleReadHost.parentNode !== node) node.appendChild(mobileTitleReadHost); }} />
         {!titleInHeader && <TrackLifecycleBadge lifecycle={track.lifecycle} />}
+        {/* #1722 §5.3 — the same indicator the rail paints, from the same
+            overlay-derived state. `unread` is `false` here by construction: the
+            page is the reader, and its receipt clears the moment it is visible,
+            so only working / attention / failed can show. It renders after the
+            phase word so that word stays directly beside the title. Declared
+            mobile/desktop difference: the unified mobile page head (#1707)
+            carries NO indicator — the mobile track list row does. */}
+        {!titleInHeader && <ActivityIndicator state={trackActivityState(track, false)} />}
       </div>, titleContainer)}
       {headerActionsHost !== null && mobileActions !== undefined && createPortal(mobileActions, headerActionsHost)}
       {titleInHeader && !boardOpen ? null : <div className={styles.mobileTrackHeader}>

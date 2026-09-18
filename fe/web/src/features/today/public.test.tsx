@@ -43,18 +43,37 @@ function track(overrides: Partial<Track> = {}): Track {
 }
 
 describe('Today clock', () => {
-  it('counts running and waiting tracks with the shared predicates', () => {
+  /*
+   * #1722 §5.3 / M13 — the first number is the kernel's verdict (input or
+   * failed; count only, the list is gone by owner call), the second is the
+   * length of the "In progress" section right below it, and that section is
+   * grouped by lifecycle PHASE: a `planning` track whose planner is idle stays
+   * listed (without a spinner), a `done` track with work in flight is neither
+   * listed nor counted, and a track that needs a person leaves the section for
+   * the first number. Regrouping by `isWorking`, or making the second number a
+   * runtime count, reddens this.
+   */
+  it('counts waiting on you by the kernel verdict and In progress by lifecycle phase', () => {
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} nowMs={NOW} areas={[area()]} tracks={[
-      track({ id: 'a', lifecycle: 'working' }),
-      track({ id: 'b', lifecycle: 'planning' }),
-      track({ id: 'c', lifecycle: 'blocked' }),
-      track({ id: 'd', lifecycle: 'done' }),
+      track({ id: 'a', title: 'Working phase, idle', lifecycle: 'working', working: false }),
+      track({ id: 'b', title: 'Planning phase, idle planner', lifecycle: 'planning', working: false }),
+      track({ id: 'c', title: 'Blocked phase, needs input', lifecycle: 'blocked', attention: 'input' }),
+      track({ id: 'd', title: 'Done phase, still in flight', lifecycle: 'done', working: true }),
+      track({ id: 'e', title: 'Working phase, failed', lifecycle: 'working', attention: 'failed' }),
+      track({ id: 'f', title: 'Blocked phase, nothing from the kernel', lifecycle: 'blocked' }),
     ]} />);
     // The counts are two elements each — a value and a word — because the
     // number takes the weight and the word stays quiet (§3.2 rule 1). So the
     // assertion reads the region, not a single text node.
-    expect(screen.getByRole('banner').textContent).toContain('1waiting');
-    expect(screen.getByRole('banner').textContent).toContain('2running');
+    expect(screen.getByRole('banner').textContent).toContain('2waiting on you');
+    expect(screen.getByRole('banner').textContent).toContain('2in progress');
+    const section = screen.getByRole('heading', { name: 'In progress' }).closest('section')!;
+    expect(section.textContent).toContain('Planning phase, idle planner');
+    expect(section.textContent).toContain('Working phase, idle');
+    expect(section.textContent).not.toContain('Done phase, still in flight');
+    expect(section.textContent).not.toContain('Working phase, failed');
+    expect(section.textContent).not.toContain('needs input');
+    expect(screen.queryByText('Running')).toBeNull();
   });
 
   it('renders the pinned time instead of the wall clock when nowMs is given', () => {
@@ -120,7 +139,7 @@ describe('Today agenda', () => {
       areas={[area()]}
       nowMs={NOW}
     />);
-    expect(screen.getByRole('banner').textContent).toContain('0waiting');
+    expect(screen.getByRole('banner').textContent).toContain('0waiting on you');
     expect(screen.queryByText('Archived attention')).toBeNull();
     expect(screen.getByRole('button', { name: 'Monday, Aug 10' })).toBeTruthy();
   });

@@ -1,7 +1,11 @@
 @layer ui {
   .indicator { display: inline-block; flex: none; inline-size: var(--dot-sm); block-size: var(--dot-sm); border-radius: var(--radius-pill); }
   .unread { background: var(--accent); }
-  .attention { background: var(--error); }
+  /* Amber is "waiting on you", red is "broken" — two hues far enough apart to
+     tell two 6px dots apart (#1722 decision (b)); the browser test pins the
+     hue distance. */
+  .attention { background: var(--warn); }
+  .failed { background: var(--error); }
   .working {
     inline-size: 10px;
     block-size: 10px;

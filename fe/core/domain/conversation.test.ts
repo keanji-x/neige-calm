@@ -247,15 +247,17 @@ describe('track conversations', () => {
     expect(operation.path).toBe('/api/tracks/track%201/conversations');
     expect(operation.responseSchema.parse([row])).toEqual([{
       id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant',
-      state: 'starting', updatedAt: 7,
+      state: 'starting', updatedAt: 7, lastTurnCompletedAt: null,
     }]);
+    // The completion time is carried, not just parsed: it is what the read
+    // receipt compares against (#1722 §5.2).
+    expect(operation.responseSchema.parse([{ ...row, lastTurnCompletedAt: 9 }])[0].lastTurnCompletedAt).toBe(9);
   });
 
   /*
    * #1722 S1b — `lastTurnCompletedAt` is required (API v9): a row without it
    * is an older kernel's row and is rejected, while `null` (no turn has
-   * completed) and a number both decode. The domain row does not carry it yet;
-   * the field and its reader land together.
+   * completed) and a number both decode.
    */
   it('requires lastTurnCompletedAt on a list row, null or a number', () => {
     const schema = trackConversationsOperation('w').responseSchema;

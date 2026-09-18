@@ -30,7 +30,7 @@ test('keeps Today usable without claiming zero activity when Areas is unavailabl
   // not found` for a header that never rendered, which is the same message as a
   // header that rendered a count: two opposite verdicts under one failure.
   await expect(header).toBeVisible();
-  await expect(header).not.toContainText(/\d\s*(waiting|running)/);
+  await expect(header).not.toContainText(/\d\s*(waiting|in progress)/);
   await expect(main.getByText('Nothing scheduled.')).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Workspace' })).toBeVisible();
   await page.screenshot({ path: 'test-results/today-unavailable-desktop.png' });

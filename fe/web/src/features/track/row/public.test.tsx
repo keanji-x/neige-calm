@@ -47,15 +47,20 @@ describe('accessible name', () => {
   // carry lifecycle and attention, on every variant, including the rail where
   // the dot is the only thing a sighted user sees.
   it('names the lifecycle, and the attention state when there is one', () => {
-    render(<TrackRow track={track({ lifecycle: 'blocked' })} areaName="Work" onOpen={vi.fn()} nowMs={NOW} />);
+    render(<TrackRow track={track({ lifecycle: 'blocked', attention: 'input' })} areaName="Work" onOpen={vi.fn()} nowMs={NOW} />);
     expect(screen.getByRole('button', {
       name: 'Track Open track, waiting on you, Blocked, in area Work',
     })).toBeTruthy();
   });
 
+  it('names a broken track as needing attention', () => {
+    render(<TrackRow track={track({ lifecycle: 'done', attention: 'failed' })} onOpen={vi.fn()} nowMs={NOW} />);
+    expect(screen.getByRole('button', { name: 'Track Open track, needs attention, Done' })).toBeTruthy();
+  });
+
   it('names the area only when the surface supplies one', () => {
-    render(<TrackRow track={track()} onOpen={vi.fn()} nowMs={NOW} />);
-    expect(screen.getByRole('button', { name: 'Track Open track, running, Working' })).toBeTruthy();
+    render(<TrackRow track={track({ working: true })} onOpen={vi.fn()} nowMs={NOW} />);
+    expect(screen.getByRole('button', { name: 'Track Open track, working, Working' })).toBeTruthy();
   });
 
   it('uses the untitled label rather than an empty name', () => {
@@ -138,11 +143,42 @@ describe('navigation activity markers', () => {
     expect(document.getElementById(row.getAttribute('aria-describedby')!)?.textContent).toBe('Unread updates');
   });
 
-  it('gives needs-input precedence over working and unread', () => {
-    const view = render(<TrackRow track={track()} unread onOpen={vi.fn()} />);
+  /*
+   * INV-APP-118 — the dot and the accessible name come from the kernel's
+   * activity overlay, never from the lifecycle. The two fixtures are chosen
+   * to disagree with the lifecycle in both directions, so a `trackActivityState`
+   * (or a name) that fell back to `isRunning(lifecycle)` reddens on each:
+   * `planning` with nothing in flight is quiet and not "running"; `done` with
+   * work still in flight spins and says so.
+   */
+  it('derives the marker and the name from the activity overlay, not the lifecycle', () => {
+    const view = render(<TrackRow track={track({ lifecycle: 'planning', working: false })} variant="rail" onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).not.toMatch(/running|working/);
+
+    view.rerender(<TrackRow track={track({ lifecycle: 'done', working: true })} variant="rail" onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity="working"]')).toBeTruthy();
-    view.rerender(<TrackRow track={track({ anyCardNeedsInput: true })} unread onOpen={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, working, Done');
+  });
+
+  it('gives needs-input precedence over working and unread, and failed over all three', () => {
+    const view = render(<TrackRow track={track({ working: true })} unread onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity="working"]')).toBeTruthy();
+    view.rerender(<TrackRow track={track({ working: true, attention: 'input' })} unread onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity="attention"]')).toBeTruthy();
     expect(view.container.querySelector('[data-nc-activity="working"]')).toBeNull();
+    view.rerender(<TrackRow track={track({ working: true, attention: 'failed' })} unread onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity="failed"]')).toBeTruthy();
+    expect(view.container.querySelector('[data-nc-activity="attention"]')).toBeNull();
+  });
+
+  it('ignores the retired any_card_needs_input flag', () => {
+    const view = render(<TrackRow track={track({ anyCardNeedsInput: true })} variant="rail" onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
+  });
+
+  it.each(['default', 'compact', 'panel', 'rail'] as const)('paints the same state on the %s variant', (variant) => {
+    const view = render(<TrackRow track={track({ attention: 'failed' })} variant={variant} onOpen={vi.fn()} />);
+    expect(view.container.querySelectorAll('[data-nc-activity="failed"]')).toHaveLength(1);
   });
 });

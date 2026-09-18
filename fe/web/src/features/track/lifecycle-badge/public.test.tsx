@@ -12,19 +12,30 @@ describe('TrackLifecycleBadge', () => {
     expect(screen.getByRole('status', { name: 'Track lifecycle: In review' })).toBeTruthy();
   });
 
-  it('marks blocked, reviewing and failed as the attention treatment', () => {
-    for (const lifecycle of ['blocked', 'reviewing', 'failed'] as const) {
+  it('marks blocked and reviewing as the attention treatment', () => {
+    for (const lifecycle of ['blocked', 'reviewing'] as const) {
       cleanup();
       render(<TrackLifecycleBadge lifecycle={lifecycle} />);
       expect(screen.getByTestId('track-lifecycle').getAttribute('data-nc-lifecycle-tone')).toBe('attention');
     }
   });
 
-  it('marks planning, dispatching and working as the running treatment', () => {
+  it('marks failed as the failed treatment, apart from attention', () => {
+    render(<TrackLifecycleBadge lifecycle="failed" />);
+    expect(screen.getByTestId('track-lifecycle').getAttribute('data-nc-lifecycle-tone')).toBe('failed');
+  });
+
+  /*
+   * #1722 §5.3 — a running phase is neutral: "in motion" is the activity
+   * indicator's fact, read from the kernel overlay, and a phase word that
+   * looked alive on a track whose planner had been idle for days was the
+   * defect. Restoring a `running` tone reddens this.
+   */
+  it('leaves planning, dispatching and working neutral — the phase word does not read as alive', () => {
     for (const lifecycle of ['planning', 'dispatching', 'working'] as const) {
       cleanup();
       render(<TrackLifecycleBadge lifecycle={lifecycle} />);
-      expect(screen.getByTestId('track-lifecycle').getAttribute('data-nc-lifecycle-tone')).toBe('running');
+      expect(screen.getByTestId('track-lifecycle').getAttribute('data-nc-lifecycle-tone')).toBe('neutral');
     }
   });
 

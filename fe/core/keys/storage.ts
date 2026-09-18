@@ -13,6 +13,13 @@ export type StorageKey = string & { readonly [storageKeyBrand]: true };
 export const IDB_DB_NAME = 'neige-calm';
 export const SYNC_CURSOR_KEY = 'calm:sync:cursor' as StorageKey;
 export const DB_INSTANCE_ID_KEY = 'calm:db_instance_id' as StorageKey;
+/**
+ * The kernel database's stable identity (`/api/version` `databaseId`, #1722
+ * S1b) — survives a process restart, changes only when the database itself
+ * is replaced. Read receipts are scoped by it; `DB_INSTANCE_ID_KEY` above is
+ * the per-boot id and must never seed them.
+ */
+export const DATABASE_ID_KEY = 'calm:database_id' as StorageKey;
 export const THEME_KEY = 'calm.theme' as StorageKey;
 
 /** Creates application-owned keys; segments must already be normalized and non-empty. */

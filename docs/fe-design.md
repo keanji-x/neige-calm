@@ -119,6 +119,8 @@ Surface 总数保持有限。需要新增 surface 时，先证明现有层级无
 
 应用保持一个常驻 rail 和一个主区。Rail 负责 area/track 导航，不承担产品详情；页头负责当前位置、主要状态和当前页面动作。
 
+rail 的颜色只属于指示器词表（`ui/activity-indicator`：warn = 等你，error = 坏了，accent = 未读，灰 = 在动）与当前位置（`--accent-soft`）；标题永不带状态色；area 身份不进 rail。
+
 960px 以下 rail 折叠为图标条，不隐藏。桌面主区使用受控最大宽度；报告和表单各有适合阅读的 measure。右侧面板只有在它持续承载当前上下文时存在，不能留下孤立空栏。
 
 四条主路由：
