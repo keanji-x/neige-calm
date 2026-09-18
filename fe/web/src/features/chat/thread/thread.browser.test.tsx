@@ -3390,7 +3390,12 @@ describe('the activity line’s row count, as the engine lays it out', () => {
   it('keeps a long done line on one row, ellipsized beside the verb', async () => {
     await page.viewport(1400, 900);
     expect(LONG_TARGET).toHaveLength(64);
-    render(<RailPane turns={[activity({}), activity({ id: 'a2', target: 'ls' })]} />);
+    // A message separates these singleton lines; adjacent calls now use Astryx.
+    render(<RailPane turns={[
+      activity({}),
+      { id: 'reply', author: 'agent', text: 'Next check', atMs: 0 },
+      activity({ id: 'a2', target: 'ls' }),
+    ]} />);
     await frame();
 
     const [long, short] = lines();
@@ -3414,6 +3419,7 @@ describe('the activity line’s row count, as the engine lays it out', () => {
     await page.viewport(1400, 900);
     render(<RailPane turns={[
       activity({ state: 'failed', durationMs: 8_400, detail: 'error: no test specified' }),
+      { id: 'reply', author: 'agent', text: 'Next check', atMs: 0 },
       activity({ id: 'a2', target: 'ls' }),
     ]}
     />);
