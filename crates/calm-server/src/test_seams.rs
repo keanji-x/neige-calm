@@ -136,6 +136,37 @@ pub async fn acquire_workspace_lease_for_test(
     Ok(())
 }
 
+/// #1727 S1 (fix round 2, H5) — release a card's active workspace lease
+/// through the production "flip the row only" path
+/// (`release_workspace_lease_for_card_repo`: `held|releasing → released`,
+/// `workspace.released`, checkout left on disk) from an integration test.
+/// `worker_worktree_facts_tx` must tell this release apart from the
+/// removing one below, and a test that flipped the row by hand would not be
+/// exercising the row shape production writes. `fixtures`-only.
+#[cfg(feature = "fixtures")]
+pub async fn release_workspace_lease_for_card_for_test(
+    repo: &dyn crate::db::RepoEventWrite,
+    events: &crate::event::EventBus,
+    card_id: &str,
+) -> crate::error::Result<bool> {
+    crate::operation::workspace_lease::release_workspace_lease_for_card_repo(repo, events, card_id)
+        .await
+}
+
+/// #1727 S1 (fix round 2, H5) — release a lease through the production
+/// "remove the worktree" path (`release_workspace_lease_by_id`: the checkout
+/// is removed, `worktree.removed` is appended card-scoped, then the row is
+/// released). On a non-git lease root this removes the directory, exactly
+/// as production does for such a lease. `fixtures`-only.
+#[cfg(feature = "fixtures")]
+pub async fn release_workspace_lease_by_id_for_test(
+    pool: &sqlx::SqlitePool,
+    events: &crate::event::EventBus,
+    lease_id: &str,
+) -> crate::error::Result<bool> {
+    crate::operation::workspace_lease::release_workspace_lease_by_id(pool, events, lease_id).await
+}
+
 /// #1147 S3 — build git commands in a test exactly the way the server does.
 ///
 /// `neige_git_command` is `pub(crate)` and deliberately so: every git spawn on

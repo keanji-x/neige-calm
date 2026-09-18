@@ -27,14 +27,28 @@ use super::{Tx, row_to_workspace_lease, workspace_lease_target_from_lease};
 use crate::error::Result;
 
 /// What `calm.plan.list` shows as `worktree` for the current attempt.
+///
+/// #1727 S1 fix H5 — a lease's `state` alone cannot say whether the
+/// directory still exists: `release_workspace_lease_by_id` removes the
+/// worktree (`git worktree remove` + `git branch -D`) and emits
+/// `worktree.removed`, while `release_workspace_lease_for_card_tx` only flips
+/// the row to `released` and leaves the checkout on disk. `removed` carries
+/// that distinction: the latest `worktree.removed` event for the card is
+/// newer than its latest `worktree.provisioned` (no provisioned event → any
+/// removed event counts). A removed worktree has no `path` and no `branch`
+/// to name; `last_commit` stays — the sha is still a fact about the card.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct WorkerWorktreeFacts {
-    /// The lease's worktree path, whatever the lease's `state`.
-    pub path: String,
+    /// The lease's worktree path, whatever the lease's `state`; omitted once
+    /// the kernel has removed the worktree (`removed: true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// `held` | `releasing` | `released` — the lease row's own column.
     pub state: String,
     /// The slice branch: from the latest `worktree.committed` event when there
     /// is one, otherwise the lease's own naming (`workspace_lease_target_from_lease`).
+    /// Omitted once the kernel has removed the worktree (`git branch -D` goes
+    /// with `git worktree remove`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// `commit_sha` of the latest `worktree.committed` event scoped to the
@@ -45,11 +59,19 @@ pub(crate) struct WorkerWorktreeFacts {
     /// here (the previous successful sha, or the absence, stays — #1615 A).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
+    /// `true` when the kernel removed the worktree after its last
+    /// provisioning (see the struct doc); `false` while the checkout is
+    /// still on disk, whatever the lease `state`.
+    pub removed: bool,
 }
 
 /// The latest `workspace_leases` row for `worker_card_id` (by `created_at_ms`,
 /// any state) joined with the latest `worktree.committed` event scoped to that
-/// card. `None` when the card never held a lease.
+/// card and the `worktree.removed` / `worktree.provisioned` ordering that
+/// decides `removed`. `None` when the card never held a lease.
+///
+/// Keep this signature: #1727 PR-B delegates `recovery.guidance.retained`
+/// to it.
 pub(crate) async fn worker_worktree_facts_tx(
     tx: &mut Tx<'_>,
     worker_card_id: &str,
@@ -88,14 +110,60 @@ pub(crate) async fn worker_worktree_facts_tx(
             .map(str::to_string)
     };
     let last_commit = payload_string("commit_sha");
+    let removed = worktree_removed_after_last_provision_tx(tx, worker_card_id).await?;
+    if removed {
+        return Ok(Some(WorkerWorktreeFacts {
+            path: None,
+            state: lease.state,
+            branch: None,
+            last_commit,
+            removed: true,
+        }));
+    }
     let branch = match payload_string("branch") {
         Some(branch) => Some(branch),
         None => workspace_lease_target_from_lease(&lease)?.map(|target| target.branch),
     };
     Ok(Some(WorkerWorktreeFacts {
-        path: lease.path,
+        path: Some(lease.path),
         state: lease.state,
         branch,
         last_commit,
+        removed: false,
     }))
+}
+
+/// `worktree.removed` newer than the card's latest `worktree.provisioned`
+/// (both card-scoped by every emitter: the two release-with-removal paths,
+/// the track sweep, and the codex / claude adapters' provisioning). A card
+/// with no provisioned event at all is removed iff a removed event exists;
+/// a re-provision after a removal (a newer provisioned id) puts the path
+/// back.
+async fn worktree_removed_after_last_provision_tx(
+    tx: &mut Tx<'_>,
+    worker_card_id: &str,
+) -> Result<bool> {
+    let latest_id = |kind: &'static str| {
+        sqlx::query_scalar::<_, i64>(
+            r#"SELECT id FROM events
+               WHERE scope_card = ?1 AND kind = ?2
+               ORDER BY id DESC
+               LIMIT 1"#,
+        )
+        .bind(worker_card_id.to_string())
+        .bind(kind)
+    };
+    let removed_id = latest_id("worktree.removed")
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some(removed_id) = removed_id else {
+        return Ok(false);
+    };
+    let provisioned_id = latest_id("worktree.provisioned")
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(match provisioned_id {
+        Some(provisioned_id) => removed_id > provisioned_id,
+        None => true,
+    })
 }

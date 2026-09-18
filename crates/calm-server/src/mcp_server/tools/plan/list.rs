@@ -116,6 +116,7 @@ pub(super) fn summary(entry: &Value) -> Value {
             "worktree/branch",
             "worktree/last_commit",
             "worktree/state",
+            "worktree/removed",
             "gate_result/passed",
             "gate_result/status",
             "gate_result/failing_step",
