@@ -647,8 +647,8 @@
     #1722：rail 里「股票持仓表」`data-nc-activity=working` 而其 planner 已 idle 三天——FE 用 `isRunning(lifecycle)`
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
-  source: fe/core/domain/activity.ts:40-48; fe/core/domain/track.ts:770-797;
-    fe/web/src/app/providers/ui-preferences.tsx:64-99; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8
+  source: fe/core/domain/activity.ts:40-48; fe/core/domain/track.ts:779-806;
+    fe/web/src/app/providers/ui-preferences.tsx:82-130; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8
   authoritative_test: fe/core/domain/activity.test.ts:9-44; fe/core/domain/track.test.ts:184-230;
     fe/web/src/features/track/row/public.test.tsx:136-184; fe/web/src/app/providers/ui-preferences.test.tsx:114-166;
     fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:59-87

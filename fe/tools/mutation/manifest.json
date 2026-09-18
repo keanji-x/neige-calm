@@ -1262,6 +1262,21 @@
     "why_more_than_one": "The predicate is shared: the rail row, the page head, the router-level Today row and the core predicate suite each pin one surface of the same lifecycle-instead-of-overlay drift (a planning track with an idle planner reads quiet; a done track with work in flight reads working)."
   },
   {
+    "mutation_id": "s2a-activity-overlay-plugin-gate-dropped",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/domain/track.ts",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex a76187531..64b534433 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -247,7 +247,7 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir\n     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };\n     else if (overlay.kind === 'any_card_needs_input' && typeof value === 'boolean') {\n       activity = { ...activity, anyCardNeedsInput: value };\n-    } else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {\n+    } else if (overlay.kind === 'activity') {\n       const fields = activityOverlayFields(overlay.payload);\n       if (fields !== null) activity = { ...activity, ...fields };\n     }\n",
+    "expected_red": [
+      "trackActivityFrom: the kernel activity overlay applies only the kernel-owned activity row; a plugin-owned one leaves the track quiet"
+    ],
+    "selection_paths": [
+      "core/domain/track.test.ts"
+    ],
+    "why_more_than_one": "Only the plugin-owned row case should fail when the kernel plugin_id gate is dropped: every other activity-overlay fixture in the file is written under plugin_id kernel and folds the same way with or without the gate."
+  },
+  {
     "mutation_id": "s2a-track-row-name-from-lifecycle",
     "defends": [
       "oracle:INV-APP-118"
@@ -1330,6 +1345,8 @@
     "expected_red": [
       "local read receipts first_scope_entry_marks_everything_read",
       "local read receipts null_scope_is_never_unread",
+      "receipts_survive_a_recovery_scope_change_on_the_same_database",
+      "receipts_are_isolated_per_user",
       "Today rows carry the track read receipt",
       "reads the track receipt against the activity high-water mark, not updatedAt"
     ],
@@ -1338,7 +1355,7 @@
       "web/src/app/router/today-activity.test.tsx",
       "web/src/app/shell/sidebar.test.tsx"
     ],
-    "why_more_than_one": "Without the baseline, first entry into a scope no longer marks older activity read: the receipt unit cases, the rail receipt case and the router-level Today receipt case all rely on it."
+    "why_more_than_one": "Without the baseline, first entry into a scope no longer marks older activity read: the receipt unit cases, the rail receipt case and the router-level Today receipt case all rely on it. The two receipt-namespace cases (recovery-scope change on the same database, per-user isolation) also count the baseline key under the stable namespace and find none."
   },
   {
     "mutation_id": "s2a-receipt-scope-from-instance-id",

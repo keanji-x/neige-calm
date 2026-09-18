@@ -100,9 +100,6 @@ export function ServerCompatGate({ children: routeContent, runtime, client, rend
    * #1722 §5.2 — the database's *stable* id, remembered the same way as the
    * instance id above (write when missing, overwrite when it changes) but with
    * none of the cache busting: it seeds `createUiPreferences` on the next load.
-   * Only writing when missing would pin a device to a database that has since
-   * been reset, and every later load would spend a frame on the old scope's
-   * receipts before the layout effect swapped them out.
    */
   const databaseId = query.data?.databaseId;
   useEffect(() => {
