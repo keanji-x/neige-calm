@@ -107,16 +107,19 @@ pub const SERVER_OWNED_TERMINAL_PAYLOAD_KEYS: [&str; 3] = [
 /// — and therefore the one `card_update_tx` re-inserts into a replacement
 /// payload (and whose presence refuses a non-object replacement):
 /// `terminal_signals` only when `true`, `claude_permissions` only when it is a
-/// JSON object, `claude_permissions_source` only when it is one of the three
-/// source spellings. Any other stored shape was never minted by the kernel
-/// and is not kept sticky (the #1620 contract for the marker, unchanged by
-/// #1704).
+/// JSON object, `claude_permissions_source` only when it is a JSON STRING that
+/// is one of the three source spellings (the kernel writes the string form;
+/// serde also decodes the `{"declared": null}` map form of a unit variant,
+/// which was never minted). Any other stored shape was never minted by the
+/// kernel and is not kept sticky (the #1620 contract for the marker,
+/// unchanged by #1704).
 pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     match key {
         TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
         TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY => value.is_object(),
         TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY => {
-            serde_json::from_value::<ClaudePermissionsSource>(value.clone()).is_ok()
+            value.is_string()
+                && serde_json::from_value::<ClaudePermissionsSource>(value.clone()).is_ok()
         }
         _ => false,
     }
@@ -788,6 +791,23 @@ mod tests {
     }
 
     // ---------------- Card: terminal ----------------
+
+    /// #1723 — the source key is sticky only in the string form the kernel
+    /// writes; serde's map spelling of a unit variant is not a minted shape.
+    #[test]
+    fn server_owned_source_is_sticky_only_as_a_string() {
+        let sticky = |value: Value| {
+            server_owned_value_is_sticky(TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY, &value)
+        };
+        assert!(sticky(json!("declared")));
+        assert!(sticky(json!("declared_within_policy")));
+        assert!(
+            !sticky(json!({"declared": null})),
+            "the map form of a unit variant is not minted"
+        );
+        assert!(!sticky(json!("policy")));
+        assert!(!sticky(Value::Null));
+    }
 
     #[test]
     fn terminal_happy_with_id() {
