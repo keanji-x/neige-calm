@@ -38,7 +38,7 @@ test('keeps Today usable without claiming zero activity when Areas is unavailabl
   recovered = true;
   await retry.click();
   await expect(failure).toHaveCount(0);
-  await expect(header).toContainText(/\d\s*running/);
+  await expect(header).toContainText(/\d\s*in progress/);
 });
 
 test('retains the original Track request after a lost acknowledgement and navigation', async ({ page, request, context }) => {
