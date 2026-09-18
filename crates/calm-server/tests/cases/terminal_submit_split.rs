@@ -73,9 +73,10 @@ async fn open_probe(h: &Harness, request: &str) -> String {
     opened["terminal_id"].as_str().unwrap().to_owned()
 }
 /// Submits `text`, asserts the receipt and the single sequence step, waits
-/// until the CR octet is on the screen (whichever read carried it), lets the
-/// output settle and returns the rows of a fresh observation (which is also
-/// the latest observation the next input will act on).
+/// until the text's last row and the CR octet are on the screen (whichever
+/// read carried the CR), lets the output settle and returns the rows of a
+/// fresh observation (which is also the latest observation the next input
+/// will act on).
 async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str) -> Vec<String> {
     let before = h.interaction().input_ack_sequence(terminal).await.unwrap();
     let sent = h
@@ -105,7 +106,9 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
             )
             .await;
         let seen = rows(&view);
-        let text_landed = seen.iter().any(|row| row == last_text_row);
+        // Whichever read carried the CR: alone on its row, or at the end
+        // of the text's last row.
+        let text_landed = seen.iter().any(|row| row.starts_with(last_text_row));
         let cr_landed = seen.iter().any(|row| row.ends_with("\\r"));
         if text_landed && cr_landed {
             break;
