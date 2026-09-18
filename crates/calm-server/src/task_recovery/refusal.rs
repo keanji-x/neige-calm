@@ -137,7 +137,8 @@ pub(crate) enum RefusalSite {
     IsolatedRecordUnreadable,
     /// The journal holds no quiescence proof for the terminal operation.
     IsolatedStopUnconfirmed,
-    /// The stop proof does not match the execution's retained identity.
+    /// The recorded run's admission is not closed, or its identity chain
+    /// does not match this execution.
     IsolatedStopIdentityMismatch,
     // ---- admission::check_recovery_attempt_tx ----
     /// The attempt's allocation row is missing.

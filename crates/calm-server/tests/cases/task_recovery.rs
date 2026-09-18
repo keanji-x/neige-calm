@@ -1388,7 +1388,8 @@ async fn task_recovery_guidance_waits_for_settlement_behind_the_planner_limit() 
         condition.starts_with(recovery["reason"].as_str().unwrap())
             && condition.contains("User recovery")
             && condition.contains(". Independently of who asks: ")
-            && condition.contains("no confirmed namespace stop yet"),
+            && condition.contains("is in phase spawn_succeeded, not failed")
+            && condition.contains("the settlement that records its stop has not completed"),
         "{condition}"
     );
 }

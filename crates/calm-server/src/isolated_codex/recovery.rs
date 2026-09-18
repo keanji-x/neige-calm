@@ -86,13 +86,16 @@ pub(crate) async fn require_stopped_tx(
                 ),
             ));
         }
+        // The Controller may already have checkpointed a matching quiescence
+        // proof: it records `Quiesced` before the separate parked-completion
+        // transaction. What this branch tests is the phase alone.
         return Err(denied(
             RefusalSite::IsolatedStopPending,
             SupportedContinuation::WaitForSettlement,
             format!(
-                "predecessor isolated execution has no confirmed namespace stop yet (operation \
-                 phase {phase}); recovery re-opens if the kernel records the stop and delivers \
-                 its settlement briefing"
+                "predecessor isolated operation is in phase {phase}, not failed; the settlement \
+                 that records its stop has not completed, so recovery re-opens once the kernel \
+                 settles it and delivers the settlement briefing"
             ),
         ));
     }
@@ -134,7 +137,8 @@ pub(super) async fn confirmed_record_tx(
     let boundary = &endpoint.boundary;
     let launch = endpoint.launch_request();
     let request_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&record.request)?));
-    if record.admission != Admission::Closed
+    let admission_open = record.admission != Admission::Closed;
+    if admission_open
         || record.track_id != task.track_id
         || identity.run_id != op_id
         || identity.attempt_id != task.id
@@ -168,11 +172,22 @@ pub(super) async fn confirmed_record_tx(
             "prior_boot" | "init_absent" | "init_reaped" | "init_pid_reused"
         )
     {
+        // An admission that never closed reaches here with every identity
+        // field unchanged; the sentence names the disjunct that failed.
+        let unmet = if admission_open {
+            format!(
+                "has admission state {}, not closed",
+                record.admission.as_str()
+            )
+        } else {
+            "has an identity chain that does not match this execution".into()
+        };
         return Err(permanent(
             RefusalSite::IsolatedStopIdentityMismatch,
-            "predecessor isolated execution's recorded namespace stop proof does not match its \
-             retained identity; same-key recovery is permanently unavailable"
-                .into(),
+            format!(
+                "predecessor isolated execution's recorded run {unmet}; same-key recovery is \
+                 permanently unavailable"
+            ),
         ));
     }
     Ok(record)
