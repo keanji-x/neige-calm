@@ -81,11 +81,28 @@ export class RecoverySession {
       })]);
     } finally { if (timer !== undefined) clearTimeout(timer); }
   }
-  private async probe(explicit: boolean, expectedSession?: string): Promise<SessionIdentity | null> {
-    this.cancel(); this.access.invalidate('recovering');
+  private async probe(explicit: boolean, expectedSession?: string, signal?: AbortSignal): Promise<SessionIdentity | null> {
+    if (signal?.aborted) return null;
+    this.cancel(); this.access.invalidate(explicit ? 'login' : 'recovering');
     const generation = this.access.read().generation;
     const controller = new AbortController(); this.controller = controller;
     let identityAccepted = false;
+    let identityVerified = false;
+    const cancelAttempt = () => {
+      if (this.controller !== controller || this.access.read().generation !== generation) return;
+      this.cancel(); this.access.invalidate('login');
+    };
+    signal?.addEventListener('abort', cancelAttempt, { once: true });
+    const acceptIdentity = () => {
+      signal?.throwIfAborted();
+      if (explicit) {
+        this.ports.storage.removeItem(logoutMarkerKey());
+        this.marker = null;
+      }
+      identityAccepted = true;
+      // Rendering the accepted session unmounts its form; that is not cancellation.
+      signal?.removeEventListener('abort', cancelAttempt);
+    };
     const current = () => !this.stopped && !controller.signal.aborted && this.access.read().generation === generation;
     try {
       const identity = await this.deadline(this.ports.identity, controller);
@@ -94,14 +111,11 @@ export class RecoverySession {
         if (this.storageFault) throw new Error('无法读取退出状态，请检查设备存储。');
         if (expectedSession !== undefined && identity.sessionId !== expectedSession) throw new Error('登录会话已改变，请重新登录。');
         if (this.marker !== null && fingerprint(identity.sessionId) === this.marker) throw new Error('仍是已退出的旧会话，请重新配对。');
-        this.ports.storage.removeItem(logoutMarkerKey());
-        this.marker = null;
       }
-      // Explicit proof only gates identity. Once accepted, later availability
-      // failures return to ordinary recovery without reviving the logout block.
-      identityAccepted = true;
+      identityVerified = true;
       const version = await this.deadline(this.ports.version, controller);
       if (!current()) return null;
+      acceptIdentity();
       if (version.minWebCompatVersion > this.ports.compatibleVersion || version.webCompatVersion < this.ports.compatibleVersion) {
         this.access.change('update', version.minWebCompatVersion > this.ports.compatibleVersion ? '请更新 Neige App' : '请更新电脑端 Neige');
         return null;
@@ -113,7 +127,8 @@ export class RecoverySession {
         if (raw !== null && stored === null) this.ports.storage.removeItem(recoveryContextKey());
       } catch { /* presentation unavailable */ }
       if ((this.identity !== null && this.identity.userId !== identity.userId) ||
-        (this.version !== null && this.version.dbInstanceId !== version.dbInstanceId) ||
+        (this.version !== null && (this.version.dbInstanceId !== version.dbInstanceId
+          || this.version.syncEventVersion !== version.syncEventVersion)) ||
         (stored !== null && (stored.scope.userId !== identity.userId || stored.scope.dbInstanceId !== version.dbInstanceId))) {
         this.clear(); this.scopeRevision++;
         stored = null;
@@ -125,11 +140,21 @@ export class RecoverySession {
       this.stable = setTimeout(() => { if (current()) this.attempt = 0; }, 30_000);
       return identity;
     } catch (error) {
+      if (signal?.aborted) return null;
       if (!current() && this.access.read().generation !== generation) return null;
       if (this.stopped) return null;
       const unauthorized = typeof error === 'object' && error !== null && 'failure' in error &&
         typeof error.failure === 'object' && error.failure !== null && 'kind' in error.failure && error.failure.kind === 'unauthorized';
       if (unauthorized) { this.unauthorized(); return null; }
+      // A verified identity with an unavailable version keeps normal recovery,
+      // but caller cancellation never clears the local logout denial.
+      if (identityVerified && !identityAccepted) {
+        try { acceptIdentity(); }
+        catch (failure) {
+          this.access.change('login', failure instanceof Error ? failure.message : '验证未成功，请重试。');
+          return null;
+        }
+      }
       if ((explicit && !identityAccepted) || this.blocked()) {
         this.access.change('login', error instanceof Error ? error.message : '验证未成功，请重试。'); return null;
       }
@@ -138,11 +163,14 @@ export class RecoverySession {
       this.access.change('offline', '服务器暂不可达', now, now + delay);
       if (this.ports.online() && this.ports.visible()) this.timer = setTimeout(this.retry, delay);
       return null;
-    } finally { if (this.controller === controller) this.controller = null; }
+    } finally {
+      signal?.removeEventListener('abort', cancelAttempt);
+      if (this.controller === controller) this.controller = null;
+    }
   }
-  verifyNewSession = async (expectedSession?: string): Promise<SessionIdentity | null> => {
+  verifyNewSession = async (expectedSession?: string, signal?: AbortSignal): Promise<SessionIdentity | null> => {
     if (this.controller !== null || this.stopped) return null;
-    return this.probe(true, expectedSession);
+    return this.probe(true, expectedSession, signal);
   };
   async signOut(): Promise<void> {
     const identity = this.identity;

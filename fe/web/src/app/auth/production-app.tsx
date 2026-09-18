@@ -12,10 +12,12 @@ import { createUnauthorizedChannel, type UnauthorizedChannel } from '../../../..
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { IDB_DB_NAME } from '../../../../core/keys/storage.ts';
 import { LoginPage } from '../../features/auth/login-page/public.tsx';
-import { loginWithTransport } from './login.ts';
+import { loginForRecovery, loginWithTransport } from './login.ts';
 import { clearSessionArtifacts, SessionGate } from './session-gate.tsx';
 import { createBrowserEventComposition } from '../composition.ts';
 import { EventBridge } from '../events/event-bridge.tsx';
+import { RecoveryEventBridge } from '../events/recovery-event-bridge.tsx';
+import { createBrowserCursorStore } from '../events/browser-cursor-store.ts';
 import { AppProviders, WEB_COMPAT_VERSION, type ProviderRuntime } from '../providers/public.tsx';
 import { logoutOperation, runOperation, serverVersionOperation } from '../providers/queries.ts';
 import { createFetchTransport } from '../providers/transport.ts';
@@ -60,9 +62,12 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   const transport = __NC_BUNDLED__ ? guarded.business : base;
   const probe = __NC_BUNDLED__ ? guarded.probe : base;
   const client = new QueryClient();
-  const events = createBrowserEventComposition({ storage: browser.storage, transport: probe, unauthorizedChannel: unauthorized,
-    ...(__NC_BUNDLED__ ? { probeUnauthorized: () => { recovery?.resume(); return Promise.resolve(); } } : {}),
-  });
+  const events = __NC_BUNDLED__ ? null
+    : createBrowserEventComposition({ storage: browser.storage, transport: probe, unauthorizedChannel: unauthorized });
+  const cursorStore = events?.store ?? createBrowserCursorStore(browser.storage);
+  const createRecoveryEvents = () => createBrowserEventComposition({ storage: browser.storage, transport: probe,
+    cursorStore, unauthorizedChannel: unauthorized,
+    probeUnauthorized: () => { recovery?.resume(); return Promise.resolve(); } });
   // The one place the card runtime is assembled. `bootCards` is called exactly
   // once, on this instance — there is no module-level registry and no
   // module-level "already registered" guard (`INV-CARD-224` is retired); a
@@ -86,9 +91,8 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     identity: (signal) => runOperation(probe, { ...whoamiOperation(), signal }, undefined),
     version: (signal) => runOperation(probe, { ...serverVersionOperation(), signal }, unauthorized),
     logout: (signal) => runOperation(probe, { ...logoutOperation(), signal }, undefined),
-    clear: () => clearSessionArtifacts(client, events.store, runtime), online: () => navigator.onLine, visible: () => !document.hidden,
+    clear: () => clearSessionArtifacts(client, cursorStore, runtime), online: () => navigator.onLine, visible: () => !document.hidden,
   }) : undefined;
-  if (recovery) events.stream.onConnectionState((state) => recovery?.events(state));
   const router = createAppRouter({
     transport,
     unauthorized,
@@ -99,25 +103,26 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     onSignOut: () => {
       if (recovery) { void recovery.signOut(); return; }
       void runOperation(transport, logoutOperation(), unauthorized).finally(() => {
-        clearSessionArtifacts(client, events.store, runtime);
+        clearSessionArtifacts(client, cursorStore, runtime);
         browser.reload();
       });
     },
   });
   createRoot(root).render(<ProductionApp transport={transport} unauthorized={unauthorized} client={client}
-    runtime={runtime} cursorStore={events.store} router={router} recovery={recovery}
+    runtime={runtime} cursorStore={cursorStore} router={router} recovery={recovery}
     renderLogin={() => __NC_BUNDLED__
       ? <BundledLoginPage message={recovery?.access.read().detail}
         verifyPairing={recovery?.blocked() ? () => { void recovery.verifyNewSession(); } : undefined}
-        login={async (username, password) => {
-        const result = await loginWithTransport(probe, username, password);
-        return result === null ? null : await recovery!.verifyNewSession(result.sessionId);
-      }} reload={() => { /* verified session mounts directly */ }} />
-      : <LoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={browser.reload} />}
+        login={(username, password, signal) => loginForRecovery(probe, recovery!, username, password, signal)}
+        reload={() => { /* verified session mounts directly */ }} />
+      : <LoginPage login={(username, password, signal) => loginWithTransport(transport, username, password, signal)} reload={browser.reload} />}
     renderError={(retry) => __NC_BUNDLED__
       ? <BundledConnectionNotice kind="unreachable"><button type="button" onClick={retry}>重试连接</button></BundledConnectionNotice>
       : <main><p>Could not check your session.</p><button type="button" onClick={retry}>Try again</button></main>}
-    renderEventBridge={(server) => <EventBridge client={client} stream={events.stream}
-      syncEventVersion={server.syncEventVersion} dbInstanceId={server.dbInstanceId} cursor={events.store} />}
+    renderEventBridge={(server) => recovery
+      ? <RecoveryEventBridge key={`${recovery.scopeRevision}:${server.syncEventVersion}`} createEvents={createRecoveryEvents}
+        recovery={recovery} client={client} version={server} />
+      : <EventBridge client={client} stream={events!.stream}
+        syncEventVersion={server.syncEventVersion} dbInstanceId={server.dbInstanceId} cursor={cursorStore} />}
   />);
 }

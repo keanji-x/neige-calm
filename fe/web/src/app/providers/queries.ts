@@ -440,7 +440,9 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     uploadAttachment: async (readBytes: () => Promise<Uint8Array>, contentType: string) => {
       const admitted = admitTransport(transport);
       const bytes = await readBytes();
-      return runOperation(admitted, uploadPlannerAttachmentOperation(cardId, bytes, contentType), unauthorized);
+      const uploaded = await runOperation(admitted, uploadPlannerAttachmentOperation(cardId, bytes, contentType), unauthorized);
+      // Keep admission attached to the value until the feature actually consumes it.
+      return () => { admitted.recovery?.checkpoint()(); return uploaded; };
     },
     /* No `reset` — see the note where `resetPlannerOperation` used to be in
        `core/domain/conversation.ts`. The endpoint is still served; nothing in

@@ -5,7 +5,7 @@
       "oracle:INV-LOGIN-001"
     ],
     "target": "web/src/features/auth/login-page/public.tsx",
-    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..be25005b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -23,7 +23,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       void login(username, password).then((result) => {\n         if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n-        reload();\n+        setSubmitting(false);\n       }).catch((cause: unknown) => {\n         setError(cause instanceof Error && cause.message ? cause.message : 'Sign-in failed.');\n         setSubmitting(false);\n",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -44,5 +44,5 @@\n         if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n-        reload();\n+        setSubmitting(false);\n       }).catch((cause: unknown) => {\n         if (attempt.signal.aborted) return;\n",
     "expected_red": [
       "login page oracle contracts INV-LOGIN-001 reloads the whole document after successful login"
     ],
@@ -20,7 +20,7 @@
       "oracle:CAP-LOGIN-002"
     ],
     "target": "web/src/features/auth/login-page/public.tsx",
-    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..0377347a 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -21,7 +21,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       if (submitting) return;\n       setSubmitting(true); setError(null);\n       void login(username, password).then((result) => {\n-        if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n+        if (!result) { setError('Sign-in failed.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n         reload();\n       }).catch((cause: unknown) => {\n",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -42,5 +42,5 @@\n       void login(username, password, attempt.signal).then((result) => {\n         if (attempt.signal.aborted) return;\n-        if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n+        if (!result) { setError('Sign-in failed.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n         reload();\n",
     "expected_red": [
       "login page oracle contracts CAP-LOGIN-002 distinguishes rejected credentials, exceptions, and submitting state",
       "production login assembly CAP-LOGIN-002 maps a production 401 to credential copy without broadcasting"

@@ -7,7 +7,7 @@
   why: >
     源码注释(#189):"the reload is the simplest path that guarantees every persisted / in-memory cache also gets a
     fresh start under the new identity — matches what the ServerCompatGate's bust path does."
-  source: fe/web/src/features/auth/login-page/public.tsx:1-56
+  source: fe/web/src/features/auth/login-page/public.tsx:42-46
   authoritative_test: fe/web/src/features/auth/login-page/public.contract.test.tsx:9-18
   owner_slice: features/auth/login-page
   intentional_omission: true
@@ -23,7 +23,7 @@
     "Signing in…" 且禁用。
   why: |
     凭据错(200 + 空结果)与网络/服务器错是两类不同的失败,文案必须区分。
-  source: fe/web/src/features/auth/login-page/public.tsx:1-56
+  source: fe/web/src/features/auth/login-page/public.tsx:37-63
   authoritative_test: fe/web/src/features/auth/login-page/public.contract.test.tsx:20-38
   owner_slice: features/auth/login-page
   intentional_omission: false
@@ -39,7 +39,7 @@
   why: >
     源码注释:"Single-purpose login screen; autofocus the first field for expected UX. There's no surrounding
     context to skip past." —— 这是对 no-autofocus 规则的有意豁免。
-  source: fe/web/src/features/auth/login-page/public.tsx:1-56
+  source: fe/web/src/features/auth/login-page/public.tsx:57-61
   authoritative_test: fe/web/src/features/auth/login-page/login-page.browser.test.tsx:8-16
   owner_slice: features/auth/login-page
   intentional_omission: true

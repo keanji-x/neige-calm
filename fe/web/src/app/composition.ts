@@ -20,6 +20,7 @@ export function createBrowserEventComposition(options: Readonly<{
   transport: ApiTransportPort;
   unauthorizedChannel?: Pick<UnauthorizedChannel, 'notify'>;
   probeUnauthorized?: UnauthorizedProbe;
+  cursorStore?: SyncCursorPort;
 }>): EventComposition {
   const unauthorized = options.unauthorizedChannel ?? createUnauthorizedChannel(
     { enqueue: (task) => queueMicrotask(task) },
@@ -30,6 +31,7 @@ export function createBrowserEventComposition(options: Readonly<{
     transport: options.transport,
     onUnauthorized: () => unauthorized.notify(),
     probeUnauthorized: options.probeUnauthorized,
+    cursorStore: options.cursorStore,
   });
 }
 
@@ -42,8 +44,9 @@ export function createEventComposition(options: Readonly<{
   probeUnauthorized?: UnauthorizedProbe;
   driverFactory?: EventDriverFactory;
   url?: string;
+  cursorStore?: SyncCursorPort;
 }>): EventComposition {
-  const store = createBrowserCursorStore(options.storage, options.idle);
+  const store = options.cursorStore ?? createBrowserCursorStore(options.storage, options.idle);
   const createDriver = options.driverFactory ?? ((driverOptions) => new WebSocketDriver(driverOptions));
   const driver = createDriver({
     cursor: store,

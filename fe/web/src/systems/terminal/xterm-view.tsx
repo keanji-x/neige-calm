@@ -563,15 +563,17 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     let retryDelay = 500;
     const permitted = () => recovery !== null ? recovery.read().phase === 'connected' : !__NC_BUNDLED__;
     const connect = () => {
+      setStatus(permitted() ? 'connecting' : 'closed');
+      setCloseInfo(null);
+      setProtocolError(null);
+      setExitInfo(null);
+      exitInfoRef.current = null;
+      onExitChangeRef.current?.(null);
+      term.options.disableStdin = true;
       if (!permitted()) return () => {};
       const generation = recovery?.read().generation;
       let live = true;
       const current = () => live && permitted() && generation === recovery?.read().generation;
-      setStatus('connecting');
-      setCloseInfo(null);
-      setProtocolError(null);
-      exitInfoRef.current = null;
-      term.options.disableStdin = true;
       let connectionReady = false;
       let awaitingOwner = false;
       const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${
@@ -1138,25 +1140,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         // onclose) so a strict-mode unmount or a `terminalId` change clears
         // the parent state even if no close frame fires.
         onRoleChangeRef.current?.(null);
-        // #306 followup — defensive: reset the live exit mirror on teardown.
-        // On a terminal swap or reconnect the next attach must not inherit
-        // this ref still
-        // pointing at the previous terminal's exit, and the close-frame
-        // backstop in `ws.onclose` (which gates on `exitInfoRef.current
-        // === null`) could be suppressed for the new terminal if its
-        // `TerminalExited` JSON frame is lost on a slow link. Narrow edge
-        // today, one line to prevent.
-        exitInfoRef.current = null;
-        // #421 followup — mirror `onRoleChange` above: the parent's `exit`
-        // state must also be cleared on teardown so a user-triggered
-        // reconnect (Refresh / Reset) doesn't inherit a `TerminalExited`
-        // badge from the previous daemon attach. Without this, a clean
-        // exit_code=1 delivered just before tear-down (e.g. the old codex
-        // daemon exits when its app-server is reaped during Reset) stays
-        // pinned on the new card head even though the new daemon is up.
-        // Synced here (not via `ws.onclose`) so a strict-mode unmount or a
-        // reconnect always clears it, matching the role pill.
-        onExitChangeRef.current?.(null);
+        // Revoking the transport does not revoke authoritative exit/error facts.
+        // A new attach resets them in connect(); disposal clears the parent below.
       };
     };
     let disconnect = connect();
@@ -1170,7 +1155,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       if (!now) {
         if (retryTimer !== null) clearTimeout(retryTimer);
         retryTimer = null; disconnect(); disconnect = () => {};
-        term.options.disableStdin = true; setStatus('closed');
+        term.options.disableStdin = true;
+        setStatus(previous => previous === 'exited' || previous === 'protocol-error' ? previous : 'closed');
       } else if (!wasPermitted && automaticAllowed) reconnect();
       wasPermitted = now;
     });
@@ -1186,6 +1172,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       unsubscribeRecovery?.();
       if (retryTimer !== null) clearTimeout(retryTimer);
       disconnect();
+      exitInfoRef.current = null;
+      onExitChangeRef.current?.(null);
       term.dispose();
       removeTestDumpHook();
       if (termRef.current === term) termRef.current = null;
