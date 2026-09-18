@@ -132,7 +132,7 @@ func (i *issuer) issue(ctx context.Context, cmd enrollmentCommand, s *service) (
 	err = json.Unmarshal(data, &key)
 	now := time.Now()
 	sort.Strings(key.Capabilities.Devices.Create.Tags)
-	valid := err == nil && exactCapabilities(fields["capabilities"]) && safeID(key.ID) && validAuthKey(key.Secret) && reflect.DeepEqual(key.Capabilities, phoneCapabilities(c.PhoneTags)) && !key.Created.IsZero() && !key.Expires.IsZero() && !key.Created.After(now.Add(5*time.Second)) && key.Expires.After(key.Created) && key.Expires.Sub(key.Created) <= 300*time.Second && key.Expires.After(now.Add(30*time.Second)) && !key.Expires.After(now.Add(300*time.Second))
+	valid := err == nil && fields["created"] != nil && fields["expires"] != nil && fields["key"] != nil && exactCapabilities(fields["capabilities"]) && safeID(r.KeyID) && key.ID == r.KeyID && validAuthKey(key.Secret) && reflect.DeepEqual(key.Capabilities, phoneCapabilities(c.PhoneTags)) && !key.Created.IsZero() && !key.Expires.IsZero() && !key.Created.After(now.Add(5*time.Second)) && key.Expires.After(key.Created) && key.Expires.Sub(key.Created) <= 300*time.Second && key.Expires.After(now.Add(30*time.Second)) && !key.Expires.After(now.Add(300*time.Second))
 	if valid {
 		err = s.enrollmentReady(ctx, c)
 		valid = err == nil && ctx.Err() == nil && now.UnixMilli() < cmd.Deadline

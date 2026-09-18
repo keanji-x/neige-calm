@@ -336,3 +336,27 @@ func TestEnrollmentRestartPreservesLedgerAfterInterruptedTemporaryWrite(t *testi
 		t.Fatal("restart overwrote unrelated temporary bytes")
 	}
 }
+
+func TestEnrollmentReturnedIDMustMatchDurableMetadata(t *testing.T) {
+	i, s, cmd, c := issuerFixture(t)
+	fixtureAPI(t, i, c, 300*time.Second, true)
+	original := i.api.client.Transport
+	i.api.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		res, err := original.RoundTrip(r)
+		if err != nil || r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/keys") {
+			return res, err
+		}
+		var body map[string]any
+		if json.NewDecoder(res.Body).Decode(&body) != nil {
+			t.Fatal("fixture response")
+		}
+		res.Body.Close()
+		body["ID"] = body["id"]
+		delete(body, "id")
+		b, _ := json.Marshal(body)
+		return responseJSON(string(b), 200), nil
+	})
+	if result, err := i.issue(context.Background(), cmd, s); err == nil || result.AuthKey != "" {
+		t.Fatal("key published without exact durable key ID")
+	}
+}
