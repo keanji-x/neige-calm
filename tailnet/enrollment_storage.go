@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -242,7 +243,13 @@ func writeLedger(dir *os.File, l cleanupLedger) error {
 	if err != nil {
 		return err
 	}
-	name := "enrollment-ledger.next"
+	// A killed writer may leave its temporary file behind. A fresh exclusive
+	// name permits recovery without deleting or trusting those orphaned bytes.
+	var nonce [16]byte
+	if _, err = rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	name := "enrollment-ledger." + hex.EncodeToString(nonce[:]) + ".next"
 	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 	if err != nil {
 		return err

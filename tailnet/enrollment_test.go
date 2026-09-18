@@ -309,3 +309,30 @@ func TestEnrollmentRejectsLongActualLifetimeWithShortRemaining(t *testing.T) {
 		t.Fatal("short remaining time concealed a long actual key lifetime")
 	}
 }
+
+func TestEnrollmentRestartPreservesLedgerAfterInterruptedTemporaryWrite(t *testing.T) {
+	i, s, cmd, c := issuerFixture(t)
+	fixtureAPI(t, i, c, 300*time.Second, false)
+	if _, err := i.issue(context.Background(), cmd, s); err != nil {
+		t.Fatal(err)
+	}
+	orphan := filepath.Join(i.dir.Name(), "enrollment-ledger.next")
+	if err := os.WriteFile(orphan, []byte("interrupted temporary write"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := newIssuer(i.dir.Name(), i.configPath)
+	if err != nil {
+		t.Fatalf("interrupted temporary write blocked cleanup restart: %v", err)
+	}
+	defer j.dir.Close()
+	if len(j.ledger.Records) != 1 || j.ledger.Records[0].KeyID != "real-key-id" || j.ledger.Records[0].State != "cleanup" {
+		t.Fatal("restart lost durable cleanup record")
+	}
+	j.api = i.api
+	if result, err := j.cleanup(context.Background(), "", true); err != nil || result.PendingCleanup != 0 {
+		t.Fatal("restart did not compensate known key", err)
+	}
+	if b, err := os.ReadFile(orphan); err != nil || string(b) != "interrupted temporary write" {
+		t.Fatal("restart overwrote unrelated temporary bytes")
+	}
+}
