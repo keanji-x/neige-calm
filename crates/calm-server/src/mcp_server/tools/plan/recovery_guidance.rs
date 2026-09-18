@@ -4,11 +4,10 @@
 //! part of the REST `TaskRecoveryView` wire type.
 use crate::error::Result;
 use crate::model::Task;
+use crate::operation::Tx;
+use crate::operation::workspace_lease::facts::{WorkerWorktreeFacts, worker_worktree_facts_tx};
 use crate::task_recovery::{AdmissionError, RefusalSite, RefusedRecovery};
 use serde_json::{Value, json};
-use sqlx::{Sqlite, Transaction};
-
-type Tx<'a> = Transaction<'a, Sqlite>;
 
 /// `{ blocking_condition, supported_continuation, retained }` for a refused
 /// recovery of `task` (the failed current attempt). `blocking_condition` is
@@ -48,7 +47,9 @@ pub(crate) async fn guidance_tx(
         }
     }
     let retained = match task.worker_card_id.as_deref() {
-        Some(card_id) => retained_tx(tx, card_id).await?,
+        Some(card_id) => worker_worktree_facts_tx(tx, card_id)
+            .await?
+            .map_or_else(|| json!({}), retained_from_facts),
         None => json!({}),
     };
     Ok(json!({
@@ -70,72 +71,38 @@ fn join_independent(policy: &str, tail: &str) -> String {
     format!("{policy}{stop} Independently of who asks: {tail}")
 }
 
-/// What the failed attempt's worker card left behind, keyed by the card:
-/// the latest workspace lease path (held or released — the directory may
-/// still exist), the kernel commit recorded for that card, and the slice
-/// branch the lease was named with when no commit was recorded. A
+/// What the failed attempt's worker card left behind, as `retained`: the
+/// same facts `calm.plan.list` renders as `worktree`
+/// (`operation::workspace_lease::facts`), keyed the way the Planner prompt
+/// names them. `workspace_path` is the lease path (held or released — the
+/// directory may still exist), `branch` the slice branch, `last_commit` the
+/// kernel commit recorded for that card; every field is optional. A
 /// `worktree.removed` newer than the last `worktree.provisioned` means the
-/// directory and slice branch are gone: only `removed` and the commit (the
-/// object survives removal) are reported.
-async fn retained_tx(tx: &mut Tx<'_>, card_id: &str) -> Result<Value> {
+/// directory and slice branch are gone: only `removed: true` and the commit
+/// (the object survives removal) are reported. The lease `state` is not
+/// carried — `retained` says what is left, not what the lease row says.
+fn retained_from_facts(facts: WorkerWorktreeFacts) -> Value {
+    let WorkerWorktreeFacts {
+        path,
+        state: _,
+        branch,
+        last_commit,
+        removed,
+    } = facts;
     let mut retained = json!({});
-    let lease: Option<(String, String)> = sqlx::query_as(
-        "SELECT path, track_id FROM workspace_leases WHERE card_id = ?1 \
-         ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1",
-    )
-    .bind(card_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let Some((path, track_id)) = lease else {
-        return Ok(retained);
-    };
-    let committed: Option<String> = sqlx::query_scalar(
-        "SELECT payload FROM events WHERE kind = 'worktree.committed' \
-         AND json_extract(payload, '$.card_id') = ?1 \
-         ORDER BY id DESC LIMIT 1",
-    )
-    .bind(card_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let committed = committed.and_then(|payload| serde_json::from_str::<Value>(&payload).ok());
-    let removed = latest_worktree_event_id_tx(tx, "worktree.removed", card_id).await?;
-    let provisioned = latest_worktree_event_id_tx(tx, "worktree.provisioned", card_id).await?;
-    if removed.is_some_and(|removed| provisioned.is_none_or(|provisioned| removed > provisioned)) {
+    if removed {
         retained["removed"] = json!(true);
-        if let Some(payload) = committed {
-            retained["last_commit"] = payload["commit_sha"].clone();
-        }
-        return Ok(retained);
     }
-    retained["workspace_path"] = json!(path);
-    match committed {
-        Some(payload) => {
-            retained["last_commit"] = payload["commit_sha"].clone();
-            retained["branch"] = payload["branch"].clone();
-        }
-        None => {
-            retained["branch"] = json!(
-                crate::operation::workspace_lease::workspace_slice_branch_for(&track_id, card_id)?
-            );
-        }
+    if let Some(path) = path {
+        retained["workspace_path"] = json!(path);
     }
-    Ok(retained)
-}
-
-async fn latest_worktree_event_id_tx(
-    tx: &mut Tx<'_>,
-    kind: &str,
-    card_id: &str,
-) -> Result<Option<i64>> {
-    Ok(sqlx::query_scalar(
-        "SELECT id FROM events WHERE kind = ?1 \
-         AND json_extract(payload, '$.card_id') = ?2 \
-         ORDER BY id DESC LIMIT 1",
-    )
-    .bind(kind)
-    .bind(card_id)
-    .fetch_optional(&mut **tx)
-    .await?)
+    if let Some(branch) = branch {
+        retained["branch"] = json!(branch);
+    }
+    if let Some(last_commit) = last_commit {
+        retained["last_commit"] = json!(last_commit);
+    }
+    retained
 }
 
 #[cfg(test)]
