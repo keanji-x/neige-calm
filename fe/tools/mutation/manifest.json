@@ -825,13 +825,12 @@
     "expected_red": [
       "WebSocketDriver contracts T-B3 rechecks epoch after connected delivery before delivering replay-complete",
       "WebSocketDriver contracts T-B4 stop prevents any new socket construction from an in-flight old close continuation",
-      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation",
-      "accepts all real oracle data without exceptions"
+      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
     ],
-    "why_more_than_one": "The combined mutation removes epoch advancement and representative callback/connect guards; T-B4 asserts construction count after stop."
+    "why_more_than_one": "The combined mutation removes epoch advancement and representative callback/connect guards; T-B4 asserts construction count after stop. All three behavioral witnesses remain required. The former static-oracle failure was incidental: deleting two lines from the old 151-line driver invalidated source ranges ending at 151. The recovery driver is longer, so the unchanged range validator correctly stays green; no behavioral assertion or oracle check is relaxed."
   },
   {
     "mutation_id": "events-reducer-reconnect-before-persist",
