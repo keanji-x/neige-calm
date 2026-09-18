@@ -232,7 +232,7 @@ async fn declaration_tx(tx: &mut Tx<'_>, track: &Track, key: &str) -> Admission<
     Ok(declaration)
 }
 
-async fn check_constraint_tx(
+pub(super) async fn check_constraint_tx(
     tx: &mut Tx<'_>,
     track: &Track,
     key: &str,
