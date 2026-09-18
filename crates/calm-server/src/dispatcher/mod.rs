@@ -158,16 +158,16 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // `review.round` no longer wake the planner. The facts stay in the
         // `workspace_leases` and `events` rows and are read back on demand:
         // `calm.plan.list` renders the worker's lease path / slice branch /
-        // last kernel-made commit sha as `worktree`
+        // the last commit the kernel recorded for the card as `worktree`
         // (`operation::workspace_lease::facts::worker_worktree_facts_tx`);
         // each of these used to cost a whole turn that ended in one
         // `calm.plan.list`. `review.round` can only be written by the
         // planner author (`calm-truth::role_gate`), so pushing it is pure
         // self-echo. A successful `worktree.committed` needs no wake either.
         // KNOWN GAP (#1615 A): a FAILED auto commit writes only its
-        // operation row — no event, tasks row untouched — so today it is
-        // visible only as a missing `worktree.last_commit` in
-        // `calm.plan.list`.
+        // operation row — no event, tasks row untouched — and
+        // `worktree.last_commit` shows only the last SUCCESSFUL kernel
+        // commit, so the failure is invisible.
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
         | Event::WorktreeProvisioned { .. }

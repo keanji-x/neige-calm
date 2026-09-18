@@ -4,12 +4,22 @@
 //! `workspace.leased` / `worktree.provisioned` / `worktree.committed` no longer
 //! push a Planner turn (`dispatcher::event_warrants_planner_push_with_role`),
 //! and nothing else Planner-readable carried a worker's lease path, slice
-//! branch or kernel-made commit sha (the track-fs projection drops those kinds,
-//! `track_vcs/delta.rs`). A Codex worker reports `task.completed` BEFORE the
-//! kernel's auto `git.commit` runs, so it cannot self-report the sha either.
-//! This is the one lookup that turns those rows back into facts; today
-//! `calm.plan.list` renders it as `worktree`, and #1727 S3 reuses it for
-//! `recovery.guidance.retained`.
+//! branch or the commit the kernel recorded for it (the track-fs projection
+//! drops those kinds, `track_vcs/delta.rs`). A Codex worker reports
+//! `task.completed` BEFORE the kernel's auto `git.commit` runs, so it cannot
+//! self-report that sha either. This is the one lookup that turns those rows
+//! back into facts; today `calm.plan.list` renders it as `worktree`, and
+//! #1727 S3 reuses it for `recovery.guidance.retained`.
+//!
+//! `last_commit` is exactly "the latest `worktree.committed` event scoped to
+//! the card": the auto-commit after a Codex worker's `task.complete`
+//! (`mcp_server::tools::emit::submit_worker_success_commit`) or a git-forge
+//! `git.commit` action — both land through the forge action adapter. Commits a
+//! worker makes with plain `git` are never recorded; Claude / isolated /
+//! terminal workers get no auto-commit, so for them it is set only when a
+//! git-forge `git.commit` ran; and a failed auto-commit after an earlier
+//! successful kernel commit leaves the earlier sha in place — it is
+//! indistinguishable from success here (KNOWN GAP, #1615 A).
 
 use serde::Serialize;
 
@@ -28,9 +38,11 @@ pub(crate) struct WorkerWorktreeFacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// `commit_sha` of the latest `worktree.committed` event scoped to the
-    /// worker card. Absent when the kernel has not committed (or its auto
-    /// commit failed — KNOWN GAP, #1615 A: that failure writes only the
-    /// operation row, so this absence is the only visible trace).
+    /// worker card — the latest commit the KERNEL recorded (auto-commit after
+    /// a Codex worker's `task.complete`, or a git-forge `git.commit` action).
+    /// Absent when the kernel never recorded one. Plain-`git` commits by the
+    /// worker are never recorded, and a FAILED auto-commit changes nothing
+    /// here (the previous successful sha, or the absence, stays — #1615 A).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
 }
