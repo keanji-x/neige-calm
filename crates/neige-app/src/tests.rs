@@ -319,6 +319,19 @@ async fn status_route_returns_supervisor_identity_shape() {
 }
 
 #[tokio::test]
+async fn unix_socket_peer_pid_matches_connecting_process() {
+    let (client, server) = tokio::net::UnixStream::pair().expect("Unix socket pair");
+    assert_eq!(
+        unix_stream_peer_pid(&client).expect("client peer PID"),
+        std::process::id()
+    );
+    assert_eq!(
+        unix_stream_peer_pid(&server).expect("server peer PID"),
+        std::process::id()
+    );
+}
+
+#[tokio::test]
 async fn adopted_supervisor_status_keeps_peer_pid() {
     let supervisor = Supervisor::new(SupervisorConfig {
         name: "calm-proc-supervisor".into(),

@@ -13,6 +13,10 @@ pub(crate) mod recovery;
 pub(crate) mod review_settled;
 pub(crate) mod settled;
 pub(crate) mod turn;
+#[cfg(target_os = "linux")]
+pub(crate) mod workspace;
+#[cfg(not(target_os = "linux"))]
+#[path = "workspace_unsupported.rs"]
 pub(crate) mod workspace;
 
 use crate::error::{CalmError, Result};

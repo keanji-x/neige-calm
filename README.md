@@ -87,6 +87,30 @@ The first message in the New Track composer is submitted with the create request
 
 `make prod` is a foreground host-local run mode. For a supervised installation and upgrade procedure, see the [Deploy & Upgrade Guide](docs/deploy-and-upgrade.md).
 
+### macOS local builds (limited)
+
+The Rust service binaries and maintained frontend can also be built on macOS:
+
+```bash
+rustup toolchain install
+(cd fe && npm ci && npm run build)
+CARGO_BUILD_JOBS=6 cargo build --locked --release \
+  -p calm-server -p calm-codex-bridge -p neige-app \
+  -p neige-mcp-stdio-shim -p calm-proc-supervisor -p neige-cli \
+  --bin calm-server --bin neige-codex-bridge --bin neige-app \
+  --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
+```
+
+This is a limited local-development path, not Linux feature parity. The Tailnet
+helper and the `make prod` build path remain Linux-only. Configure a local
+`neige-app` installation with Tailnet disabled and `child.fe_dist` pointing to
+the absolute `fe/web/dist` path; the frontend is served at `/next/`.
+Linux namespace-isolated workers, artifact delivery, secure workspace file
+access requiring `openat2`, and `/proc`-based process recovery are not ported.
+Unsupported isolation and file operations fail closed; they never fall back to
+less restrictive filesystem access. This build does not change Codex sandbox
+permissions or grant access to the user's home directory.
+
 ### Containerized development
 
 Docker Engine, Docker Compose v2, `curl`, and `ss` are optional requirements for the containerized development path. Before using it, copy and review the environment file:
