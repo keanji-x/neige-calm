@@ -1,11 +1,13 @@
 //! `calm.plan.list` only: the way out of a refused recovery. The refusing
 //! site decided the continuation and the sentence; this module carries
-//! them through and adds what the failed attempt retained on disk. Not
-//! part of the REST `TaskRecoveryView` wire type.
+//! them through and adds what the failed attempt retained on disk — the
+//! worktree facts the caller already read for the entry's `worktree` key,
+//! handed in rather than read again. Not part of the REST `TaskRecoveryView`
+//! wire type.
 use crate::error::Result;
 use crate::model::Task;
 use crate::operation::Tx;
-use crate::operation::workspace_lease::facts::{WorkerWorktreeFacts, worker_worktree_facts_tx};
+use crate::operation::workspace_lease::facts::WorkerWorktreeFacts;
 use crate::task_recovery::{AdmissionError, RefusalSite, RefusedRecovery};
 use serde_json::{Value, json};
 
@@ -14,7 +16,10 @@ use serde_json::{Value, json};
 /// the refusal's reason sentence and `supported_continuation` the
 /// continuation its site decided; nothing is re-derived from the code or
 /// the task shape. The Track comes from the refusal: the row admission read
-/// under this transaction.
+/// under this transaction. `worktree` is `worker_worktree_facts_tx` for the
+/// task's worker card as the caller read it in this transaction (`None` when
+/// there is no worker card or it never held a lease); `retained` is its
+/// projection, `{}` when absent.
 ///
 /// Admission checks the actor-dependent policy before the actor-independent
 /// contract and predecessor checks, so a policy refusal (`user_recovery`,
@@ -26,6 +31,7 @@ pub(crate) async fn guidance_tx(
     tx: &mut Tx<'_>,
     task: &Task,
     refused: &RefusedRecovery,
+    worktree: Option<WorkerWorktreeFacts>,
 ) -> Result<Value> {
     let mut continuation = refused.refusal.continuation;
     let mut blocking_condition = refused.refusal.reason.clone();
@@ -46,12 +52,7 @@ pub(crate) async fn guidance_tx(
             Err(AdmissionError::Other(error)) => return Err(error),
         }
     }
-    let retained = match task.worker_card_id.as_deref() {
-        Some(card_id) => worker_worktree_facts_tx(tx, card_id)
-            .await?
-            .map_or_else(|| json!({}), retained_from_facts),
-        None => json!({}),
-    };
+    let retained = worktree.map_or_else(|| json!({}), retained_from_facts);
     Ok(json!({
         "blocking_condition": blocking_condition,
         "supported_continuation": continuation.as_str(),

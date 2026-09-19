@@ -1440,7 +1440,12 @@ async fn every_refusal_site_names_its_code_kind_and_continuation() {
 /// records `Quiesced` before the parked-completion transaction), so the
 /// sentence names the phase, not a missing stop. `IsolatedStopIdentityMismatch`
 /// is reached with every identity field unchanged when the admission never
-/// closed, so the sentence names the admission state.
+/// closed, so the sentence names the admission state. Its other bucket is ONE
+/// sentence for the rest of the disjunction — an identity field that differs,
+/// or stop-proof metadata that does not validate — so it is pinned where the
+/// old wording ("an identity chain that does not match") was false: a closed
+/// receipt whose every identity field matches and whose only defect is
+/// `observed_at_ms = 0` (the `isolated_codex_retry` mutation; #1727 PR-C N2).
 #[tokio::test]
 async fn isolated_stop_sentences_name_the_condition_their_branch_tests() {
     let pending = Box::pin(drive(Site::IsolatedStopPending)).await;
@@ -1455,6 +1460,22 @@ async fn isolated_stop_sentences_name_the_condition_their_branch_tests() {
         mismatch.reason,
         "predecessor isolated execution's recorded run has admission state open, not closed; \
          same-key recovery is permanently unavailable"
+    );
+    let fx = failed_initial_with(isolated_declaration()).await;
+    let mut receipt = isolated_receipt(&fx);
+    *receipt
+        .pointer_mut("/provider/record/stop/Quiesced/observed_at_ms")
+        .unwrap() = json!(0);
+    insert_prepared_isolated_operation(&fx, "failed", &receipt).await;
+    let stop_proof = refused(
+        Site::IsolatedStopIdentityMismatch,
+        admit(&fx, ActorId::User, 1).await,
+    );
+    assert_eq!(stop_proof.site, Site::IsolatedStopIdentityMismatch);
+    assert_eq!(
+        stop_proof.reason,
+        "predecessor isolated execution's recorded run has an identity chain or stop proof that \
+         does not validate for this execution; same-key recovery is permanently unavailable"
     );
 }
 

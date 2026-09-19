@@ -838,15 +838,22 @@ async fn plan_list(
                     // kernel-made commit sha, now that `workspace.leased`
                     // and `worktree.committed` no longer wake the planner.
                     // Absent (no key) when the attempt never held a lease.
-                    if let Some(worker_card_id) =
-                        task.as_ref().and_then(|task| task.worker_card_id.as_deref())
-                        && let Some(facts) =
+                    // Read once: `recovery.guidance.retained` below is the
+                    // same facts under the Planner prompt's names (PR-C N3).
+                    let worktree_facts = match task
+                        .as_ref()
+                        .and_then(|task| task.worker_card_id.as_deref())
+                    {
+                        Some(worker_card_id) => {
                             crate::operation::workspace_lease::facts::worker_worktree_facts_tx(
                                 tx,
                                 worker_card_id,
                             )
                             .await?
-                    {
+                        }
+                        None => None,
+                    };
+                    if let Some(facts) = &worktree_facts {
                         entry["worktree"] = serde_json::to_value(facts)?;
                     }
                     // MCP-only: a refused recovery names its way out. The REST
@@ -855,7 +862,8 @@ async fn plan_list(
                     // `track` resolved before the tx is never consulted here.
                     if let (Some(refused), Some(task)) = (&refusal, &task) {
                         entry["recovery"]["guidance"] =
-                            recovery_guidance::guidance_tx(tx, task, refused).await?;
+                            recovery_guidance::guidance_tx(tx, task, refused, worktree_facts)
+                                .await?;
                     }
                     tasks_json.push(if args.summary { list::summary(&entry) } else { entry });
                     after_key = Some(allocation.key);

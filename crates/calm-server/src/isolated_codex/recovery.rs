@@ -172,15 +172,22 @@ pub(super) async fn confirmed_record_tx(
             "prior_boot" | "init_absent" | "init_reaped" | "init_pid_reused"
         )
     {
-        // An admission that never closed reaches here with every identity
-        // field unchanged; the sentence names the disjunct that failed.
+        // Two sentences for one disjunction, not one per disjunct. An
+        // admission that never closed reaches here with every identity field
+        // unchanged and is named as such. Everything else shares the second
+        // bucket: an identity field that differs, OR a stop proof whose
+        // metadata does not validate with every identity field matching
+        // (`observed_at_ms == 0`, an unknown `method`, a malformed boundary
+        // — `isolated_codex_retry` installs the first on a real receipt), so
+        // that sentence names the disjunction the branch tests, not the
+        // disjunct that failed.
         let unmet = if admission_open {
             format!(
                 "has admission state {}, not closed",
                 record.admission.as_str()
             )
         } else {
-            "has an identity chain that does not match this execution".into()
+            "has an identity chain or stop proof that does not validate for this execution".into()
         };
         return Err(permanent(
             RefusalSite::IsolatedStopIdentityMismatch,
