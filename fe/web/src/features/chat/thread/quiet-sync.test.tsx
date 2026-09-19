@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -218,6 +218,9 @@ describe('QuietSyncFold in the thread', () => {
     const details = fold(container);
     expect(details?.querySelector('summary [data-nc-activity="working"]')).not.toBeNull();
     expect(workingMarks()).toHaveLength(1);
+    // The third tail shape (a live fold owning the mark) says the drawer's
+    // one spoken "Working" exactly once, like an agent reply or an action tail.
+    expect(screen.getAllByText('Working')).toHaveLength(1);
     expect(details?.querySelector('[data-nc-quiet-sync-label]')?.textContent).toContain('The assistant edited the report');
   });
 

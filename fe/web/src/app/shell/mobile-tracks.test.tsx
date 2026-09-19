@@ -104,6 +104,12 @@ describe('MobileTracks', () => {
     const marker = () => screen.getByRole('button', { name: /^Responsive mobile UI/ })
       .querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
     const name = () => screen.getByRole('button', { name: /^Responsive mobile UI/ }).getAttribute('aria-label');
+    /* What the row is described by (`aria-describedby` → an element's text),
+       or `null` when nothing describes it. */
+    const description = () => {
+      const id = screen.getByRole('button', { name: /^Responsive mobile UI/ }).getAttribute('aria-describedby');
+      return id === null ? null : document.getElementById(id)?.textContent ?? null;
+    };
     const mount = (overrides: Partial<Track>, isUnread: (track: Track) => boolean = () => false) => (
       <MobileTracks view="tracks" areas={[area]} tracksByArea={new Map([['c1', [{ ...track, ...overrides }]]])} areaId="c1" currentTrackId={undefined}
         onBack={vi.fn()} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={vi.fn()} onOpenTrack={vi.fn()}
@@ -112,10 +118,12 @@ describe('MobileTracks', () => {
     const view = render(mount({ lifecycle: 'planning', working: false }));
     expect(marker()).toBeNull();
     expect(name()).toBe('Responsive mobile UI');
+    expect(description()).toBeNull();
 
     view.rerender(mount({ lifecycle: 'done', working: true }));
     expect(marker()).toBe('working');
     expect(name()).toBe('Responsive mobile UI, working');
+    expect(description()).toBeNull();
 
     view.rerender(mount({ attention: 'input' }));
     expect(marker()).toBe('attention');
@@ -126,16 +134,20 @@ describe('MobileTracks', () => {
     expect(name()).toBe('Responsive mobile UI, needs attention');
 
     // The receipt is the caller's verdict (`activityAt` newer than what this
-    // reader has seen): a blue dot, and nothing added to the name.
+    // reader has seen): a blue dot, nothing added to the name — and, as on the
+    // rail row, the fact is the button's description (#1722 S2b r2, Codex
+    // P2-1): without it an unread row reads exactly like a quiet one.
     view.rerender(mount({ activityAt: 150 }, (candidate) => (candidate.activityAt ?? 0) > 100));
     expect(marker()).toBe('unread');
     expect(name()).toBe('Responsive mobile UI');
+    expect(description()).toBe('Unread updates');
 
     // The must-red for a lifecycle-driven spinner: a running phase with an
     // idle planner is the #1722 §1 bug, and it shows nothing at all.
     view.rerender(mount({ lifecycle: 'working', working: false }));
     expect(marker()).toBeNull();
     expect(name()).toBe('Responsive mobile UI');
+    expect(description()).toBeNull();
     // The lifecycle phrase is still there, as the phase it is, not as activity.
     expect(screen.getByRole('button', { name: 'Responsive mobile UI' }).textContent).toContain('Working');
   });

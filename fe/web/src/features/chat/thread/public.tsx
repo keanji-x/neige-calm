@@ -52,7 +52,7 @@ import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
-import { cardActivityOf, type CardActivity } from '../../../../../core/domain/activity.ts';
+import { activityLabelOf, cardActivityOf, type CardActivity } from '../../../../../core/domain/activity.ts';
 import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
   isQueuedConversationTurn, opensAfterGap, opensExchange,
@@ -826,11 +826,13 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
             mark: every indicator is decorative (`aria-hidden`), the row's
             `, working` suffix is out in the list, and a reader focused inside
             the drawer is on neither — so the word is said here, once, and the
-            marks in this thread carry no text. It sits after the placeholder
-            rather than before it because the stylesheet spaces `.thread`'s
-            children by adjacency (`.exchange + *`), and a hidden span between
-            an exchange and the placeholder would move the placeholder. */}
-        {live && <VisuallyHidden>Working</VisuallyHidden>}
+            marks in this thread carry no text. The word is the one vocabulary
+            (`activityLabelOf`, `core/domain/activity.ts`), not a literal of
+            this file's own. It sits after the placeholder rather than before it
+            because the stylesheet spaces `.thread`'s children by adjacency
+            (`.exchange + *`), and a hidden span between an exchange and the
+            placeholder would move the placeholder. */}
+        {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}
         <div ref={endRef} aria-hidden="true" />
       </div>
     </div>

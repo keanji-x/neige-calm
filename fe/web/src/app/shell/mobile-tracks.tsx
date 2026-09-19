@@ -3,7 +3,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { List, ListItem } from '@astryxdesign/core/List';
-import { activityNameBit } from '../../../../core/domain/activity.ts';
+import { activityLabelOf, activityNameBit } from '../../../../core/domain/activity.ts';
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import { lifecycleLabel, trackActivityState, visibleTracks, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
 import { ActivityIndicator } from '../../ui/activity-indicator/public.tsx';
@@ -75,17 +75,24 @@ function NavigationPage({
                activity overlay plus this reader's receipt, never the lifecycle.
                The name's activity bit comes from that SAME value as the dot,
                and the lifecycle phrase stays in `trackMeta` as the phase it is.
-               The indicator is decorative here: the button's name carries the
-               fact, so the primitive is not given anything to speak. */
+               The indicator is decorative here: the button's name carries what
+               is in motion or needs a person, and `unread` — never part of a
+               name — is the button's description, as on the rail row
+               (`features/track/row/public.tsx`), in the one vocabulary
+               (`activityLabelOf`); so the primitive is not given anything to
+               speak. The id is per row: one `MobileTracks` per document. */
             const activity = trackActivityState(track, isUnread(track));
             const activityBit = activityNameBit(activity);
+            const descriptionId = `mobile-track-${track.id}-unread`;
             return <li key={track.id}>
               <button type="button" className={styles.track} aria-label={`${trackDisplayTitle(track.title)}${activityBit ? `, ${activityBit}` : ''}`}
+                aria-describedby={activity === 'unread' ? descriptionId : undefined}
                 aria-current={track.id === currentTrackId ? 'page' : undefined} onClick={() => onOpenTrack(track.id)}>
                 <span className={styles.trackIcon}><Icon name="file" /></span>
                 <span className={styles.trackCopy}><span>{trackDisplayTitle(track.title)}</span><span className={styles.trackMeta}>{lifecycleLabel(track.lifecycle)}</span></span>
                 {activity !== 'quiet' && <span className={styles.trackActivity} aria-hidden="true"><ActivityIndicator state={activity} /></span>}
               </button>
+              {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}
             </li>;
           })}
           {readError === null && !readLoading && tracks.length === 0 && <MobileListEmpty>No tracks in this area yet.</MobileListEmpty>}
