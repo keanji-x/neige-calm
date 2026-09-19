@@ -45,6 +45,7 @@ import { FIELD, MARKER, paintModule } from '../../../../../core/view/panel.ts';
 import type {
   PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, RowStatus,
 } from '../../../../../core/view/panel.ts';
+import { activityLabelOf } from '../../../../../core/domain/activity.ts';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
@@ -234,8 +235,11 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
     ...row.badges.map(taskBadge),
     /* The same indicator the desktop row paints beside its status word, from
        the same `row.activity` (#1722 §5.3) — a declared same-set surface, not
-       a mobile omission. */
-    ...(row.activity === null ? [] : [<ActivityIndicator key="activity" state={row.activity} />]),
+       a mobile omission — and spoken for the same reason: no control here
+       names the verdict. */
+    ...(row.activity === null ? [] : [
+      <ActivityIndicator key="activity" state={row.activity} spoken={activityLabelOf(row.activity)} />,
+    ]),
     ...(row.status === null ? [] : [statusWord(
       row.status,
       row.status.token !== 'pending' || action === null || action.hint === null,
@@ -294,7 +298,10 @@ function cardRow(row: PanelRow): ReactNode {
       ? []
       : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),
     ...row.badges.map(cardBadge),
-    ...(row.activity === null ? [] : [<ActivityIndicator key="activity" state={row.activity} />]),
+    /* Spoken, as on the desktop card row: the status word is a different fact. */
+    ...(row.activity === null ? [] : [
+      <ActivityIndicator key="activity" state={row.activity} spoken={activityLabelOf(row.activity)} />,
+    ]),
     ...(row.status === null ? [] : [statusWord(row.status, true)]),
   ];
   return (

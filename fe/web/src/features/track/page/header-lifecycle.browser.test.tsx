@@ -86,7 +86,7 @@ describe('the track lifecycle status in the page header', () => {
     renderPage({ inputNotifications: plannerNotification, onOpenInputNotification });
 
     const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
-    const review = document.querySelector<HTMLButtonElement>('[aria-label="Review Planner notification"]')!;
+    const review = document.querySelector<HTMLButtonElement>('[aria-label^="Review Planner notification"]')!;
     const noticeBox = notice.getBoundingClientRect();
     expect(review.innerText).toBe('Review');
     expect(review.getBoundingClientRect().height).toBeGreaterThanOrEqual(32);

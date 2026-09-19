@@ -86,16 +86,27 @@ export type ChatThreadProps = Readonly<{
    * except the sender's own send, and must say so with `{}`.
    */
   cards: Readonly<Record<string, CardActivity>>;
+  /**
+   * The drawer's local wedge fact (`/planner/run` reported `wedged`) — the
+   * same one the open list row maps to `failed` (#1722 §5.3, the second
+   * declared local echo). Required, no default, like `cards`: a wedged
+   * planner's kernel verdict is still `working` (its harness row sits at
+   * `turn_pending` and the registry still lists it), so a thread that did
+   * not know it was stuck would spin beside "This conversation is stuck".
+   */
+  stalled: boolean;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled }: ChatThreadProps) {
   /*
    * INV-APP-118: the live mark is the sender's pending send or the kernel's
    * verdict — never `conversation.state`. That is the server's session
    * reading, which sits at `turn_pending` / `running` long after a turn
-   * ended: the spinner that never stopped (#1722 §1).
+   * ended: the spinner that never stopped (#1722 §1). The local wedge
+   * outranks both: a stuck conversation is not in motion whatever the
+   * kernel's cached verdict says about it.
    */
-  const live = pending || cardActivityOf({ cards }, conversation.id) === 'working';
+  const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. It is not `.thread` itself
@@ -806,16 +817,20 @@ export function ChatThread({ conversation, turns, pending = false, cards }: Chat
             tail owns the live mark only when it is an agent reply, a running
             action on its own line, or a group with a running call among the
             rows it is showing (`tailCarriesLiveMark`); otherwise this
-            placeholder keeps the one mark visible.
-
-            This placeholder is also the drawer's ONE accessible "in motion"
-            fact (#1722 §5.3): the indicator is decorative (`aria-hidden`), the
-            row's `, working` suffix is out in the list, and a reader focused
-            inside the drawer is on neither — so the word is said here, once,
-            and the other marks in this thread carry no text. */}
+            placeholder keeps the one mark visible. */}
         {live && !tailCarriesLiveMark && (
-          <p className={styles.reply}><ActivityIndicator state="working" /><VisuallyHidden>Working</VisuallyHidden></p>
+          <p className={styles.reply}><ActivityIndicator state="working" /></p>
         )}
+        {/* The drawer's ONE accessible "in motion" fact (#1722 §5.3), said
+            whenever the thread is live and whichever element owns the visual
+            mark: every indicator is decorative (`aria-hidden`), the row's
+            `, working` suffix is out in the list, and a reader focused inside
+            the drawer is on neither — so the word is said here, once, and the
+            marks in this thread carry no text. It sits after the placeholder
+            rather than before it because the stylesheet spaces `.thread`'s
+            children by adjacency (`.exchange + *`), and a hidden span between
+            an exchange and the placeholder would move the placeholder. */}
+        {live && <VisuallyHidden>Working</VisuallyHidden>}
         <div ref={endRef} aria-hidden="true" />
       </div>
     </div>

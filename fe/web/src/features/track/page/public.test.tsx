@@ -166,7 +166,7 @@ describe('TrackPage header', () => {
     expect(notice.textContent).toContain('1');
     await userEvent.click(screen.getByRole('button', { name: 'Open 1 notification' }));
     expect(notice.getAttribute('data-nc-notification-mode')).toBe('expanded');
-    await userEvent.click(screen.getByRole('button', { name: 'Review Planner notification' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Review Planner notification: Requires input to continue.' }));
     expect(onOpenInputNotification).toHaveBeenCalledWith('planner');
   });
 
@@ -298,6 +298,45 @@ describe('TrackPage task inventory', () => {
     expect(statuses).toEqual({
       busy: 'running', asking: 'running', stale: 'running', 'b-impl': 'running', 'b-doc': 'running', 'b-gate': 'running',
     });
+  });
+
+  /*
+   * #1722 S2b r1 (Codex P2-3) — the indicator on a card or task row is
+   * `aria-hidden` and no control on the row names the verdict (the status
+   * word is the phase, a different fact), so the row speaks it: the same
+   * vocabulary as the conversation row's description (`activityLabelOf`).
+   * A row the kernel listed nothing for says nothing.
+   */
+  it('card and task rows speak the kernel verdict', () => {
+    const cards = [
+      card({ id: 'busy', title: 'Busy worker', kind: 'codex',
+        runtime: { worker_session_id: 'ws-busy', kind: 'codex', status: 'running' } }),
+      card({ id: 'broken', title: 'Broken worker', kind: 'claude',
+        runtime: { worker_session_id: 'ws-broken', kind: 'claude', status: 'failed' } }),
+      card({ id: 'quiet', title: 'Quiet card', kind: 'terminal' }),
+    ];
+    const tasks = [running('impl', 'running', 'busy'), running('doc', 'failed', 'broken'), task('plain', 'ready')];
+    const { container } = renderPage({
+      cards, tasks,
+      track: track({ cards: { busy: 'working', broken: 'failed' } }),
+    });
+    const desktop = container.querySelector('[data-nc-desktop-panel]')!;
+    const row = (id: string) => {
+      const found = [...desktop.querySelectorAll('[data-nc-row]')].find((node) => node.getAttribute('data-nc-row') === id);
+      if (found === undefined) throw new Error(`no row ${id}`);
+      return found as HTMLElement;
+    };
+    expect(within(row('busy')).getByText('Working')).toBeTruthy();
+    expect(within(row('broken')).getByText('Needs attention')).toBeTruthy();
+    expect(within(row('b-impl')).getByText('Working')).toBeTruthy();
+    expect(within(row('b-doc')).getByText('Needs attention')).toBeTruthy();
+    /* The spoken word is not the visual marker: one marker per row, and the
+       word is its own element after it. */
+    expect(row('busy').querySelectorAll('[data-nc-activity]')).toHaveLength(1);
+    expect(within(row('busy')).getByText('Working').getAttribute('data-nc-activity')).toBeNull();
+    for (const id of ['quiet', 'b-plain']) {
+      expect(within(row(id)).queryByText(/^(Working|Needs input|Needs attention|Unread updates)$/)).toBeNull();
+    }
   });
 
   /* FOLDER used to hold this slot and was removed, not moved: `area/new-track`

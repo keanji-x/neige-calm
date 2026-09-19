@@ -649,15 +649,16 @@
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
   source: fe/core/domain/activity.ts:40-48; fe/core/domain/track.ts:779-806;
     fe/web/src/app/providers/ui-preferences.tsx:82-130; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
-    fe/web/src/features/chat/list/public.tsx:55-141; fe/core/view/track-page.ts:82-86;
-    fe/web/src/systems/cards/builtins/terminal-card.tsx:15-108
+    fe/web/src/features/chat/list/public.tsx:55-142; fe/core/view/track-page.ts:82-86;
+    fe/web/src/systems/cards/builtins/terminal-card.tsx:15-113
   authoritative_test: fe/core/domain/activity.test.ts:9-44; fe/core/domain/track.test.ts:184-230;
     fe/web/src/features/track/row/public.test.tsx:136-184; fe/web/src/app/providers/ui-preferences.test.tsx:114-166;
     fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:59-87;
     fe/web/src/features/chat/list/public.test.tsx:38-94; fe/web/src/app/router/track-conversation.test.tsx:2324-2409;
-    fe/web/src/app/router/today-conversation.test.tsx:230-253; fe/web/src/features/chat/thread/public.test.tsx:676-696;
-    fe/web/src/features/track/page/public.test.tsx:260-301; fe/web/src/features/track/page/mobile-projection.test.tsx:402-424;
-    fe/web/src/systems/cards/builtins/terminal-lifecycle.test.tsx:104-120
+    fe/web/src/app/router/today-conversation.test.tsx:230-253; fe/web/src/features/chat/thread/public.test.tsx:676-761;
+    fe/web/src/features/track/page/public.test.tsx:260-340; fe/web/src/features/track/page/mobile-projection.test.tsx:406-434;
+    fe/web/src/systems/cards/builtins/terminal-lifecycle.test.tsx:104-120;
+    fe/web/src/systems/cards/builtins/terminal-head-activity.test.tsx:58-85
   owner_slice: core/domain/overlay
   runtime_layer: core
   verification_owner: unit

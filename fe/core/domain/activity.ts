@@ -47,6 +47,23 @@ export function activityStateOf(
   return 'quiet';
 }
 
+/**
+ * The spoken counterpart of an indicator state — the ONE vocabulary every
+ * accessible label or description of an indicator draws from (#1722 §5.3):
+ * a conversation row's `aria-describedby` text, and the visually hidden text
+ * an indicator carries where no owning control names the fact (the card and
+ * task rows, the terminal card head). `quiet` has nothing to say.
+ */
+export function activityLabelOf(state: ActivityState): string | null {
+  switch (state) {
+    case 'working': return 'Working';
+    case 'attention': return 'Needs input';
+    case 'failed': return 'Needs attention';
+    case 'unread': return 'Unread updates';
+    case 'quiet': return null;
+  }
+}
+
 /** Folds a list of items the way the kernel folds `attention`: any failed → failed, else any input → input. */
 export function attentionKindOf(items: readonly Readonly<{ kind: 'input' | 'failed' }>[]): AttentionKind {
   let kind: AttentionKind = 'none';

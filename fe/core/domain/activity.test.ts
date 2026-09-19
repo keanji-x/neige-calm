@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  activityStateOf, attentionKindOf, attentionOfCard, cardActivityOf, cardActivityState,
+  activityLabelOf, activityStateOf, attentionKindOf, attentionOfCard, cardActivityOf, cardActivityState,
   type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 
@@ -44,6 +44,24 @@ describe('activityStateOf', () => {
     // track that is also in motion shows the thing that needs you.
     expect(activityStateOf({ working: true, attention: 'failed', unread: true })).toBe('failed');
     expect(activityStateOf({ working: true, attention: 'input', unread: true })).toBe('attention');
+  });
+});
+
+describe('activityLabelOf', () => {
+  /*
+   * The one vocabulary, every state written out (#1722 §5.3): the conversation
+   * row's description and the spoken text on a card/task row or terminal head
+   * both read this table, so a word changed here changes every surface at once
+   * and a word changed anywhere else is a second vocabulary.
+   */
+  it.each<[ActivityState, string | null]>([
+    ['working', 'Working'],
+    ['attention', 'Needs input'],
+    ['failed', 'Needs attention'],
+    ['unread', 'Unread updates'],
+    ['quiet', null],
+  ])('%s → %s', (state, expected) => {
+    expect(activityLabelOf(state)).toBe(expected);
   });
 });
 

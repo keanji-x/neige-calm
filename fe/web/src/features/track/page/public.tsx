@@ -858,7 +858,11 @@ export function TrackPage({
                       <button
                         type="button"
                         className={styles.needsInputAction}
-                        aria-label={`Review ${notification.source} notification`}
+                        /* The message is part of the name: one card can carry two
+                           items (a killed worker is a task item and a session item,
+                           #1722 §4.1 C1), and two buttons named alike are one button
+                           to a reader who cannot see which row each sits in. */
+                        aria-label={`Review ${notification.source} notification: ${notification.message}`}
                         onClick={() => onOpenInputNotification(notification.cardId)}
                       >Review</button>
                     )}

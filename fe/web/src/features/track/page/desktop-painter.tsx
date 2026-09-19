@@ -44,6 +44,7 @@ import { FIELD, MARKER, paintPanel } from '../../../../../core/view/panel.ts';
 import type {
   ActionSupport, PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, TrackPageView,
 } from '../../../../../core/view/panel.ts';
+import { activityLabelOf } from '../../../../../core/domain/activity.ts';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
@@ -175,8 +176,10 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
         <span className={styles.cardMeta}>
           {/* The kernel's verdict beside the phase word (#1722 §5.3): the
               word says what phase or result this is, the indicator whether it
-              is in motion or needs a person — from `row.activity` alone. */}
-          {row.activity !== null && <ActivityIndicator state={row.activity} />}
+              is in motion or needs a person — from `row.activity` alone. No
+              control on this row names the verdict (the status word is a
+              different fact), so the indicator speaks it (`activityLabelOf`). */}
+          {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
           {row.status !== null && <ListText tone="secondary" className={styles.cardStatus}
             {...mark(MARKER.status, row.status.token)} title={row.status.phrase}>{row.status.token}</ListText>}
           {/* Only when a title took the name slot — an untitled card is already
@@ -256,7 +259,9 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
           {...mark(MARKER.badge, badge.id)}
         >{badge.text}</ListText>
       ))}
-      {row.activity !== null && <ActivityIndicator state={row.activity} />}
+      {/* Spoken for the same reason as the card row's: the status word below
+          is `aria-hidden` and names the run, not the verdict. */}
+      {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
       {row.status !== null && (
         <ListText tone="secondary"
           className={styles.taskStatusText}

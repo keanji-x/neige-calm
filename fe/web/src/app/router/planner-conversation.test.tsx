@@ -32,6 +32,19 @@ function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
 }
 
+/*
+ * The kernel's `kernel/track/activity` overlay for `w1` (#1722 §4.1), the ONE
+ * source every indicator reads — here only its per-card verdicts, in the same
+ * shape `track-conversation.test.tsx` seeds. A wedged planner's verdict is
+ * still `working` (its harness row sits at `turn_pending`, the registry lists
+ * it) until the next tick, which is the case the wedge branch below seeds.
+ */
+const trackActivityOverlay = (cards: readonly { card_id: string; state: 'working' | 'input' | 'failed' }[]) => ({
+  id: 'activity-w1', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity',
+  payload: { schemaVersion: 1, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
+  updated_at: 3,
+});
+
 function transcriptQueryKey() {
   return queryKeys.harnessItems(CARD.id);
 }
@@ -89,6 +102,11 @@ function setup(reply?: Reply) {
 async function openConversation() {
   fireEvent.click(await screen.findByRole('button', { name: /Conversation Planner chat/ }));
   await screen.findByRole('complementary', { name: 'Planner chat' });
+}
+
+/** The open drawer, as a root for what is and is not inside it. */
+function drawerElement(): HTMLElement {
+  return screen.getByRole('complementary', { name: 'Planner chat' });
 }
 
 /*
@@ -1414,7 +1432,12 @@ describe('planner conversation regressions', () => {
     async (phase, policy) => {
       const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
         ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null })
-        : undefined);
+        /* The wedged case also carries the kernel's stale `working` verdict for
+           the card (#1722 S2b r1): the drawer's own wedge must outrank it. */
+        : policy === 'stalled' && request.path === '/api/tracks/w1'
+          ? ok({ track: TRACK, can_resume: false, cards: [CARD],
+              overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] })
+          : undefined);
       await openConversation();
       /*
        * The transport already serves this phase; seeding the same value into
@@ -1439,6 +1462,12 @@ describe('planner conversation regressions', () => {
         const row = screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
         expect(row.closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('failed');
         expect(document.getElementById(row.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs attention');
+        /* And the drawer agrees with its own row: the overlay above says
+           `working` for this card, the local wedge says stuck, and stuck wins
+           in both places — no spinner, no spoken `Working` beside the alert. */
+        expect(row.getAttribute('aria-label')).not.toContain(', working');
+        expect(drawerElement().querySelector('[data-nc-activity="working"]')).toBeNull();
+        expect(within(drawerElement()).queryByText('Working')).toBeNull();
         await sendWithEnter(messageField());
         expect(input()).toHaveLength(0);
         expect(document.querySelector('[data-nc-queued]')).toBeNull();

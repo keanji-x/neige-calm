@@ -1326,14 +1326,16 @@
       "activityStateOf working=true attention=failed unread=false → failed",
       "activityStateOf working=true attention=failed unread=true → failed",
       "activityStateOf ranks a person-needed state above motion when both hold at once",
-      "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict"
+      "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict",
+      "planner conversation regressions phase wedged applies stalled policy to markers, composer state and subsequent sends"
     ],
     "selection_paths": [
       "core/domain/activity.test.ts",
       "core/domain/track.test.ts",
+      "web/src/app/router/planner-conversation.test.tsx",
       "web/src/features/track/row/public.test.tsx"
     ],
-    "why_more_than_one": "The exhaustive 2x3x2 table names each row the reordered chain gets wrong; the row-level precedence test and the core predicate test are the two consumers that see the same swap."
+    "why_more_than_one": "The exhaustive 2x3x2 table names each row the reordered chain gets wrong; the row-level precedence test and the core predicate test are the two consumers that see the same swap. Since S2b r1 the router wedge case seeds the kernel's working verdict for the wedged planner beside its local failed, so the swapped chain reads that row as working instead of failed."
   },
   {
     "mutation_id": "s2a-receipt-baseline-not-written",
@@ -1496,7 +1498,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/chat/thread/public.tsx",
-    "patch": "diff --git a/web/src/features/chat/thread/public.tsx b/web/src/features/chat/thread/public.tsx\nindex bfcbab5d0..2fbf795c1 100644\n--- a/web/src/features/chat/thread/public.tsx\n+++ b/web/src/features/chat/thread/public.tsx\n@@ -95,7 +95,9 @@ export function ChatThread({ conversation, turns, pending = false, cards }: Chat\n    * reading, which sits at `turn_pending` / `running` long after a turn\n    * ended: the spinner that never stopped (#1722 §1).\n    */\n-  const live = pending || cardActivityOf({ cards }, conversation.id) === 'working';\n+  const live = pending || cardActivityOf({ cards }, conversation.id) === 'working'\n+    // MUT-1722-S2B-3: the drawer's live mark reads the session state again\n+    || conversation.state === 'starting' || conversation.state === 'running' || conversation.state === 'turn_pending';\n   const lastTurn = turns[turns.length - 1];\n   const endRef = useRef<HTMLDivElement | null>(null);\n   /** The box every marker lookup starts from. It is not `.thread` itself\n",
+    "patch": "diff --git a/web/src/features/chat/thread/public.tsx b/web/src/features/chat/thread/public.tsx\nindex 49ea11270..08473c2cd 100644\n--- a/web/src/features/chat/thread/public.tsx\n+++ b/web/src/features/chat/thread/public.tsx\n@@ -106,7 +106,9 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle\n    * outranks both: a stuck conversation is not in motion whatever the\n    * kernel's cached verdict says about it.\n    */\n-  const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');\n+  const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working'\n+    // MUT-1722-S2B-3: the drawer's live mark reads the session state again\n+    || conversation.state === 'starting' || conversation.state === 'running' || conversation.state === 'turn_pending');\n   const lastTurn = turns[turns.length - 1];\n   const endRef = useRef<HTMLDivElement | null>(null);\n   /** The box every marker lookup starts from. It is not `.thread` itself\n",
     "expected_red": [
       "ChatThread thread live mark follows activity.cards",
       "tool activity groups does not spin for a call left running by a conversation that is no longer live"
@@ -1506,6 +1508,23 @@
       "web/src/features/chat/thread/public.test.tsx"
     ],
     "why_more_than_one": "The drawer's live mark is read from one place, so a session-state OR relights every thread case that renders a running/turn_pending conversation without a verdict: the jsdom live-mark case and the browser cases that rerender a finished call under a still-running session reading."
+  },
+  {
+    "mutation_id": "s2b-thread-live-ignores-stalled",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/features/chat/thread/public.tsx",
+    "patch": "diff --git a/web/src/features/chat/thread/public.tsx b/web/src/features/chat/thread/public.tsx\nindex 49ea11270..8e7867588 100644\n--- a/web/src/features/chat/thread/public.tsx\n+++ b/web/src/features/chat/thread/public.tsx\n@@ -106,7 +106,8 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle\n    * outranks both: a stuck conversation is not in motion whatever the\n    * kernel's cached verdict says about it.\n    */\n-  const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');\n+  // MUT-1722-S2B-R1-1: the drawer's live mark ignores the local wedge again\n+  const live = pending || cardActivityOf({ cards }, conversation.id) === 'working';\n   const lastTurn = turns[turns.length - 1];\n   const endRef = useRef<HTMLDivElement | null>(null);\n   /** The box every marker lookup starts from. It is not `.thread` itself\n",
+    "expected_red": [
+      "ChatThread the local wedge suppresses the kernel’s stale working verdict",
+      "planner conversation regressions phase wedged applies stalled policy to markers, composer state and subsequent sends"
+    ],
+    "selection_paths": [
+      "web/src/app/router/planner-conversation.test.tsx",
+      "web/src/features/chat/thread/public.test.tsx"
+    ],
+    "why_more_than_one": "The drawer's local wedge is the second declared local echo (#1722 §5.3): the thread unit case renders stalled with a working verdict, and the router wedge case seeds the kernel's stale working verdict for the wedged planner and asserts the drawer is not live while its row stays failed — dropping `!stalled &&` relights both."
   },
   {
     "mutation_id": "s2b-card-row-from-runtime-status",
@@ -1530,12 +1549,14 @@
     "target": "core/view/track-page.ts",
     "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex e5344390c..878b40e7a 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -272,7 +272,8 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity): PanelRow {\n     /* By the worker card, which is how the kernel keys a dispatched task's\n        verdict (§4.2 W); a task with no worker card yet has no indicator, and\n        `execution.status === 'running'` does not put one there. */\n-    activity: rowActivity(activity, workerCardId),\n+    // MUT-1722-S2B-5: a task row spins on its status token again\n+    activity: rowActivity(activity, workerCardId) ?? (currentStatus === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
     "expected_red": [
-      "TrackPage task inventory card and task rows paint activity.cards, not runtime status"
+      "TrackPage task inventory card and task rows paint activity.cards, not runtime status",
+      "TrackPage task inventory keeps the full status on the reveal control without a duplicate status graphic",
+      "TrackPage task inventory reveals the block from the row even when the task has a worker card"
     ],
     "selection_paths": [
       "web/src/features/track/page/public.test.tsx"
     ],
-    "why_more_than_one": "Only the page case with a running execution whose worker card the kernel did not list, and a running task with no worker card at all, reaches the token fallback."
+    "why_more_than_one": "Only the page case with a running execution whose worker card the kernel did not list, and a running task with no worker card at all, reaches the token fallback. Since S2b r1 the row speaks its verdict inside the reveal control, so a running task the mutation wrongly marks working is named `alpha Working` and the two exact-name lookups of that control miss."
   },
   {
     "mutation_id": "s2b-terminal-head-from-session-state",
@@ -1543,12 +1564,14 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/systems/cards/builtins/terminal-card.tsx",
-    "patch": "diff --git a/web/src/systems/cards/builtins/terminal-card.tsx b/web/src/systems/cards/builtins/terminal-card.tsx\nindex d2ac69a7e..964bc95e4 100644\n--- a/web/src/systems/cards/builtins/terminal-card.tsx\n+++ b/web/src/systems/cards/builtins/terminal-card.tsx\n@@ -81,8 +81,9 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle\n            (the indicator) and the session / connection text. Neither stands\n            in for the other — a failed session can be red AND say `Session\n            failed.`, and a connected terminal with no verdict says nothing. */\n-        status={activity === null && statusText === null ? undefined : <>\n-          {activity !== null && <ActivityIndicator state={cardActivityState(activity)} />}\n+        status={activity === null && statusText === null && card.sessionState !== 'running' ? undefined : <>\n+          {/* MUT-1722-S2B-6: the head spins on the session reading again */}\n+          {(activity !== null || card.sessionState === 'running') && <ActivityIndicator state={cardActivityState(activity ?? 'working')} />}\n           {statusText !== null && <span role=\"status\">{statusText}</span>}\n         </>}\n         onClose={onRemove}\n",
+    "patch": "diff --git a/web/src/systems/cards/builtins/terminal-card.tsx b/web/src/systems/cards/builtins/terminal-card.tsx\nindex a5438934a..02313607a 100644\n--- a/web/src/systems/cards/builtins/terminal-card.tsx\n+++ b/web/src/systems/cards/builtins/terminal-card.tsx\n@@ -84,9 +84,10 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle\n            The verdict is spoken (`activityLabelOf`): the words beside it\n            describe the session or the connection, never the verdict, so\n            nothing else in this head would name it. */\n-        status={activity === null && statusText === null ? undefined : <>\n-          {activity !== null && (\n-            <ActivityIndicator state={cardActivityState(activity)} spoken={activityLabelOf(cardActivityState(activity))} />\n+        status={activity === null && statusText === null && card.sessionState !== 'running' ? undefined : <>\n+          {/* MUT-1722-S2B-6: the head spins on the session reading again */}\n+          {(activity !== null || card.sessionState === 'running') && (\n+            <ActivityIndicator state={cardActivityState(activity ?? 'working')} spoken={activityLabelOf(cardActivityState(activity ?? 'working'))} />\n           )}\n           {statusText !== null && <span role=\"status\">{statusText}</span>}\n         </>}\n",
     "expected_red": [
       "accepts input and later automatically reconnects after a recoverable ownership rejection and successful owner claim",
       "bundled recovery fences input and automatically reattaches the same terminal only after synchronization",
+      "claude terminal head, connected says nothing at all with no verdict",
       "claude terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
       "claude terminal lifecycle after refresh uses the runtime terminal identity instead of a stale payload identity",
+      "codex terminal head, connected says nothing at all with no verdict",
       "codex terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
       "codex terminal lifecycle after refresh uses the runtime terminal identity instead of a stale payload identity",
       "does not revive input after BadHandshake when a late owner notification arrives",
@@ -1560,14 +1583,16 @@
       "does not revive input after exited when a late owner notification arrives",
       "retains process exit truth when REST still says running",
       "shows a refused connection and reconnects the same terminal without creating a process",
+      "terminal terminal head, connected says nothing at all with no verdict",
       "terminal terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
       "terminal terminal lifecycle after refresh uses the runtime terminal identity instead of a stale payload identity"
     ],
     "selection_paths": [
+      "web/src/systems/cards/builtins/terminal-head-activity.test.tsx",
       "web/src/systems/cards/builtins/terminal-lifecycle.test.tsx",
       "web/src/systems/cards/builtins/terminal-reconnect.browser.test.tsx"
     ],
-    "why_more_than_one": "Every terminal-kind mount with runtime.status running and a null verdict grows an indicator: the three-kind lifecycle cases and the reconnect browser cases that connect a running terminal all assert its absence."
+    "why_more_than_one": "Every terminal-kind mount with runtime.status running and a null verdict grows an indicator: the three-kind lifecycle cases and the reconnect browser cases that connect a running terminal all assert its absence. The connected-head suite (S2b r1, a mocked surface that reports connected) mounts a running terminal with no verdict and asserts an empty head, so its three no-verdict cases redden too."
   },
   {
     "mutation_id": "s2b-terminal-head-from-connection",
@@ -1575,16 +1600,20 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/systems/cards/builtins/terminal-card.tsx",
-    "patch": "diff --git a/web/src/systems/cards/builtins/terminal-card.tsx b/web/src/systems/cards/builtins/terminal-card.tsx\nindex d2ac69a7e..86763f519 100644\n--- a/web/src/systems/cards/builtins/terminal-card.tsx\n+++ b/web/src/systems/cards/builtins/terminal-card.tsx\n@@ -81,8 +81,9 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle\n            (the indicator) and the session / connection text. Neither stands\n            in for the other — a failed session can be red AND say `Session\n            failed.`, and a connected terminal with no verdict says nothing. */\n-        status={activity === null && statusText === null ? undefined : <>\n-          {activity !== null && <ActivityIndicator state={cardActivityState(activity)} />}\n+        status={activity === null && statusText === null && !(attached && !ended && status === 'connected') ? undefined : <>\n+          {/* MUT-1722-S2B-7: the head spins on this tab's connection again */}\n+          {(activity !== null || (attached && !ended && status === 'connected')) && <ActivityIndicator state={cardActivityState(activity ?? 'working')} />}\n           {statusText !== null && <span role=\"status\">{statusText}</span>}\n         </>}\n         onClose={onRemove}\n",
+    "patch": "diff --git a/web/src/systems/cards/builtins/terminal-card.tsx b/web/src/systems/cards/builtins/terminal-card.tsx\nindex a5438934a..a1e74f9b1 100644\n--- a/web/src/systems/cards/builtins/terminal-card.tsx\n+++ b/web/src/systems/cards/builtins/terminal-card.tsx\n@@ -84,9 +84,10 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle\n            The verdict is spoken (`activityLabelOf`): the words beside it\n            describe the session or the connection, never the verdict, so\n            nothing else in this head would name it. */\n-        status={activity === null && statusText === null ? undefined : <>\n-          {activity !== null && (\n-            <ActivityIndicator state={cardActivityState(activity)} spoken={activityLabelOf(cardActivityState(activity))} />\n+        status={activity === null && statusText === null && !(attached && !ended && status === 'connected') ? undefined : <>\n+          {/* MUT-1722-S2B-7: the head spins on this tab's connection again */}\n+          {(activity !== null || (attached && !ended && status === 'connected')) && (\n+            <ActivityIndicator state={cardActivityState(activity ?? 'working')} spoken={activityLabelOf(cardActivityState(activity ?? 'working'))} />\n           )}\n           {statusText !== null && <span role=\"status\">{statusText}</span>}\n         </>}\n",
     "expected_red": [
       "accepts input and later automatically reconnects after a recoverable ownership rejection and successful owner claim",
       "bundled recovery fences input and automatically reattaches the same terminal only after synchronization",
-      "shows a refused connection and reconnects the same terminal without creating a process"
+      "claude terminal head, connected says nothing at all with no verdict",
+      "codex terminal head, connected says nothing at all with no verdict",
+      "shows a refused connection and reconnects the same terminal without creating a process",
+      "terminal terminal head, connected says nothing at all with no verdict"
     ],
     "selection_paths": [
+      "web/src/systems/cards/builtins/terminal-head-activity.test.tsx",
       "web/src/systems/cards/builtins/terminal-reconnect.browser.test.tsx"
     ],
-    "why_more_than_one": "jsdom never connects, so only the browser cases that bring a socket up on a running terminal and then assert no indicator can see a connection-derived spinner; the lifecycle suite stays green, which is why those browser files are selection paths."
+    "why_more_than_one": "jsdom never connects, so only the browser cases that bring a socket up on a running terminal and then assert no indicator can see a connection-derived spinner; the lifecycle suite stays green, which is why those browser files are selection paths. Since S2b r1 the connected-head jsdom suite mocks the surface to report connected, so its three no-verdict cases also see the connection-derived spinner."
   },
   {
     "mutation_id": "s2b-board-cell-drops-activity",
@@ -1594,14 +1623,21 @@
     "target": "web/src/systems/cards/ui/board-host.tsx",
     "patch": "diff --git a/web/src/systems/cards/ui/board-host.tsx b/web/src/systems/cards/ui/board-host.tsx\nindex 6983dae46..94e0a0bd0 100644\n--- a/web/src/systems/cards/ui/board-host.tsx\n+++ b/web/src/systems/cards/ui/board-host.tsx\n@@ -280,5 +280,6 @@ function BoardCell({ host, item, focused, visible, onRemove }: {\n       </div>\n     );\n   }\n-  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} />;\n+  // MUT-1722-S2B-8: the cell drops the verdict on the floor\n+  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={null} />;\n }\n",
     "expected_red": [
+      "claude terminal head, connected speaks a request for input",
+      "claude terminal head, connected speaks the kernel verdict beside its marker",
       "claude terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
+      "codex terminal head, connected speaks a request for input",
+      "codex terminal head, connected speaks the kernel verdict beside its marker",
       "codex terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status",
+      "terminal terminal head, connected speaks a request for input",
+      "terminal terminal head, connected speaks the kernel verdict beside its marker",
       "terminal terminal lifecycle after refresh terminal head paints activity.cards, not runtime.status"
     ],
     "selection_paths": [
+      "web/src/systems/cards/builtins/terminal-head-activity.test.tsx",
       "web/src/systems/cards/builtins/terminal-lifecycle.test.tsx"
     ],
-    "why_more_than_one": "Only the lifecycle case that mounts a card with a working/failed verdict through the real BoardHost sees the cell drop it; every other board case mounts with a null verdict."
+    "why_more_than_one": "Only the lifecycle case that mounts a card with a working/failed verdict through the real BoardHost sees the cell drop it; every other board case mounts with a null verdict. The connected-head suite (S2b r1) mounts working and input verdicts through the same BoardHost, so its six verdict cases redden as well."
   },
   {
     "mutation_id": "s2b-notifications-from-card-status",
@@ -1646,7 +1682,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/track/page/mobile-painter.tsx",
-    "patch": "diff --git a/web/src/features/track/page/mobile-painter.tsx b/web/src/features/track/page/mobile-painter.tsx\nindex c2d40b20a..0e26ea8d4 100644\n--- a/web/src/features/track/page/mobile-painter.tsx\n+++ b/web/src/features/track/page/mobile-painter.tsx\n@@ -235,7 +235,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {\n     /* The same indicator the desktop row paints beside its status word, from\n        the same `row.activity` (#1722 §5.3) — a declared same-set surface, not\n        a mobile omission. */\n-    ...(row.activity === null ? [] : [<ActivityIndicator key=\"activity\" state={row.activity} />]),\n+    // MUT-1722-S2B-11: the mobile task row paints no indicator\n     ...(row.status === null ? [] : [statusWord(\n       row.status,\n       row.status.token !== 'pending' || action === null || action.hint === null,\n@@ -294,7 +294,7 @@ function cardRow(row: PanelRow): ReactNode {\n       ? []\n       : [<span key=\"kind\" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),\n     ...row.badges.map(cardBadge),\n-    ...(row.activity === null ? [] : [<ActivityIndicator key=\"activity\" state={row.activity} />]),\n+    // MUT-1722-S2B-11: the mobile card row paints no indicator\n     ...(row.status === null ? [] : [statusWord(row.status, true)]),\n   ];\n   return (\n",
+    "patch": "diff --git a/web/src/features/track/page/mobile-painter.tsx b/web/src/features/track/page/mobile-painter.tsx\nindex 2944355d6..afa0a75a6 100644\n--- a/web/src/features/track/page/mobile-painter.tsx\n+++ b/web/src/features/track/page/mobile-painter.tsx\n@@ -237,9 +237,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {\n        the same `row.activity` (#1722 §5.3) — a declared same-set surface, not\n        a mobile omission — and spoken for the same reason: no control here\n        names the verdict. */\n-    ...(row.activity === null ? [] : [\n-      <ActivityIndicator key=\"activity\" state={row.activity} spoken={activityLabelOf(row.activity)} />,\n-    ]),\n+    // MUT-1722-S2B-11: the mobile task row paints no indicator\n     ...(row.status === null ? [] : [statusWord(\n       row.status,\n       row.status.token !== 'pending' || action === null || action.hint === null,\n@@ -299,9 +297,7 @@ function cardRow(row: PanelRow): ReactNode {\n       : [<span key=\"kind\" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),\n     ...row.badges.map(cardBadge),\n     /* Spoken, as on the desktop card row: the status word is a different fact. */\n-    ...(row.activity === null ? [] : [\n-      <ActivityIndicator key=\"activity\" state={row.activity} spoken={activityLabelOf(row.activity)} />,\n-    ]),\n+    // MUT-1722-S2B-11: the mobile card row paints no indicator\n     ...(row.status === null ? [] : [statusWord(row.status, true)]),\n   ];\n   return (\n",
     "expected_red": [
       "mobile and desktop paint the same data-nc-activity set on the cards module",
       "mobile and desktop paint the same data-nc-activity set on the tasks module"

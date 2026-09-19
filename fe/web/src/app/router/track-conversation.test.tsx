@@ -372,7 +372,7 @@ describe('track conversations', () => {
             cards: [{ card_id: PLANNER_CARD.id, state: 'input' }] })],
         })
       : undefined);
-    fireEvent.click(await screen.findByRole('button', { name: 'Review Planner notification' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Review Planner notification: Requires input to continue.' }));
     expect(await screen.findByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement));
     expect(screen.getByRole('region', { name: 'Notifications' })
@@ -390,7 +390,7 @@ describe('track conversations', () => {
         })
       : undefined);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Review Worker notification' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Review Worker notification: Requires input to continue.' }));
     await waitFor(() => expect(window.location.search).toContain('card=card-worker'));
     expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
     expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-worker"]')).toBeTruthy();
@@ -406,7 +406,7 @@ describe('track conversations', () => {
         })
       : undefined);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Review Assistant notification' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Review Assistant notification: Requires input to continue.' }));
     expect(await screen.findByRole('complementary', { name: 'Assistant' })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement));
     expect(window.location.search).not.toContain('card=');
@@ -467,7 +467,14 @@ describe('track conversations', () => {
       'Task gateThe task failed and needs attention.Review',
       'TrackThe track is waiting on you.Review',
     ]);
-    fireEvent.click(within(notice).getByRole('button', { name: 'Review Task gate notification' }));
+    /* The two Worker-card buttons are told apart by name (A MINOR-2): the
+       message is in it, so a reader jumping by button hears which item. */
+    expect(within(notice).getAllByRole('button', { name: /^Review Worker notification/ })
+      .map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Review Worker notification: The task failed and needs attention.',
+      'Review Worker notification: Its session failed and needs attention.',
+    ]);
+    fireEvent.click(within(notice).getByRole('button', { name: 'Review Task gate notification: The task failed and needs attention.' }));
     expect(await screen.findByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
     expect(window.location.search).not.toContain('card=');
   });

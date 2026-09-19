@@ -12,7 +12,7 @@
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { useId } from 'react';
 import {
-  activityStateOf, attentionOfCard, cardActivityOf, type CardActivity,
+  activityLabelOf, activityStateOf, attentionOfCard, cardActivityOf, type CardActivity,
 } from '../../../../../core/domain/activity.ts';
 import {
   byRecency, conversationName, type Conversation,
@@ -80,9 +80,10 @@ export function ChatList({
           attention: echo?.stalled ? 'failed' : attentionOfCard(verdict),
           unread,
         });
-        const description = activity === 'attention' ? 'Needs input'
-          : activity === 'failed' ? 'Needs attention'
-            : activity === 'unread' ? 'Unread updates' : null;
+        /* The one vocabulary (`activityLabelOf`); the working fact is not a
+           description here because it is already the name's `, working`
+           suffix below — said once per row. */
+        const description = activity === 'working' ? null : activityLabelOf(activity);
         const descriptionId = `${descriptionPrefix}-${encodeURIComponent(conversation.id)}`;
         const active = conversation.id === activeId;
         /* Both are optional and both are said only when known: a row whose track

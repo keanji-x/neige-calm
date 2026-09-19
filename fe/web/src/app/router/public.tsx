@@ -2201,6 +2201,7 @@ function useConversationPanel(
                   || composerDraft === '' || turn.id !== store.failedSend.echo.id)}
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
+                stalled={store.stalled}
               />
             )}
             {/*
@@ -2771,6 +2772,9 @@ function attentionNotifications(
 ): readonly TrackInputNotification[] {
   return items.map((item): TrackInputNotification => {
     const card = item.cardId === null ? undefined : cards.find((candidate) => candidate.id === item.cardId);
+    /* Declared fallback: an item whose `card_id` names a card absent from `detail.cards` (deleted
+       between the projector's tick and this read) is listed as `Card` and reviews to the planner
+       drawer; the next 30 s tick drops the item and the row heals itself. */
     const source = card !== undefined ? notificationCardLabel(card)
       : item.origin === 'task' ? `Task ${item.id}`
         : item.origin === 'lifecycle' ? 'Track' : 'Card';

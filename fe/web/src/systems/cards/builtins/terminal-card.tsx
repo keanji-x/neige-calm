@@ -10,7 +10,7 @@ import type { CardHostCapabilities } from '../contracts.ts';
 import { PathLabel } from '../../../ui/path-label/public.tsx';
 import { CardHead } from '../ui/card-head.tsx';
 import type { WorkerSessionState } from '../../../../../core/api/schemas.js';
-import { cardActivityState, type CardActivity } from '../../../../../core/domain/activity.js';
+import { activityLabelOf, cardActivityState, type CardActivity } from '../../../../../core/domain/activity.js';
 
 export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle = 'terminal' }: {
   card: {
@@ -80,9 +80,14 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle
         /* Two facts, side by side and from two sources: the kernel's verdict
            (the indicator) and the session / connection text. Neither stands
            in for the other — a failed session can be red AND say `Session
-           failed.`, and a connected terminal with no verdict says nothing. */
+           failed.`, and a connected terminal with no verdict says nothing.
+           The verdict is spoken (`activityLabelOf`): the words beside it
+           describe the session or the connection, never the verdict, so
+           nothing else in this head would name it. */
         status={activity === null && statusText === null ? undefined : <>
-          {activity !== null && <ActivityIndicator state={cardActivityState(activity)} />}
+          {activity !== null && (
+            <ActivityIndicator state={cardActivityState(activity)} spoken={activityLabelOf(cardActivityState(activity))} />
+          )}
           {statusText !== null && <span role="status">{statusText}</span>}
         </>}
         onClose={onRemove}

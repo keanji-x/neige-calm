@@ -51,7 +51,7 @@ async function frame() {
 
 describe('the quiet-sync fold in a real engine', () => {
   it('is a control-height line that hides the turn until opened from the keyboard', async () => {
-    render(<ChatThread cards={{}} conversation={conversation} turns={[wake, read, reply, notify]} />);
+    render(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={[wake, read, reply, notify]} />);
     await frame();
 
     const fold = document.querySelector<HTMLDetailsElement>('[data-nc-turn="quiet-sync"]')!;
