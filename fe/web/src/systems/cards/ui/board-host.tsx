@@ -6,6 +6,7 @@ import {
   type LayoutItem,
 } from 'react-grid-layout';
 
+import type { CardActivity } from '../../../../../core/domain/activity.js';
 import { useState } from '../../../ui/state/public.ts';
 import { FALLBACK_SIZE, type CardComponentProps, type RegisteredCard } from '../registry.js';
 import type { CardHost, CardHostCapabilities, MountedCard } from '../host.js';
@@ -58,6 +59,12 @@ export type BoardHostItem = Readonly<{
    * `cardWireSchema`'s `.default(true)` already encodes.
    */
   deletable?: boolean;
+  /**
+   * The kernel's activity verdict for this card, or `null` — see
+   * `CardComponentProps.activity`. Required: a board with no overlay to read
+   * says so with `null`, not by leaving the field out.
+   */
+  activity: CardActivity | null;
 }>;
 
 function cardWithTitle(item: BoardHostItem): RegisteredCard {
@@ -273,5 +280,5 @@ function BoardCell({ host, item, focused, visible, onRemove }: {
       </div>
     );
   }
-  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} />;
+  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} />;
 }

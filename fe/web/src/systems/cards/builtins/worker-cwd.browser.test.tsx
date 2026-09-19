@@ -24,7 +24,7 @@ it('keeps the worker checkout readable inside a narrow card', async () => {
     emit: vi.fn(),
   } as unknown as CardHostCapabilities;
   const Component = CLAUDE_CARD_ENTRY.component;
-  render(<Component card={card} host={host} />);
+  render(<Component card={card} host={host} activity={null} />);
   await expect.element(page.getByText('Working directory', { exact: true })).toBeVisible();
   await expect.element(page.getByText(cwd)).toBeVisible();
   await expect.element(page.getByText('Gate working directory')).toBeVisible();

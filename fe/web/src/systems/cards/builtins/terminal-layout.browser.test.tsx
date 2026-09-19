@@ -30,7 +30,7 @@ it('preserves attached terminal geometry and output when its session exits', asy
     });
     if (card === null) throw new Error('Missing terminal');
     return <BoardHost host={host} items={[
-      { card, title: 'Terminal', originalIndex: 0, deletable: true },
+      { card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null },
     ]} visible activeCardId="card-1" />;
   };
   const { rerender } = render(board('running'));
@@ -45,7 +45,7 @@ it('preserves attached terminal geometry and output when its session exits', asy
   expect(screen.getByText('Session exited.')).toBeTruthy();
   expect(screen.getByText('/repo/worker-checkout')).toBeTruthy();
   expect(screen.getByText('/repo/gate-checkout')).toBeTruthy();
-  expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
+  expect(document.querySelector('[data-nc-card-cell] [data-nc-activity]')).toBeNull();
   expect(screen.getByTestId('retained-output')).toBe(output);
   expect(getComputedStyle(body).padding).toBe('0px');
   expect(getComputedStyle(body).display).toBe('flex');

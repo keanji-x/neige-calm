@@ -39,8 +39,8 @@ function contrast(first: Rgb, second: Rgb): number {
 }
 
 const plannerNotification = [{
-  cardId: 'planner', source: 'Planner', message: 'Requires input to continue.',
-  state: 'awaiting-input' as const, updatedAt: 1,
+  origin: 'card' as const, id: 'planner', cardId: 'planner', source: 'Planner',
+  message: 'Requires input to continue.', state: 'awaiting-input' as const, updatedAt: 1,
 }];
 
 describe('the track lifecycle status in the page header', () => {
@@ -86,7 +86,7 @@ describe('the track lifecycle status in the page header', () => {
     renderPage({ inputNotifications: plannerNotification, onOpenInputNotification });
 
     const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
-    const review = document.querySelector<HTMLButtonElement>('[aria-label="Review Planner notification"]')!;
+    const review = document.querySelector<HTMLButtonElement>('[aria-label^="Review Planner notification"]')!;
     const noticeBox = notice.getBoundingClientRect();
     expect(review.innerText).toBe('Review');
     expect(review.getBoundingClientRect().height).toBeGreaterThanOrEqual(32);
@@ -142,6 +142,7 @@ describe('the track lifecycle status in the page header', () => {
           track={track({ lifecycle: resumed ? 'working' : 'done' })}
           cards={[]}
           tasks={[]}
+          openableCards={new Set()}
           canResumeTrack={!resumed}
           onRenameTrack={vi.fn()}
           onResumeTrack={() => { setResumed(true); }}

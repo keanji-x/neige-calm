@@ -31,6 +31,8 @@
 // ordinary props on the page component. The view model describes only what is
 // derivable.
 
+import type { ActivityState } from '../domain/activity.js';
+
 /** A short word next to a row's name: `kernel-owned`, `Withdrawn`, … */
 export type RowBadge = Readonly<{ id: string; text: string; struck: boolean }>;
 
@@ -113,6 +115,14 @@ export type PanelRow = Readonly<{
   kind: string | null;
   badges: readonly RowBadge[];
   status: RowStatus | null;
+  /**
+   * The kernel's activity verdict for the card this row is about, as an
+   * indicator state (#1722 §5.3, INV-APP-118) — `null` when the kernel listed
+   * no verdict for it, which is also what a task with no worker card gets.
+   * Derived from `TrackActivity.cards` alone: `status.token` is the phase /
+   * result word and stays, but no painter reads "in motion" off it.
+   */
+  activity: ActivityState | null;
   /** An ordered set, not named slots — where an action is placed is the
    *  painter's call; *which* actions exist and in what order is the view
    *  model's, and is checked as a sequence. */

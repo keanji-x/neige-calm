@@ -22,7 +22,7 @@ describe('MobileTracks', () => {
     const onEditArea = vi.fn(); const onOpenTrack = vi.fn(); const onBack = vi.fn();
     render(<MobileTracks view="tracks" areas={[area]} tracksByArea={new Map([['c1', [track]]])} areaId="c1" currentTrackId="w1"
       onBack={onBack} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={onEditArea} onOpenTrack={onOpenTrack}
-      readError={null} readLoading={false} onRetryRead={vi.fn()} />);
+      isUnread={() => false} readError={null} readLoading={false} onRetryRead={vi.fn()} />);
     const header = screen.getByRole('heading', { name: 'Product' }).closest('header');
 
     expect(screen.getByRole('button', { name: 'Back to Areas' })).toBeTruthy();
@@ -51,7 +51,7 @@ describe('MobileTracks', () => {
     const onBack = vi.fn(); const onOpenSettings = vi.fn();
     render(<MobileTracks view="tracks" areas={[{ ...area, kind: 'system' }]} tracksByArea={new Map([['c1', [track]]])}
       areaId="c1" currentTrackId={undefined} onBack={onBack} onNewTrack={onNewTrack} onOpenSettings={onOpenSettings} onCreateArea={onCreateArea} onSelectArea={vi.fn()}
-      onEditArea={onEditArea} onOpenTrack={vi.fn()} readError={null} readLoading={false} onRetryRead={vi.fn()} />);
+      onEditArea={onEditArea} onOpenTrack={vi.fn()} isUnread={() => false} readError={null} readLoading={false} onRetryRead={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Product' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Responsive mobile UI' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'New area' })).toBeNull();
@@ -72,7 +72,7 @@ describe('MobileTracks', () => {
     const onCreateArea = vi.fn();
     render(<MobileTracks view="areas" areas={[]} tracksByArea={new Map()} areaId={undefined} currentTrackId={undefined}
       onBack={vi.fn()} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={onCreateArea} onSelectArea={vi.fn()} onEditArea={vi.fn()} onOpenTrack={vi.fn()}
-      readError={null} readLoading={false} onRetryRead={vi.fn()} />);
+      isUnread={() => false} readError={null} readLoading={false} onRetryRead={vi.fn()} />);
     const actions = screen.getByRole('group', { name: 'Workspace actions' });
     expect([...actions.querySelectorAll('button')].map((button) => button.textContent?.trim())).toEqual(['Settings', 'New area']);
     expect(screen.queryByRole('button', { name: 'New track' })).toBeNull();
@@ -84,10 +84,80 @@ describe('MobileTracks', () => {
     const onRetryRead = vi.fn();
     render(<MobileTracks view="tracks" areas={[area]} tracksByArea={new Map()} areaId="c1" currentTrackId={undefined}
       onBack={vi.fn()} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={vi.fn()} onOpenTrack={vi.fn()}
-      readError="Tracks are unavailable" readLoading={false} onRetryRead={onRetryRead} />);
+      isUnread={() => false} readError="Tracks are unavailable" readLoading={false} onRetryRead={onRetryRead} />);
     expect(screen.getByRole('alert').textContent).toContain('Tracks are unavailable');
     expect(screen.queryByText('No tracks in this area yet.')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetryRead).toHaveBeenCalledOnce();
+  });
+
+  /*
+   * INV-APP-118 on the phone's Track list: the trailing dot and the activity
+   * bit in the row's name come from the kernel's activity overlay plus the
+   * reader's receipt, never from the lifecycle. The fixtures disagree with the
+   * lifecycle in both directions, so a row that fell back to
+   * `isRunning(lifecycle)` reddens here: `planning` with nothing in flight is
+   * quiet and unnamed; `done` with work in flight spins and says so; and a
+   * `working` phase with an idle planner (the #1722 §1 bug) shows NOTHING.
+   */
+  it('track rows carry the activity indicator and name bit from the overlay, never the lifecycle', () => {
+    const marker = () => screen.getByRole('button', { name: /^Responsive mobile UI/ })
+      .querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
+    const name = () => screen.getByRole('button', { name: /^Responsive mobile UI/ }).getAttribute('aria-label');
+    /* What the row is described by (`aria-describedby` → an element's text),
+       or `null` when nothing describes it. */
+    const description = () => {
+      const id = screen.getByRole('button', { name: /^Responsive mobile UI/ }).getAttribute('aria-describedby');
+      return id === null ? null : document.getElementById(id)?.textContent ?? null;
+    };
+    const mount = (overrides: Partial<Track>, isUnread: (track: Track) => boolean = () => false) => (
+      <MobileTracks view="tracks" areas={[area]} tracksByArea={new Map([['c1', [{ ...track, ...overrides }]]])} areaId="c1" currentTrackId={undefined}
+        onBack={vi.fn()} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={vi.fn()} onOpenTrack={vi.fn()}
+        isUnread={isUnread} readError={null} readLoading={false} onRetryRead={vi.fn()} />
+    );
+    const view = render(mount({ lifecycle: 'planning', working: false }));
+    expect(marker()).toBeNull();
+    expect(name()).toBe('Responsive mobile UI');
+    expect(description()).toBeNull();
+
+    view.rerender(mount({ lifecycle: 'done', working: true }));
+    expect(marker()).toBe('working');
+    expect(name()).toBe('Responsive mobile UI, working');
+    expect(description()).toBeNull();
+
+    view.rerender(mount({ attention: 'input' }));
+    expect(marker()).toBe('attention');
+    expect(name()).toBe('Responsive mobile UI, waiting on you');
+
+    view.rerender(mount({ attention: 'failed' }));
+    expect(marker()).toBe('failed');
+    expect(name()).toBe('Responsive mobile UI, needs attention');
+
+    // The receipt is the caller's verdict (`activityAt` newer than what this
+    // reader has seen): a blue dot, nothing added to the name — and, as on the
+    // rail row, the fact is the button's description (#1722 S2b r2, Codex
+    // P2-1): without it an unread row reads exactly like a quiet one.
+    view.rerender(mount({ activityAt: 150 }, (candidate) => (candidate.activityAt ?? 0) > 100));
+    expect(marker()).toBe('unread');
+    expect(name()).toBe('Responsive mobile UI');
+    expect(description()).toBe('Unread updates');
+
+    // The description hangs on the FOLDED state, not on the receipt (#1722
+    // §5.3, the same rule as the rail row): unread under working is "working"
+    // — the dot and the name say so — and nothing describes it. The receipt
+    // is not said twice.
+    view.rerender(mount({ activityAt: 150, working: true }, (candidate) => (candidate.activityAt ?? 0) > 100));
+    expect(marker()).toBe('working');
+    expect(name()).toBe('Responsive mobile UI, working');
+    expect(description()).toBeNull();
+
+    // The must-red for a lifecycle-driven spinner: a running phase with an
+    // idle planner is the #1722 §1 bug, and it shows nothing at all.
+    view.rerender(mount({ lifecycle: 'working', working: false }));
+    expect(marker()).toBeNull();
+    expect(name()).toBe('Responsive mobile UI');
+    expect(description()).toBeNull();
+    // The lifecycle phrase is still there, as the phase it is, not as activity.
+    expect(screen.getByRole('button', { name: 'Responsive mobile UI' }).textContent).toContain('Working');
   });
 });

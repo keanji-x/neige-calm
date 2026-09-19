@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ReportTaskRow } from '../domain/report.js';
-import type { CardWire } from '../domain/track.js';
-import { deriveTrackPageView, taskStatusPhrase } from './track-page.js';
+import { NEUTRAL_ACTIVITY, type CardWire } from '../domain/track.js';
+import { deriveTrackPageView, taskStatusPhrase, type TrackPageActivity } from './track-page.js';
 
 function card(overrides: Partial<CardWire> = {}): CardWire {
   return {
@@ -34,17 +34,30 @@ function task(overrides: Partial<ReportTaskRow> = {}): ReportTaskRow {
   };
 }
 
-function cardsModule(cards: readonly CardWire[]) {
-  return deriveTrackPageView({ cards, tasks: [] }).rowModules[0];
+/** Every worker card the tasks name, which is what these cases mean by
+ *  "a card is running the task" unless one says otherwise (#1722 S2b r5). */
+function everyWorkerOf(tasks: readonly ReportTaskRow[]): ReadonlySet<string> {
+  return new Set(tasks.flatMap((entry) => {
+    const workerCardId = entry.execution === undefined ? entry.workerCardId : entry.execution.workerCardId;
+    return workerCardId === null ? [] : [workerCardId];
+  }));
 }
 
-function tasksModule(tasks: readonly ReportTaskRow[]) {
-  return deriveTrackPageView({ cards: [], tasks }).rowModules[1];
+function cardsModule(cards: readonly CardWire[]) {
+  return deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() }).rowModules[0];
+}
+
+function tasksModule(
+  tasks: readonly ReportTaskRow[],
+  activity: TrackPageActivity = NEUTRAL_ACTIVITY,
+  openableCards: ReadonlySet<string> = everyWorkerOf(tasks),
+) {
+  return deriveTrackPageView({ cards: [], tasks, activity, openableCards }).rowModules[1];
 }
 
 describe('deriveTrackPageView modules', () => {
   it('derives the two row modules in the panel’s order, with their empty texts', () => {
-    const view = deriveTrackPageView({ cards: [], tasks: [] });
+    const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
 
     expect(view.rowModules.map((module) => module.key)).toEqual(['cards', 'tasks']);
     expect(view.rowModules.map((module) => module.title)).toEqual(['Cards', 'Tasks']);
@@ -263,6 +276,48 @@ describe('deriveTrackPageView tasks', () => {
     }]);
   });
 
+  /*
+   * #1722 S2b r5 (Codex P2) — identity and openability are two facts. The
+   * worker card id keys the row's activity verdict (INV-APP-118, §4.2 W) and
+   * its `open-card` action; only the action is gated on the registry being
+   * able to draw the card. `app/router` used to null the id for an unopenable
+   * worker, which erased the verdict along with the control, while the Cards
+   * module (INV-CARD-226 keeps such a card listed) still showed it.
+   *
+   * The r5 mutation (manifest `s2b-task-row-loses-worker-identity`): look the
+   * verdict up through the openable subset (`openableCards.has(id) ? id :
+   * null`), or null the id upstream again — the first expectation below goes
+   * red; the twin stays green.
+   */
+  it('keeps the worker’s identity for the activity verdict when the card is not openable, and only drops the control', () => {
+    const activity: TrackPageActivity = { cards: { 'card-9': 'failed', 'card-7': 'working' } };
+    const [failed, working] = tasksModule([
+      task({ blockId: 'b-f', key: 'k-f', kind: 'claude', workerCardId: 'card-9', status: 'running' }),
+      { ...task({ blockId: 'b-w', key: 'k-w', kind: 'codex', workerCardId: 'stale', status: 'dispatched' }), execution: {
+        attemptId: 'a1', generation: 1, status: 'running', label: 'Running', statusDetail: null,
+        workerCardId: 'card-7', blockingReason: null,
+      } },
+    ], activity, new Set()).rows;
+
+    expect(failed.activity).toBe('failed');
+    expect(failed.actions.map((action) => action.kind)).toEqual(['reveal-block']);
+    expect(working.activity).toBe('working');
+    expect(working.actions.map((action) => action.kind)).toEqual(['reveal-block']);
+  });
+
+  it('offers the control as well when the same worker card is openable', () => {
+    const activity: TrackPageActivity = { cards: { 'card-9': 'failed' } };
+    const [row] = tasksModule([
+      task({ blockId: 'b-f', key: 'k-f', kind: 'claude', workerCardId: 'card-9', status: 'running' }),
+    ], activity, new Set(['card-9'])).rows;
+
+    expect(row.activity).toBe('failed');
+    expect(row.actions.map((action) => action.kind)).toEqual(['reveal-block', 'open-card']);
+    expect(row.actions[1]).toEqual({
+      kind: 'open-card', cardId: 'card-9', label: null, hint: 'Open the worker card for k-f', description: null,
+    });
+  });
+
   it('strikes the declaration badge of a withdrawn task and no other', () => {
     const [unreadable, withdrawn] = tasksModule([
       task({ blockId: 'b-w', state: 'withdrawn', declaration: 'Withdrawn' }),
@@ -352,10 +407,16 @@ describe('taskStatusPhrase', () => {
   });
 });
 
+/* The card's task status is keyed by the worker's *identity*, so it holds for
+   a card the board cannot draw too (`openableCards` empty here) — INV-CARD-226
+   lists that card, and which task ran on it is not a question of openability
+   (#1722 S2b r5). Mutation: fold `taskStatusByCard` over the `open-card`
+   actions again → `running`. */
 it('groups a completed task’s card as completed even while its worker process remains alive', () => {
   const view = deriveTrackPageView({
     cards: [card({ id: 'finished-worker', runtime: { worker_session_id: 'runtime', kind: 'codex', status: 'running' } })],
-    tasks: [task({ status: 'done', kind: 'codex', workerCardId: 'finished-worker' })],
+    tasks: [task({ status: 'done', kind: 'codex', workerCardId: 'finished-worker' })], activity: NEUTRAL_ACTIVITY,
+    openableCards: new Set(),
   });
   expect(view.rowModules[0].rows[0].status?.token).toBe('done');
 });

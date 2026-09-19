@@ -181,4 +181,31 @@ describe('navigation activity markers', () => {
     const view = render(<TrackRow track={track({ attention: 'failed' })} variant={variant} onOpen={vi.fn()} />);
     expect(view.container.querySelectorAll('[data-nc-activity="failed"]')).toHaveLength(1);
   });
+
+  /*
+   * The description hangs on the FOLDED state, not on the raw receipt (#1722
+   * §5.3, the rule the phone row and the conversation row already follow): an
+   * unread track that is also working is "working" — the dot says so and the
+   * name says so — and is described by nothing; only when the fold lands on
+   * `unread` is the row described, in the one vocabulary. A row that read
+   * `aria-describedby` off the `unread` prop would say "Unread updates" beside
+   * a spinner, which is the receipt said twice over a fact the name already
+   * ranks above it.
+   */
+  it('describes an unread track only in the folded state, never beside a working name', () => {
+    const description = () => {
+      const id = screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-describedby');
+      return id === null ? null : document.getElementById(id)?.textContent ?? null;
+    };
+    const view = render(<TrackRow track={track({ working: true })} variant="rail" unread onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity="working"]')).toBeTruthy();
+    expect(view.container.querySelector('[data-nc-activity="unread"]')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, working, Working');
+    expect(description()).toBeNull();
+
+    view.rerender(<TrackRow track={track({ lifecycle: 'done' })} variant="rail" unread onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity="unread"]')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, Done');
+    expect(description()).toBe('Unread updates');
+  });
 });

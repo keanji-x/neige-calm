@@ -66,10 +66,21 @@ try {
       card: { id: 'card-1', title: 'Probe', terminalId: 'capture-terminal',
         sessionState: 'running', cwd: null, gateCwd: null },
       host: { lifecycle: { getSnapshot: () => ({ visible: true }), subscribe: () => () => {} } },
+      // The kernel's verdict for this card, already resolved (#1722
+      // INV-APP-118): the head's indicator comes from this prop and nothing
+      // else — not from `sessionState`, not from the connection.
+      activity: 'working',
     }));
   }, { react: dependency('react'), reactDom: dependency('react-dom_client') });
   await page.locator('.xterm-view .xterm-screen').waitFor();
-  await page.getByRole('img', { name: 'status Working' }).waitFor();
+  // Connected: the head prints `Connecting…` as `role="status"` until the
+  // surface attaches, and nothing once it is connected (`terminal-card.tsx`
+  // `statusText`), so the connection is settled when that span is gone. The
+  // indicator is the verdict passed above, not the connection, so it is
+  // asserted on its own.
+  await page.locator('[data-nc-terminal-card] [role="status"]').waitFor({ state: 'detached' });
+  assert.equal(await page.locator('[data-nc-terminal-card] .card-head [data-nc-activity="working"]').count(), 1,
+    'the head shows the kernel verdict it was given');
   // Allow the controlled one-shot frame to render. This is only a probe/test
   // settle delay, not the eventual production atomic observation protocol.
   await page.waitForTimeout(300);

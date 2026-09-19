@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  activityStateOf, attentionKindOf, cardActivityOf, type ActivityState, type AttentionKind,
+  activityLabelOf, activityNameBit, activityStateOf, attentionKindOf, attentionOfCard, cardActivityOf, cardActivityState,
+  type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 
 const ATTENTION: readonly AttentionKind[] = ['none', 'input', 'failed'];
@@ -46,6 +47,42 @@ describe('activityStateOf', () => {
   });
 });
 
+describe('activityLabelOf', () => {
+  /*
+   * The one vocabulary, every state written out (#1722 §5.3): the conversation
+   * row's description and the spoken text on a card/task row or terminal head
+   * both read this table, so a word changed here changes every surface at once
+   * and a word changed anywhere else is a second vocabulary.
+   */
+  it.each<[ActivityState, string | null]>([
+    ['working', 'Working'],
+    ['attention', 'Needs input'],
+    ['failed', 'Needs attention'],
+    ['unread', 'Unread updates'],
+    ['quiet', null],
+  ])('%s → %s', (state, expected) => {
+    expect(activityLabelOf(state)).toBe(expected);
+  });
+});
+
+describe('activityNameBit', () => {
+  /*
+   * The name-side vocabulary (#1722 §5.3): the rail row and the phone's Track
+   * list row append this after the title, so both surfaces read a track the
+   * same way. `unread` is deliberately silent here — it is the rail row's
+   * description, and a name that said "unread" would be a second carrier.
+   */
+  it.each<[ActivityState, string]>([
+    ['working', 'working'],
+    ['attention', 'waiting on you'],
+    ['failed', 'needs attention'],
+    ['unread', ''],
+    ['quiet', ''],
+  ])('%s → %s', (state, expected) => {
+    expect(activityNameBit(state)).toBe(expected);
+  });
+});
+
 describe('attentionKindOf', () => {
   it('folds items the way the kernel folds attention', () => {
     expect(attentionKindOf([])).toBe('none');
@@ -62,5 +99,20 @@ describe('cardActivityOf', () => {
     expect(cardActivityOf(activity, 'b')).toBe('failed');
     expect(cardActivityOf(activity, 'c')).toBeNull();
     expect(cardActivityOf({ cards: {} }, 'a')).toBeNull();
+  });
+});
+
+describe('card verdicts as indicator states', () => {
+  it('maps each per-card verdict onto the attention axis, and nothing else', () => {
+    expect(attentionOfCard(null)).toBe('none');
+    expect(attentionOfCard('working')).toBe('none');
+    expect(attentionOfCard('input')).toBe('input');
+    expect(attentionOfCard('failed')).toBe('failed');
+  });
+
+  it.each<[CardActivity, ActivityState]>([
+    ['working', 'working'], ['input', 'attention'], ['failed', 'failed'],
+  ])('shows a %s card as %s, never as unread', (card, expected) => {
+    expect(cardActivityState(card)).toBe(expected);
   });
 });

@@ -68,27 +68,4 @@
   .body > * + * {
     margin-block-start: var(--space-3);
   }
-
-  /* The same 6px accent dot and pulse the thread's own live mark takes. */
-  .live {
-    display: inline-block;
-    flex: none;
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
-    border-radius: var(--radius-pill);
-    background: var(--accent);
-    animation: quiet-sync-pulse var(--motion-pulse) ease-in-out infinite;
-  }
-
-  @keyframes quiet-sync-pulse {
-    50% {
-      opacity: 0.35;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .live {
-      animation: none;
-    }
-  }
 }

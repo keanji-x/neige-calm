@@ -845,7 +845,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
           style={{ blockSize: paneHeight, flex: 'none' }}
         >
           <div className={drawerStyles.bodyInner} data-nc-rail-pane-inner="">
-            <ChatThread conversation={railConversation()} turns={turns} />
+            <ChatThread cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
           </div>
         </div>
       </div>
@@ -3161,7 +3161,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     function Harness({ open }: { open: boolean }) {
       return (
         <Drawer open={open} title="Ship the rewrite" onClose={() => {}}>
-          <ChatThread conversation={railConversation()} turns={railTurns(8)} />
+          <ChatThread cards={{}} stalled={false} conversation={railConversation()} turns={railTurns(8)} />
         </Drawer>
       );
     }

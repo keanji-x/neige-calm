@@ -15,7 +15,7 @@
 // wiring, because the wiring IS the claim.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -64,11 +64,14 @@ type Case = Readonly<{
   trackRows?: readonly unknown[];
   /** Whether the workspace has a user-visible area/track besides the launchpad. */
   userWorkspace?: boolean;
+  /** The workspace-wide track overlays (`GET /api/overlays?entity_kind=track`),
+   *  read on every request; the launchpad's `kernel/track/activity` row lives here. */
+  overlays?: () => readonly unknown[];
 }>;
 
 function renderApp({
   launchpadResolve, launchpadRows = () => [], launchpadConversations,
-  trackRows = [], historyRows = [], userWorkspace = true,
+  trackRows = [], historyRows = [], userWorkspace = true, overlays = () => [],
 }: Case = {}) {
   const requests: ApiRequest[] = [];
   const transport: ApiTransportPort = {
@@ -83,6 +86,7 @@ function renderApp({
       }
       if (request.path === '/api/areas') return Promise.resolve(ok(userWorkspace ? [AREA] : []));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(userWorkspace ? [TRACK] : []));
+      if (request.path === '/api/overlays?entity_kind=track') return Promise.resolve(ok(overlays()));
       if (request.path === '/api/tracks/w1') {
         return Promise.resolve(ok({ track: TRACK, can_resume: false, cards: [], overlays: [] }));
       }
@@ -102,7 +106,7 @@ function renderApp({
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  return { requests, router };
+  return { requests, router, client };
 }
 
 /** The same page on a workspace that has no launchpad yet: `200 null`. */
@@ -212,6 +216,40 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     /* The memory history this file drives the router with, still on Today. A
        navigation would have put `/track/lp` here. */
     expect(router.state.location.pathname).toBe('/');
+  });
+
+  /*
+   * #1722 §5.3, the third `ChatList` site (A-MAJOR-1). The launchpad is in the
+   * system area, so it is on no workspace track list and this page has no
+   * track detail — its rows can only read `working` off the workspace-wide
+   * overlays query, which the route must ask for itself. A `cards` that only
+   * flows through the track route leaves this list `{}`: the summary writer
+   * never shows working while it writes, and its drawer never carries the
+   * live mark. `state: 'turn_pending'` on the row is not a verdict.
+   */
+  it('the launchpad summary row reads the launchpad activity overlay', async () => {
+    let cards: { card_id: string; state: 'working' | 'input' | 'failed' }[] = [];
+    const { client } = renderApp({
+      launchpadRows: () => [conversationRow({ id: SUMMARY_CONVERSATION, title: null, state: 'turn_pending' })],
+      overlays: () => [{
+        id: 'activity-lp', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'lp', kind: 'activity', updated_at: 3,
+        payload: { schemaVersion: 1, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
+      }],
+    });
+    const row = () => screen.getByRole('button', { name: /^Conversation Today’s progress(?:,|$)/ });
+    const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
+    await screen.findByRole('button', { name: /^Conversation Today’s progress(?:,|$)/ });
+    expect(indicator()).toBeUndefined();
+
+    cards = [{ card_id: SUMMARY_CONVERSATION, state: 'working' }];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['overlays', 'track'] }); });
+    await waitFor(() => expect(indicator()).toBe('working'));
+    expect(row().getAttribute('aria-label')).toBe('Conversation Today’s progress, working');
+
+    /* And the drawer's live mark reads the same verdict. */
+    await userEvent.click(row());
+    const drawer = await screen.findByRole('complementary', { name: 'Today’s progress' });
+    await waitFor(() => expect(drawer.querySelector('[data-nc-activity="working"]')).not.toBeNull());
   });
 
   it('keeps the summary bootstrap instruction out of the conversation name', async () => {

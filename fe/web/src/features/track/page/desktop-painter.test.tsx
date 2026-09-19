@@ -41,6 +41,7 @@ const titled: PanelRow = {
   kind: 'terminal',
   badges: [],
   status: null,
+  activity: null,
   actions: [
     { kind: 'open-card', cardId: 'card-1', label: null, hint: null, description: null },
     {
@@ -59,6 +60,7 @@ const untitled: PanelRow = {
   kind: null,
   badges: [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
   status: null,
+  activity: null,
   actions: [{ kind: 'open-card', cardId: 'card-2', label: null, hint: null, description: null }],
 };
 

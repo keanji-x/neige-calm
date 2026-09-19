@@ -47,6 +47,42 @@ export function activityStateOf(
   return 'quiet';
 }
 
+/**
+ * The spoken counterpart of an indicator state — the ONE vocabulary every
+ * accessible label or description of an indicator draws from (#1722 §5.3):
+ * a conversation row's `aria-describedby` text, the `unread` description of
+ * a track row (rail and phone), and the visually hidden text an indicator
+ * carries where no owning control names the fact (the card and task rows,
+ * the terminal card head). `quiet` has nothing to say.
+ */
+export function activityLabelOf(state: ActivityState): string | null {
+  switch (state) {
+    case 'working': return 'Working';
+    case 'attention': return 'Needs input';
+    case 'failed': return 'Needs attention';
+    case 'unread': return 'Unread updates';
+    case 'quiet': return null;
+  }
+}
+
+/**
+ * The activity bit a track row's accessible *name* carries, derived from the
+ * SAME state as its dot (#1722 §5.3): the rail's `TrackRow` and the phone's
+ * Track list row both append it after the title. `unread` and `quiet` add
+ * nothing — the name says what is in motion or needs a person; unread is a
+ * description at most (the rail's `aria-describedby`), never part of a name.
+ * Empty string, not `null`: the value is concatenated, never rendered alone.
+ */
+export function activityNameBit(state: ActivityState): string {
+  switch (state) {
+    case 'working': return 'working';
+    case 'attention': return 'waiting on you';
+    case 'failed': return 'needs attention';
+    case 'unread':
+    case 'quiet': return '';
+  }
+}
+
 /** Folds a list of items the way the kernel folds `attention`: any failed → failed, else any input → input. */
 export function attentionKindOf(items: readonly Readonly<{ kind: 'input' | 'failed' }>[]): AttentionKind {
   let kind: AttentionKind = 'none';
@@ -63,4 +99,19 @@ export function cardActivityOf(
   cardId: string,
 ): CardActivity | null {
   return activity.cards[cardId] ?? null;
+}
+
+/** A card verdict as the attention axis reads it; `null` (no verdict) and `working` are `none`. */
+export function attentionOfCard(card: CardActivity | null): AttentionKind {
+  return card === 'input' ? 'input' : card === 'failed' ? 'failed' : 'none';
+}
+
+/**
+ * A card verdict as an indicator shows it. Cards have no read receipt (§9 G4),
+ * so `unread` is never part of a card-level state; the fold goes through
+ * `activityStateOf` all the same, so a card and a track can never rank the
+ * same two facts differently.
+ */
+export function cardActivityState(card: CardActivity): ActivityState {
+  return activityStateOf({ working: card === 'working', attention: attentionOfCard(card), unread: false });
 }

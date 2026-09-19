@@ -66,6 +66,7 @@ const cardRow: PanelRow = Object.freeze({
   kind: 'worker',
   badges: Object.freeze([Object.freeze({ id: 'b1', text: 'kernel-owned', struck: false })]),
   status: null,
+  activity: null,
   actions: Object.freeze<readonly RowAction[]>([
     Object.freeze({ kind: 'open-card', cardId: 'c1', label: null, hint: null, description: null }),
     deleteAction,
@@ -73,7 +74,7 @@ const cardRow: PanelRow = Object.freeze({
 });
 
 const plainRow: PanelRow = Object.freeze({
-  id: 'c2', title: 'Sweep', kind: null, badges: Object.freeze([]), status: null, actions: Object.freeze([]),
+  id: 'c2', title: 'Sweep', kind: null, badges: Object.freeze([]), status: null, activity: null, actions: Object.freeze([]),
 });
 
 /** The "only unsupported" half of §3.5's action-shape pair: under
@@ -86,6 +87,7 @@ const deleteOnlyRow: PanelRow = Object.freeze({
   kind: 'chore',
   badges: Object.freeze([]),
   status: null,
+  activity: null,
   actions: Object.freeze<readonly RowAction[]>([
     Object.freeze({
       kind: 'delete-card', cardId: 'c3', label: 'Delete card Purge', hint: 'Delete card',
@@ -103,6 +105,7 @@ const taskRow: PanelRow = Object.freeze({
     Object.freeze({ id: 'd2', text: 'declared', struck: true }),
   ]),
   status: Object.freeze({ token: 'dispatched', phrase: 'Dispatched a moment ago' }),
+  activity: null,
   actions: Object.freeze<readonly RowAction[]>([
     Object.freeze({
       kind: 'reveal-block', blockId: 'k', label: null, hint: 'Show T-1 in the report',
@@ -123,6 +126,7 @@ const blankStatusRow: PanelRow = Object.freeze({
   kind: 'triage',
   badges: Object.freeze([]),
   status: Object.freeze({ token: '', phrase: 'No status yet' }),
+  activity: null,
   actions: Object.freeze([]),
 });
 
@@ -793,6 +797,7 @@ describe('E / co-hosting', () => {
     kind: 'tag',
     badges: Object.freeze([Object.freeze({ id: 'g1', text: 'tag', struck: false })]),
     status: null,
+    activity: null,
     actions: Object.freeze([]),
   });
   const cohostView: readonly RowModuleView[] = Object.freeze([Object.freeze({
@@ -856,6 +861,7 @@ describe('a faithful painter is green', () => {
       kind: 'worker',
       badges: Object.freeze([]),
       status: null,
+      activity: null,
       actions: Object.freeze<readonly RowAction[]>([
         Object.freeze({
           kind: 'open-card', cardId: 'm1', label: 'Open card Ingest', hint: null,

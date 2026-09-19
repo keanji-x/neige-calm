@@ -54,10 +54,13 @@ export type Conversation = Readonly<{
    * `null` is a fact, not a gap: the conversation list is a LEFT JOIN restricted to the
    * four live states, so a card whose session exited, failed or was superseded
    * — and a card minted seconds ago that has none yet — both arrive as `null`.
-   * Rendering it must therefore say only "nothing is happening in it right
-   * now", which is what `isLiveConversation(null) === false` and the unlit dot
-   * already say. Substituting `'exited'` or `'failed'` would assert a state
-   * nobody read.
+   * Substituting `'exited'` or `'failed'` would assert a state nobody read.
+   *
+   * **No indicator reads this** (#1722 §5.3, INV-APP-118): a row's dot comes
+   * from the kernel's `activity.cards` verdict, and the drawer's live mark from
+   * the same verdict plus the sender's own in-flight send. What still reads it
+   * is the open row's local phase (`describeConversation`) and the drawer's
+   * baseline `scope.state`.
    */
   state: ConversationState | null;
   /** Last turn, or the session's own update time when it has no turns yet. */
@@ -152,18 +155,6 @@ export function conversationNameFrom(text: string): string | null {
   return line.length <= CONVERSATION_NAME_MAX
     ? line
     : `${line.slice(0, CONVERSATION_NAME_MAX - 1).trimEnd()}…`;
-}
-
-/**
- * A session is *live* while it can still produce turns. This is the one
- * predicate the list needs, and it is declared here rather than in a feature so
- * the two surfaces that show conversations cannot disagree about it.
- *
- * `null` is not live, for the same reason it is not `'exited'`: it says no live
- * session was found, and "not live" is precisely the whole of that.
- */
-export function isLiveConversation(state: ConversationState | null): boolean {
-  return state === 'starting' || state === 'running' || state === 'turn_pending';
 }
 
 /** Newest first. Sorting is a display rule, but "which is newest" is not. */

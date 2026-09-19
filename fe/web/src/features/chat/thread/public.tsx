@@ -43,16 +43,19 @@ import {
 import { Code } from '@astryxdesign/core/Code';
 import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
+import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { EdgeNavigator } from '../../../ui/edge-navigation/public.tsx';
 import { observeResize } from '../../../ui/edge-navigation/resize.ts';
 import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
+import { activityLabelOf, cardActivityOf, type CardActivity } from '../../../../../core/domain/activity.ts';
 import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
-  isLiveConversation, isQueuedConversationTurn, opensAfterGap, opensExchange,
+  isQueuedConversationTurn, opensAfterGap, opensExchange,
   type Conversation, type ConversationActivity, type SendOutcome, type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
@@ -69,12 +72,41 @@ export type ChatThreadProps = Readonly<{
   conversation: Conversation;
   /** Messages and the actions between them, in the order they happened. */
   turns: readonly TranscriptEntry[];
-  /** True while a turn is in flight; the composer stays usable, the dot pulses. */
+  /**
+   * The sender's own turn in flight — shown before the kernel's next tick can
+   * say so (#1722 §5.3, a declared local echo of INV-APP-118). The composer
+   * stays usable and the tail carries the working mark.
+   */
   pending?: boolean;
+  /**
+   * The kernel's per-card verdicts for this conversation's track
+   * (`TrackActivity.cards`, #1722 §4.1); this thread reads its own
+   * conversation's entry and nothing else. Required, no default: a caller
+   * with no overlay to read has a thread on which nothing is ever working
+   * except the sender's own send, and must say so with `{}`.
+   */
+  cards: Readonly<Record<string, CardActivity>>;
+  /**
+   * The drawer's local wedge fact (`/planner/run` reported `wedged`) — the
+   * same one the open list row maps to `failed` (#1722 §5.3, the second
+   * declared local echo). Required, no default, like `cards`: a wedged
+   * planner's kernel verdict is still `working` (its harness row sits at
+   * `turn_pending` and the registry still lists it), so a thread that did
+   * not know it was stuck would spin beside "This conversation is stuck".
+   */
+  stalled: boolean;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false }: ChatThreadProps) {
-  const live = pending || isLiveConversation(conversation.state);
+export function ChatThread({ conversation, turns, pending = false, cards, stalled }: ChatThreadProps) {
+  /*
+   * INV-APP-118: the live mark is the sender's pending send or the kernel's
+   * verdict — never `conversation.state`. That is the server's session
+   * reading, which sits at `turn_pending` / `running` long after a turn
+   * ended: the spinner that never stopped (#1722 §1). The local wedge
+   * outranks both: a stuck conversation is not in motion whatever the
+   * kernel's cached verdict says about it.
+   */
+  const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. It is not `.thread` itself
@@ -680,7 +712,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
         ) : (
           <div className={styles.reply} data-nc-turn="agent">
             <Reply text={turn.text} />
-            {showLive && last && <span className={styles.live} aria-label="Working" />}
+            {showLive && last && <ActivityIndicator state="working" />}
           </div>
         )}
       </div>
@@ -692,7 +724,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
       <div className={styles.empty} data-nc-thread-empty="">
         <p className={styles.emptyLead}>{live ? 'The agent is working.' : 'Nothing said yet.'}</p>
         <p className={styles.emptyHint}>{live ? 'Messages will appear here.' : 'Write below and it starts here.'}</p>
-        {live && <span className={styles.live} aria-label="Working" />}
+        {live && <ActivityIndicator state="working" />}
       </div>
     );
   }
@@ -787,8 +819,20 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
             rows it is showing (`tailCarriesLiveMark`); otherwise this
             placeholder keeps the one mark visible. */}
         {live && !tailCarriesLiveMark && (
-          <p className={styles.reply}><span className={styles.live} aria-label="Working" /></p>
+          <p className={styles.reply}><ActivityIndicator state="working" /></p>
         )}
+        {/* The drawer's ONE accessible "in motion" fact (#1722 §5.3), said
+            whenever the thread is live and whichever element owns the visual
+            mark: every indicator is decorative (`aria-hidden`), the row's
+            `, working` suffix is out in the list, and a reader focused inside
+            the drawer is on neither — so the word is said here, once, and the
+            marks in this thread carry no text. The word is the one vocabulary
+            (`activityLabelOf`, `core/domain/activity.ts`), not a literal of
+            this file's own. It sits after the placeholder rather than before it
+            because the stylesheet spaces `.thread`'s children by adjacency
+            (`.exchange + *`), and a hidden span between an exchange and the
+            placeholder would move the placeholder. */}
+        {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}
         <div ref={endRef} aria-hidden="true" />
       </div>
     </div>
@@ -1161,7 +1205,7 @@ function ActivityLine({ activity, entry, live }: {
           && <span className={styles.activityTarget}>{activity.target}</span>}
         {activity.state === 'failed' && <span className={styles.activityFailure}>Failed</span>}
         {duration !== null && <span className={styles.activityDuration}>{duration}</span>}
-        {running && live && <span className={styles.live} aria-label="Working" />}
+        {running && live && <ActivityIndicator state="working" />}
       </span>
       {activity.detail !== null && (
         <span className={styles.activityDetail}>{activity.detail}</span>

@@ -50,7 +50,7 @@ test('refreshing an exited terminal shows its final state while secondary reads 
     await page.reload();
     await expect(page.getByText('Session exited.')).toBeVisible();
     await expect(page.getByText('Starting terminal…')).toHaveCount(0);
-    await expect(page.getByRole('img', { name: 'status Working' })).toHaveCount(0);
+    await expect(page.locator('[data-nc-card-cell] [data-nc-activity]')).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath('terminal-exited.png'), fullPage: true });
     expect(errors).toEqual([]);
   } finally {

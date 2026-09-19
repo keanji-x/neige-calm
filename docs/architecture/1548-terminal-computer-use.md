@@ -152,6 +152,10 @@ node scripts/spike/terminal-capture-check.mjs \
 The check saves a PNG with Chinese text and reverse-video menu highlighting,
 rejects disconnects before and during capture, and asserts no terminal input.
 It covers the actual nested card/surface DOM, not a hand-written replacement.
+It mounts the card with the kernel's verdict passed explicitly
+(`activity: 'working'`; the head's indicator comes from that prop alone,
+#1722 INV-APP-118), waits for the head's connection text to clear, and asserts
+the head shows that verdict.
 Inspect the PNG as part of the probe; these checks do not prove visual fidelity
 for arbitrary TUI programs or genuine astry image input.
 

@@ -72,7 +72,7 @@ function renderBoard() {
   return render(
     <BoardHost
       host={host}
-      items={[Object.freeze({ card, title: 'Build log', originalIndex: 0 })]}
+      items={[Object.freeze({ card, title: 'Build log', originalIndex: 0, activity: null })]}
       activeCardId="card-a"
       visible
     />,
@@ -175,6 +175,7 @@ describe('BoardHost lifecycle', () => {
       card: { type: 'board-host-term' as const, id, title: null, terminalId: `t-${id}` },
       title: id,
       originalIndex,
+      activity: null,
     }));
     const rect = (top: number, bottom: number): DOMRect => ({
       x: 0, y: top, top, bottom, left: 0, right: 100,
@@ -207,7 +208,7 @@ describe('BoardHost lifecycle', () => {
     const hostA = createCardHost(registry);
     const hostB = createCardHost(registry);
     const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1', cwd: null, gateCwd: null };
-    const items = [Object.freeze({ card, title: 'Build log', originalIndex: 0 })];
+    const items = [Object.freeze({ card, title: 'Build log', originalIndex: 0, activity: null })];
     const board = render(
       <BoardHost host={hostA} items={items} activeCardId="card-a" visible />,
     );
@@ -237,7 +238,7 @@ describe('BoardHost lifecycle', () => {
     const hostA = createCardHost(registry);
     const hostB = createCardHost(registry);
     const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1', cwd: null, gateCwd: null };
-    const items = [Object.freeze({ card, title: 'Build log', originalIndex: 0 })];
+    const items = [Object.freeze({ card, title: 'Build log', originalIndex: 0, activity: null })];
     const board = render(
       <BoardHost host={hostA} items={items} activeCardId="card-a" visible={false} />,
     );
@@ -299,7 +300,7 @@ describe('BoardHost card removal', () => {
       <BoardHost
         host={host}
         items={[Object.freeze({
-          card, title: 'Build log', originalIndex: 0, deletable: options.deletable,
+          card, title: 'Build log', originalIndex: 0, deletable: options.deletable, activity: null,
         })]}
         activeCardId="card-a"
         visible
@@ -347,7 +348,7 @@ describe('BoardHost card removal', () => {
     render(
       <BoardHost
         host={host}
-        items={[Object.freeze({ card, title: 'Mystery', originalIndex: 0 })]}
+        items={[Object.freeze({ card, title: 'Mystery', originalIndex: 0, activity: null })]}
         activeCardId={null}
         visible
         onRemoveCard={onRemoveCard}

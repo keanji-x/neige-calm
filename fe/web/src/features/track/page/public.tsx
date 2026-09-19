@@ -23,6 +23,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 
 import { createPortal } from 'react-dom';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 
+import type { ActivityOrigin } from '../../../../../core/domain/activity.ts';
 import { independentTaskUnavailableReason } from '../../../../../core/domain/independent-task.ts';
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import {
@@ -69,8 +70,23 @@ import styles from './page.module.css';
  */
 type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
 
+/**
+ * One item of the Notifications aside — the route's projection of one
+ * `TrackActivity.attentionItems` entry (#1722 §4.1), so the aside lists every
+ * thing the kernel says needs a person: a card's input request, a failed task,
+ * a wedged or dead session, a blocked lifecycle.
+ */
 export type TrackInputNotification = Readonly<{
-  cardId: string;
+  /** Which kind of thing this is about — the overlay item's `source`. */
+  origin: ActivityOrigin;
+  /** Card id, task key, session id or track id — whichever `origin` names.
+   *  With `origin` it is the row's key: one card can carry two items (a task
+   *  and its session), and two items are two rows. */
+  id: string;
+  /** The card Review opens, or `null` — a lifecycle item, or a task with no
+   *  worker card — in which case Review lands on the track itself. */
+  cardId: string | null;
+  /** The human-read label: `Planner`, the card's title, the task key, … */
   source: string;
   message: string;
   state: 'awaiting-input' | 'errored';
@@ -88,6 +104,16 @@ export type TrackPageProps = Readonly<{
    * carries what the kernel says about the run.
    */
   tasks: readonly ReportTaskRow[];
+  /**
+   * The cards the board can draw, as `app/router` asks the registry (the ids
+   * of its `gridItems`). Required: this page is a pure renderer and holds no
+   * registry of its own, so the answer must arrive resolved — a default here
+   * would be a second, silent verdict. It gates only whether a Task row's kind
+   * is an `open-card` control (`core/view/track-page.ts`, `taskRow`); the
+   * row's activity is looked up by the worker id whether or not the card is in
+   * this set (#1722 S2b r5).
+   */
+  openableCards: ReadonlySet<string>;
   /** Report anchors rendered as a separate mobile list instead of a margin rail. */
   outlineItems?: readonly ReportOutlineItem[];
   /** The panel card's second module, composed by `app/router` (features/chat). */
@@ -98,9 +124,11 @@ export type TrackPageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
-  /** Actionable card-scoped requests, projected by the route from status overlays. */
+  /** Everything the kernel says needs a person on this track, projected by
+   *  the route from the activity overlay's items (`attentionItems`). */
   inputNotifications?: readonly TrackInputNotification[];
-  onOpenInputNotification?: (cardId: string) => void;
+  /** Review: the item's card when it has one, else the track itself. */
+  onOpenInputNotification?: (cardId: string | null) => void;
   /** The route's conversation drawer is open. Input notifications compact
    *  beside it instead of covering its composer. */
   conversationOpen?: boolean;
@@ -183,7 +211,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 }
 
 export function TrackPage({
-  track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
+  track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onOpenInputNotification,
   cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
@@ -232,7 +260,7 @@ export function TrackPage({
   const resumeFeedback = useOperationFeedback();
   const [resumePending, setResumePending] = useState(false);
   const notificationSignature = inputNotifications
-    .map(({ cardId, state, updatedAt }) => `${cardId}:${state}:${updatedAt}`)
+    .map(({ origin, id, state, updatedAt }) => `${origin}:${id}:${state}:${updatedAt}`)
     .join('|');
   const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
   const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
@@ -327,7 +355,9 @@ export function TrackPage({
    * stay hand-composed: they are not in `rowModules`, and pushing them in would
    * let this page's navigation decide the view model's contents.
    */
-  const panelView = deriveTrackPageView({ cards, tasks });
+  /* `activity` is the track itself: `Track` carries the overlay-derived
+     `cards` verdicts, and that field is all the derivation is typed to read. */
+  const panelView = deriveTrackPageView({ cards, tasks, activity: track, openableCards });
   const desktopPainter = makeDesktopPainter({
     onOpenCard,
     onOpenTask,
@@ -826,7 +856,7 @@ export function TrackPage({
               <ul className={styles.needsInputNoticeList}>
                 {inputNotifications.map((notification) => (
                   <li
-                    key={notification.cardId}
+                    key={`${notification.origin}:${notification.id}`}
                     className={styles.needsInputNoticeItem}
                     data-nc-notification-state={notification.state}
                   >
@@ -838,7 +868,11 @@ export function TrackPage({
                       <button
                         type="button"
                         className={styles.needsInputAction}
-                        aria-label={`Review ${notification.source} notification`}
+                        /* The message is part of the name: one card can carry two
+                           items (a killed worker is a task item and a session item,
+                           #1722 §4.1 C1), and two buttons named alike are one button
+                           to a reader who cannot see which row each sits in. */
+                        aria-label={`Review ${notification.source} notification: ${notification.message}`}
                         onClick={() => onOpenInputNotification(notification.cardId)}
                       >Review</button>
                     )}

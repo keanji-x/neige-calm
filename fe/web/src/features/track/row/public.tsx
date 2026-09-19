@@ -17,6 +17,7 @@
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { useId } from 'react';
+import { activityLabelOf, activityNameBit } from '../../../../../core/domain/activity.ts';
 import {
   lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,
 } from '../../../../../core/domain/track.ts';
@@ -104,12 +105,19 @@ export function TrackRow({
    * value as the dot, never from the lifecycle: a `planning` track whose
    * planner is idle must neither spin nor be read as "running", and a `done`
    * track with work still in flight must do both. The lifecycle phrase stays
-   * in the name as what it is — a phase.
+   * in the name as what it is — a phase. The bit's words are `activityNameBit`,
+   * shared with the phone's Track list row (`app/shell/mobile-tracks.tsx`).
+   *
+   * `unread` is never part of the name; it is the button's *description*, and
+   * only in the folded state — `activity === 'unread'`, not the raw receipt.
+   * A working / attention / failed dot already carries its own name bit, so
+   * an unread track that is also working is "working" and nothing more; the
+   * receipt is not a second fact said beside it. The phone row follows the
+   * same rule and the conversation row describes off the same fold; the word
+   * is `activityLabelOf('unread')` on all of them (§5.3).
    */
   const activity = trackActivityState(track, unread);
-  const activityBit = activity === 'working' ? 'working'
-    : activity === 'attention' ? 'waiting on you'
-      : activity === 'failed' ? 'needs attention' : '';
+  const activityBit = activityNameBit(activity);
   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}, ${lifecycle}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
 
@@ -155,7 +163,7 @@ export function TrackRow({
         ].filter(Boolean).join(' ')}
         aria-current={active ? 'page' : undefined}
         aria-label={label}
-        aria-describedby={unread ? descriptionId : undefined}
+        aria-describedby={activity === 'unread' ? descriptionId : undefined}
         onClick={() => onOpen(track.id)}
       >
         {!trailingStatus && (
@@ -176,7 +184,7 @@ export function TrackRow({
         )}
       </button>
 
-      {unread && <span hidden id={descriptionId}>Unread updates</span>}
+      {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}
       {trailingStatus && activity !== 'quiet' && <span className={styles.statusSlot} aria-hidden="true">
         <ActivityIndicator state={activity} />
       </span>}

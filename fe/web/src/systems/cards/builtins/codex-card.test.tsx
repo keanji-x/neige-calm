@@ -34,6 +34,7 @@ describe('codex card component', () => {
       <Component
         card={{ type: 'codex', id: 'x1', title: null, terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
+        activity={null}
       />,
     );
 
@@ -60,6 +61,7 @@ describe('codex card component', () => {
       <Component
         card={{ type: 'codex', id: 'x1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
+        activity={null}
       />,
     );
     expect(screen.getByText('tencent-valuation')).toBeTruthy();
@@ -74,6 +76,7 @@ describe('codex card component', () => {
       <Component
         card={{ type: 'codex', id: 'x1', title: null, terminalId: null, sessionState: 'starting', cwd: null, gateCwd: null }}
         host={fakeHost()}
+        activity={null}
       />,
     );
     expect(screen.getByText('Starting codex…')).toBeTruthy();
@@ -92,7 +95,7 @@ describe('worker checkout visibility', () => {
     });
     if (card === null) throw new Error('worker card must resolve');
     const Component = CODEX_CARD_ENTRY.component;
-    render(<Component card={card} host={fakeHost()} />);
+    render(<Component card={card} host={fakeHost()} activity={null} />);
     expect(screen.getByText('/repo/.claude/worktrees/track/worker')).toBeTruthy();
     expect(screen.getByText('Working directory')).toBeTruthy();
     expect(screen.getByText('Gate working directory')).toBeTruthy();

@@ -46,18 +46,19 @@
 // `data-nc-row` goes red there. Read it as hygiene either way; the oracle is the
 // entry suite.
 
-import { cleanup, screen } from '@testing-library/react';
+import { cleanup, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { activityLabelOf, type ActivityState } from '../../../../../core/domain/activity.ts';
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
-import type { CardWire } from '../../../../../core/domain/track.ts';
+import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
 import { MARKER } from '../../../../../core/view/panel.ts';
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeMobilePainter } from './mobile-painter.tsx';
 import pageSource from './public.tsx?raw';
-import { card, renderPage } from './test-fixtures.tsx';
+import { card, openableCardsOf, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 
@@ -89,8 +90,10 @@ function mobilePanel(container: Element): Element {
   return root!;
 }
 
+/* `openableCards` mirrors `renderPage`'s default so the two sides of each
+   comparison below derive from one and the same input. */
 const cardsModule = (cards: readonly CardWire[]) =>
-  deriveTrackPageView({ cards, tasks: [] }).rowModules.filter((module) => module.key === 'cards');
+  deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(cards, []) }).rowModules.filter((module) => module.key === 'cards');
 
 /*
  * The Tasks fixture (S1b-4b), written as `deriveReportTasks` produces its rows
@@ -141,7 +144,7 @@ const TASKS: readonly ReportTaskRow[] = [
 ];
 
 const tasksModule = (tasks: readonly ReportTaskRow[]): readonly RowModuleView[] =>
-  deriveTrackPageView({ cards: [], tasks }).rowModules.filter((module) => module.key === 'tasks');
+  deriveTrackPageView({ cards: [], tasks, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf([], tasks) }).rowModules.filter((module) => module.key === 'tasks');
 
 // ── The fixture shape guard ──────────────────────────────────────────────────
 
@@ -385,6 +388,50 @@ describe('the rendered mobile Tasks page projects its view model faithfully', ()
     expect(text).not.toContain('Ready');
     expect(text).not.toContain('Not ready');
     expect(text).toContain('failed');
+  });
+});
+
+// ── #1722 §5.3 — the same indicators on both surfaces ────────────────────────
+
+/*
+ * The projection checker does not read `PanelRow.activity` (its standing list
+ * is title / kind / badges / status / actions), so the indicator is held here
+ * by a same-set comparison over the real page: for each row module, the map
+ * `row id → [data-nc-activity, spoken label]` painted inside the mobile panel
+ * equals the one painted inside the desktop panel. The spoken half (#1722 S2b
+ * r1) is read against the one vocabulary — for a row with a verdict, the text
+ * `activityLabelOf(state)` must be inside the row; for a row without one, no
+ * word of the vocabulary may be. The page head is excluded on purpose — the
+ * mobile head paints no indicator (a declared difference, #1722 §5.3) — which
+ * is why the comparison is scoped to the two panel subtrees and not the page.
+ */
+describe('mobile and desktop paint the same data-nc-activity set', () => {
+  const VOCABULARY = /^(Working|Needs input|Needs attention|Unread updates)$/;
+  const activityByRow = (root: Element): Record<string, [string | null, string | null]> => Object.fromEntries(
+    [...root.querySelectorAll('[data-nc-row]')].map((row): [string, [string | null, string | null]] => {
+      const state = row.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
+      const spoken = within(row as HTMLElement).queryByText(VOCABULARY)?.textContent ?? null;
+      return [row.getAttribute('data-nc-row') ?? '', [state, spoken]];
+    }),
+  );
+  const verdicts = track({ cards: { 'card-1': 'working', 'card-9': 'failed' } });
+
+  it.each(['cards', 'tasks'] as const)('on the %s module', (panel) => {
+    const { container } = renderPage({ cards: CARDS, tasks: TASKS, track: verdicts, panel });
+    const mobile = activityByRow(mobilePanel(container));
+    const desktop = activityByRow(container.querySelector('[data-nc-desktop-panel]')!);
+    const module = new Set((panel === 'cards' ? cardsModule(CARDS) : tasksModule(TASKS))
+      .flatMap((view) => view.rows.map((row) => row.id)));
+    const desktopModule = Object.fromEntries(Object.entries(desktop).filter(([id]) => module.has(id)));
+    /* Non-vacuous: the fixture reaches a working card, a failed worker-card
+       task, and rows with no verdict at all. */
+    expect(Object.values(desktopModule).map(([state]) => state)).toContain(panel === 'cards' ? 'working' : 'failed');
+    expect(Object.values(desktopModule).map(([state]) => state)).toContain(null);
+    /* Each side speaks exactly its own verdict, in the one vocabulary. */
+    for (const [state, spoken] of [...Object.values(desktopModule), ...Object.values(mobile)]) {
+      expect(spoken).toBe(state === null ? null : activityLabelOf(state as ActivityState));
+    }
+    expect(mobile).toEqual(desktopModule);
   });
 });
 

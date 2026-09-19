@@ -10,7 +10,7 @@ import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
   CONVERSATION_STATE_SOURCE, conversationCreateFailure,
   createSerialWriter, createTrackConversationOperation,
-  harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages, isLiveConversation,
+  harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
   mergeTranscript, plannerQueueWriteFailure, readableCommand,
   reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
@@ -270,19 +270,18 @@ describe('track conversations', () => {
   });
 
   /*
-   * A row is rejected, not coerced. `state` is the field that matters: it is
-   * the one the list renders a live dot from, and the server's contract is that
-   * it is either one of the seven session states or `null` because the LEFT
-   * JOIN found no session. A schema that let an unknown string through would
-   * hand the renderer a state nobody defined behaviour for.
+   * A row is rejected, not coerced. `state` is the server's reading of the
+   * session, and its contract is that it is either one of the seven session
+   * states or `null` because the LEFT JOIN found no session. A schema that let
+   * an unknown string through would hand a consumer a state nobody defined
+   * behaviour for. (No indicator reads it any more — #1722 §5.3 — but the
+   * drawer's baseline and the open row's local phase still do.)
    */
   it('rejects a row whose session state is not one the kernel can produce', () => {
     expect(trackConversationsOperation('w').responseSchema.safeParse([{ ...row, state: 'dormant' }]).success)
       .toBe(false);
     expect(trackConversationsOperation('w').responseSchema.safeParse([{ ...row, state: null }]).success)
       .toBe(true);
-    expect(isLiveConversation(null)).toBe(false);
-    expect(isLiveConversation('turn_pending')).toBe(true);
   });
 
   it.each([

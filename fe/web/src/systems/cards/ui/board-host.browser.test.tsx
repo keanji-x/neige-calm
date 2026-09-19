@@ -41,6 +41,7 @@ it('brings a newly selected card into the board viewport', async () => {
     card: { type: 'board-scroll-term' as const, id: `card-${index}`, title: `Worker ${index}` },
     title: `Worker ${index}`,
     originalIndex: index,
+    activity: null,
   }));
 
   function Harness() {

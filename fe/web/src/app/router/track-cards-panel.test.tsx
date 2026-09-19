@@ -130,6 +130,13 @@ const TASK_DIAGNOSTICS = [
   { blockId: 'b-codex', key: 'codex-adapter', schedulable: true, status: 'running', workerCardId: ORDINARY_CODEX.id, diagnostics: [] },
   { blockId: 'b-unknown', key: 'no-adapter', schedulable: true, status: 'running', workerCardId: UNCLAIMED_CARD.id, diagnostics: [] },
 ];
+/** The kernel's `kernel/track/activity` row for `w1` with per-card verdicts
+ *  (#1722 §4.1) — the shape `track-conversation.test.tsx` seeds. */
+const activityOverlay = (cards: readonly { card_id: string; state: 'working' | 'input' | 'failed' }[]) => ({
+  id: 'activity-w1', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity',
+  payload: { schemaVersion: 1, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
+  updated_at: 3,
+});
 
 function setup(
   cards: readonly CardWire[] = CARDS,
@@ -138,6 +145,9 @@ function setup(
     /* A thunk is allowed so a test can change the kernel's answer between
        reads — which is the only way to observe a refetch at all. */
     taskDiagnostics = [] as readonly unknown[] | (() => readonly unknown[]),
+    /* The track detail's overlay rows — the `kernel/track/activity` row is
+       what every indicator on the page reads (INV-APP-118). */
+    overlays = [] as readonly unknown[],
   } = {},
 ) {
   let reportReads = 0;
@@ -155,7 +165,7 @@ function setup(
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/overlays?entity_kind=track') return Promise.resolve(ok([]));
       if (request.path === '/api/tracks/w1') {
-        return Promise.resolve(ok({ track: TRACK, can_resume: false, cards: [...cards], overlays: [] }));
+        return Promise.resolve(ok({ track: TRACK, can_resume: false, cards: [...cards], overlays: [...overlays] }));
       }
       if (request.path === '/api/tracks/w1/report') {
         reportReads += 1;
@@ -468,6 +478,49 @@ describe('track route TASKS panel', () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
     await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
+  });
+
+  /*
+   * #1722 S2b r5 (Codex P2) — identity and openability are two facts, and this
+   * is the one place they meet: `no-adapter` is dispatched onto `card-unclaimed`,
+   * a card no entry claims. The route used to null the task's `workerCardId`
+   * so the kind would not become a control — and that erased the id the TASKS
+   * row keys its activity verdict by (INV-APP-118): the kernel said the card
+   * was working, the CARDS row showed it (INV-CARD-226 keeps the card listed),
+   * the TASKS row showed nothing. Now the id stays and only the control is
+   * gated, on the same openable set `TaskRecovery` reads.
+   *
+   * The r5 mutation (the route nulls the id again, or the derivation looks
+   * the verdict up through the openable subset — manifest
+   * `s2b-task-row-loses-worker-identity`): this case goes red at the first
+   * `waitFor`; the twin below stays green.
+   */
+  it('shows the kernel verdict on a task whose worker no adapter claims, and still offers no control', async () => {
+    setup(TASK_CARDS, {
+      taskDiagnostics: TASK_DIAGNOSTICS,
+      overlays: [activityOverlay([{ card_id: UNCLAIMED_CARD.id, state: 'working' }])],
+    });
+    const list = within(await tasks());
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [data-nc-activity]')
+      ?.getAttribute('data-nc-activity')).toBe('working'));
+    // The kind is still a word, not a control: no button, no destination hint.
+    expect(list.getByText('claude')).toBeTruthy();
+    expect(list.queryByRole('button', { name: 'claude' })).toBeNull();
+    expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [title^="Open the worker card"]')).toBeNull();
+    // The CARDS row for the same card reads the same verdict — the two modules agree.
+    expect(document.querySelector('[data-nc-card-inventory] [data-nc-row="card-unclaimed"] [data-nc-activity]')
+      ?.getAttribute('data-nc-activity')).toBe('working');
+  });
+
+  it('shows the kernel verdict and the control on a task whose worker the registry can draw', async () => {
+    setup(TASK_CARDS, {
+      taskDiagnostics: TASK_DIAGNOSTICS,
+      overlays: [activityOverlay([{ card_id: UNKNOWN_TERMINAL.id, state: 'failed' }])],
+    });
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-activity]')
+      ?.getAttribute('data-nc-activity')).toBe('failed'));
+    const control = within(await tasks()).getByRole('button', { name: 'terminal' });
+    expect(control.getAttribute('title')).toBe('Open the worker card for has-adapter');
   });
 
   it('carries execution diagnostics through the real route into the report reference', async () => {

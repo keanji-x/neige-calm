@@ -382,6 +382,10 @@ export function AppShell({
                 areaId={navigationArea?.id}
                 onCreateArea={requestCreateArea}
                 onEditArea={requestEditArea}
+                /* The rail's receipt, key for key (`sidebar.tsx`): opening a
+                   track on the phone clears the phone list's dot, and the
+                   rail's, and vice versa (#1722 §5.2). */
+                isUnread={(track) => preferences.isUnread('track', track.id, track.activityAt ?? 0)}
                 onOpenTrack={(trackId) => {
                   closeMobileSection();
                   go({ name: 'track', trackId, from: areaIdOf(trackId) === undefined ? 'pages' : 'area' });

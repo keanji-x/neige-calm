@@ -59,9 +59,21 @@ function mountTerminal(status: 'running' | 'starting' = 'running', width?: numbe
   });
   if (card === null) throw new Error('Missing terminal');
   return render(<div style={{ width }}><BoardHost host={createCardHost(registry, { recovery })} items={[
-    { card, title: 'Terminal', originalIndex: 0, deletable: true },
+    { card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null },
   ]} visible activeCardId="card-1" onRemoveCard={() => {}} /></div>);
 }
+
+/* The head's activity indicator. Its absence after a successful connect is the
+   assertion that matters here (#1722 §5.3, INV-APP-118): the kernel's verdict
+   is `BoardHostItem.activity`, `null` in every mount below, and a socket
+   coming up must not paint one — the connection is this tab's, not the
+   card's work. */
+const headIndicator = () => document.querySelector('[data-nc-card-cell] [data-nc-activity]');
+/* The head's words. `null` is the connected state and nothing else: attached and
+   not ended, only `connected` prints no text (`Connecting…` / `Disconnected` /
+   `Connection error` are the other three) — so "no text" is the positive
+   evidence that the socket came up before the indicator is asserted absent. */
+const headStatusText = () => document.querySelector('[data-nc-card-drag] [role="status"]')?.textContent ?? null;
 
 function buffer() {
   return (window as unknown as { __xtermDumps__?: Record<string, () => string> }).__xtermDumps__?.['pty-1']?.() ?? '';
@@ -76,16 +88,18 @@ it('shows a refused connection and reconnects the same terminal without creating
   await waitFor(() => expect(sockets).toHaveLength(1));
   act(() => sockets[0].disconnect());
   expect(await screen.findByText('Disconnected')).toBeTruthy();
-  expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
+  expect(headIndicator()).toBeNull();
   await page.screenshot({ path: 'test-results/terminal-disconnected.png' });
   await userEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
   await waitFor(() => expect(sockets).toHaveLength(2));
   expect(sockets[1].url).toBe(sockets[0].url);
   expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
   act(() => sockets[1].open('restored prompt'));
-  expect(await screen.findByRole('img', { name: 'status Working' })).toBeTruthy();
+  await waitFor(() => expect(headStatusText()).toBeNull());
+  expect(headIndicator()).toBeNull();
   act(() => sockets[0].message({ ProtocolError: { code: 'NotOwner', message: 'Stale connection', expected_version: null } }));
-  expect(screen.getByRole('img', { name: 'status Working' })).toBeTruthy();
+  expect(headStatusText()).toBeNull();
+  expect(headIndicator()).toBeNull();
   expect(sockets[1].sent.some((frame) => typeof frame === 'object' && 'ClientHello' in frame
     && frame.ClientHello.initial_scrollback === 'All')).toBe(true);
   mounted.unmount();
@@ -132,7 +146,7 @@ it.each(['running', 'starting'] as const)('retains process exit truth when REST 
     sockets[0].disconnect();
   });
   expect(await screen.findByText('Session exited.')).toBeTruthy();
-  expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
+  expect(headIndicator()).toBeNull();
   expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
 });
 
@@ -155,7 +169,8 @@ it('accepts input and later automatically reconnects after a recoverable ownersh
   await userEvent.keyboard('x');
   await waitFor(() => expect(sockets[0].sent.filter((frame) => typeof frame === 'object' && 'Input' in frame)).toHaveLength(1));
   expect(screen.queryByText('Connection error')).toBeNull();
-  expect(screen.getByRole('img', { name: 'status Working' })).toBeTruthy();
+  expect(headStatusText()).toBeNull();
+  expect(headIndicator()).toBeNull();
   act(() => access.invalidate('recovering')); act(() => access.change('connected'));
   await waitFor(() => expect(sockets).toHaveLength(2));
   expect(sockets[1].url).toBe(sockets[0].url);
@@ -184,7 +199,7 @@ it.each(['UnsupportedVersion', 'UnsupportedEncoding', 'BadHandshake', 'BadSequen
     input.focus();
     await userEvent.keyboard('x');
     expect(sockets[0].sent.filter((frame) => typeof frame === 'object' && 'Input' in frame)).toHaveLength(0);
-    expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
+    expect(headIndicator()).toBeNull();
     if (failure === 'closed') expect(screen.getByRole('button', { name: 'Reconnect' })).toBeTruthy();
     if (failure !== 'closed' && failure !== 'exited') expect(screen.getByRole('alert').textContent).toContain('Cannot continue this connection');
     act(() => access.invalidate('recovering')); act(() => access.change('connected'));
@@ -236,7 +251,8 @@ it('bundled recovery fences input and automatically reattaches the same terminal
   expect(sockets).toHaveLength(0);
   act(() => access.change('connected')); await waitFor(() => expect(sockets).toHaveLength(1));
   act(() => sockets[0].open('old retained prompt'));
-  await waitFor(() => expect(screen.getByRole('img', { name: 'status Working' })).toBeTruthy());
+  await waitFor(() => expect(headStatusText()).toBeNull());
+  expect(headIndicator()).toBeNull();
   act(() => access.invalidate('recovering'));
   expect(sockets[0].readyState).toBe(3);
   const textarea = document.querySelector<HTMLTextAreaElement>('[data-nc-terminal-id] textarea')!;

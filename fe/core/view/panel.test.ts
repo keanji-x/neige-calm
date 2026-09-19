@@ -14,7 +14,7 @@ import {
 } from './panel.js';
 
 function row(id: string, title: string, actions: readonly RowAction[] = []): PanelRow {
-  return { id, title, kind: null, badges: [], status: null, actions };
+  return { id, title, kind: null, badges: [], status: null, activity: null, actions };
 }
 
 function module(rows: readonly PanelRow[]): RowModuleView {
@@ -174,6 +174,7 @@ describe('paintModule action filtering', () => {
       kind: 'shell',
       badges: [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
       status: { token: 'running', phrase: 'running' },
+      activity: null,
       actions: [OPEN, DELETE],
     };
     paintModule(painter, module([source]));

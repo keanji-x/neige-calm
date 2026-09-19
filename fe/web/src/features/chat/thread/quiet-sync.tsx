@@ -38,6 +38,7 @@
 
 import type { ReactNode } from 'react';
 
+import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import {
   REPORT_EDIT_AUTHORS, type QuietSyncGroup, type QuietSyncOutcome, type ReportEditAuthor,
 } from '../../../../../core/domain/conversation-quiet-sync.ts';
@@ -97,7 +98,7 @@ export function QuietSyncFold({ group, time, live, children }: QuietSyncFoldProp
         <span className={styles.label} data-nc-quiet-sync-label="">
           Synced · {line} · <span className={styles.time}>{time}</span>{verdict}
         </span>
-        {live && <span className={styles.live} aria-label="Working" />}
+        {live && <ActivityIndicator state="working" />}
       </summary>
       <div className={styles.body} data-nc-quiet-sync-body="">
         {children}

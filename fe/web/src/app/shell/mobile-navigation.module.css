@@ -121,4 +121,13 @@
     font-size: var(--text-xs);
     color: var(--text-3);
   }
+
+  /* The trailing edge is status (§3.1), as on the rail row: the indicator sits
+     after the copy, and the copy keeps its width when there is nothing to show. */
+  .trackActivity {
+    display: flex;
+    flex: none;
+    align-items: center;
+    margin-inline-start: auto;
+  }
 }
