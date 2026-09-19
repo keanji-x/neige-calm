@@ -142,6 +142,15 @@ describe('MobileTracks', () => {
     expect(name()).toBe('Responsive mobile UI');
     expect(description()).toBe('Unread updates');
 
+    // The description hangs on the FOLDED state, not on the receipt (#1722
+    // §5.3, the same rule as the rail row): unread under working is "working"
+    // — the dot and the name say so — and nothing describes it. The receipt
+    // is not said twice.
+    view.rerender(mount({ activityAt: 150, working: true }, (candidate) => (candidate.activityAt ?? 0) > 100));
+    expect(marker()).toBe('working');
+    expect(name()).toBe('Responsive mobile UI, working');
+    expect(description()).toBeNull();
+
     // The must-red for a lifecycle-driven spinner: a running phase with an
     // idle planner is the #1722 §1 bug, and it shows nothing at all.
     view.rerender(mount({ lifecycle: 'working', working: false }));

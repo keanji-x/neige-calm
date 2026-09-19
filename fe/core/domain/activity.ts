@@ -50,9 +50,10 @@ export function activityStateOf(
 /**
  * The spoken counterpart of an indicator state — the ONE vocabulary every
  * accessible label or description of an indicator draws from (#1722 §5.3):
- * a conversation row's `aria-describedby` text, and the visually hidden text
- * an indicator carries where no owning control names the fact (the card and
- * task rows, the terminal card head). `quiet` has nothing to say.
+ * a conversation row's `aria-describedby` text, the `unread` description of
+ * a track row (rail and phone), and the visually hidden text an indicator
+ * carries where no owning control names the fact (the card and task rows,
+ * the terminal card head). `quiet` has nothing to say.
  */
 export function activityLabelOf(state: ActivityState): string | null {
   switch (state) {
