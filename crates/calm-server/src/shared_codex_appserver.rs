@@ -4,11 +4,12 @@
 //! server. It deliberately does not route any card traffic to this daemon yet;
 //! later PRs switch callers over through the public methods here.
 
+#[cfg(target_os = "macos")]
+mod macos_process;
 mod preserving_recovery;
 
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::os::unix::io::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -4497,6 +4498,7 @@ enum SignalScope {
     Group { pgid: i32 },
     /// Signal a bare pid — ONLY for `reap_listener_if_alive`'s
     /// getpgid-failure fallback, where no valid pgid is derivable.
+    #[cfg(target_os = "linux")]
     Pid { pid: i32 },
 }
 
@@ -4506,6 +4508,7 @@ impl SignalScope {
             SignalScope::Group { pgid } => {
                 signal_process_group(pgid, signal);
             }
+            #[cfg(target_os = "linux")]
             SignalScope::Pid { pid } => {
                 // SAFETY: kill(2) on a pid this supervisor verified/derived.
                 unsafe {
@@ -4518,6 +4521,7 @@ impl SignalScope {
     fn describe(&self) -> (&'static str, i32) {
         match *self {
             SignalScope::Group { pgid } => ("pgid", pgid),
+            #[cfg(target_os = "linux")]
             SignalScope::Pid { pid } => ("pid", pid),
         }
     }
@@ -4536,6 +4540,7 @@ enum ExitWait<'a> {
     },
     /// `reap_listener_if_alive` targets: `/proc` presence poll (a
     /// post-signal zombie counts as exited).
+    #[cfg(target_os = "linux")]
     ProcPresence { pid: i32 },
 }
 
@@ -4672,6 +4677,7 @@ async fn terminate_group_with_grace(
             .await,
             None,
         ),
+        #[cfg(target_os = "linux")]
         ExitWait::ProcPresence { pid } => (
             poll_leader_exit(deadline, || {
                 if !proc_pid_present(pid) {
@@ -4742,6 +4748,7 @@ async fn terminate_group_with_grace(
                         "non-owned leader dead (zombie or reaped); swept remaining group members individually instead of group SIGKILL"
                     );
                 }
+                #[cfg(target_os = "linux")]
                 SignalScope::Pid { .. } => {
                     // Pid-fallback scope: the only known target IS the
                     // dead leader; there is no pgid to enumerate and a
@@ -4974,35 +4981,31 @@ async fn handle_thread_started_notification(
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()> {
     let Ok(stream) = UnixStream::connect(sock_path).await else {
         return Ok(());
     };
 
-    let fd = stream.as_raw_fd();
-    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut cred_len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let rc = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            &mut cred as *mut _ as *mut libc::c_void,
-            &mut cred_len,
-        )
+    let peer_pid = match stream.peer_cred().and_then(|cred| {
+        cred.pid().filter(|pid| *pid > 0).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "listener peer PID is unavailable",
+            )
+        })
+    }) {
+        Ok(pid) => pid,
+        Err(error) => {
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                %error,
+                sock = %sock_path.display(),
+                "SO_PEERCRED failed; proceeding to unlink listener-bound socket without reap"
+            );
+            return Ok(());
+        }
     };
-    if rc != 0 {
-        let err = std::io::Error::last_os_error();
-        tracing::warn!(
-            target: "shared_codex_daemon::stop",
-            error = %err,
-            sock = %sock_path.display(),
-            "SO_PEERCRED failed; proceeding to unlink listener-bound socket without reap"
-        );
-        return Ok(());
-    }
-
-    let peer_pid = cred.pid;
     let pgid = unsafe { libc::getpgid(peer_pid) };
     if pgid < 0 {
         let err = std::io::Error::last_os_error();
@@ -5044,6 +5047,62 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
     )
     .await;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()> {
+    let Ok(stream) = UnixStream::connect(sock_path).await else {
+        return Ok(());
+    };
+    let peer_pid = stream
+        .peer_cred()
+        .map_err(|error| CalmError::CodexAppServer(format!("read listener credentials: {error}")))?
+        .pid()
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| CalmError::CodexAppServer("listener peer PID is unavailable".into()))?;
+    let observed_pgid = unsafe { libc::getpgid(peer_pid) };
+    let pgid = if observed_pgid > 1 && observed_pgid == peer_pid {
+        Some(observed_pgid)
+    } else {
+        if observed_pgid < 0 {
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                peer_pid,
+                %error,
+                sock = %sock_path.display(),
+                "getpgid failed; falling back to pid-only reap of stale socket listener"
+            );
+        } else {
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                peer_pid,
+                observed_pgid,
+                sock = %sock_path.display(),
+                "listener process group does not match its pid; falling back to pid-only reap"
+            );
+        }
+        None
+    };
+    // Register the kernel exit observation while the peer connection still
+    // proves which process owns the listener. The macOS path must not use the
+    // Linux `/proc` wait or unlink before the observed process has exited.
+    let watcher = macos_process::ExitWatcher::new(peer_pid).map_err(|error| {
+        CalmError::CodexAppServer(format!("watch listener process {peer_pid}: {error}"))
+    })?;
+    drop(stream);
+    macos_process::terminate_listener(watcher, pgid, grace)
+        .await
+        .map_err(|error| {
+            CalmError::CodexAppServer(format!("reap listener process {peer_pid}: {error}"))
+        })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+async fn reap_listener_if_alive(_sock_path: &Path, _grace: Duration) -> Result<()> {
+    Err(CalmError::CodexAppServer(
+        "stale listener reaping requires Linux or macOS".into(),
+    ))
 }
 
 struct SpawnedChildGuard {

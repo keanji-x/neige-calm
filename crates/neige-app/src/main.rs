@@ -3,8 +3,6 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 #[cfg(unix)]
-use std::os::fd::AsRawFd;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -2022,27 +2020,14 @@ fn signal_pid(pid: u32, signal: libc::c_int, name: &str) -> anyhow::Result<()> {
 
 #[cfg(unix)]
 fn unix_stream_peer_pid(stream: &tokio::net::UnixStream) -> anyhow::Result<u32> {
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&mut cred as *mut libc::ucred).cast(),
-            &mut len,
-        )
-    };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error()).context("getsockopt SO_PEERCRED");
-    }
-    cred.pid
+    stream
+        .peer_cred()
+        .context("read Unix socket peer credentials")?
+        .pid()
+        .filter(|pid| *pid > 0)
+        .context("Unix socket peer PID is unavailable")?
         .try_into()
-        .context("peer pid from SO_PEERCRED does not fit u32")
+        .context("Unix socket peer PID does not fit u32")
 }
 
 #[cfg(not(unix))]

@@ -234,7 +234,7 @@ impl PrivateHome {
             )?;
             io::sync_directory(&staging.join("home"))?;
             io::sync_directory(&staging)?;
-            // renameat2 publishes once; a concurrent prepare cannot replace a home.
+            // Publish once; a concurrent prepare cannot replace a home.
             use std::os::unix::ffi::OsStrExt;
             let from = std::ffi::CString::new(staging.as_os_str().as_bytes())
                 .map_err(|_| Error::Configuration("invalid staging path".into()))?;
@@ -242,18 +242,7 @@ impl PrivateHome {
                 .map_err(|_| Error::Configuration("invalid home path".into()))?;
             #[cfg(test)]
             io::faults::before_publish();
-            if unsafe {
-                libc::renameat2(
-                    libc::AT_FDCWD,
-                    from.as_ptr(),
-                    libc::AT_FDCWD,
-                    to.as_ptr(),
-                    libc::RENAME_NOREPLACE,
-                )
-            } != 0
-            {
-                return Err(std::io::Error::last_os_error().into());
-            }
+            io::rename_noreplace(&from, &to)?;
             self.publication_barrier(&receipt)?;
             Ok(())
         })();
