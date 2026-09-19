@@ -13,6 +13,6 @@ feature's own vocabulary — `activityLabelOf(state)` from
 `core/domain/activity.ts`, which this primitive may not import — and it is
 rendered visually hidden right after the marker; `data-nc-activity` stays on
 the visual span only. Do not pass it where a row's name or description
-already carries the fact (rail rows, Today rows, conversation rows) or where
-one spoken fact per region is already said elsewhere (the conversation
-thread's marks).
+already carries the fact (rail rows, Today rows, the phone's Track list rows,
+conversation rows) or where one spoken fact per region is already said
+elsewhere (the conversation thread's marks).

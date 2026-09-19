@@ -3,8 +3,10 @@
 import { useLayoutEffect, useRef } from 'react';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { List, ListItem } from '@astryxdesign/core/List';
+import { activityNameBit } from '../../../../core/domain/activity.ts';
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
-import { lifecycleLabel, visibleTracks, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
+import { lifecycleLabel, trackActivityState, visibleTracks, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
+import { ActivityIndicator } from '../../ui/activity-indicator/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { MobileList, MobileListEmpty, MobileListGroup } from '../../ui/mobile-list/public.tsx';
@@ -19,6 +21,8 @@ type MobileTracksProps = Readonly<{
   currentTrackId: string | undefined;
   onSelectArea: (areaId: string) => void;
   onOpenTrack: (trackId: string) => void;
+  /** The reader's receipt for a track, keyed exactly as the rail's (`sidebar.tsx`): one receipt, both surfaces. */
+  isUnread: (track: Track) => boolean;
   readError: string | null;
   readLoading: boolean;
   onRetryRead: () => void;
@@ -45,7 +49,7 @@ export function MobileTracks(props: MobileTracksProps) {
 
 function NavigationPage({
   view, areas, tracksByArea, areaId, currentTrackId, onBack, onCreateArea, onSelectArea, onEditArea, onOpenTrack, onNewTrack, onOpenSettings,
-  readError, readLoading, onRetryRead,
+  isUnread, readError, readLoading, onRetryRead,
 }: MobileTracksProps) {
   const shown = visibleAreas(areas);
   const selected = shown.find((candidate) => candidate.id === areaId);
@@ -66,13 +70,24 @@ function NavigationPage({
             onClick={() => onSelectArea(area.id)} />)}
           {shown.length === 0 && !readLoading && readError === null && <MobileListEmpty>No areas yet.</MobileListEmpty>}
         </List> : <MobileList>
-          {tracks.map((track) => <li key={track.id}>
-            <button type="button" className={styles.track} aria-label={trackDisplayTitle(track.title)}
-              aria-current={track.id === currentTrackId ? 'page' : undefined} onClick={() => onOpenTrack(track.id)}>
-              <span className={styles.trackIcon}><Icon name="file" /></span>
-              <span className={styles.trackCopy}><span>{trackDisplayTitle(track.title)}</span><span className={styles.trackMeta}>{lifecycleLabel(track.lifecycle)}</span></span>
-            </button>
-          </li>)}
+          {tracks.map((track) => {
+            /* The same state the rail row shows (INV-APP-118): the kernel's
+               activity overlay plus this reader's receipt, never the lifecycle.
+               The name's activity bit comes from that SAME value as the dot,
+               and the lifecycle phrase stays in `trackMeta` as the phase it is.
+               The indicator is decorative here: the button's name carries the
+               fact, so the primitive is not given anything to speak. */
+            const activity = trackActivityState(track, isUnread(track));
+            const activityBit = activityNameBit(activity);
+            return <li key={track.id}>
+              <button type="button" className={styles.track} aria-label={`${trackDisplayTitle(track.title)}${activityBit ? `, ${activityBit}` : ''}`}
+                aria-current={track.id === currentTrackId ? 'page' : undefined} onClick={() => onOpenTrack(track.id)}>
+                <span className={styles.trackIcon}><Icon name="file" /></span>
+                <span className={styles.trackCopy}><span>{trackDisplayTitle(track.title)}</span><span className={styles.trackMeta}>{lifecycleLabel(track.lifecycle)}</span></span>
+                {activity !== 'quiet' && <span className={styles.trackActivity} aria-hidden="true"><ActivityIndicator state={activity} /></span>}
+              </button>
+            </li>;
+          })}
           {readError === null && !readLoading && tracks.length === 0 && <MobileListEmpty>No tracks in this area yet.</MobileListEmpty>}
         </MobileList>}
       </MobileListGroup>

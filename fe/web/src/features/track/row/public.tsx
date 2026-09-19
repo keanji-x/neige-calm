@@ -17,6 +17,7 @@
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { useId } from 'react';
+import { activityNameBit } from '../../../../../core/domain/activity.ts';
 import {
   lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,
 } from '../../../../../core/domain/track.ts';
@@ -104,12 +105,11 @@ export function TrackRow({
    * value as the dot, never from the lifecycle: a `planning` track whose
    * planner is idle must neither spin nor be read as "running", and a `done`
    * track with work still in flight must do both. The lifecycle phrase stays
-   * in the name as what it is — a phase.
+   * in the name as what it is — a phase. The bit's words are `activityNameBit`,
+   * shared with the phone's Track list row (`app/shell/mobile-tracks.tsx`).
    */
   const activity = trackActivityState(track, unread);
-  const activityBit = activity === 'working' ? 'working'
-    : activity === 'attention' ? 'waiting on you'
-      : activity === 'failed' ? 'needs attention' : '';
+  const activityBit = activityNameBit(activity);
   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}, ${lifecycle}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  activityLabelOf, activityStateOf, attentionKindOf, attentionOfCard, cardActivityOf, cardActivityState,
+  activityLabelOf, activityNameBit, activityStateOf, attentionKindOf, attentionOfCard, cardActivityOf, cardActivityState,
   type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 
@@ -62,6 +62,24 @@ describe('activityLabelOf', () => {
     ['quiet', null],
   ])('%s → %s', (state, expected) => {
     expect(activityLabelOf(state)).toBe(expected);
+  });
+});
+
+describe('activityNameBit', () => {
+  /*
+   * The name-side vocabulary (#1722 §5.3): the rail row and the phone's Track
+   * list row append this after the title, so both surfaces read a track the
+   * same way. `unread` is deliberately silent here — it is the rail row's
+   * description, and a name that said "unread" would be a second carrier.
+   */
+  it.each<[ActivityState, string]>([
+    ['working', 'working'],
+    ['attention', 'waiting on you'],
+    ['failed', 'needs attention'],
+    ['unread', ''],
+    ['quiet', ''],
+  ])('%s → %s', (state, expected) => {
+    expect(activityNameBit(state)).toBe(expected);
   });
 });
 

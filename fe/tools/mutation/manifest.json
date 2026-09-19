@@ -1282,7 +1282,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/track/row/public.tsx",
-    "patch": "diff --git a/web/src/features/track/row/public.tsx b/web/src/features/track/row/public.tsx\nindex 7dc08d523..62675e8b8 100644\n--- a/web/src/features/track/row/public.tsx\n+++ b/web/src/features/track/row/public.tsx\n@@ -18,7 +18,7 @@\n import { ListText } from '../../../ui/list-typography/public.tsx';\n import { useId } from 'react';\n import {\n-  lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,\n+  isRunning, lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,\n } from '../../../../../core/domain/track.ts';\n import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';\n import { Icon } from '../../../ui/icon/public.tsx';\n@@ -107,7 +107,7 @@ export function TrackRow({\n    * in the name as what it is — a phase.\n    */\n   const activity = trackActivityState(track, unread);\n-  const activityBit = activity === 'working' ? 'working'\n+  const activityBit = isRunning(track.lifecycle) ? 'running'\n     : activity === 'attention' ? 'waiting on you'\n       : activity === 'failed' ? 'needs attention' : '';\n   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}, ${lifecycle}`\n",
+    "patch": "diff --git a/web/src/features/track/row/public.tsx b/web/src/features/track/row/public.tsx\nindex 64f899c..bc716b1 100644\n--- a/web/src/features/track/row/public.tsx\n+++ b/web/src/features/track/row/public.tsx\n@@ -19,7 +19,7 @@ import { ListText } from '../../../ui/list-typography/public.tsx';\n import { useId } from 'react';\n import { activityNameBit } from '../../../../../core/domain/activity.ts';\n import {\n-  lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,\n+  isRunning, lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,\n } from '../../../../../core/domain/track.ts';\n import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';\n import { Icon } from '../../../ui/icon/public.tsx';\n@@ -109,7 +109,9 @@ export function TrackRow({\n    * shared with the phone's Track list row (`app/shell/mobile-tracks.tsx`).\n    */\n   const activity = trackActivityState(track, unread);\n-  const activityBit = activityNameBit(activity);\n+  const activityBit = isRunning(track.lifecycle) ? 'running'\n+    : activity === 'attention' ? 'waiting on you'\n+      : activity === 'failed' ? 'needs attention' : '';\n   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}, ${lifecycle}`\n     + (areaName === undefined ? '' : `, in area ${areaName}`);\n \n",
     "expected_red": [
       "accessible name names the area only when the surface supplies one",
       "navigation activity markers derives the marker and the name from the activity overlay, not the lifecycle"
@@ -1691,5 +1691,28 @@
       "web/src/features/track/page/mobile-projection.test.tsx"
     ],
     "why_more_than_one": "The same-set comparison runs once per row module, and both modules lose their indicators on the mobile side at once."
+  },
+  {
+    "mutation_id": "s3-mobile-track-row-from-lifecycle",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/shell/mobile-tracks.tsx",
+    "patch": "diff --git a/web/src/app/shell/mobile-tracks.tsx b/web/src/app/shell/mobile-tracks.tsx\nindex cd3653d..e28ed72 100644\n--- a/web/src/app/shell/mobile-tracks.tsx\n+++ b/web/src/app/shell/mobile-tracks.tsx\n@@ -5,7 +5,7 @@ import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';\n import { List, ListItem } from '@astryxdesign/core/List';\n import { activityNameBit } from '../../../../core/domain/activity.ts';\n import { visibleAreas, type Area } from '../../../../core/domain/area.ts';\n-import { lifecycleLabel, trackActivityState, visibleTracks, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';\n+import { isRunning, lifecycleLabel, trackActivityState, visibleTracks, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';\n import { ActivityIndicator } from '../../ui/activity-indicator/public.tsx';\n import { ErrorBox } from '../../ui/error-box/public.tsx';\n import { Icon } from '../../ui/icon/public.tsx';\n@@ -77,7 +77,8 @@ function NavigationPage({\n                and the lifecycle phrase stays in `trackMeta` as the phase it is.\n                The indicator is decorative here: the button's name carries the\n                fact, so the primitive is not given anything to speak. */\n-            const activity = trackActivityState(track, isUnread(track));\n+            // MUT-1722-S3-1: the phone row spins on the lifecycle phase again\n+            const activity = isRunning(track.lifecycle) ? 'working' : 'quiet';\n             const activityBit = activityNameBit(activity);\n             return <li key={track.id}>\n               <button type=\"button\" className={styles.track} aria-label={`${trackDisplayTitle(track.title)}${activityBit ? `, ${activityBit}` : ''}`}\n",
+    "expected_red": [
+      "MobileTracks has one Area header, a More edit action, and grouped actions above the selected Track",
+      "MobileTracks track rows carry the activity indicator and name bit from the overlay, never the lifecycle",
+      "Unified mobile headers switches complete Area pages directly and gives Tracks matching file icons",
+      "Unified mobile headers uses clean Area rows and a separate Tracks page with the same actions",
+      "compact navigation interaction contracts hands the Track list the rail’s read receipt, so a newer completion is unread until it is read",
+      "workspace header navigation writes ?from= when navigation opens the track"
+    ],
+    "selection_paths": [
+      "web/src/app/router/mobile-report-navigation.test.tsx",
+      "web/src/app/shell/mobile-tracks.test.tsx",
+      "web/src/app/shell/responsive.contract.test.tsx",
+      "web/src/app/shell/unified-mobile-header.browser.test.tsx"
+    ],
+    "why_more_than_one": "The phone row's dot and its name bit come from one value, so a lifecycle-driven state changes both: the row case sees a spinner on an idle `working` phase and no spinner on a `done` track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds a running-phase row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount a `lifecycle: 'working'` track with no overlay — misses it because the name now ends in `, working`."
   }
 ]
