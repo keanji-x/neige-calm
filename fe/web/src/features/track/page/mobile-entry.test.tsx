@@ -51,7 +51,7 @@ import { MARKER } from '../../../../../core/view/panel.ts';
 import type { RowModuleView, RowPainter } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import type { MobileLeaf } from './mobile-painter.tsx';
-import { card, renderPage } from './test-fixtures.tsx';
+import { card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 /** Every call the page made, in order. */
 const calls: { painter: RowPainter<MobileLeaf>; module: RowModuleView }[] = [];
@@ -140,7 +140,7 @@ describe('the page paints its mobile Cards page through paintMobileModule', () =
     /* Equality against the derivation run independently here: it catches a page
        that passed the Tasks module, a hand-built module, or a filtered copy of
        the right one. */
-    const expected = deriveTrackPageView({ cards: CARDS, tasks: [], activity: NEUTRAL_ACTIVITY }).rowModules
+    const expected = deriveTrackPageView({ cards: CARDS, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, []) }).rowModules
       .find((module) => module.key === 'cards');
     expect(calls[0].module).toEqual(expected);
     /* Spelled out too, because the equality above would also be satisfied by a
@@ -198,7 +198,7 @@ describe('the page paints its mobile Tasks page through paintMobileModule', () =
        that passed the Cards module, a hand-built one, or a filtered copy. The
        page is rendered *with cards too*, so passing the wrong module is a live
        possibility rather than one the fixture forecloses. */
-    const expected = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY }).rowModules
+    const expected = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).rowModules
       .find((module) => module.key === 'tasks');
     expect(calls[0].module).toEqual(expected);
     expect(calls[0].module.key).toBe('tasks');

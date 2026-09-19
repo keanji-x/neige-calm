@@ -142,6 +142,7 @@ describe('the track lifecycle status in the page header', () => {
           track={track({ lifecycle: resumed ? 'working' : 'done' })}
           cards={[]}
           tasks={[]}
+          openableCards={new Set()}
           canResumeTrack={!resumed}
           onRenameTrack={vi.fn()}
           onResumeTrack={() => { setResumed(true); }}

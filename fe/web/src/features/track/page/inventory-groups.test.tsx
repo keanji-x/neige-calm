@@ -12,7 +12,7 @@ function task(blockId: string, status: string): ReportTaskRow {
 it('shows working tasks and discloses completed tasks with their original actions', () => {
   const onOpenTask = vi.fn();
   const view = render(<TrackPage track={track()} tasks={[task('finished-a', 'done'), task('active-a', 'running'), task('finished-b', 'done')]}
-    cards={[]} mobilePanelObscured={false} canResumeTrack={false} onRenameTrack={vi.fn()} onResumeTrack={vi.fn()} onDeleteTrack={vi.fn()} onOpenTask={onOpenTask} />);
+    cards={[]} openableCards={new Set()} mobilePanelObscured={false} canResumeTrack={false} onRenameTrack={vi.fn()} onResumeTrack={vi.fn()} onDeleteTrack={vi.fn()} onOpenTask={onOpenTask} />);
   const working = view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="working"]')!;
   const completed = view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="done"]')!;
   expect(working.open).toBe(true);

@@ -120,7 +120,7 @@
   source: fe/web/src/systems/cards/builtins/headless-filter.ts:1-43
   authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75
     fe/web/src/systems/cards/builtins/register.contract.test.ts:126,149,198
-    fe/web/src/app/router/track-cards-panel.test.tsx:136,148,157,162,169
+    fe/web/src/app/router/track-cards-panel.test.tsx:222,234,245,366,373
   owner_slice: systems/cards/builtins
   intentional_omission: true
   runtime_layer: systems

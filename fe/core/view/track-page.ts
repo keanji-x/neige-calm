@@ -14,7 +14,8 @@
 //  - **Semantic correctness of the rules below** — that `row.kind` is dropped
 //    for an untitled card, that `kernel-owned` is the `deletable === false`
 //    case, that `statusDetail` is appended and never substituted, that the
-//    worker-card action needs both `kind !== null` and `workerCardId !== null` —
+//    worker-card action needs `kind !== null`, `workerCardId !== null` *and*
+//    an openable card while the activity verdict needs only the id —
 //    is held by `core/view/track-page.test.ts` (with `core/view/panel.test.ts`
 //    for the traversal). Those are unit tests over this function's output; they
 //    are what stops this file being self-consistent and wrong, and their §5.1 /
@@ -57,6 +58,10 @@
 // module here reads the track itself; what they do read off it since #1722 is
 // its `activity.cards` — passed as `activity`, typed to that one field, so the
 // rows can carry the kernel's per-card verdict and nothing else of the track.
+// The third input, `openableCards`, is the registry's answer to "which cards
+// can the board draw" — a fact about this bundle, not about the track — and it
+// gates exactly one thing here: whether a Task row's kind is an `open-card`
+// control (#1722 S2b r5, below).
 
 import { groupPanelRows } from './panel-groups.js';
 import { cardActivityOf, cardActivityState, type CardActivity } from '../domain/activity.js';
@@ -186,6 +191,16 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa
 }
 
 /**
+ * The card a task's work was dispatched onto — the current execution's when
+ * the recovery read has landed, else the verdict's. `null` when nothing has
+ * been dispatched (or the row is not decorated, see `taskRow`). This is the
+ * task's *identity* fact; whether that card can be opened is `openableCards`'.
+ */
+function taskWorkerCardId(task: ReportTaskRow): string | null {
+  return task.execution === undefined ? task.workerCardId : task.execution.workerCardId;
+}
+
+/**
  * The Tasks module. Its renderers are `track/page/desktop-painter.tsx`'s
  * `taskRow`, which is where S1b-3b moved the DOM that `track/page/public.tsx`
  * used to spell inline under its `Tasks` `PanelModule`, and — since S1b-4b —
@@ -205,7 +220,20 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa
  * the kind is drawn at all, and only inside it does `workerCardId === null`
  * choose between a label `<span>` and a `<button>`. So a clickable worker card
  * exists exactly when `task.kind !== null && workerCardId !== null`, and both
- * halves are reproduced here.
+ * halves are reproduced here — plus a third since #1722 S2b r5, which is a
+ * fact about the *bundle* rather than the task: `openableCards.has(id)`.
+ *
+ * **Identity and openability are two facts** (#1722 S2b r5, Codex P2). The
+ * worker card id is *who* the kernel dispatched the work onto, and it keys
+ * two things on this row: the `open-card` action and the `activity` verdict.
+ * Only the action needs the card to be drawable — a control that routed at a
+ * card no registry entry claims would land the reader nowhere. The verdict
+ * does not: the kernel reports on the card whether or not this bundle can
+ * draw it, and INV-CARD-226 keeps that same card listed in the Cards module
+ * with its own indicator. `app/router` used to null the id itself for an
+ * unopenable worker, which erased the verdict along with the control; it
+ * now hands the id through and passes the registry's openable set instead,
+ * and this function is the one place that decides what the set gates.
  *
  * **The second half is not defending against an input that happens.** Upstream,
  * `deriveReportTasks` (`core/domain/report.ts`) decides both fields, and it
@@ -233,8 +261,8 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa
  * Cards row's `open-card` has no wording at all, which is why `RowAction`
  * carries its sentences per row rather than per `kind`.
  */
-function taskRow(task: ReportTaskRow, activity: TrackPageActivity): PanelRow {
-  const workerCardId = task.execution === undefined ? task.workerCardId : task.execution.workerCardId;
+function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards: ReadonlySet<string>): PanelRow {
+  const workerCardId = taskWorkerCardId(task);
   const currentStatus = task.execution?.status ?? task.status;
   const badges: RowBadge[] = task.execution === undefined && task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
@@ -254,7 +282,7 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity): PanelRow {
     hint: reason,
     description: status?.phrase ?? reason,
   }];
-  if (task.kind !== null && workerCardId !== null) {
+  if (task.kind !== null && workerCardId !== null && openableCards.has(workerCardId)) {
     actions.push({
       kind: 'open-card',
       cardId: workerCardId,
@@ -271,7 +299,9 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity): PanelRow {
     status,
     /* By the worker card, which is how the kernel keys a dispatched task's
        verdict (§4.2 W); a task with no worker card yet has no indicator, and
-       `execution.status === 'running'` does not put one there. */
+       `execution.status === 'running'` does not put one there. The lookup is
+       by the *identity*, never by the openable subset above: a worker the
+       board cannot draw is still the card the kernel reports on. */
     activity: rowActivity(activity, workerCardId),
     actions,
   };
@@ -288,17 +318,28 @@ export function deriveTrackPageView(input: Readonly<{
   tasks: readonly ReportTaskRow[];
   /** See `TrackPageActivity`; a `Track` satisfies it, and so does `NEUTRAL_ACTIVITY`. */
   activity: TrackPageActivity;
+  /**
+   * The ids of the cards the board can draw — `app/router` asks the registry
+   * through the very list the grid paints (`gridItems`). Required, with no
+   * default: an absent set would silently mean "nothing opens". It gates the
+   * Task row's `open-card` action and nothing else (see `taskRow`).
+   */
+  openableCards: ReadonlySet<string>;
 }>): TrackPageView {
-  const taskRows = groupPanelRows(input.tasks.map((task) => taskRow(task, input.activity)), 'tasks')
+  const taskRows = groupPanelRows(input.tasks.map((task) => taskRow(task, input.activity, input.openableCards)), 'tasks')
     .flatMap(group => group.rows);
   // A worker process can stay alive after its task ends. Its task's current
   // execution is the work status; the session is only a fallback for standalone cards.
+  // Keyed by the task's worker card *identity*, not by its `open-card` action:
+  // which task runs on a card is true of a card the board cannot draw too, and
+  // INV-CARD-226 lists that card. Grouped order, so the in-progress task wins
+  // a card two tasks name.
+  const workerCardByBlock = new Map(input.tasks.map((task) => [task.blockId, taskWorkerCardId(task)] as const));
   const taskStatusByCard = new Map<string, RowStatus>();
   for (const row of taskRows) {
     if (row.status === null) continue;
-    for (const action of row.actions) {
-      if (action.kind === 'open-card' && !taskStatusByCard.has(action.cardId)) taskStatusByCard.set(action.cardId, row.status);
-    }
+    const workerCardId = workerCardByBlock.get(row.id) ?? null;
+    if (workerCardId !== null && !taskStatusByCard.has(workerCardId)) taskStatusByCard.set(workerCardId, row.status);
   }
   const cards: RowModuleView = {
     key: 'cards',

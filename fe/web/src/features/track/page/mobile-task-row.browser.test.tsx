@@ -71,6 +71,7 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
         track={track}
         cards={[]}
         tasks={TASKS}
+        openableCards={new Set()}
         panel="tasks"
         onOpenTask={vi.fn()}
         canResumeTrack={false}

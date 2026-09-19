@@ -1548,7 +1548,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/view/track-page.ts",
-    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex e5344390c..878b40e7a 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -272,7 +272,8 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity): PanelRow {\n     /* By the worker card, which is how the kernel keys a dispatched task's\n        verdict (§4.2 W); a task with no worker card yet has no indicator, and\n        `execution.status === 'running'` does not put one there. */\n-    activity: rowActivity(activity, workerCardId),\n+    // MUT-1722-S2B-5: a task row spins on its status token again\n+    activity: rowActivity(activity, workerCardId) ?? (currentStatus === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
+    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex 61a73d68c..19ba6d34a 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -302,7 +302,8 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards\n        `execution.status === 'running'` does not put one there. The lookup is\n        by the *identity*, never by the openable subset above: a worker the\n        board cannot draw is still the card the kernel reports on. */\n-    activity: rowActivity(activity, workerCardId),\n+    // MUT-1722-S2B-5: a task row spins on its status token again\n+    activity: rowActivity(activity, workerCardId) ?? (currentStatus === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
     "expected_red": [
       "TrackPage task inventory card and task rows paint activity.cards, not runtime status",
       "TrackPage task inventory keeps the full status on the reveal control without a duplicate status graphic",
@@ -1558,6 +1558,23 @@
       "web/src/features/track/page/public.test.tsx"
     ],
     "why_more_than_one": "Only the page case with a running execution whose worker card the kernel did not list, and a running task with no worker card at all, reaches the token fallback. Since S2b r1 the row speaks its verdict inside the reveal control, so a running task the mutation wrongly marks working is named `alpha Working` and the two exact-name lookups of that control miss."
+  },
+  {
+    "mutation_id": "s2b-task-row-loses-worker-identity",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/view/track-page.ts",
+    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex 61a73d68c..9ede66558 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -302,7 +302,8 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards\n        `execution.status === 'running'` does not put one there. The lookup is\n        by the *identity*, never by the openable subset above: a worker the\n        board cannot draw is still the card the kernel reports on. */\n-    activity: rowActivity(activity, workerCardId),\n+    // MUT-1722-S2B-R5-1: the verdict is looked up through the openable subset again\n+    activity: rowActivity(activity, workerCardId !== null && openableCards.has(workerCardId) ? workerCardId : null),\n     actions,\n   };\n }\n",
+    "expected_red": [
+      "deriveTrackPageView tasks keeps the worker’s identity for the activity verdict when the card is not openable, and only drops the control",
+      "track route TASKS panel shows the kernel verdict on a task whose worker no adapter claims, and still offers no control"
+    ],
+    "selection_paths": [
+      "core/view/track-page.test.ts",
+      "web/src/app/router/track-cards-panel.test.tsx"
+    ],
+    "why_more_than_one": "Identity and openability are two inputs to the task row (#1722 S2b r5): looking the verdict up through the openable subset erases it for exactly the worker the board cannot draw, and only two cases hand the derivation such a worker with a verdict — the unit case with an empty openable set and a failed/working verdict, and the route case whose `no-adapter` task runs on the unclaimed card the real registry cannot draw while the overlay reports it working. Every other case names openable workers or no verdict, and the twin cases (openable worker, verdict and control) stay green."
   },
   {
     "mutation_id": "s2b-terminal-head-from-session-state",

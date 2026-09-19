@@ -3102,33 +3102,36 @@ function TrackRouteBody({
     [cards],
   );
   /*
-   * A task row may only offer its worker card when that card can actually be
-   * opened — and "openable" is asked of the *registry*, through the very list
-   * the board draws, never of a hardcoded set of worker kinds.
+   * The cards this route can open — asked of the *registry*, through the very
+   * list the board draws, never of a hardcoded set of worker kinds.
    *
    * The kernel dispatches `codex`, `claude` and `terminal` workers, and this
    * build's registry can draw all three — `codex` was the standing exception
    * until `CODEX_CARD_ENTRY` landed, and nothing here changed when it did: the
    * id simply started resolving, which is the point of asking the registry.
-   * What the filter still catches is any worker card whose kind no entry claims
+   * What the set still excludes is any worker card whose kind no entry claims
    * — a kernel newer than this bundle stamping one is the live case. Such a card
    * is `unknown`: it is not in `gridItems`, `knownCard` below is false for it,
    * and the effect under this line bounces `?card=` straight back off the URL.
    * A row that clicked there would land the reader nowhere and lose the reveal
-   * it used to have. Filtering here rather than teaching `TrackPage` about the
-   * registry keeps the panel a pure renderer.
+   * it used to have.
+   *
+   * **The set is handed down; the worker id is not rewritten** (#1722 S2b r5,
+   * Codex P2). This route used to null `workerCardId` on every task whose
+   * worker it could not open, so that no row would offer the dead control —
+   * and that erased the task's *identity* along with its *openability*: the
+   * TASKS row looks its activity verdict up by that same id (INV-APP-118), so
+   * a task whose unopenable worker the kernel reported `working` or `failed`
+   * showed nothing while the CARDS row for the very same card (INV-CARD-226
+   * keeps it listed) showed the verdict. The two facts are separate inputs
+   * now: `tasks` carries who the work ran on, and `openableCards` — one set,
+   * built once here for both the TASKS panel and the report's `TaskRecovery`
+   * — is what an *open* control is gated on. The derivation decides what the
+   * set gates (`core/view/track-page.ts`, `taskRow`); this route only answers
+   * the registry question.
    */
-  const currentTasks = useCurrentTaskRows(track.id, joinedTasks);
-  const tasks = useMemo(() => {
-    const openable = new Set(gridItems.map((item) => item.card.id));
-    return currentTasks.map((task) => {
-      if (task.execution !== undefined) return { ...task, execution: {
-        ...task.execution, workerCardId: task.execution.workerCardId !== null
-          && openable.has(task.execution.workerCardId) ? task.execution.workerCardId : null,
-      } };
-      return task.workerCardId === null || openable.has(task.workerCardId) ? task : { ...task, workerCardId: null };
-    });
-  }, [gridItems, currentTasks]);
+  const tasks = useCurrentTaskRows(track.id, joinedTasks);
+  const openableCards = useMemo(() => new Set(gridItems.map((item) => item.card.id)), [gridItems]);
   const knownCard = requestedCardId !== null
     && gridItems.some((item) => item.card.id === requestedCardId);
   useEffect(() => {
@@ -3406,6 +3409,7 @@ function TrackRouteBody({
       /* Derived from the report's own blocks, so the panel and the document
          cannot disagree about what tasks exist. */
       tasks={tasks}
+      openableCards={openableCards}
       outlineItems={outline}
       /* Tasks and the mobile Outline share one anchor landing. The URL carries
          it too, so the reader can hand the destination to somebody else. */
@@ -3471,7 +3475,7 @@ function TrackRouteBody({
         renderTaskExecution={(task, expanded) => <TaskRecovery
           key={`${track.id}:${task.key}`} trackId={track.id} taskKey={task.key} expanded={expanded}
           transport={transport} unauthorized={unauthorized} onViewArtifact={taskFiles.open}
-          openableWorkerIds={new Set(gridItems.map((item) => item.card.id))}
+          openableWorkerIds={openableCards}
           openWorker={(cardId) => { go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
         />}
         rail={<ReportOutline items={outline} />}

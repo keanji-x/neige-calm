@@ -30,6 +30,7 @@ function draw() {
       kind: 'codex', workerCardId: null, pendingReason: null,
     })),
     activity: NEUTRAL_ACTIVITY,
+    openableCards: new Set(),
   });
   render(<div style={{ display: 'flex', gap: 32 }}>
     <div style={{ inlineSize: 240 }}><Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])}

@@ -113,7 +113,7 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:548-566,708-715,773-777,946-959
+  source: fe/web/src/app/router/public.tsx:549-567,709-716,774-778,947-960
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
   # tabulated a second time at the platform-independent tier
@@ -329,7 +329,7 @@
     explicit per-caller prop and not the shared primitive's default. The already-blank case is
     arithmetic, not policy — there is no state change to request.
     The legacy front-end's opposite rule is E2E-INV-RENAME-009 above.
-  source: fe/web/src/ui/editable-title/public.tsx:36-52,99-113; fe/web/src/features/track/page/public.tsx:293-300
+  source: fe/web/src/ui/editable-title/public.tsx:36-52,99-113; fe/web/src/features/track/page/public.tsx:321-328
   authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:383
   owner_slice: ui/editable-title
   intentional_omission: false
@@ -351,7 +351,7 @@
     typing. It could not be *stored* — resubmitting it hit the unchanged-value arm and wrote
     nothing — so the defect is the text in the box, not a write, and a fix aimed at persistence
     would have been aimed at nothing.
-  source: fe/web/src/ui/editable-title/public.tsx:16-46,141-143; fe/web/src/features/track/page/public.tsx:293-300
+  source: fe/web/src/ui/editable-title/public.tsx:16-46,141-143; fe/web/src/features/track/page/public.tsx:321-328
   authoritative_test: fe/web/src/features/track/page/public.contract.test.tsx:154
   owner_slice: ui/editable-title
   intentional_omission: false
@@ -391,7 +391,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:40,69-81,159-184,253-284;
-    fe/web/src/app/router/public.tsx:1626-1636,2326-2331,2716-2729;
+    fe/web/src/app/router/public.tsx:1637-1647,2363-2368,2773-2798;
     fe/web/src/features/chat/thread/public.tsx:1277-1282,1357,1423,1484-1503,1651-1654
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose

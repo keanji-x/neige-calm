@@ -146,7 +146,7 @@ import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
-import { card, renderPage } from './test-fixtures.tsx';
+import { card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 /*
  * The fixture has to give the assertion teeth, which is a fixture requirement
@@ -334,7 +334,7 @@ function expectFieldsPresent(text: string, fields: readonly string[], where: str
 describe('deriveTrackPageView against the rendered desktop panel', () => {
   it('renders every derived module title, and every row field inside its own row', () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
-    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY });
+    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
     const whole = visibleText(container);
 
     /* The fixture invariant the untitled-card arm's discriminating power rests
@@ -374,7 +374,7 @@ describe('deriveTrackPageView against the rendered desktop panel', () => {
 
   it('renders each module’s empty text when, and only when, the module has no rows', () => {
     const { container } = renderPage({ cards: [], tasks: [] });
-    const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY });
+    const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
     const whole = visibleText(container);
 
     for (const module of view.rowModules) {

@@ -104,6 +104,16 @@ export type TrackPageProps = Readonly<{
    * carries what the kernel says about the run.
    */
   tasks: readonly ReportTaskRow[];
+  /**
+   * The cards the board can draw, as `app/router` asks the registry (the ids
+   * of its `gridItems`). Required: this page is a pure renderer and holds no
+   * registry of its own, so the answer must arrive resolved — a default here
+   * would be a second, silent verdict. It gates only whether a Task row's kind
+   * is an `open-card` control (`core/view/track-page.ts`, `taskRow`); the
+   * row's activity is looked up by the worker id whether or not the card is in
+   * this set (#1722 S2b r5).
+   */
+  openableCards: ReadonlySet<string>;
   /** Report anchors rendered as a separate mobile list instead of a margin rail. */
   outlineItems?: readonly ReportOutlineItem[];
   /** The panel card's second module, composed by `app/router` (features/chat). */
@@ -201,7 +211,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 }
 
 export function TrackPage({
-  track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
+  track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onOpenInputNotification,
   cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
@@ -347,7 +357,7 @@ export function TrackPage({
    */
   /* `activity` is the track itself: `Track` carries the overlay-derived
      `cards` verdicts, and that field is all the derivation is typed to read. */
-  const panelView = deriveTrackPageView({ cards, tasks, activity: track });
+  const panelView = deriveTrackPageView({ cards, tasks, activity: track, openableCards });
   const desktopPainter = makeDesktopPainter({
     onOpenCard,
     onOpenTask,

@@ -70,7 +70,7 @@ import { MARKER } from '../../../../../core/view/panel.ts';
 import type { RowPainter, TrackPageView } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import type { DesktopLeaf } from './desktop-painter.tsx';
-import { card, renderPage } from './test-fixtures.tsx';
+import { card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 /** Every call the page made, in order. */
 const calls: { painter: RowPainter<DesktopLeaf>; view: TrackPageView }[] = [];
@@ -156,7 +156,7 @@ describe('the page paints its desktop panel through paintDesktopPanel', () => {
     /* The **whole** view, not a slice of it: an equality against the derivation
        run independently here catches a page that filtered a module away, or
        reordered them, or paints from something else entirely. */
-    expect(calls[0].view).toEqual(deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY }));
+    expect(calls[0].view).toEqual(deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }));
     /* Spelled out too, because the equality above would also be satisfied by a
        derivation that had itself lost a module. */
     expect(calls[0].view.rowModules.map((module) => module.key)).toEqual(['cards', 'tasks']);

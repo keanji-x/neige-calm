@@ -36,6 +36,9 @@ function renderTasks(
         track={track}
         cards={[]}
         tasks={tasks}
+        /* `assigned`'s worker is drawable here; the case with no card sets
+           `workerCardId: null` on the task itself. */
+        openableCards={new Set(['c-4'])}
         onOpenCard={onOpenCard}
         onOpenTask={onOpenTask}
         canResumeTrack={false}

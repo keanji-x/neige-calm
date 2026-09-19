@@ -189,6 +189,7 @@ describe('TrackPage header', () => {
             track={track({ anyCardNeedsInput: true })}
             cards={[]}
             tasks={[]}
+            openableCards={new Set()}
             inputNotifications={notifications}
             canResumeTrack={false}
             onRenameTrack={vi.fn()}
@@ -672,7 +673,7 @@ describe('TrackPage card inventory', () => {
       tasks: MENU_TASKS,
       outlineItems: [{ blockId: 'section-1', label: 'What changed', number: 1, children: [] }],
     });
-    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY }).rowModules;
+    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY, openableCards: new Set(['card-1']) }).rowModules;
     /* Not vacuous: a one-module derivation would make "the order matches" an
        assertion about nothing. */
     expect(modules.length).toBeGreaterThan(1);
@@ -687,7 +688,7 @@ describe('TrackPage card inventory', () => {
   });
 
   it('and each of those entries opens the module it names', async () => {
-    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY }).rowModules;
+    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY, openableCards: new Set(['card-1']) }).rowModules;
     for (const [index, module] of modules.entries()) {
       /* No `outlineItems`, so the derived entries start the list and their menu
          position is their index in `rowModules`. */
@@ -812,7 +813,7 @@ describe('TrackPage card inventory', () => {
   it('renders whatever panel it is handed, and closes when that becomes null', () => {
     const props = {
       mobilePanelObscured: false,
-      track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [],
+      track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [], openableCards: new Set(['k1']),
       canResumeTrack: false, onRenameTrack: vi.fn(), onResumeTrack: vi.fn(), onDeleteTrack: vi.fn(),
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
@@ -896,6 +897,7 @@ describe('TrackPage card inventory', () => {
       track={track()}
       cards={[card({ id: 'k1', kind: 'notes', title: null })]}
       tasks={[]}
+      openableCards={new Set(['k1'])}
       canResumeTrack={false}
       onRenameTrack={vi.fn()}
       onResumeTrack={vi.fn()}

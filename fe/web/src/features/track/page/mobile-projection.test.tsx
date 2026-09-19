@@ -58,7 +58,7 @@ import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeMobilePainter } from './mobile-painter.tsx';
 import pageSource from './public.tsx?raw';
-import { card, renderPage, track } from './test-fixtures.tsx';
+import { card, openableCardsOf, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 
@@ -90,8 +90,10 @@ function mobilePanel(container: Element): Element {
   return root!;
 }
 
+/* `openableCards` mirrors `renderPage`'s default so the two sides of each
+   comparison below derive from one and the same input. */
 const cardsModule = (cards: readonly CardWire[]) =>
-  deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY }).rowModules.filter((module) => module.key === 'cards');
+  deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(cards, []) }).rowModules.filter((module) => module.key === 'cards');
 
 /*
  * The Tasks fixture (S1b-4b), written as `deriveReportTasks` produces its rows
@@ -142,7 +144,7 @@ const TASKS: readonly ReportTaskRow[] = [
 ];
 
 const tasksModule = (tasks: readonly ReportTaskRow[]): readonly RowModuleView[] =>
-  deriveTrackPageView({ cards: [], tasks, activity: NEUTRAL_ACTIVITY }).rowModules.filter((module) => module.key === 'tasks');
+  deriveTrackPageView({ cards: [], tasks, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf([], tasks) }).rowModules.filter((module) => module.key === 'tasks');
 
 // ── The fixture shape guard ──────────────────────────────────────────────────
 
