@@ -1,5 +1,4 @@
-//! Destruction must preserve an unresolved prepared launch, even when a probe
-//! currently finds no process. The original request may still be in flight.
+//! Destruction must preserve an unresolved prepared launch, even when a probe currently finds no process.
 use super::{Phase, Tx, terminal_launch::RequestState};
 use crate::db::{RouteRepo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
@@ -33,8 +32,7 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
         Scope::Track(id) => ("c.track_id", id),
         Scope::Area(id) => ("t.area_id", id),
     };
-    // Column is selected exclusively from the static scope above. Include
-    // prepared ownership even if the terminal row was already lost historically.
+    // Column is selected exclusively from the static scope above.
     let sql = format!(
         "SELECT o.* FROM operations o JOIN cards c ON o.target_type='card' AND o.target_id=c.id JOIN tracks t ON t.id=c.track_id WHERE o.kind IN ('terminal-worker','claude-worker','codex-worker') AND {column}=?1 ORDER BY o.id"
     );
@@ -88,9 +86,7 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
             Some(RequestState::NotRequested { .. }) if op.kind != "codex-worker" || successful => {
                 continue;
             }
-            // Old successful operations predate this checkpoint. They already
-            // completed the original ownership transfer; preserve their normal
-            // deletion contract. Missing state at SpawnStarted is NOT success.
+            // Old successful operations predate this checkpoint; missing state at SpawnStarted is NOT success.
             None if successful => continue,
             _ => None,
         };
@@ -103,9 +99,7 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
     Ok(unresolved)
 }
 
-/// Transaction recheck immediately before removing rows or replacing workspace
-/// ownership. Callers hold the normal OperationRuntime/Track deletion fences
-/// across the external teardown; no supervisor I/O is performed in this writer.
+/// Transaction recheck immediately before removing rows or replacing workspace ownership; no supervisor I/O happens in this writer.
 pub(crate) async fn require_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()> {
     if let Some(unresolved) = unresolved_tx(tx, scope).await?.first() {
         return Err(unresolved.error());
@@ -113,9 +107,7 @@ pub(crate) async fn require_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()
     Ok(())
 }
 
-/// Inspect the entire affected scope before touching any member's resources.
-/// Request an exact best-effort stop, but keep the durable obligation regardless
-/// of reply, missing PID, renderer state or a truthful Probe(false).
+/// Inspect the entire affected scope before touching any member's resources; the durable obligation is kept regardless of reply, missing PID, renderer state or a truthful Probe(false).
 pub(crate) async fn require_safe(
     repo: &dyn RouteRepo,
     scope: Scope,

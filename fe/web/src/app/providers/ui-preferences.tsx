@@ -13,12 +13,8 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
   const memory = new Map<string, Preference>();
   const listeners = new Set<() => void>();
   let revision = 0;
-  /*
-   * Seeded from the database's *stable* identity (#1722 §5.2), never from the
-   * per-boot `DB_INSTANCE_ID_KEY`: receipts keyed by a process id were thrown
-   * away on every kernel restart, which is what turned a whole rail blue.
-   * `null` until the compat gate has confirmed the id for this load.
-   */
+  /* Seeded from the database's STABLE identity, never the per-boot `DB_INSTANCE_ID_KEY`: receipts keyed
+   * by a process id were thrown away on every kernel restart. `null` until the compat gate confirms it. */
   let database: string | null = null;
   try { database = storage?.getItem(DATABASE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }
   const notify = () => {
@@ -26,17 +22,8 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     for (const listener of listeners) listener();
   };
   let recoveryScope: string | null = null;
-  /*
-   * Bundled builds adopt `[origin, userId, dbInstanceId]` as the recovery scope
-   * (`systems/recovery/session.ts`), and display preferences live under it so
-   * a re-paired device or another owner inherits no selection. Receipts and
-   * the baseline (`read:*`) must NOT: `dbInstanceId` is per boot, so under it
-   * every kernel restart lost the baseline and stamped a fresh one, and what
-   * completed between the two stamps was never unread (#1722 S2a review).
-   * They get a stable namespace from the scope's origin and userId only; the
-   * database identity is already inside the key. A scope that is not that
-   * triple keeps the per-scope namespace, which isolates and never shares.
-   */
+  /* Display preferences live under the bundled recovery scope `[origin, userId, dbInstanceId]`, but receipts
+   * and the baseline (`read:*`) must NOT: `dbInstanceId` is per boot, so they use origin and userId only. */
   let receiptNamespace: readonly [origin: string, userId: string] | null = null;
   const receiptNamespaceOf = (scope: string): readonly [string, string] | null => {
     try {
@@ -80,14 +67,8 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     notify();
   };
   const receiptKey = (kind: 'track' | 'conversation', id: string) => `read:${database ?? 'local'}:${kind}:${id}`;
-  /*
-   * #1722 §5.2 / owner decision (c): a device's first entry into a database
-   * scope marks everything read. The baseline is written once per
-   * `(device, databaseId)`, with the *server's* clock from `/api/version`, and
-   * every receipt reads as at least that. Older activity than the baseline is
-   * therefore never unread on this device; only what completes after the first
-   * look is.
-   */
+  /* A device's first entry into a database scope marks everything read: the baseline is written once per
+   * `(device, databaseId)` with the SERVER's clock, and every receipt reads as at least that. */
   const baselineKey = (databaseId: string) => `read:${databaseId}:baseline`;
   const stampOf = (value: unknown) => {
     const stamp = typeof value === 'string' ? Number(value) : 0;
@@ -104,12 +85,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
   };
   return Object.freeze({
     readScope: () => database,
-    /**
-     * `nowMs` is the server time the scope was confirmed at; it becomes the
-     * baseline the first time this device sees `id`. A `null` scope (compat
-     * verdict still pending, or an older server without a database identity)
-     * writes nothing and keeps receipts in memory.
-     */
+    /** `nowMs` is the server time the scope was confirmed at; it becomes the baseline the first time this device sees `id`. A `null` scope writes nothing. */
     setReadScope(id: string | null, nowMs: number | null = null): void {
       if (id !== null && nowMs !== null && Number.isFinite(nowMs) && nowMs > 0 && read(baselineKey(id)) === null) {
         write(baselineKey(id), String(nowMs), false);
@@ -119,8 +95,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       notify();
     },
     isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {
-      // No scope, no verdict: an unscoped receipt map is empty, and "everything
-      // is unread until /api/version answers" is a lie on every page load.
+      // No scope, no verdict: "everything is unread until /api/version answers" is a lie on every page load.
       if (database === null) return false;
       return updatedAt > receipt(receiptKey(kind, id));
     },
@@ -157,10 +132,8 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
 const UiPreferencesContext = createContext<UiPreferences | null>(null);
 /** The database the visible data belongs to, and the server time that was confirmed at. */
 export type ReadReceiptScope = Readonly<{ id: string | null; nowMs: number | null }>;
-// Undefined means a standalone preferences host. A null `id` means the
-// compatibility gate has not yet confirmed which database owns the visible
-// data — or the server predates database identity, in which case nothing is
-// ever unread rather than everything.
+// Undefined means a standalone preferences host; a null `id` means the gate has not confirmed the database
+// yet (or the server predates database identity), in which case nothing is ever unread.
 const ReadReceiptScopeContext = createContext<ReadReceiptScope | undefined>(undefined);
 
 export function ReadReceiptScopeProvider({ id, nowMs = null, children }: { id: string | null; nowMs?: number | null; children: ReactNode }) {

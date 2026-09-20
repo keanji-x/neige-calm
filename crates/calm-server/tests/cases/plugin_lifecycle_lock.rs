@@ -1,29 +1,5 @@
-//! #1196 + #1169 S1 — acceptance suite for the per-plugin lifecycle lock.
-//!
-//! Design: `docs/architecture/1196-plugin-lifecycle-lock.md` §4.
-//!
-//! Two disciplines run through the whole file and are worth stating once:
-//!
-//! * **Every concurrent case names its barrier.** Merely launching two
-//!   operations at once does not prove the loser ever met the lock: if the
-//!   winner's critical section finishes first, the loser gets `plugin_conflict`
-//!   (acceptance 6) or plain success (acceptance 7) and the prose assertions
-//!   below would still all pass — a test that never once exercised the lock and
-//!   cannot tell you so. Each such test therefore pins the winner *inside* its
-//!   critical section and asserts the loser observed `plugin_busy` /
-//!   `LifecycleBusy` explicitly.
-//! * **Reject semantics.** `try_lock_lifecycle` is non-blocking, so a refused
-//!   caller is finished — it does not queue and resume at the linearization
-//!   point. Every case that wants the loser's work done retries it explicitly.
-//!
-//! **Acceptance 2 is a compile-time fact, not a test in this file.** The
-//! `PluginHost::emit_state(id, status)` overload is deleted; the only emitter is
-//! `emit_state_under(&LifecycleGuard, ..)`. Nothing here can witness that from
-//! outside the crate (both are private), and the honest statement is that the
-//! compiler witnesses it: reintroducing a call to `emit_state` does not build.
-//! What is explicitly NOT claimed is that `Event::PluginState` cannot be
-//! constructed and written elsewhere — it can, and closing that needs a type
-//! fence on the event variant, tracked as #1210.
+//! Acceptance suite for the per-plugin lifecycle lock. `try_lock_lifecycle` is
+//! non-blocking: a refused caller is finished and must retry explicitly.
 
 #![cfg(unix)]
 
@@ -51,10 +27,6 @@ const CRASH_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-crash");
 
 const ID: &str = "test.lock";
 
-// ===========================================================================
-// Fixture
-// ===========================================================================
-
 struct Fx {
     host: Arc<PluginHost>,
     repo: Arc<dyn Repo>,
@@ -62,8 +34,6 @@ struct Fx {
     _tmp: TempDir,
 }
 
-/// Write a plugin tree (`manifest.json` + `bin/stub` symlink) under
-/// `plugins_dir/<id>` and return its path.
 fn write_plugin_with_args(plugins_dir: &Path, id: &str, stub_bin: &str, args: &[&str]) -> PathBuf {
     let dir = plugins_dir.join(id);
     let bin_dir = dir.join("bin");
@@ -98,17 +68,11 @@ struct BootOpts {
     lifecycle_db: Option<Arc<dyn LifecycleDb>>,
     /// Narrow repo read used by boot autospawn's initial plugin enumeration.
     plugin_list_db: Option<Arc<dyn PluginListDb>>,
-    /// Override for the initial plugin-list wall, so the wedged-read gate does
-    /// not wait out the production allowance.
     plugin_list_wall: Option<Duration>,
-    /// Pre-built repo, for the tests that must construct their
-    /// [`LifecycleDb`] fake around the same handle the host will use.
+    /// Pre-built repo, for tests that construct their [`LifecycleDb`] fake around the same handle.
     repo: Option<Arc<dyn Repo>>,
-    /// `config.plugins_disabled`, i.e. the operator's kill switch. Default
-    /// empty; `a20` is the only case that populates it.
+    /// `config.plugins_disabled`, the operator's kill switch.
     plugins_disabled: Vec<String>,
-    /// Override for `APP_AUTOSPAWN_WALL`, so a gate can watch the `app` boot
-    /// fence fire without waiting out the production 30 s.
     app_wall: Option<Duration>,
 }
 
@@ -201,20 +165,9 @@ async fn boot() -> Fx {
     boot_with(BootOpts::default()).await
 }
 
-// ===========================================================================
-// Barriers
-// ===========================================================================
-
-/// Holds a `BEGIN IMMEDIATE` transaction open, so **every** write to the
-/// database parks. Any host operation that reaches a repo write — a
-/// `plugin.state` emission, a token mint, an `enabled` flip — therefore stalls
-/// *inside* its lifecycle guard.
-///
-/// Scope warning: this blocks the whole database, not one plugin's rows. Do not
-/// drive a second plugin while it is held, and do not use it as a *window*
-/// barrier (one expecting a row to change while it is held): `tests/` run on
-/// `sqlite::memory:`, `journal_mode = WAL` is a no-op there, and readers get no
-/// snapshot isolation — the blocked write simply never commits.
+/// Holds a `BEGIN IMMEDIATE` transaction open, so every write to the database parks.
+/// This blocks the whole database, not one plugin's rows; on `sqlite::memory:` readers get
+/// no snapshot isolation, so it cannot serve as a window barrier.
 struct DbBarrier {
     release: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
@@ -249,18 +202,8 @@ impl DbBarrier {
     }
 }
 
-/// Captures `tracing` events into a buffer for the duration of one test.
-///
-/// The guard is **thread-local** (`tracing::subscriber::set_default`, not
-/// `set_global_default`), and every test in this file runs on a
-/// `#[tokio::test]` current-thread runtime — so every task the host spawns is
-/// polled on the same thread that installed the subscriber, and no other test
-/// in the binary is affected.
-///
-/// This exists so a test can observe a branch that, by design, changes nothing:
-/// a supervisor that wakes from its backoff and declines to act writes no event,
-/// no status and no row. Its `tracing::info!` is the only thing it leaves
-/// behind, and it is a production statement, not a test seam.
+/// Captures `tracing` events into a buffer for the duration of one test. Thread-local
+/// (`set_default`): every test here runs on a current-thread runtime, so no other test is affected.
 struct LogCapture {
     buf: SharedBuf,
     _guard: tracing::subscriber::DefaultGuard,
@@ -305,11 +248,6 @@ impl LogCapture {
     }
 
     /// Block until `needle` appears in the captured log, or fail loud.
-    ///
-    /// Matching on the message text is deliberate and its failure mode is the
-    /// safe one: if the production string is reworded, this hangs to its
-    /// deadline and fails with the whole captured log attached — it cannot go
-    /// silently vacuous the way an arithmetic identity about `Instant`s can.
     async fn wait_for(&self, needle: &str, timeout: Duration, why: &str) {
         let deadline = Instant::now() + timeout;
         loop {
@@ -327,11 +265,6 @@ impl LogCapture {
 }
 
 /// Block until `id`'s lifecycle lock is held by somebody else.
-///
-/// This is the positive observation that makes "the winner is inside its
-/// critical section" a fact rather than a hope: it succeeds only when a real
-/// `try_lock_lifecycle` fails. Combined with [`DbBarrier`] (which guarantees the
-/// holder cannot leave), it pins the window deterministically.
 async fn wait_until_locked(host: &Arc<PluginHost>, id: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -393,14 +326,8 @@ async fn snapshot(fx: &Fx, id: &str) -> Snapshot {
     }
 }
 
-/// Run a lifecycle call that is expected to be **refused at the entry**, under
-/// a hard time bound.
-///
-/// The bound is part of the assertion, not defensive padding: a refusal is
-/// non-blocking and answers immediately, whereas a call that got *into* the
-/// critical section parks on whatever barrier the winner is parked on. Without
-/// the bound, a regression that admits the loser shows up as a hung test with
-/// no message instead of a named failure.
+/// Run a lifecycle call that is expected to be refused at the entry, under a hard time bound:
+/// a refusal answers immediately, whereas a call that got into the critical section parks on the winner's barrier.
 async fn refused<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
     match tokio::time::timeout(Duration::from_secs(5), fut).await {
         Ok(v) => v,
@@ -426,21 +353,6 @@ fn assert_busy_host(err: &HostError, what: &str) {
         "{what}: expected LifecycleBusy, got {err:?}"
     );
 }
-
-// ===========================================================================
-// Acceptance 1 — every entry point takes the lock, refuses inertly, and works
-// on retry. ONE FIXTURE PER ENTRY.
-//
-// Separate fixtures are not stylistic: a single fixture that calls every entry
-// under one held guard would, after the `uninstall` retry succeeded, be able to
-// answer only `NotFound` for `spawn` / `enable` / `reload`, so the "retry
-// succeeds" half would be untestable for everything after the first
-// destructive entry.
-//
-// Mutation witness for the whole block: delete the `try_lock_lifecycle` line
-// from any one entry point and that entry's fixture fails at its
-// `expect_err`.
-// ===========================================================================
 
 #[tokio::test]
 async fn a1_spawn_is_refused_while_the_lock_is_held() {
@@ -578,12 +490,7 @@ async fn a1_install_is_refused_while_the_lock_is_held() {
     assert!(!plug.enabled, "install leaves the plugin disabled");
 }
 
-/// Acceptance 1 also has to pin the *ordering* the guard sits at inside
-/// `install`: after the read-only min-kernel check, before the duplicate probe.
-///
-/// Mutation witness: move the `try_lock_lifecycle` to `install`'s first line and
-/// this returns 409 `plugin_busy` instead of 422 `plugin_kernel_too_old` — an
-/// error code silently changed by the lock.
+/// The guard sits after the read-only min-kernel check, before the duplicate probe.
 #[tokio::test]
 async fn a1_install_reports_kernel_too_old_even_when_the_id_is_busy() {
     let fx = boot_with(BootOpts {
@@ -662,8 +569,6 @@ async fn a1_disable_is_refused_while_the_lock_is_held() {
     assert!(fx.host.status(ID).await.is_none());
 }
 
-/// Acceptance 1 + 11 — the uninstall refusal is fail-closed: everything the
-/// operation would have destroyed is still there afterwards.
 #[tokio::test]
 async fn a1_a11_uninstall_is_refused_fail_closed_while_the_lock_is_held() {
     let fx = boot().await;
@@ -717,31 +622,8 @@ async fn a1_reload_is_refused_while_the_lock_is_held() {
     fx.host.stop(ID).await.unwrap();
 }
 
-// ===========================================================================
-// Acceptance 12 — liveness and re-entrancy
-// ===========================================================================
-
-/// (b) **With no contention, no entry point may answer `Busy`.**
-///
-/// This is the re-entrancy gate. `tokio::Mutex` is not re-entrant, so a
-/// `*_under` body that mistakenly called a lock-taking wrapper would deadlock
-/// under the waiting semantics — but under the non-blocking one it does not
-/// hang and does not time out. It returns a silent 409 to a caller with no
-/// competitor, which no timeout-based test can see.
-///
-/// Mutation witness: make `stop_under` call `self.stop(id)` instead of doing
-/// the work (i.e. re-enter through the wrapper). `stop`, `restart` and
-/// `rotate_plugin_token` then answer `LifecycleBusy` with no competitor and this
-/// test fails on them.
-///
-/// **What that mutation does NOT catch, stated because the earlier note here
-/// claimed it did:** `disable` / `uninstall` / `reload` also re-enter, but each
-/// funnels every non-`NotFound` stop error into
-/// `CalmError::Internal("stop failed: ...")`, so their code is `internal`, not
-/// `plugin_busy`, and the `not_busy!` arms above stay green. Those three are
-/// covered by the `HostError` half of the same mutation one call deeper, not by
-/// their own arms. Widening the arms to "must not fail at all" is not an option:
-/// several of these legitimately fail on a plugin that is already stopped.
+/// The re-entrancy gate: under non-blocking semantics a `*_under` body that re-entered a
+/// lock-taking wrapper returns a silent 409 instead of deadlocking.
 #[tokio::test]
 async fn a12b_no_entry_point_returns_busy_without_contention() {
     let fx = boot_with(BootOpts {
@@ -767,7 +649,6 @@ async fn a12b_no_entry_point_returns_busy_without_contention() {
     not_busy!("reload", fx.host.reload(ID).await);
     not_busy!("disable", fx.host.disable(ID).await);
 
-    // The `HostError` entries, same question.
     for (what, res) in [
         ("spawn", fx.host.spawn(ID).await),
         ("restart", fx.host.restart(ID).await),
@@ -785,12 +666,6 @@ async fn a12b_no_entry_point_returns_busy_without_contention() {
     not_busy!("uninstall", fx.host.uninstall(ID).await);
 }
 
-/// (a) Every pair of entry points, **including each with itself**, run
-/// concurrently must all settle. A hang is the failure mode this catches; the
-/// bound is the assertion.
-///
-/// Each pair also states the outcomes it will accept, so "everything returned
-/// `Busy` instantly" cannot pass as liveness.
 #[tokio::test]
 async fn a12a_every_pair_of_entry_points_settles() {
     #[derive(Clone, Copy, Debug)]
@@ -847,8 +722,7 @@ async fn a12a_every_pair_of_entry_points_settles() {
                 .await
                 .unwrap_or_else(|_| panic!("{a:?} + {b:?} did not settle — deadlock"));
 
-            // Not "everything may fail": at most one of the pair may report a
-            // busy lock, because at most one can lose a two-way race.
+            // At most one of the pair may report a busy lock, because at most one can lose a two-way race.
             let busy = [&ra, &rb]
                 .iter()
                 .filter(|r| matches!(r, Err(m) if m.contains("busy")))
@@ -858,8 +732,6 @@ async fn a12a_every_pair_of_entry_points_settles() {
                 "{a:?} + {b:?}: both reported busy ({ra:?}, {rb:?})"
             );
 
-            // And the final runtime state must be one of the two operations'
-            // legitimate terminals, never a torn one.
             let live = fx.host.status(ID).await.map(|s| s.status);
             assert!(
                 matches!(
@@ -870,17 +742,10 @@ async fn a12a_every_pair_of_entry_points_settles() {
                 "{a:?} + {b:?} left a torn state: {live:?}"
             );
 
-            // #1196 S1 review P1-5 — the shape above is not enough. It accepts
-            // `busy = 0` + `Running` while the row says `enabled = false`, which
-            // is precisely the tear P0-1 produced (`reload` respawning on an
-            // `enabled` bit it read outside its guard). So cross-check the three
-            // stores against each other.
             let row = fx.repo.plugin_get_by_id(ID).await.unwrap();
             let in_registry = fx.host.registry().get(ID).is_some();
             let running = matches!(live, Some(PluginRuntimeStatus::Running));
 
-            // Holds for EVERY pair: a plugin that has been uninstalled leaves
-            // nothing behind in either of the other two stores.
             if row.is_none() {
                 assert!(
                     !in_registry,
@@ -894,25 +759,6 @@ async fn a12a_every_pair_of_entry_points_settles() {
                 );
             }
 
-            // #1226 — this used to hold for the `enabled`-aware pairs ONLY,
-            // because `spawn` / `restart` / `rotate_plugin_token` ignored the
-            // `enabled` bit, so "Running while disabled" was a legitimate
-            // terminal for any pair containing one of them and asserting
-            // against it would have been asserting a falsehood. It is not
-            // legitimate any more — the spawn door refuses an id whose row says
-            // `enabled = false` and rotation skips its restart on one — so the
-            // exclusion states something that is no longer true and the
-            // predicate is deleted rather than extended (an extended list is
-            // one more list to keep in sync).
-            //
-            // **Measured, not assumed: widening this does NOT make the matrix
-            // catch #1226.** Reverting both halves of the fix and re-running
-            // this test leaves it green — every pair here starts from an
-            // `enabled = true` row, and none of the interleavings the matrix
-            // actually produces reaches the disabled-then-spawned ordering.
-            // The gates for #1226 are the three dedicated tests at the foot of
-            // this file; what changes here is only that the cross-check no
-            // longer carries an exemption for a claim that has been withdrawn.
             if let Some(p) = row.as_ref() {
                 assert!(
                     p.enabled || !running,
@@ -933,24 +779,7 @@ async fn a12a_every_pair_of_entry_points_settles() {
     }
 }
 
-// ===========================================================================
-// Acceptance 5 (app half) — uninstall vs an in-flight spawn
-//
-// The connector half lives in `connector_host.rs`
-// (`uninstall_is_refused_while_a_connector_spawn_is_in_flight`). Both halves
-// are required because the connector path has a mitigation the app path never
-// had: `set_exposes_tools` no-ops for an absent id and abandons the spawn,
-// whereas the app spawn looks the registry up once at the top and never again.
-// ===========================================================================
-
-/// Barrier: a held DB write transaction parks the app spawn at its first repo
-/// write (the token mint), inside its guard; `wait_until_locked` is the
-/// positive observation that the guard is actually held.
-///
-/// Mutation witness: delete the `try_lock_lifecycle` from `PluginHost::spawn`
-/// and the first `uninstall` succeeds — deleting the row and the token of a
-/// plugin that then completes its spawn and runs on as a live entry with no
-/// row behind it.
+/// Barrier: a held DB write transaction parks the app spawn at its first repo write (the token mint), inside its guard.
 #[tokio::test]
 async fn a5_uninstall_is_refused_while_an_app_spawn_is_in_flight() {
     let fx = boot().await;
@@ -986,21 +815,8 @@ async fn a5_uninstall_is_refused_while_an_app_spawn_is_in_flight() {
     assert_eq!(after.live, None, "no admission reservation may survive");
 }
 
-// ===========================================================================
-// Acceptance 6 — two concurrent installs of one id
-// ===========================================================================
-
-/// The loser must get `plugin_busy`, **not** `plugin_conflict`: under reject
-/// semantics it never reached the duplicate-id probe at all. Only after an
-/// explicit retry — once the winner has committed — is `plugin_conflict` the
-/// right answer. And the winner's row must not have been overwritten: the
-/// underlying insert is an `ON CONFLICT DO UPDATE`, which is what made the
-/// probe/insert pair a TOCTOU before the lock.
-///
-/// Barrier: the held DB transaction pins the winner inside its critical
-/// section. Without it the winner would simply finish first and the loser would
-/// get `plugin_conflict` on the first call — every prose assertion below would
-/// still hold and the lock would never have been touched.
+/// Barrier: the held DB transaction pins the winner inside its critical section; without it
+/// the loser would simply get `plugin_conflict` on the first call.
 #[tokio::test]
 async fn a6_concurrent_installs_of_one_id_give_busy_then_conflict() {
     let fx = boot_with(BootOpts {
@@ -1037,7 +853,6 @@ async fn a6_concurrent_installs_of_one_id_give_busy_then_conflict() {
     assert_eq!(plug.id, ID);
     let install_path = plug.install_path.clone();
 
-    // The explicit retry: NOW it is a permanent conflict.
     let err = fx
         .host
         .install(manifest, &src)
@@ -1052,10 +867,6 @@ async fn a6_concurrent_installs_of_one_id_give_busy_then_conflict() {
     );
     assert_eq!(row.version, plug.version);
 }
-
-// ===========================================================================
-// Acceptance 7 — overlapping enable / disable, both directions
-// ===========================================================================
 
 #[tokio::test]
 async fn a7_disable_overlapping_an_enable_is_refused_then_works() {
@@ -1091,7 +902,6 @@ async fn a7_disable_overlapping_an_enable_is_refused_then_works() {
         Some(PluginRuntimeStatus::Running)
     ));
 
-    // Explicit retry of the loser: DB bit and runtime agree afterwards.
     let plug = fx.host.disable(ID).await.expect("disable on retry");
     assert!(!plug.enabled);
     assert_eq!(fx.host.status(ID).await.map(|s| s.status), None);
@@ -1158,32 +968,6 @@ async fn wait_for_events(fx: &Fx, pred: impl Fn(&[String]) -> bool, timeout: Dur
     }
 }
 
-// ===========================================================================
-// Acceptance 9 / 10 — the backoff sleep is OUTSIDE the lock, and waking up
-// re-decides
-// ===========================================================================
-
-/// A `disable` issued while a crashed plugin is in its respawn backoff must
-/// complete **within** the backoff, and after the backoff has fully elapsed the
-/// plugin must be down and stay down.
-///
-/// Mutation witness: move the `tokio::time::sleep` inside the guard (i.e. hold
-/// the guard across segments 1–3) → the `disable` blocks for the whole backoff
-/// and the `elapsed` assertion fails. That is the half this test owns.
-///
-/// **What the second half does NOT witness, corrected from the earlier note
-/// here:** deleting segment 3's live/epoch/attempt predicate leaves this test
-/// green. `disable` calls `stop_under`, which **aborts** the sleeping supervisor
-/// task outright (`rp.supervisor.take()` → `abort()`), so the mutated predicate
-/// is never evaluated — there is no task left to evaluate it. The same is true
-/// of `a10`. The predicate's real gate is `a9b`, which reaches it through the
-/// one shape that does *not* abort the supervisor (an explicit `spawn` over a
-/// `Crashed` entry), and the `enabled`-bit gate is `a15b`.
-///
-/// The terminal assertions below are still worth keeping: they pin that the
-/// abort + the `enabled` write together leave the plugin down and the event
-/// log's last word `disabled` — they just are not a witness for the epoch
-/// predicate.
 #[tokio::test]
 async fn a9_backoff_does_not_hold_the_lock_and_does_not_resurrect() {
     const BACKOFF: u64 = 2_000;
@@ -1231,14 +1015,6 @@ async fn a9_backoff_does_not_hold_the_lock_and_does_not_resurrect() {
     );
 }
 
-/// Same shape for `uninstall`: after an uninstall during the backoff, the
-/// plugin must be gone and stay gone.
-///
-/// Same correction as `a9`: this is **not** a witness for segment 3's
-/// registry/epoch predicates. `uninstall` also goes through `stop_under`, which
-/// aborts the sleeping supervisor, so the mutated predicate is never reached.
-/// What this pins is the composite operation's own terminal — row, registry and
-/// live entry all gone, and nothing brings them back.
 #[tokio::test]
 async fn a10_uninstall_during_backoff_prevents_the_respawn() {
     const BACKOFF: u64 = 2_000;
@@ -1269,36 +1045,13 @@ async fn a10_uninstall_during_backoff_prevents_the_respawn() {
     assert!(fx.host.registry().get(ID).is_none());
 }
 
-// ===========================================================================
-// Acceptance 14 — the supervisor contends for the lock (§2.5's two holes)
-// ===========================================================================
-
-/// (a) The supervisor's FIRST segment collides with the spawn's own guard.
-///
-/// The crash stub exits the moment the handshake completes, which is before
-/// `spawn_under` has finished — it still owes a live insert and a `running`
-/// emission, all inside its guard. So the supervisor's `child.wait()` returns
-/// while the guard is held, **by construction**. A `try`-and-give-up there
-/// would leave a live `Running` entry over a dead process with no task left to
-/// correct it.
-///
-/// The window is pinned rather than hoped for: a DB write barrier is taken as
-/// soon as the `spawning` event is seen (after which the only remaining repo
-/// write in `spawn_under` is the `running` emission), and the test asserts the
-/// spawn is *still running* — i.e. still holding the guard — while the child is
-/// already gone.
-///
-/// Mutation witness: replace `await_lifecycle` with `try_lock_lifecycle` +
-/// early return in segment 1. The crash is never accounted, the entry stays
-/// `Running`, and the final `Crashed` assertion times out.
+/// The crash stub exits the moment the handshake completes, before `spawn_under` has finished,
+/// so the supervisor's `child.wait()` returns while the guard is held, by construction.
 #[tokio::test]
 async fn a14a_a_crash_inside_the_spawns_own_guard_is_still_accounted() {
     let fx = boot_with(BootOpts {
         stub: CRASH_BIN,
-        // The stub sleeps before answering `initialize`, which is what makes
-        // the window below a real window rather than a race: the `spawning`
-        // emission has committed, the child is alive, and the handshake has
-        // not happened yet.
+        // The stub sleeps before answering `initialize`, which makes the window below a real window rather than a race.
         stub_args: vec!["--delay-ms=600"],
         // Long enough that the respawn cannot mask the assertion.
         backoff: Some((vec![60_000], Duration::from_secs(300), 50)),
@@ -1309,8 +1062,7 @@ async fn a14a_a_crash_inside_the_spawns_own_guard_is_still_accounted() {
     let h = Arc::clone(&fx.host);
     let spawning = tokio::spawn(async move { h.spawn(ID).await });
 
-    // Once `spawning` is on the wire the token mint is done; the only repo
-    // write left inside the guard is the trailing `running` emission.
+    // Once `spawning` is on the wire the token mint is done; the only repo write left inside the guard is the `running` emission.
     wait_for_events(
         &fx,
         |ev| ev.contains(&"spawning".to_string()),
@@ -1319,8 +1071,6 @@ async fn a14a_a_crash_inside_the_spawns_own_guard_is_still_accounted() {
     .await;
     let barrier = DbBarrier::hold(&fx.repo).await;
 
-    // The live insert happens before that emission, so this proves the spawn
-    // has handshaken (hence the crash stub has exited) and is now parked.
     wait_for_status(
         &fx.host,
         ID,
@@ -1343,7 +1093,6 @@ async fn a14a_a_crash_inside_the_spawns_own_guard_is_still_accounted() {
         .expect("spawn task panicked")
         .expect("spawn itself succeeds; the child died after the handshake");
 
-    // The terminal must NOT be a false `Running` over a dead child.
     wait_for_status(
         &fx.host,
         ID,
@@ -1364,16 +1113,6 @@ async fn a14a_a_crash_inside_the_spawns_own_guard_is_still_accounted() {
     );
 }
 
-/// (b) The supervisor's THIRD segment collides with an unrelated lock holder
-/// that ends up doing nothing. The plugin must still be respawned, not left
-/// permanently `Crashed`.
-///
-/// The holder here is the test itself via the `pub` `try_lock_lifecycle` — the
-/// reason that function is public (design §5 R7).
-///
-/// Mutation witness: replace `await_lifecycle` with `try_lock_lifecycle` +
-/// early return in `respawn_after_backoff`. The supervisor gives up and the
-/// second `running` never arrives.
 #[tokio::test]
 async fn a14b_a_busy_lock_at_the_end_of_backoff_does_not_strand_the_plugin() {
     let fx = boot_with(BootOpts {
@@ -1414,20 +1153,8 @@ async fn a14b_a_busy_lock_at_the_end_of_backoff_does_not_strand_the_plugin() {
     .await;
 }
 
-// ===========================================================================
-// Acceptance 15 — the supervisor's third segment fails CLOSED on a DB read
-// failure (fault injection through the narrow port)
-// ===========================================================================
-
-/// Fake [`LifecycleDb`] with a one-shot read failure and a pause gate.
-///
-/// The pause gate is not decoration. `respawn_after_backoff` retries a failed
-/// read a bounded number of times a few hundred ms apart; without a gate the
-/// second attempt would succeed while the test was still setting up its
-/// assertion, and the whole thing would drift into "sometimes green for the
-/// wrong reason". With it, the failure window stays open until the test closes
-/// it, and `failures` is the acknowledgement that the injected failure was
-/// actually consumed by production code rather than sitting unused.
+/// Fake [`LifecycleDb`] with a one-shot read failure and a pause gate that holds the failure
+/// window open until the test closes it.
 struct FaultyDb {
     repo: Arc<dyn Repo>,
     fail_next: AtomicBool,
@@ -1492,11 +1219,6 @@ impl LifecycleDb for FaultyDb {
     }
 }
 
-/// 15a (**liveness**) — a read failure must not respawn, and recovery must.
-///
-/// Mutation witness: make the `Err` arm of the `enabled_row` match fall through
-/// to the respawn (fail-open) and the "still `Crashed` during the failure
-/// window" assertion fails.
 #[tokio::test]
 async fn a15a_a_plugin_row_read_failure_defers_the_respawn_and_recovery_resumes_it() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -1533,7 +1255,6 @@ async fn a15a_a_plugin_row_read_failure_defers_the_respawn_and_recovery_resumes_
         "nothing may have respawned while the row could not be read"
     );
 
-    // Reads recover — and the plugin IS still enabled, so it comes back.
     faulty.release();
     wait_for_events(
         &fx,
@@ -1543,19 +1264,8 @@ async fn a15a_a_plugin_row_read_failure_defers_the_respawn_and_recovery_resumes_
     .await;
 }
 
-/// 15b (**correctness + the mutation witness**) — the `enabled` bit stays
-/// authoritative across a read failure.
-///
-/// The plugin is disabled through the residual design §2.3 registers
-/// explicitly: a direct `repo` write that bypasses the host entirely. That
-/// leaves `live` and `run_epoch` untouched, so the supervisor's epoch check
-/// still says "this is my instance" — the only thing that can stop the respawn
-/// is the DB read, which is exactly what fail-closed is for.
-///
-/// Mutation witness: change the `Err` arm to skip the DB check and respawn (the
-/// r3 shape). The variant respawns at the instant of the read failure, bringing
-/// back a plugin the database says is disabled, and the `never running again`
-/// assertion fails.
+/// The plugin is disabled through a direct `repo` write that bypasses the host, so `live` and
+/// `run_epoch` are untouched and only the DB read can stop the respawn.
 #[tokio::test]
 async fn a15b_a_read_failure_never_respawns_a_plugin_the_db_says_is_disabled() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -1573,8 +1283,6 @@ async fn a15b_a_read_failure_never_respawns_a_plugin_the_db_says_is_disabled() {
     fx.host.spawn(ID).await.expect("spawn");
     faulty.wait_failure_consumed().await;
 
-    // The residual: a plugin-row write that never goes through the host.
-    // `live` and `run_epoch` are untouched by it, by construction.
     fx.repo
         .plugin_update_enabled(ID, false)
         .await
@@ -1599,19 +1307,8 @@ async fn a15b_a_read_failure_never_respawns_a_plugin_the_db_says_is_disabled() {
     );
 }
 
-// ===========================================================================
-// Acceptance 16 — `disable` stops BEFORE it writes the row
-// ===========================================================================
-
-/// A [`LifecycleDb`] that samples `PluginHost::status` at the instant
-/// `set_enabled` is called.
-///
-/// This is the whole reason the port exists (design §4 acceptance 16). A DB
-/// barrier cannot witness this ordering in this repo: `tests/` run on
-/// `sqlite::memory:` where `journal_mode = WAL` is a no-op, readers have no
-/// snapshot isolation, and `plugin_update_enabled` is a bare autocommit
-/// `UPDATE` — under the old order it would simply park on the barrier and never
-/// commit, so both orders would look identical and green.
+/// A [`LifecycleDb`] that samples `PluginHost::status` at the instant `set_enabled` is called.
+/// A DB barrier cannot witness this ordering on `sqlite::memory:`: readers have no snapshot isolation.
 struct OrderProbe {
     repo: Arc<dyn Repo>,
     host: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
@@ -1650,9 +1347,6 @@ impl LifecycleDb for OrderProbe {
     }
 }
 
-/// Mutation witness: swap the two statements in `PluginHost::disable` back to
-/// S0's order (`set_enabled` then `stop_under`) and the observation becomes
-/// `Some("running")` instead of `None`.
 #[tokio::test]
 async fn a16_disable_stops_the_plugin_before_it_writes_the_row() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -1683,90 +1377,14 @@ async fn a16_disable_stops_the_plugin_before_it_writes_the_row() {
     );
 }
 
-/// Acceptance 9/10, third predicate — a supervisor that wakes from its backoff
-/// onto a **different run instance** must leave it alone.
-///
-/// **#1196 S1 review P1-4 — `run_epoch` is now the only discriminator.** The
-/// first version of this test revived the plugin with the *echo* stub, so the
-/// replacement entry was `Running` with `crash_attempt = 0`. Deleting
-/// `rp.run_epoch == run_epoch` from segment 3's predicate left that test green,
-/// because `matches!(rp.status, Crashed { .. })` and `rp.crash_attempt ==
-/// attempt` each rejected the stale supervisor on their own — the epoch
-/// predicate had no gate at all, which is the thing acceptance 9/10's third
-/// predicate is *for*.
-///
-/// So the replacement instance is deliberately built to satisfy every other
-/// conjunct:
-///
-/// * same stub, so it crashes too and the entry is `Crashed { .. }` — ✓ status;
-/// * its own supervisor increments `crash_attempt` from the fresh entry's `0` to
-///   `1`, which is exactly the `attempt` the *stale* supervisor captured from
-///   the first crash — ✓ attempt;
-/// * nothing is stopping it — ✓ `!stopping`;
-/// * `spawn_under` allocates a fresh `run_epoch` — ✗ epoch, and only epoch.
-///
-/// The revive is an explicit `spawn` and not `reload`/`restart` on purpose:
-/// those call `stop_under`, which **aborts** the sleeping supervisor outright,
-/// and an aborted task cannot witness anything. An explicit `spawn` on a
-/// `Crashed` entry is admitted, replaces the live entry (and with it the
-/// supervisor handle — dropping a `JoinHandle` does not abort its task), and
-/// leaves the old supervisor alive and sleeping. That is the one reachable shape
-/// in which a stale supervisor meets a newer run instance.
-///
-/// The observation is the respawn COUNT inside the window between the two
-/// supervisors' deadlines: the stale one is due first and must do nothing, the
-/// newer one is due later and must respawn. A variant that lets the stale
-/// supervisor through respawns twice, and the extra `running` lands inside the
-/// window.
-///
-/// **The window's barrier** (file header rule 1; #1196 S1 review r4/r5). The two
-/// ends are established by different means, and they are not equally strong:
-///
-/// * **Lower end — observed.** The test blocks until the stale supervisor logs
-///   its own give-up line. That is a direct observation that it woke, took the
-///   lifecycle guard, compared `run_epoch` and declined; there is no clock
-///   arithmetic and no unasserted margin left in it. r5 replaced the previous
-///   shape here, which slept to a computed instant and then asserted an
-///   inequality that the sleep had just made true — a tautology that could only
-///   have caught `sleep_until` returning early, resting on an unstated
-///   assumption (that a 400 ms margin covers the gap between the `crashed`
-///   commit the test sees and the `sleep` a few statements later).
-/// * **Upper end — asserted on the clock.** `revive_at.elapsed() < BACKOFF` is a
-///   real assertion (a slow machine fails it loudly), but it is not an
-///   observation: the newer supervisor is supposed to still be asleep at this
-///   point, and a sleeping task emits nothing to observe. It is a genuine lower
-///   bound on its deadline, since its `crashed` cannot precede its own spawn.
-///
-/// So one end is witnessed and one end is bounded, and the file no longer says
-/// "both ends are asserted" as if they were the same kind of claim.
-///
-/// Mutation witnesses (each applied alone to `respawn_after_backoff`'s `ok`
-/// block), **with the assertion that actually goes red** — r5 re-ran both after
-/// changing the lower-end barrier, and neither lands where r4's note said:
-/// * delete `rp.run_epoch == run_epoch` → the stale supervisor respawns instead
-///   of declining, so its give-up line never appears and the **`wait_for`
-///   barrier** fails (13 s deadline, whole captured log attached). The
-///   `exactly two` assertion below is never reached;
-/// * force `ok = false` → *both* supervisors decline, so the barrier and
-///   `exactly two` both pass and the **liveness wait** at the end (`>= 3
-///   running`) is what fails, on `["spawning","running","crashed","spawning",
-///   "running","crashed"]`. That is the correct place for it: this mutation
-///   does not break the epoch discrimination, it freezes everything, and the
-///   liveness half exists precisely to say so.
+/// The revive is an explicit `spawn`, not `reload`/`restart`: those abort the sleeping supervisor,
+/// whereas a spawn over a `Crashed` entry replaces the live entry and leaves the old supervisor sleeping.
 #[tokio::test]
 async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
-    // Both supervisors sleep BACKOFF, and both start that sleep immediately
-    // after emitting their own `crashed` — see `supervise_inner`: the emission
-    // is the last statement of segment 1 and `sleep` is segment 2. So an
-    // observed `crashed` event is a barrier for that supervisor's sleep, and the
-    // window is named in terms of it rather than in terms of wall clock since
-    // the test started.
+    // Both supervisors start their BACKOFF sleep right after emitting their own `crashed`, so an observed `crashed` is a barrier for that sleep.
     const BACKOFF: u64 = 3_000;
     const STAGGER: u64 = 1_500;
-    /// The stale supervisor's give-up line, verbatim from `respawn_after_backoff`
-    /// check (a). Seeing it is a POSITIVE observation that the supervisor woke
-    /// AND read the epoch AND declined — strictly stronger than "its backoff has
-    /// elapsed", which is all the window this test used to compute could claim.
+    /// The stale supervisor's give-up line, verbatim from `respawn_after_backoff`.
     const STALE_GAVE_UP: &str = "backoff elapsed but the run instance is gone or has moved on";
     let capture = LogCapture::install();
     let fx = boot_with(BootOpts {
@@ -1777,11 +1395,7 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     .await;
 
     fx.host.spawn(ID).await.expect("spawn");
-    // #1196 S1 review r4 — wait for the OBSERVED first crash before staggering,
-    // so `STAGGER` is measured from the stale supervisor's sleep and not from
-    // `t0`. (r4 also used this instant to compute a sample point; r5 dropped
-    // that computation entirely — see the give-up wait below. `crashed1_at`
-    // survives only as a diagnostic.)
+    // Wait for the observed first crash before staggering, so `STAGGER` is measured from the stale supervisor's sleep.
     wait_for_events(
         &fx,
         |ev| ev.iter().filter(|s| *s == "crashed").count() >= 1,
@@ -1797,9 +1411,6 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     )
     .await;
 
-    // Stagger, then revive with an explicit `spawn` of the SAME crash stub. The
-    // replacement crashes in its turn and parks its own supervisor, so the two
-    // supervisors differ in `run_epoch` and in nothing else the predicate reads.
     sleep(Duration::from_millis(STAGGER)).await;
     let revive_at = Instant::now();
     fx.host.spawn(ID).await.expect("explicit revive");
@@ -1819,18 +1430,6 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
         "setup: exactly the two spawns this test made"
     );
 
-    // ---- the sample point, and the two halves of the window ---------------
-    //
-    // Lower end — a REAL observation, not an arithmetic identity. The earlier
-    // shape slept to `crashed1_at + BACKOFF + MARGIN` and then asserted
-    // `crashed1_at.elapsed() >= BACKOFF + MARGIN`, which the preceding
-    // `sleep_until` had just made true: it could only ever catch `sleep_until`
-    // returning early, and the barrier it *claimed* — that `MARGIN` covers the
-    // gap between the `crashed` commit the test saw and the `sleep` a few
-    // statements later — was an unasserted assumption. Waiting for the stale
-    // supervisor's own give-up line replaces both: when it appears, that
-    // supervisor has provably woken, taken the lifecycle guard, read
-    // `run_epoch`, found it stale and returned. No margin, no assumption.
     capture
         .wait_for(
             STALE_GAVE_UP,
@@ -1839,13 +1438,7 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
              epoch check, so the assertion below would say nothing",
         )
         .await;
-    // Upper end: the newer supervisor's `crashed` cannot precede its own spawn,
-    // so its deadline is at or after `revive_at + BACKOFF`. If the sample drifted
-    // past that, "only two running events" would be a statement about a
-    // supervisor that has not woken yet either — vacuous in the other direction,
-    // and this end has no positive observation available (the newer supervisor
-    // is *supposed* to still be asleep, and a sleeping task emits nothing), so
-    // it stays an assertion on the clock.
+    // Upper end: the newer supervisor's `crashed` cannot precede its own spawn, so its deadline is at or after `revive_at + BACKOFF`.
     assert!(
         revive_at.elapsed() < Duration::from_millis(BACKOFF),
         "the sample drifted past the NEWER supervisor's earliest possible \
@@ -1864,8 +1457,6 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
         crashed1_at.elapsed()
     );
 
-    // Liveness half: the NEWER supervisor is still owed its respawn, so this is
-    // not "the epoch check froze everything".
     wait_for_events(
         &fx,
         |ev| ev.iter().filter(|s| *s == "running").count() >= 3,
@@ -1874,31 +1465,6 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     .await;
 }
 
-// ===========================================================================
-// #1196 S1 review P1-6 — boot's `app` branch is bounded
-// ===========================================================================
-
-/// A lifecycle lock nobody releases must not hang boot.
-///
-/// The `app` branch of `autospawn_enabled_within` had no fence at all: it goes
-/// through `autospawn_one`, whose `Busy` fallback is `await_lifecycle`, which is
-/// unbounded by design. The design's defence was "boot's only contender is a
-/// crash supervisor, whose work is bounded" — but §5 R6 says a timing argument
-/// is not a proof, `try_lock_lifecycle` is `pub`, and a supervisor's own
-/// `spawn_under` can park on a slow event store indefinitely. Connectors already
-/// had `timeout_at`; this is the same fence for the other half.
-///
-/// The lock here is held for the whole test, i.e. genuinely never released — so
-/// "it finished" cannot be luck.
-///
-/// Mutation witness: delete the `tokio::time::timeout` wrapper around the `app`
-/// branch's `autospawn_one` call (keeping the body). r5 ran it: the test fails
-/// in ~10 s on its own outer `timeout(…).expect("boot never returned: …")`, with
-/// that message. It does **not** hang — an earlier version of this note said it
-/// runs until nextest's slow-timeout kills it, which the outer bound below has
-/// always prevented. The distinction matters because "hangs" is what the
-/// *production* failure looks like; the test's job is to turn that into a
-/// readable red, and it does.
 #[tokio::test]
 async fn a19_a_wedged_lifecycle_lock_cannot_hang_boot() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1954,13 +1520,6 @@ async fn a19_a_wedged_lifecycle_lock_cannot_hang_boot() {
     );
 }
 
-// ===========================================================================
-// #1238 — boot's initial plugin enumeration is bounded
-// ===========================================================================
-
-/// A repo substitute whose boot-time plugin enumeration genuinely never
-/// returns. It is intentionally narrower than `RouteRepo`: implementing that
-/// ~100-method trait would bury this one behavior in forwarding boilerplate.
 struct WedgedPluginListDb;
 
 #[async_trait]
@@ -1970,13 +1529,6 @@ impl PluginListDb for WedgedPluginListDb {
     }
 }
 
-/// A wedged `plugins_list_all` read must not hang boot before any per-plugin or
-/// connector fence can run.
-///
-/// Red witness before the fence was implemented: the test's one-second outer
-/// watchdog fired, and nextest reported `Elapsed(())` after 1.177 s. The
-/// pending future guarantees that a green result cannot come from the fake
-/// repo eventually recovering.
 #[tokio::test]
 async fn a22_a_wedged_plugin_list_cannot_hang_boot() {
     const WALL: Duration = Duration::from_millis(300);
@@ -2005,26 +1557,12 @@ async fn a22_a_wedged_plugin_list_cannot_hang_boot() {
     );
 }
 
-// ===========================================================================
-// #1196 S1 review P0-1 — `reload` may not decide on a row read outside its
-// guard
-// ===========================================================================
-
-/// A [`LifecycleDb`] that runs a full `disable` **inside** `reload`'s pre-guard
-/// existence probe, and then answers the probe with the value that was true
-/// before it did.
-///
-/// That is not a contrived value: it is exactly what the real interleaving
-/// produces. `reload`'s probe reads the row; a concurrent `disable` takes the
-/// guard (which `reload` does not hold yet), stops the plugin, commits
-/// `enabled = false` and releases; `reload` then takes the guard holding a row
-/// that is already history. The fake makes that window deterministic instead of
-/// hoping the scheduler produces it.
+/// A [`LifecycleDb`] that runs a full `disable` inside `reload`'s pre-guard existence probe,
+/// then answers the probe with the value that was true before it did.
 struct StaleProbeWindow {
     repo: Arc<dyn Repo>,
     host: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
-    /// One-shot: only the first probe opens the window, so the `disable` we run
-    /// inside it (and any later reload) sees a plain delegating port.
+    /// One-shot: only the first probe opens the window.
     armed: AtomicBool,
     fired: AtomicBool,
 }
@@ -2053,8 +1591,6 @@ impl LifecycleDb for StaleProbeWindow {
             host.disable(id).await.expect("the racing disable must win");
             self.fired.store(true, Ordering::SeqCst);
         }
-        // The pre-window value. Any caller that treats a probe as a decision
-        // gets exactly this.
         Ok(before)
     }
 
@@ -2064,20 +1600,6 @@ impl LifecycleDb for StaleProbeWindow {
     }
 }
 
-/// A `disable` that lands between `reload`'s existence probe and `reload`'s
-/// guard must not be overwritten by the reload: the terminal may not be
-/// "DB says disabled, runtime says Running".
-///
-/// This is #1169 race 3 one endpoint over, and S1 re-introduced it: the probe
-/// was moved outside the guard (correctly — otherwise `unknown id + busy`
-/// answers 409 instead of 404) but the same read kept feeding `plug.enabled` and
-/// `plug.install_path` to the decision below it.
-///
-/// Mutation witness: in `PluginHost::reload`, bind the probe
-/// (`let probed = self.lifecycle_db.enabled_row(id).await?`) and branch on it
-/// instead of on the in-guard re-read's `plug.enabled`. The reload then respawns
-/// the plugin the operator just disabled and both terminal assertions below
-/// fail.
 #[tokio::test]
 async fn a17_reload_decides_on_the_row_it_reads_inside_its_guard() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -2122,10 +1644,6 @@ async fn a17_reload_decides_on_the_row_it_reads_inside_its_guard() {
     );
 }
 
-// ===========================================================================
-// #1196 S1 review P0-3 — giving up on the respawn is a terminal, not silence
-// ===========================================================================
-
 /// A [`LifecycleDb`] whose `enabled_row` never succeeds.
 struct UnreadableDb {
     repo: Arc<dyn Repo>,
@@ -2147,19 +1665,6 @@ impl LifecycleDb for UnreadableDb {
     }
 }
 
-/// When the bounded fail-closed retry is exhausted, the supervisor must publish
-/// an explicit terminal state — not stop at a `tracing::error!` nobody reads.
-///
-/// The pre-fix ending left `live` at `Crashed`, the event stream's last word at
-/// the `crashed` emitted before the backoff, and no background path that would
-/// ever reconcile it: only an explicit `spawn` or a kernel restart. That is the
-/// same argument §2.5 makes for a `Busy` autospawn and the same reason the
-/// `Unavailable` entry exists — it was simply never applied to this path.
-///
-/// Mutation witness: delete the `publish_unavailable_under` call at the tail of
-/// `respawn_after_backoff` (leaving the `tracing::error!`) and both assertions
-/// below fail — the last event stays `crashed` and the live entry stays
-/// `Crashed`.
 #[tokio::test]
 async fn a18_exhausted_respawn_retries_publish_a_terminal_state() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -2216,21 +1721,6 @@ async fn a18_exhausted_respawn_retries_publish_a_terminal_state() {
     assert_eq!(ev.last().map(String::as_str), Some("unavailable"), "{ev:?}");
 }
 
-// ===========================================================================
-// Acceptance 1, ordering half — the 404 probes sit BEFORE the guard
-//
-// Same shape as `a1_install_reports_kernel_too_old_even_when_the_id_is_busy`,
-// one endpoint over. `enable` / `disable` / `uninstall` raise part of their
-// unknown-id 404 from the *write* (`plugin_update_enabled` / `plugin_delete`
-// report `NotFound` on `rows_affected() == 0`) and `reload` raises it only from
-// its explicit probe. Put the guard first and "unknown id AND busy" answers 409
-// instead of 404 on all four — an error code silently changed by the lock, and
-// invisible to S0's unknown-id gates because those hold no lock.
-// ===========================================================================
-
-/// Mutation witness: move any of the four `try_lock_lifecycle` calls above its
-/// `plugin_row_or_404` probe and that endpoint's arm below reports
-/// `plugin_busy` instead of `not_found`.
 #[tokio::test]
 async fn a1_unknown_id_is_still_404_when_that_id_is_busy() {
     let fx = boot_with(BootOpts {
@@ -2261,32 +1751,6 @@ async fn a1_unknown_id_is_still_404_when_that_id_is_busy() {
     }
 }
 
-// ===========================================================================
-// #1196 S1 review r4 — `plugins_disabled` × {spawn, restart, rotate-token}
-//
-// This cell of the matrix had ZERO coverage, which is why a pre-lock probe
-// shared between three entry points could silently rewrite rotate's error
-// codes: the probe answered `HostError::Disabled` where rotation's own opening
-// pair answers `NotFound` (unregistered) or `UnsupportedForKind` (connector),
-// and the rotate route maps `Disabled` through its catch-all to **500** —
-// "the kernel is broken" for a request that deleted nothing and restarted
-// nothing. Same class as install 422→409 and enable 404→409, which this slice
-// spent two rounds preventing.
-//
-// The HTTP half of the contract lives with the mapping function
-// (`routes::plugins::rotate_error_mapping_tests`); this is the host half, and
-// only the two together state an endpoint contract.
-// ===========================================================================
-
-/// Every `plugins_disabled` cell of the three `HostError` lifecycle entries.
-///
-/// Mutation witnesses (each applied alone):
-/// * add the `plugins_disabled` check back to `rotate_admission_check` (i.e.
-///   re-share `spawn_admission_check` with rotate) → the `ghost`/`connector`
-///   rotate arms below go red, reporting `Disabled` where 404 / 400 are owed;
-/// * delete the `plugins_disabled` check from `spawn_admission_check` → the
-///   `spawn`/`restart` arms go red (`NotFound`, or a real spawn, instead of
-///   `Disabled`).
 #[tokio::test]
 async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
     const APP: &str = "test.disabled.app";
@@ -2300,8 +1764,7 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
     std::fs::create_dir_all(&plugins_data_dir).unwrap();
 
     let app_dir = write_plugin_with_args(&plugins_dir, APP, ECHO_BIN, &[]);
-    // A registered connector. It is never brought up here — rotation refuses on
-    // `kind` before touching the network — so a placeholder url is honest.
+    // A registered connector, never brought up: rotation refuses on `kind` before touching the network.
     let conn_dir = plugins_dir.join(CONNECTOR);
     std::fs::create_dir_all(&conn_dir).unwrap();
     std::fs::write(
@@ -2338,8 +1801,6 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
         .await
         .unwrap();
     }
-    // A token to watch: the one cell that legitimately reaches the delete must
-    // be shown reaching it, and the two that must not must be shown not to.
     repo.plugin_token_set(APP, "hashed", i64::MAX)
         .await
         .unwrap();
@@ -2356,8 +1817,6 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
         repo.clone(),
         plugins_dir,
         plugins_data_dir,
-        // Every id under test is behind the operator's kill switch — including
-        // the ghost, which is the combination the shared probe got wrong.
         vec![APP.into(), CONNECTOR.into(), GHOST.into()],
         EventBus::new(),
         calm_server::state::WriteContext::new(
@@ -2366,8 +1825,6 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
         ),
     ));
 
-    // ---- spawn / restart: `Disabled` wins over `NotFound`, both before and
-    // ---- inside the guard. This is the pair `spawn_under` really opens with.
     for (what, res) in [
         ("spawn(registered app)", host.spawn(APP).await),
         ("spawn(unregistered)", host.spawn(GHOST).await),
@@ -2386,8 +1843,6 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
         "nothing may have been started"
     );
 
-    // ---- rotate: the kill switch is NOT rotation's opening question, so it
-    // ---- must not be allowed to answer for these two cells.
     let err = host
         .rotate_plugin_token(GHOST)
         .await
@@ -2412,15 +1867,6 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
         "neither refusal may have touched an unrelated token row"
     );
 
-    // ---- the documented residual, pinned so it cannot drift either way.
-    // A REGISTERED APP in `plugins_disabled` does reach the delete and the
-    // restart, and only then fails with `Disabled` (→ 500). "Before #1196
-    // touched it" here means S1's first commit `695813b1` (parent: the merge
-    // `3dd32702`), at which #1164's registry+kind guard and the route's
-    // 404/400 arms were already in place and this cell already answered 500 —
-    // NOT `main`'s merge-base with this branch, which predates #1164 and mapped
-    // every rotate error to 500. It is a separate decision to change, and this
-    // arm is what makes changing it deliberate.
     let err = host
         .rotate_plugin_token(APP)
         .await
@@ -2437,26 +1883,6 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
     );
 }
 
-// ===========================================================================
-// #1196 S1 review r4 — the `app` boot fence's terminal arm is await-free
-// ===========================================================================
-
-/// The fence fires, the lock IS available, and the event store is still wedged.
-///
-/// `a19` cannot reach this: it holds the lifecycle lock for the whole test, so
-/// `try_lock_lifecycle` always fails and only the log-and-move-on branch ever
-/// runs. The publishing branch — the one the timeout arm exists for — had never
-/// been executed by any gate, and it contained an **unbounded await outside the
-/// fence** (`publish_unavailable_under` → `emit_state_under` → `log_pure_event`).
-///
-/// The reachable path is the one the fence's own reason string names: an `app`
-/// spawn parks on a slow event store → the fence fires → dropping that future
-/// releases its guard → `try_lock` now succeeds → boot waits on the same wedged
-/// store, forever. `APP_AUTOSPAWN_WALL` then bounds nothing.
-///
-/// Mutation witness: change the timeout arm back to
-/// `self.publish_unavailable_under(&g, None, reason).await` and this test fails
-/// on its 10 s `expect` — boot never returns while the DB writer is held.
 #[tokio::test]
 async fn a21_the_app_boot_fence_terminal_never_waits_on_the_event_store() {
     let fx = boot_with(BootOpts {
@@ -2465,8 +1891,6 @@ async fn a21_the_app_boot_fence_terminal_never_waits_on_the_event_store() {
     })
     .await;
 
-    // Every repo write parks from here on, including the token mint that is the
-    // first thing an `app` spawn does inside its guard.
     let barrier = DbBarrier::hold(&fx.repo).await;
 
     let started = Instant::now();
@@ -2478,8 +1902,7 @@ async fn a21_the_app_boot_fence_terminal_never_waits_on_the_event_store() {
              is outside the fence",
         );
     let elapsed = started.elapsed();
-    // The fixture has to have been in force: a boot that never met the fence
-    // would also be fast, and would prove nothing.
+    // A boot that never met the fence would also be fast, and would prove nothing.
     assert!(
         elapsed >= Duration::from_millis(300),
         "boot returned in {elapsed:?}, faster than the 300 ms wall it was given \
@@ -2490,10 +1913,6 @@ async fn a21_the_app_boot_fence_terminal_never_waits_on_the_event_store() {
         "boot took {elapsed:?} against a 300 ms app wall"
     );
 
-    // What is kept is the table half — the one `GET /api/plugins/{id}` reads.
-    // Losing it is the "reported as if it had never been enabled" failure the
-    // whole arm exists to prevent; losing the event half is the acknowledged
-    // price, exactly as on the connector side.
     let st = fx
         .host
         .status(ID)
@@ -2505,7 +1924,6 @@ async fn a21_the_app_boot_fence_terminal_never_waits_on_the_event_store() {
         st.status
     );
 
-    // And the guard was released, not leaked, on the way out.
     fx.host
         .try_lock_lifecycle(ID)
         .expect("the terminal arm must not have kept the lifecycle guard");
@@ -2513,18 +1931,6 @@ async fn a21_the_app_boot_fence_terminal_never_waits_on_the_event_store() {
     barrier.release().await;
 }
 
-// ===========================================================================
-// #1196 S1 review r4 — boot's upper bound is a pinned number, not a shape
-// ===========================================================================
-
-/// `PLUGIN_LIST_WALL`, `APP_AUTOSPAWN_WALL`, and the composed boot ceiling,
-/// pinned as literals.
-///
-/// The behavioral gates override their walls through `PluginHost` builders, so
-/// they cannot see the production constants at all. This is the app/list-side
-/// counterpart of `the_connector_phase_ceiling_is_the_documented_one`: it pins
-/// each constant and literal outputs of the one composition that turns them
-/// into boot's closed bound, without duplicating that composition in the test.
 #[test]
 fn the_app_autospawn_wall_is_the_documented_one() {
     use calm_server::plugin_host::{
@@ -2532,18 +1938,12 @@ fn the_app_autospawn_wall_is_the_documented_one() {
     };
     use calm_truth::db::sqlite::{SQLITE_ACQUIRE_TIMEOUT_MS, SQLITE_BUSY_TIMEOUT_MS};
 
-    // One local DB list read: pool acquisition (including fresh-connection
-    // setup), SQLite's bounded SELECT busy wait, and scheduling margin, with
-    // boot continuing on expiry.
     assert_eq!(PLUGIN_LIST_WALL, Duration::from_secs(40));
     assert!(
         PLUGIN_LIST_WALL
             > Duration::from_millis(SQLITE_ACQUIRE_TIMEOUT_MS + SQLITE_BUSY_TIMEOUT_MS)
     );
-    // Sized against a local fork/exec + `initialize` handshake + a few
-    // persisted events — not against a network round trip.
     assert_eq!(APP_AUTOSPAWN_WALL, Duration::from_secs(30));
-    // Pin literal results, not a second copy of the production arithmetic.
     assert_eq!(boot_autospawn_ceiling(0), Duration::from_millis(71_500));
     assert_eq!(boot_autospawn_ceiling(1), Duration::from_millis(101_500));
     assert_eq!(
@@ -2551,47 +1951,16 @@ fn the_app_autospawn_wall_is_the_documented_one() {
         Duration::from_millis(191_500),
         "if a constituent wall moves, change this pinned total deliberately"
     );
-    // The ceiling is a real ceiling in both directions: it is never below
-    // either component.
     assert!(boot_autospawn_ceiling(1) > MAX_CONNECTOR_AUTOSPAWN_WALL);
     assert!(boot_autospawn_ceiling(1) > APP_AUTOSPAWN_WALL);
     assert!(boot_autospawn_ceiling(0) > PLUGIN_LIST_WALL);
 }
 
-// ===========================================================================
-// #1196 S1 review r5 — the `n > 1` term of `boot_autospawn_ceiling` is executed,
-// not just computed
-// ===========================================================================
-
-/// Two wedged `app` plugins cost **two** walls, not one shared one.
-///
-/// `the_app_autospawn_wall_is_the_documented_one` pins the four-app output of
-/// `boot_autospawn_ceiling`, but that is only an output of a `const fn`: it would
-/// hold verbatim if the loop fenced all apps with a single shared deadline, in
-/// which case the documented `N ×` shape would be a claim about a function
-/// nothing in boot uses that way. `a19` runs the fence for exactly one plugin,
-/// so no gate had ever executed the multiplier.
-/// This one does: it is the smallest `n` at which "additive" and "shared" give
-/// different answers.
-///
-/// Both plugins are wedged the way `a19` wedges its one — the lifecycle guard is
-/// taken by the test and never released — so each iteration must run its fence
-/// to expiry, and the only thing that can make boot return early is the fences
-/// sharing a budget.
-///
-/// Mutation witness: hoist the `app` branch's bound out of the loop — compute
-/// `let deadline = Instant::now() + self.app_autospawn_wall;` before the `for`
-/// and swap the per-iteration `tokio::time::timeout(self.app_autospawn_wall, …)`
-/// for `tokio::time::timeout_at(deadline, …)`. The second plugin then gets
-/// whatever is left of one wall (nothing), boot returns in ~1 × WALL, and the
-/// lower-bound assertion below goes red.
 #[tokio::test]
 async fn two_wedged_app_plugins_cost_two_walls_not_one() {
     const A: &str = "test.lock.two.a";
     const B: &str = "test.lock.two.b";
-    /// Small enough for a fast test, large enough that 1 × and 2 × cannot be
-    /// told apart by scheduling noise (the assertions leave a 300 ms band on
-    /// the low side and 3 s of headroom on the high side).
+    /// Small enough for a fast test, large enough that 1 × and 2 × cannot be told apart by scheduling noise.
     const WALL: Duration = Duration::from_millis(500);
 
     let tmp = tempfile::tempdir().unwrap();
@@ -2637,8 +2006,7 @@ async fn two_wedged_app_plugins_cost_two_walls_not_one() {
         .with_app_autospawn_wall(WALL),
     );
 
-    // Wedge BOTH. Nothing in this test ever drops either guard, so neither
-    // iteration can finish early for a reason other than its own fence.
+    // Wedge BOTH; nothing in this test ever drops either guard.
     let _wedged_a = host.try_lock_lifecycle(A).expect("A's lock is free");
     let _wedged_b = host.try_lock_lifecycle(B).expect("B's lock is free");
 
@@ -2662,14 +2030,6 @@ async fn two_wedged_app_plugins_cost_two_walls_not_one() {
          something outside the fences is unbounded"
     );
 
-    // The fixture has to have been in force for BOTH, not just the first: a
-    // plugin that was never reached is also a plugin that never started, and
-    // that would be indistinguishable from a fence firing if we only looked at
-    // wall clock. Neither may have been started, and — because this test holds
-    // both guards for its whole life — the timeout arm's `try_lock_lifecycle`
-    // fails for both, so both take the log-and-move-on branch and leave no
-    // runtime entry. (`a21` is the gate for the other branch, where the guard
-    // IS available and a terminal `Unavailable` must appear.)
     for id in [A, B] {
         assert!(
             host.status(id).await.is_none(),
@@ -2683,49 +2043,10 @@ async fn two_wedged_app_plugins_cost_two_walls_not_one() {
     }
 }
 
-// ===========================================================================
-// #1226 — rotate-token must not resurrect an operator-disabled plugin, and the
-// `enabled` bit is carried by the spawn admission path rather than by one
-// caller remembering to ask.
-//
-// Root cause: `PluginHost::spawn` only ever consulted `config.plugins_disabled`
-// (`spawn_admission_check`), never the DB `plugins.enabled` bit, and
-// `rotate_plugin_token_under` restarted unconditionally after the token delete.
-// (Review round 2 moved the delete to after the branch and gave the disabled
-// branch a stop; see the two tests at the foot of this file.)
-// Rotating the token of a disabled plugin therefore STARTED it, and nothing
-// reconciled the result: the next boot's `autospawn_enabled` skips the plugin
-// precisely *because* `enabled = false`. Terminal state — DB `enabled = false`
-// beside a runtime `Running` — is the same tear `a17`/`a16` exist to prevent
-// one endpoint over.
-// ===========================================================================
-
-/// (a) The rotate half. Rotation's purpose is "give me a new token"; the
-/// restart is an implementation side effect, and on a disabled plugin that side
-/// effect turns on something the operator explicitly turned off.
-///
-/// The disabled state is reached through the **production** `disable` route, not
-/// by seeding a row: the point of the test is the state an operator can
-/// actually produce.
-///
-/// This case is the plugin that is **already stopped**; the one that is still
-/// running beside the disabled row is
-/// `rotate_token_reconciles_a_plugin_left_running_beside_a_disabled_row`, which
-/// is where the stop in this branch is pinned.
-///
-/// Mutation witness: delete the whole `if !enabled` early return from
-/// `rotate_plugin_token_under`, so the rotation always restarts → this test
-/// goes red. Note WHICH assertion it goes red on, because it is not the obvious
-/// one: with part (b) still in place the restart reaches the spawn door, the
-/// door refuses, and the rotation reports `OperatorDisabled` — so the `expect`
-/// on the rotation itself fires, not the `must not be Running` check below it.
-/// Part (a) is what keeps the rotation successful AND inert; (b) alone would
-/// only make it a 409 that stopped the plugin on its way to failing.
 #[tokio::test]
 async fn rotate_token_does_not_resurrect_an_operator_disabled_plugin() {
     let fx = boot().await;
 
-    // Production route to "the operator turned this off".
     let row = fx.host.disable(ID).await.expect("disable");
     assert!(!row.enabled, "fixture: disable must have cleared the bit");
     assert!(
@@ -2733,9 +2054,6 @@ async fn rotate_token_does_not_resurrect_an_operator_disabled_plugin() {
         "fixture: the plugin must not be running before the rotation"
     );
 
-    // Rotation still succeeds — the operator asked for the token to be cleared
-    // and it is cleared. What is skipped is the restart; the branch's stop is a
-    // no-op here (`NotFound`) because this plugin is not running.
     fx.host.rotate_plugin_token(ID).await.expect(
         "rotating a disabled plugin's token is still Ok — the token is the \
          request, the restart is only a side effect",
@@ -2763,9 +2081,6 @@ async fn rotate_token_does_not_resurrect_an_operator_disabled_plugin() {
         "rotation must not touch the `enabled` bit in either direction"
     );
 
-    // …and the token slot really was cleared, so `enable` mints a fresh one on
-    // its next spawn. Skipping the restart may not turn the rotation into a
-    // no-op.
     assert!(
         fx.repo.plugin_token_get(ID).await.unwrap().is_none(),
         "the token row must be deleted even though the restart is skipped — \
@@ -2773,12 +2088,6 @@ async fn rotate_token_does_not_resurrect_an_operator_disabled_plugin() {
     );
 }
 
-/// (b) The structural half, positive arm: the refusal lives in the spawn
-/// admission path, so a caller that has not been taught about #1226 cannot
-/// re-open it.
-///
-/// Mutation witness: delete the `enabled == Some(false)` refusal from
-/// `config_for_spawn_or_unavailable` → this test goes red (the spawn succeeds).
 #[tokio::test]
 async fn spawn_refuses_an_id_whose_row_says_disabled() {
     let fx = boot().await;
@@ -2800,24 +2109,8 @@ async fn spawn_refuses_an_id_whose_row_says_disabled() {
     );
 }
 
-/// (b) The structural half, boundary arm. **An absent row is NOT a disabled
-/// row**: a row that does not exist cannot say "disabled", so spawn admission
-/// lets it through exactly as before. This is deliberate — fail-open here is
-/// what keeps `plugin_config_delivery::
-/// a_plugin_with_no_stored_row_is_judged_against_its_manifest_defaults`
-/// reachable, since the config gate's row-less arm is only reachable through
-/// this door.
-///
-/// "As before" is asserted positively rather than as "did not answer
-/// `OperatorDisabled`": a row-less `app` cannot complete a spawn on this repo
-/// at all — `ensure_plugin_token` writes `plugin_tokens`, whose `plugin_id`
-/// `REFERENCES plugins(id)` — so the spawn gets all the way to the token mint
-/// and dies there on the foreign key. That failure IS the pre-#1226 behavior,
-/// and reaching it is the proof that admission did not intercept.
-///
-/// Mutation witness: widen the refusal to `enabled != Some(true)` → this test
-/// goes red with `OperatorDisabled` in place of the token-mint failure, and
-/// `plugin_config_delivery`'s row-less case goes red with it.
+/// A row-less `app` cannot complete a spawn on this repo (`plugin_tokens.plugin_id` REFERENCES
+/// plugins), so reaching the token-mint failure is the proof that admission did not intercept.
 #[tokio::test]
 async fn spawn_treats_an_absent_row_as_unchanged_not_as_disabled() {
     let fx = boot_with(BootOpts {
@@ -2846,34 +2139,9 @@ async fn spawn_treats_an_absent_row_as_unchanged_not_as_disabled() {
     );
 }
 
-// ===========================================================================
-// #1226 review round 2 — B1: the disabled branch must RECONCILE the tear, not
-// walk away from it; B2: a failed token delete is not a successful rotation.
-// ===========================================================================
-
-/// B1. Rotation on a plugin that is **running beside a `enabled = false` row**
-/// must leave it stopped.
-///
-/// Skipping the restart (the first round's fix) is right, but on its own it
-/// preserves exactly the torn state #1226 is about. Deleting the token row does
-/// not stop the orphan: the plugin token is checked once, at the `initialize`
-/// handshake, against the value the kernel holds in memory, and no callback
-/// path reads `plugin_tokens` afterwards — so the process keeps working
-/// indefinitely.
-///
-/// **Why the row is written directly here.** This state's only production
-/// producer was the unconditional restart that the first round of this fix
-/// removed, so it can no longer be constructed through a route. It is still
-/// reachable in the field: a deployment upgraded from a build predating the fix
-/// can already be in it, and the rotate an operator runs after the upgrade is
-/// where it has to be reconciled. The bypass write is the residual design §2.3
-/// registers explicitly (the route layer holds an `Arc<dyn RouteRepo>` and can
-/// write the row without going through the host); `a15b` uses the same one for
-/// the same reason.
-///
-/// Mutation witness: delete the `stop_under` call from the disabled branch of
-/// `rotate_plugin_token_under` → this test goes red on the "must no longer be
-/// Running" assertion.
+/// Deleting the token row does not stop an orphan: the token is checked once at `initialize`, and
+/// no callback path reads `plugin_tokens` afterwards. The torn state has no production producer
+/// any more, so the row is written directly.
 #[tokio::test]
 async fn rotate_token_reconciles_a_plugin_left_running_beside_a_disabled_row() {
     let fx = boot().await;
@@ -2924,33 +2192,9 @@ async fn rotate_token_reconciles_a_plugin_left_running_beside_a_disabled_row() {
     );
 }
 
-/// B2 + C1. A failing `plugin_token_delete` means opposite things on the two
-/// branches, and the test has to say so branch by branch.
-///
-/// The break is a real one — a `BEFORE DELETE` trigger that aborts — so the row
-/// survives and can be read back, which is the half a `DROP TABLE` cannot show.
-///
-/// **Enabled branch: the rotation still happens, so refusing would be a lie.**
-/// `restart_under` → `spawn_under` → `ensure_plugin_token` writes through
-/// `plugin_token_set`, an `INSERT … ON CONFLICT DO UPDATE`
-/// (`calm-truth/src/db/sqlite/out_of_domain.rs:630`). It never DELETEs, so the
-/// hash is overwritten whether or not the DELETE landed. Round 2 of this fix
-/// propagated the error here and turned a working rotation into a 500 that did
-/// nothing; the fixture missed it because it never spawned the plugin, so no
-/// restart followed and there was nothing to re-mint. **This test therefore
-/// runs the enabled arm against a live plugin, and asserts the two things that
-/// prove the rotation really happened: the stored hash changed, and the pid
-/// changed.** Asserting `Ok` alone would pass on a rotation that did nothing.
-///
-/// **Disabled branch: nothing follows, so the delete IS the rotation.** The
-/// branch returns without restarting, so a swallowed failure is a 200 over an
-/// unchanged hash.
-///
-/// Mutation witnesses, one per branch (each applied alone):
-/// * put `?` back on the enabled branch's `plugin_token_delete` → the enabled
-///   arm goes red on "the rotation must still happen";
-/// * put `let _ =` back on the disabled branch's → the disabled arm goes red on
-///   "the disabled branch must report the failed delete".
+/// The break is a real `BEFORE DELETE` trigger that aborts, so the row survives and can be read back.
+/// On the enabled branch `ensure_plugin_token` re-mints via `INSERT … ON CONFLICT DO UPDATE`, so the
+/// hash is overwritten whether or not the DELETE landed.
 #[tokio::test]
 async fn a_failing_token_delete_is_fatal_only_where_nothing_re_mints() {
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -2961,7 +2205,6 @@ async fn a_failing_token_delete_is_fatal_only_where_nothing_re_mints() {
     })
     .await;
 
-    // ---- enabled branch, against a LIVE plugin. -------------------------
     fx.host.spawn(ID).await.expect("spawn");
     let before_hash = fx
         .repo
@@ -3018,8 +2261,6 @@ async fn a_failing_token_delete_is_fatal_only_where_nothing_re_mints() {
          handshook with"
     );
 
-    // ---- disabled branch: nothing re-mints, so the delete is the whole
-    // ---- rotation and its failure is the rotation's failure.
     fx.repo
         .plugin_update_enabled(ID, false)
         .await
@@ -3047,25 +2288,8 @@ async fn a_failing_token_delete_is_fatal_only_where_nothing_re_mints() {
     );
 }
 
-/// D1. The disabled branch's post-stop guard refuses on `Running` and **only**
-/// on `Running`, so a plugin with a live entry that has no live process behind
-/// it still gets its token cleared.
-///
-/// `PluginHost::status` is a snapshot of the runtime table, not a liveness
-/// check: it answers `Some` for `Crashed` (which may still carry a stale cached
-/// pid), `Unavailable` (no pid) and `Spawning` (no pid) just as readily as for
-/// `Running`. A guard written as "any `Some` means still alive" locks the token
-/// row out permanently on the first three.
-///
-/// **This is coverage, not a mutation witness, and the difference matters.**
-/// Widening the guard back to `is_some()` leaves this test green, because
-/// `stop_under`'s success path removes the live entry before the guard reads
-/// it — so `status` is `None` here whatever the guard says. The state that
-/// distinguishes the two guards is a live entry that *survives* the stop, which
-/// means `stopping = true`, which needs `process.stop` to fail; see the comment
-/// on the guard for why no test in this repo can produce that. What this test
-/// does pin is that the disabled branch handles a crashed plugin at all —
-/// nothing exercised that input before.
+/// `PluginHost::status` is a snapshot of the runtime table, not a liveness check: it answers `Some`
+/// for `Crashed`, `Unavailable` and `Spawning` as readily as for `Running`.
 #[tokio::test]
 async fn the_disabled_branch_clears_the_token_of_a_crashed_plugin() {
     let fx = boot_with(BootOpts {

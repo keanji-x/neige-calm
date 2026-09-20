@@ -93,10 +93,8 @@ function typescriptAnchorLines(path: string, contents: string, identifiers: read
   caseInsensitive: ReadonlySet<string>): Map<string, Set<number>> {
   const result = new Map(identifiers.map((identifier) => [identifier, new Set<number>()]));
   const kind = path.endsWith('.tsx') ? ts.ScriptKind.TSX : path.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.TS;
-  // A standalone ts.createScanner cannot resume a template literal that contains `${}` — that needs the
-  // parser's reScanTemplateToken — so it mis-tokenizes everything after the first such template and copies
-  // the intervening comments into the buffer. Walk the parsed AST down to leaf tokens instead: token ranges
-  // exclude trivia, so comments fall out while string/template/JSX text stays.
+  // A standalone ts.createScanner cannot resume a template literal containing `${}`, so walk the parsed
+  // AST down to leaf tokens instead: token ranges exclude trivia, so comments fall out.
   const sourceFile = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, kind);
   const code = Array.from({ length: contents.length }, () => ' ');
   const retainLeafTokens = (node: ts.Node): void => {
@@ -163,12 +161,7 @@ function postcssAnchorLines(contents: string, identifiers: readonly string[],
   return result;
 }
 
-/**
- * `caseInsensitive` names the subset of `identifiers` that match without regard to case. Only display-copy
- * anchors (§ extractStatementAnchors) belong in it: a statement paraphrases a UI section as `"waiting on
- * you"` while the source renders `Waiting on you`. Identifier-shaped anchors stay case-sensitive, because
- * `cardId` and `CardId` are different things in code and conflating them manufactures hits.
- */
+/** Only display-copy anchors match without regard to case; `cardId` and `CardId` are different things in code. */
 export function codeAnchorLines(path: string, contents: string, identifiers: readonly string[],
   caseInsensitive: ReadonlySet<string> = new Set()): Map<string, Set<number>> | null {
   const ext = extension(path);
@@ -238,15 +231,8 @@ function locationErrors(value: unknown, repoRoot: string): string[] {
 }
 
 /**
- * Words that are NOT admissible anchors, however the author typed them.
- *
- * The bar an anchor has to clear is: "this token missing from the cited file is a real defect". A word that
- * occurs in almost every React/DOM source clears nothing — it turns `source:` into a formality, which is the
- * exact fake-green this rule exists to prevent. Each entry below is here because it is a language, framework
- * or CSS built-in whose presence in a cited file carries no information about the statement.
- *
- * Lower-cased on lookup; the list is deliberately short, because the shapes that admit a candidate at all
- * (backtick-quoted, ≥ 4 characters, path/dotted/word form) already exclude most prose.
+ * Words that are NOT admissible anchors: a word present in almost every source file clears nothing.
+ * Lower-cased on lookup.
  */
 const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
   // React/DOM vocabulary present in essentially every component file.
@@ -254,15 +240,11 @@ const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
   'event', 'events', 'handler', 'handlers', 'render', 'component', 'components', 'style', 'styles',
   'class', 'classname', 'value', 'values', 'data', 'type', 'types', 'name', 'names', 'index', 'item',
   'items', 'list', 'lists', 'text', 'label', 'title', 'button', 'buttons', 'input',
-  // `view` / `views`: a React/DOM word (`XtermView`, `view` state, `views` arrays) that also silently
-  // exempts INV-UI-DIALOG-003, whose statement is a proof-of-absence ("the focus effect's deps must NOT
-  // contain `view`"). Admitting `view` would red that entry for saying the word it forbids, which is the
-  // inverse of what an anchor means. Disclosed here rather than left implicit, the way `change` is.
+  // `view` / `views` also silently exempts a proof-of-absence statement ("deps must NOT contain `view`").
   'view', 'views',
   'form', 'span', 'null', 'true', 'false', 'undefined', 'void', 'this', 'that', 'return', 'async',
   'await', 'const', 'function', 'string', 'number', 'boolean', 'object', 'array', 'error', 'errors',
-  // `change` / `changes` read as UI copy in a statement but land on a parameter name in the cited file —
-  // the coincidental-hit shape this list exists to stop.
+  // `change` / `changes` read as UI copy in a statement but land on a parameter name in the cited file.
   'change', 'changes',
   // CSS built-ins: every stylesheet has them, so citing one proves nothing about the rule under test.
   'overflow', 'display', 'color', 'width', 'height', 'margin', 'padding', 'border', 'position',
@@ -271,23 +253,12 @@ const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
   // Domain words so pervasive in this repo that every candidate file contains them.
   'card', 'cards', 'track', 'tracks', 'task', 'tasks', 'panel', 'panels', 'page', 'pages', 'user',
   'users', 'agent', 'agents', 'server', 'client', 'api', 'app', 'core', 'web', 'test', 'tests',
-  // The same shape, found the hard way: each of these is a whole subsystem of this repo, so it occurs in
-  // any file a statement about that subsystem could plausibly cite, and hitting it proves only that the
-  // author cited a file from the right area — never that the cited *lines* carry the claim.
-  //   `theme` / `themes`   — 89 sources: the theme token pipeline, every terminal theme, every fixture
-  //                          that builds a track (`theme: { fg, bg }`). It is what made E2E-INV-INFRA-019
-  //                          go green on a helper that sends a *valid* body, while that entry's statement
-  //                          then claimed a body *missing* the field is rejected. (#1148 has since narrowed
-  //                          the statement to the seed helper's own body literal, so it no longer claims the
-  //                          rejection at all; the word stays on this list for the general reason above.)
-  //   `terminal` / `terminals` — 110 sources: a card kind, a route segment, a CSS namespace.
-  //   `codex`              — 105 sources: the agent backend's name, in imports, types and copy alike.
-  //   `area` / `areas`     — 110/61 sources: the top-level container every track hangs off.
-  //   `report` / `reports` — 117 sources: a card kind, a page, a rail, an API noun.
+  // Each of these is a whole subsystem of this repo, so hitting it proves only that the author cited a
+  // file from the right area, never that the cited lines carry the claim.
   'theme', 'themes', 'terminal', 'terminals', 'codex', 'area', 'areas', 'report', 'reports',
 ]);
 
-/** An anchor plus how it must be matched; see `codeAnchorLines` for why only display copy ignores case. */
+/** An anchor plus how it must be matched. */
 export interface StatementAnchor {
   text: string;
   /** Display copy is paraphrased in prose with free capitalisation, so it matches case-insensitively. */
@@ -296,12 +267,8 @@ export interface StatementAnchor {
 
 const CJK_PATTERN = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/;
 /**
- * Runs that a display-copy anchor can never match, so the quote is cut at them and only the literal pieces
- * survive:
- *  - `<message>` / `{count}` — placeholders, replaced at run time; `Failed to load settings: <message>` is
- *    a template, and the only part that exists as a literal in the source is the prefix.
- *  - anything outside printable ASCII — `—`, `→`, typographic quotes. Sources routinely spell these as HTML
- *    entities (`&mdash;`) or escapes, so the character in the statement is not the bytes in the file.
+ * Runs a display-copy anchor can never match, so the quote is cut at them: placeholders (`<message>`,
+ * `{count}`) and anything outside printable ASCII, which sources spell as entities or escapes.
  */
 const UNMATCHABLE_RUN_PATTERN = /<[^<>]*>|\{[^{}]*\}|[^\x20-\x7E]+/g;
 const DISPLAY_COPY_MINIMUM = 6;
@@ -316,16 +283,8 @@ function isGeneric(candidate: string): boolean {
 }
 
 /**
- * Display copy: text the statement quotes with `"…"` or `“…”`, i.e. words the author claims the UI shows.
- *
- * Restrictions, each of which exists because dropping it produced fake anchors on the real corpus:
- *  - Latin letters required, CJK rejected. Chinese inside quotes in these statements is prose emphasis
- *    (`不得因为"看起来无关"而重排`), not UI copy, and would never appear in a source file.
- *  - Unmatchable runs are cut out and every surviving literal piece becomes its own anchor. Taking only the
- *    longest piece is not enough: `"Issue dev / issue → PR autoflow"` is rendered as two sibling spans, and
- *    the longer half (`Issue dev / issue`) straddles the split while `PR autoflow` is right there in the
- *    JSX. Each surviving piece is still a ≥ 6-character quoted UI phrase, not a word that happens to recur.
- *  - A floor of DISPLAY_COPY_MINIMUM characters, so quoted noise (`"x"`, `"on"`) cannot become an anchor.
+ * Display copy: text the statement quotes with `"…"` or `“…”`. CJK is prose emphasis, not UI copy;
+ * every surviving piece between unmatchable runs becomes its own anchor; a length floor keeps out quoted noise.
  */
 function displayCopyAnchors(quoted: string): string[] {
   if (CJK_PATTERN.test(quoted) || !/[A-Za-z]/.test(quoted)) return [];
@@ -426,24 +385,9 @@ function parseStructuredList(path: string | undefined): unknown[] {
 const ANCHOR_BASELINE_MAXIMUM = 171;
 const ANCHOR_EXPIRY_CEILING = '2026-12-31';
 
-// `anchor-pending.json` is NOT a second baseline. It holds the anchors the #1148 scanner fix exposed as
-// never having anchored anything; each row is a defect awaiting a decision in #1170, and the list exists
-// to be emptied — after which both the file and this code are deleted. Rules, each pinned by its own
-// single-violation fixture:
-//   1. exact match, no wildcards — an actual failure that is in neither account is `unbaselined`, and a row
-//      whose entry no longer fails (or fails differently) is `stale pending`. Missing and extra both fail.
-//   2. frozen id set — the admissible ids are enumerated below, in source. A row whose id is not in
-//      ANCHOR_PENDING_IDS is rejected, so the list can only ever shrink: deleting a row is a data edit,
-//      but admitting any id — including swapping one out for another at an unchanged row count — costs an
-//      edit to this file. This is the load-bearing rule; ANCHOR_PENDING_MAXIMUM below is only a count cap
-//      and on its own would let a fixed row be traded for a brand-new regression.
-//   3. row shape — every row needs a subtype, an issue reference, and a note, each checked separately so
-//      that dropping any one branch reds its own fixture.
-//   4. no double accounting — an id present in both accounts is an error, never a silent exemption.
-// The 38 ids the #1148 scanner fix exposed, less the 8 that #1148's anchor-strength pass turned real:
-// stronger extraction gave those entries an anchor that actually holds, so their rows left the list.
-// Rows may leave this list; nothing may enter it without a deliberate edit here, which is the visible
-// act the mechanism exists to force.
+// `anchor-pending.json` is NOT a second baseline; the list exists to be emptied. Exact match (missing and
+// extra both fail), a frozen id set so the list can only ever shrink (ANCHOR_PENDING_MAXIMUM alone would
+// let a fixed row be traded for a new regression), per-field row shape, and no double accounting.
 const ANCHOR_PENDING_IDS: ReadonlySet<string> = new Set([
   'CAP-NEWTASK-029', 'E2E-CAP-ADDPANEL-005', 'E2E-CAP-ADDPANEL-007', 'E2E-CAP-CWD-005', 'E2E-CAP-DELETE-001',
   'E2E-CAP-RENAME-015', 'E2E-CAP-SYNC-009', 'E2E-CAP-TERMINAL-009', 'E2E-CAP-VIEWMODE-021',
@@ -618,8 +562,7 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       if (typeof entry.statement !== 'string' || entry.statement.trim() === '') add(file, id, 'statement-nonempty', 'statement must be non-empty');
     });
   }
-  // An actual failure is accounted for by exactly one of the two lists; an id claimed by both is an error
-  // (rule 3) and is attributed to the baseline, so no count check double-reports the same overlap.
+  // An id claimed by both lists is an error and is attributed to the baseline, so no count check double-reports it.
   const heldByPending = new Set([...actualBaseline]
     .filter(([id, subtype]) => baseline.get(id) !== subtype && pending.get(id) === subtype)
     .map(([id]) => id));

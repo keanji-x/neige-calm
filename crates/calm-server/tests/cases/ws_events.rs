@@ -1,15 +1,4 @@
-//! Integration test for `GET /api/events` (track C).
-//!
-//! Boots a minimal Axum app with the WS events router + AppState (in-memory
-//! SqlxRepo, EventBus, stub daemon/plugin), then drives a real WebSocket
-//! client via `tokio_tungstenite` to verify:
-//!
-//!   1. `{"sub":[...]}` replaces the subscription set.
-//!   2. Events matching at least one subscribed topic are forwarded.
-//!   3. Events not matching are silently dropped.
-//!
-//! Both dependencies (`axum`, `tokio_tungstenite`) are already in `[dependencies]`
-//! so they're usable here without touching `Cargo.toml`.
+//! Integration test for `GET /api/events`: a `sub` replaces the subscription set, matching events forward, others drop.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,7 +55,6 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
         .await
         .unwrap();
     });
-    // Give the server a beat to be ready.
     tokio::time::sleep(Duration::from_millis(50)).await;
     (addr, events)
 }
@@ -91,7 +79,6 @@ async fn forwards_matching_event() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Subscribe to area:c-001 only.
     ws.send(TMessage::Text(r#"{"sub":["area:c-001"]}"#.to_string()))
         .await
         .unwrap();
@@ -99,9 +86,7 @@ async fn forwards_matching_event() {
     // Give the subscription time to register before emitting.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Non-matching event first; must NOT arrive.
     bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-other")));
-    // Matching event; must arrive.
     bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-001")));
 
     let msg = timeout(Duration::from_secs(2), ws.next())
@@ -115,7 +100,6 @@ async fn forwards_matching_event() {
         other => panic!("expected text frame, got {:?}", other),
     };
 
-    // The body should be the *matching* event (c-001), not c-other.
     assert!(text.contains("area.updated"), "got: {}", text);
     assert!(text.contains("c-001"), "got: {}", text);
     assert!(!text.contains("c-other"), "got: {}", text);
@@ -127,7 +111,6 @@ async fn empty_sub_drops_everything() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Empty sub — connection stays open, but nothing should be forwarded.
     ws.send(TMessage::Text(r#"{"sub":[]}"#.to_string()))
         .await
         .unwrap();
@@ -135,7 +118,6 @@ async fn empty_sub_drops_everything() {
 
     bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-001")));
 
-    // Expect a timeout (no message arrives).
     let res = timeout(Duration::from_millis(300), ws.next()).await;
     assert!(res.is_err(), "expected no message, got {:?}", res);
 }
@@ -172,13 +154,11 @@ async fn replaces_not_extends() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // First sub: area:c-001.
     ws.send(TMessage::Text(r#"{"sub":["area:c-001"]}"#.to_string()))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Now replace with area:c-002.
     ws.send(TMessage::Text(r#"{"sub":["area:c-002"]}"#.to_string()))
         .await
         .unwrap();
@@ -193,7 +173,6 @@ async fn replaces_not_extends() {
         res
     );
 
-    // Emit c-002: should arrive.
     bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-002")));
     let msg = timeout(Duration::from_secs(2), ws.next())
         .await
@@ -207,20 +186,7 @@ async fn replaces_not_extends() {
     }
 }
 
-/// Tier A read-side guard, broadcast surface (issue #198 concern 4,
-/// PR #214 follow-up).
-///
-/// Drives a real `bus.emit(Event::OverlaySet(...))` for two overlays:
-///
-///   * `o-supported` — kernel-owned `kind = "status"`, payload at the
-///     current `schemaVersion` — must reach the client.
-///   * `o-future` — same `kind`, payload at `schemaVersion = 999` — must
-///     be silently dropped (`tracing::warn!` emitted server-side; no
-///     frame goes over the wire).
-///
-/// We assert ordering by emitting the future-version row first so a
-/// regression (no filter) would land it on the wire before the supported
-/// frame, while the fix correctly skips it.
+/// The future-version row is emitted first so a missing filter would land it on the wire before the supported frame.
 #[tokio::test]
 async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
     let (addr, bus) = boot().await;
@@ -256,9 +222,6 @@ async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
     bus.emit(ActorId::User, Event::OverlaySet(future));
     bus.emit(ActorId::User, Event::OverlaySet(supported));
 
-    // First (and only) frame must be the supported overlay. The future-
-    // version frame must not appear — confirmed by both the id check and
-    // the follow-up timeout that asserts no further frames arrive.
     let msg = timeout(Duration::from_secs(2), ws.next())
         .await
         .expect("ws recv timed out")
@@ -278,7 +241,6 @@ async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
         "future-schemaVersion overlay must not appear in any frame, got: {text}"
     );
 
-    // No additional frames — the dropped overlay should never arrive.
     let leftover = timeout(Duration::from_millis(300), ws.next()).await;
     assert!(
         leftover.is_err(),
@@ -287,10 +249,7 @@ async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
     );
 }
 
-/// Companion to the previous test: a plugin-owned overlay kind (one for
-/// which `max_supported_overlay_schema_version` returns `None`) carries
-/// an arbitrarily high `schemaVersion` and must still pass through — the
-/// kernel has no version policy on opaque plugin payloads.
+/// A plugin-owned overlay kind has no version policy, so an arbitrarily high `schemaVersion` passes through.
 #[tokio::test]
 async fn plugin_owned_overlay_passes_through_live_broadcast() {
     let (addr, bus) = boot().await;

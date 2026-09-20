@@ -32,18 +32,9 @@ function rows(): HTMLElement[] {
   return [...document.querySelectorAll<HTMLElement>('[data-nc-pending-entry]')];
 }
 
-/**
- * Wait until a control will actually accept a press.
- *
- * Astryx's `clickAction` holds the control it is on for as long as its promise
- * is unsettled, and a press landing inside that window is dropped rather than
- * queued. A retry therefore has to wait for the button to let go, and a test
- * that does not wait is testing the vendor's dedupe, not the retry.
- */
+/** Wait until a control will accept a press: Astryx's `clickAction` holds the control while its promise is unsettled, and a press inside that window is dropped rather than queued. */
 async function pressable(find: () => HTMLButtonElement): Promise<void> {
-  /* A getter and not an element: the strip re-renders while the write is in
-     flight, so an element captured beforehand is detached by the time it would
-     have been re-enabled, and waiting on it waits forever. */
+  /* A getter, not an element: the strip re-renders while the write is in flight, so an element captured beforehand is detached and waiting on it waits forever. */
   await waitFor(() => {
     const button = find();
     expect(button.disabled).toBe(false);
@@ -63,12 +54,6 @@ describe('PendingQueue', () => {
     expect(container.querySelector('[data-nc-pending-queue]')).toBeNull();
   });
 
-  /*
-   * The revision a refused write reports, and why it is read from the refusal
-   * rather than from the row. The page in the cache is behind at that moment
-   * and the refresh that would fix it is fire-and-forget, so a retry sending
-   * `entry.rev` again is guaranteed to lose again — forever.
-   */
   it('retries against the revision the server reported, not the stale one', async () => {
     const onDelete = vi.fn<PendingQueueProps['onDelete']>()
       .mockResolvedValueOnce({ kind: 'stale', text: 'theirs', rev: 9 })
@@ -84,8 +69,6 @@ describe('PendingQueue', () => {
     expect(onDelete.mock.calls[1]?.[0]?.rev).toBe(9);
   });
 
-  /* A refusal belongs to the entry it was about. It used to be stored beside
-     the open editor, so a refusal on one row wiped state on another. */
   it('shows a refusal on its own row and not on any other', async () => {
     const onDelete = vi.fn<PendingQueueProps['onDelete']>()
       .mockResolvedValue({ kind: 'stale', text: 'theirs', rev: 9 });
@@ -116,14 +99,6 @@ describe('PendingQueue', () => {
     expect(button.disabled || button.getAttribute('aria-disabled') === 'true').toBe(true);
   });
 
-  /*
-   * One lock for the strip, not one per button.
-   *
-   * `refusal` holds one entry's answer, so two writes settling together means
-   * the second replaces the first's notice and one refusal is never shown.
-   * Astryx's `clickAction` holds only the control it is on, so the other row's
-   * cross stayed live.
-   */
   it('locks the other entry’s control while one delete is in flight', async () => {
     let settle!: (outcome: PlannerQueueWriteOutcome) => void;
     const onDelete = vi.fn<PendingQueueProps['onDelete']>(
@@ -143,27 +118,13 @@ describe('PendingQueue', () => {
     await Promise.resolve();
   });
 
-  /*
-   * Entries this page does not carry: written before #1505 PR1 (no id, never
-   * gains one) or past the page budget. Nothing here can address them, so
-   * they get no bubble and no buttons — but they are still counted, because a
-   * person who typed eleven and sees three has been misinformed.
-   *
-   * This one line of prose is all that survived the caption's removal, and it
-   * survived because it is the only place these messages exist at all.
-   */
   it('counts the messages it cannot show, and offers them no controls', () => {
     renderQueue({ entries: [], overflow: 3 });
     expect(screen.getByText('3 queued messages are waiting but cannot be shown or edited here.'))
       .toBeTruthy();
-    /* No CONTROLS at all, named by role rather than by one label: asserting
-       the absence of a button that no longer exists anywhere passes whatever
-       the component renders. */
     expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 
-  /* "more" only where there is something for them to be more than — with no
-     bubbles on screen there is nothing this count is in addition to. */
   it('says “more” only when some of the queue is actually shown', () => {
     renderQueue({ entries: [entry()], overflow: 2 });
     expect(screen.getByText('2 more queued messages are waiting but cannot be shown or edited here.'))
@@ -176,12 +137,6 @@ describe('PendingQueue', () => {
       .toBeTruthy();
   });
 
-  // #1625 P3 — "Say it now".
-
-  /* The control exists only when the router says a turn is running, which it
-     says by passing `onSteer`. A button that could only be refused is not a
-     control, so with nothing passed there is no button — named by role AND by
-     label, so a renamed button cannot make the negative pass. */
   it('offers "Say it now" only when a steer handler is given', () => {
     renderQueue();
     expect(screen.queryByRole('button', { name: 'Say it now' })).toBeNull();
@@ -202,9 +157,6 @@ describe('PendingQueue', () => {
     expect(onSteer.mock.calls[0]?.[0]).toMatchObject({ entry_id: 'e1', rev: 4 });
   });
 
-  /* The steer's own refusal: nothing happened, and the sentence says the two
-     things the reader needs — the message is still queued, and it goes with
-     the next turn. An info notice, not an error: there is nothing to fix. */
   it('says the message stays queued when no turn took it', async () => {
     const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(
       () => Promise.resolve({ kind: 'not_running' }),
@@ -213,15 +165,10 @@ describe('PendingQueue', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Say it now' }));
     expect(await screen.findByText(/Still queued/)).toBeTruthy();
     expect(screen.getByText(/stays queued and will go with the next turn/)).toBeTruthy();
-    /* And the row is still there with both controls: nothing was taken. */
     expect(rows()).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
   });
 
-  /* The steer's other refusal (review round 1): codex never answered. The
-     sentence must NOT say nothing happened — it says the outcome is not
-     known, that the message stays queued, and that it may also show up. A
-     warning, not an info notice: there is a doubt to hold. */
   it('says the outcome is not known when codex never answered the steer', async () => {
     const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(
       () => Promise.resolve({ kind: 'unanswered' }),
@@ -236,9 +183,6 @@ describe('PendingQueue', () => {
     expect(rows()).toHaveLength(1);
   });
 
-  /* One lock for the strip covers the new control too: while a steer is in
-     flight, the cross on the same row and every control on the other row are
-     held, because `refusal` still holds one entry's answer. */
   it('locks every other control while a steer is in flight', async () => {
     let settle!: (outcome: PlannerQueueWriteOutcome) => void;
     const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(
@@ -259,11 +203,6 @@ describe('PendingQueue', () => {
     await Promise.resolve();
   });
 
-  /*
-   * The caption over the bubbles is gone at the owner's call — a sentence
-   * explaining a picture that explains itself. This pins its absence so it
-   * cannot creep back in as somebody's "helpful" addition.
-   */
   it('says nothing above the bubbles', () => {
     renderQueue({ entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })] });
     expect(document.querySelector('[data-nc-pending-queue-caption]')).toBeNull();

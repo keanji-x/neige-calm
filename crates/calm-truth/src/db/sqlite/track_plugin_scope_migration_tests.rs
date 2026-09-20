@@ -28,9 +28,6 @@ fn migrator_through_0076() -> sqlx::migrate::Migrator {
     }
 }
 
-/// #1110 S4 — 0076 backfill must not abort migrate on weird `workflows`
-/// JSON, must copy the owning plugin id for a well-formed array of objects,
-/// and must fail-closed (copy `workflow_id`) when no owner matches.
 #[tokio::test]
 async fn plugin_scope_backfill_skips_malformed_workflows_and_fail_closes_orphans() {
     let pool = SqlitePoolOptions::new()
@@ -56,12 +53,7 @@ async fn plugin_scope_backfill_skips_malformed_workflows_and_fail_closes_orphans
         ("w-orphan", Some("no-such-workflow")),
         ("w-unbound", None),
     ] {
-        // #1147 S1 — `cwd` dropped from the column list (migration-0018
-        // `DEFAULT ''` covers it). This fixture runs against a schema stopped
-        // at 0075, i.e. before the workspace columns exist, so it cannot go
-        // through `track_workspace_write_tx`; not naming `cwd` at all keeps it
-        // consistent-by-construction instead of exempt. The plugin_scope
-        // backfill under test never reads the workspace.
+        // Schema stopped at 0075: no workspace columns yet, so `cwd` is left to its DEFAULT.
         sqlx::query(
             "INSERT INTO waves (id, cove_id, title, sort, lifecycle, workflow_id, created_at, updated_at)
              VALUES (?1, 'area-1', 't', 0, 'draft', ?2, 1, 1)",

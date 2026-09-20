@@ -11,9 +11,7 @@ import { registerAvailableBuiltinCards } from './register.ts';
 
 afterEach(cleanup);
 
-/* The head's activity indicator — `ui/activity-indicator`, decorative by
-   contract; the head's words (`Session exited.`, `Disconnected`, …) are the
-   accessible facts and are asserted as text. */
+/* The head's activity indicator is decorative by contract; the head's words are the accessible facts. */
 const headIndicator = () => document.querySelector('[data-nc-card-cell] [data-nc-activity]');
 
 function mountCard(
@@ -93,14 +91,7 @@ describe.each(['terminal', 'codex', 'claude'])('%s terminal lifecycle after refr
     expect(screen.getByText('Session replaced.')).toBeTruthy();
   });
 
-  /*
-   * #1722 §5.3 / INV-APP-118 — the head's indicator is the kernel's verdict,
-   * carried in as `BoardHostItem.activity`, and nothing else: not
-   * `runtime.status` (`running` for as long as a process exists — the
-   * spinner that never stopped) and not the surface's connection state (jsdom
-   * never connects, so the surface sits at `Connecting…` throughout — the
-   * indicator does not wait for it).
-   */
+  // jsdom never connects, so the surface sits at `Connecting…` throughout — the indicator does not wait for it.
   it('terminal head paints activity.cards, not runtime.status', () => {
     const { unmount } = mountCard(kind, { status: 'running', terminal_id: 'pty' });
     expect(screen.getByText('Connecting…')).toBeTruthy();

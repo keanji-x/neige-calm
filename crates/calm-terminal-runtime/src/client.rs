@@ -1,6 +1,5 @@
-//! Application-facing operations. Do not expose raw SDK creation/respawn:
-//! on Unix those convenience calls can read the requesting process's entire
-//! environment through /proc. Our creation request always supplies it explicitly.
+//! Application-facing operations. Raw SDK creation/respawn is not exposed: on Unix those convenience calls can
+//! read the requesting process's entire environment through /proc.
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -128,10 +127,8 @@ impl TerminalSession {
     pub async fn wait_for_text(&self, text: &str) -> anyhow::Result<()> {
         Ok(self.pane.wait_for_text(text).await?)
     }
-    /// Capture grid, cursor, raw keyframe and history coverage at one upstream
-    /// recovery boundary. Never substitute an empty screen for a vanished pane.
-    /// The returned generation/sequence describe this observation, not an input
-    /// compare-and-swap fence. The application still owns action authorization.
+    /// Capture grid, cursor, raw keyframe and history coverage at one upstream recovery boundary; never substitute an
+    /// empty screen for a vanished pane. The returned generation/sequence describe this observation, not a CAS fence.
     pub async fn observe(&self) -> anyhow::Result<crate::TerminalObservation> {
         tokio::time::timeout(self.timeout, async {
             let mut options = rmux_sdk::PaneRecoveryOptions::default();

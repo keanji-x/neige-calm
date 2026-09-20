@@ -1,9 +1,5 @@
-//! #1505 PR2 — the queue write port, end to end.
-//!
-//! Four things are pinned here that no unit test can see: the actor guard on a
-//! real request, the compare-and-swap answering with the body the client needs
-//! to retry with, the debounce being re-armed from what is left in the queue,
-//! and the delete-versus-drain race having two outcomes rather than three.
+//! The queue write port, end to end: the actor guard on a real request, the compare-and-swap, the debounce being
+//! re-armed from what is left in the queue, and the delete-versus-drain race having two outcomes rather than three.
 
 use axum::http::StatusCode;
 use calm_server::harness::{Observation, QueueEntry};
@@ -64,10 +60,6 @@ async fn pending(boot: &Boot) -> Vec<Value> {
     run["pending"].as_array().cloned().unwrap_or_default()
 }
 
-// ---------------------------------------------------------------------------
-// The happy paths
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn an_edit_rewrites_the_entry_bumps_its_rev_and_keeps_its_id() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -105,8 +97,7 @@ async fn a_delete_removes_the_entry_and_a_second_delete_answers_404() {
     assert_eq!(body["text"], Value::Null, "a delete has no text to echo");
     assert!(pending(&boot).await.is_empty());
 
-    // Not idempotent, and the 404 says only "it is not in the queue" — which
-    // is why the frontend contract is "re-read", not "retry".
+    // Not idempotent, and the 404 says only "it is not in the queue": the frontend contract is "re-read", not "retry".
     let (status, body) = delete_entry(&boot, &entry_id, 0).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["code"], json!("not_found"));
@@ -125,9 +116,7 @@ async fn an_unknown_entry_id_is_404_and_leaves_the_queue_alone() {
     assert_eq!(listed[0]["entry_id"], json!(kept));
 }
 
-/// A dispatcher observation has no id, so nothing can address it — including
-/// an attacker who guesses. There is no id to guess: `QueueEntry::System`
-/// has no id field.
+/// `QueueEntry::System` has no id field, so there is no id to guess.
 #[tokio::test]
 async fn a_system_observation_cannot_be_addressed_at_all() {
     let boot = boot_with(idle_snapshot(vec![
@@ -150,14 +139,8 @@ async fn a_system_observation_cannot_be_addressed_at_all() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// §11.3 #5 / #5b — the actor guard
-// ---------------------------------------------------------------------------
-
-/// The criterion is `Actor::as_str() == "user"`, and `ai:claude` is the case
-/// that proves it has to be: `Actor::to_actor_id()` folds `ai:claude` into
-/// `ActorId::User` by a defensive default, so a guard written on the id would
-/// let exactly this request through while looking correct.
+/// The criterion is `Actor::as_str() == "user"`: `Actor::to_actor_id()` folds `ai:claude` into `ActorId::User` by a
+/// defensive default, so a guard written on the id would let exactly this request through.
 #[tokio::test]
 async fn an_agent_actor_is_refused_and_the_human_is_not() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -186,30 +169,18 @@ async fn an_agent_actor_is_refused_and_the_human_is_not() {
     }
     assert_eq!(pending(&boot).await.len(), 1, "nothing was deleted");
 
-    // The green half: the same request as the human succeeds.
     let (status, body) = delete_entry(&boot, &entry_id, 0).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
-
-// The paired green example — that parameterising the criterion did not change
-// what the track-report port says — is
-// `routes::track_report_blocks::tests::each_write_port_names_itself_in_its_403`,
-// which is in-crate because the function is `pub(crate)`.
-
-// ---------------------------------------------------------------------------
-// §11.3 #6 / #7 — compare and swap
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn a_stale_if_entry_rev_is_409_carrying_the_current_text_and_rev() {
     let boot = boot_with(idle_snapshot(vec![])).await;
     let entry_id = queue_one(&boot, "first draft").await;
 
-    // Somebody else's edit moves the entry to rev 1.
     let (status, _) = patch_entry(&boot, &entry_id, "second draft", 0).await;
     assert_eq!(status, StatusCode::OK);
 
-    // The first tab still holds rev 0.
     let (status, body) = patch_entry(&boot, &entry_id, "a third, blind draft", 0).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert_eq!(body["code"], json!("planner_input_stale"));
@@ -221,11 +192,9 @@ async fn a_stale_if_entry_rev_is_409_carrying_the_current_text_and_rev() {
     );
     assert_eq!(body["rev"], json!(1));
 
-    // And the collision changed nothing.
     let listed = pending(&boot).await;
     assert_eq!(listed[0]["text"], json!("second draft"));
 
-    // The green half: resending with the rev the 409 handed back succeeds.
     let (status, body) = patch_entry(&boot, &entry_id, "a third, blind draft", 1).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["rev"], json!(2));
@@ -251,15 +220,11 @@ async fn a_delete_with_a_stale_if_entry_rev_is_refused() {
     assert_eq!(status, StatusCode::OK);
 }
 
-/// §11.3 #7 — a fold is a rewrite, so it invalidates a stale editor the same
-/// way an edit does. Without the `rev` bump on the fold path, an edit issued
-/// against the pre-fold text would silently discard the folded-in message.
+/// A fold is a rewrite: without the `rev` bump on the fold path, an edit against the pre-fold text would silently discard the folded-in message.
 #[tokio::test]
 async fn a_fold_invalidates_an_editor_holding_the_pre_fold_rev() {
     let boot = boot_with(idle_snapshot(vec![])).await;
-    // Fill the queue one short of the cap with system observations, so the
-    // user message queued next becomes the TAIL of a full queue — which is the
-    // only position a later send folds into.
+    // Fill the queue one short of the cap with system observations, so the next user message becomes the TAIL of a full queue, the only position a later send folds into.
     for index in 0..calm_server::harness::MAX_PENDING_QUEUE_LEN - 1 {
         boot.harness
             .observe(Observation::TrackGoal {
@@ -305,18 +270,11 @@ async fn a_fold_invalidates_an_editor_holding_the_pre_fold_rev() {
     assert_eq!(body["rev"], json!(1));
     assert_eq!(body["text"], json!("first half\n\nsecond half"));
 
-    // The green half: the rev the 409 handed back still works.
     let (status, body) = patch_entry(&boot, &tail, "only the first half", 1).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
-// ---------------------------------------------------------------------------
-// §11.3 #9 / #14 — debounce re-arming
-// ---------------------------------------------------------------------------
-
-/// Deleting the only hard-fire entry must disarm the queue. Without the
-/// recompute, a queue holding nothing but soft observations would keep the
-/// arming the deleted message gave it and fire a turn nobody asked for.
+/// Without the recompute, a queue holding nothing but soft observations would keep the arming the deleted message gave it.
 #[tokio::test]
 async fn deleting_the_only_user_entry_disarms_a_queue_of_system_observations() {
     let boot = boot_with(idle_snapshot(vec![
@@ -366,8 +324,7 @@ async fn deleting_the_last_entry_clears_the_debounce_window() {
     );
 }
 
-/// The other direction, so the recompute cannot be read as "any delete
-/// disarms": with a second user message still queued, the arming stays.
+/// The other direction, so the recompute cannot be read as "any delete disarms".
 #[tokio::test]
 async fn deleting_one_of_two_user_entries_keeps_the_queue_armed() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -385,8 +342,7 @@ async fn deleting_one_of_two_user_entries_keeps_the_queue_armed() {
     assert!(first_set && last_set);
 }
 
-/// An edit is not a departure, so it must not touch the window at all —
-/// otherwise a user could postpone their own turn indefinitely by retyping.
+/// An edit is not a departure; otherwise a user could postpone their own turn indefinitely by retyping.
 #[tokio::test]
 async fn an_edit_does_not_move_the_debounce_window() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -413,10 +369,6 @@ async fn an_edit_does_not_move_the_debounce_window() {
         "and the entry is still hard-fire"
     );
 }
-
-// ---------------------------------------------------------------------------
-// The event
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn a_mutation_emits_harness_queue_changed_naming_the_entry_and_the_actor() {
@@ -465,52 +417,10 @@ async fn a_refused_mutation_emits_nothing() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// §11.2 — the race, asserted as a mechanism
-// ---------------------------------------------------------------------------
-
-/// A delete submitted while the run loop is free to issue a turn has exactly
-/// two outcomes, and this test names both and denies a third.
-///
-/// It asserts on the pair `(HTTP status, what the daemon was handed)` and never
-/// on timing. The property is not "the delete wins" or "issuance wins" — it is
-/// that one of them completely precedes the other:
-///
-/// - 200 ⇒ the entry left the queue before issuance looked at it, so the
-///   daemon must never have seen its text.
-/// - 404 ⇒ issuance drained it first, so the daemon must have seen it.
-///
-/// The third state — accepted AND delivered, or refused AND never delivered —
-/// is the only thing this test can fail on.
-///
-/// WHAT CARRIES IT, measured rather than assumed. Two things, and neither is
-/// the one the design named:
-///
-///  1. `queue::apply_mutation` locates, checks `rev` and writes inside a single
-///     hold of `Inner::pending_queue`.
-///  2. `maybe_issue_turn` EMPTIES that queue, under the same lock, before it
-///     calls `turn/start`. So "left the queue" and "reached the daemon" are
-///     ordered by the lock, not by which task is running.
-///
-/// Mutating (2) — read the entries and remove them only after `turn/start`
-/// returns, which is a plausible implementation and one edit — reddens this
-/// test and the deterministic one below.
-///
-/// The design predicted the mutation "handle `Mutate` on the caller's task
-/// instead of the run loop's `select!`". That was tried and this test stayed
-/// GREEN, correctly: `pending_queue` is a `tokio::Mutex`, so moving the
-/// mutation to another task changes who waits, not what is atomic. The
-/// `select!` still matters for latency and ordering against the rest of a tick
-/// — see the second test below — but it is not what makes the disjunction
-/// true, and a comment claiming it was would have been a comfortable
-/// falsehood.
-///
-/// The varying delay is a WINDOW EXPLORER, not part of any assertion: the run
-/// loop's tick is 50ms, so a delete issued immediately after the POST would
-/// win every single round and the 404 half of the disjunction would never be
-/// reached. Nothing here asserts what a given delay produces. The 404 half is
-/// also pinned deterministically, without any clock, by
-/// `a_delete_arriving_while_turn_start_is_in_flight_is_404_and_was_delivered`.
+/// Asserts on the pair `(HTTP status, what the daemon was handed)`, never on timing: 200 ⇒ the daemon never saw the
+/// text, 404 ⇒ it did. The ordering is carried by `Inner::pending_queue`'s lock: `apply_mutation` checks and writes
+/// under one hold, and `maybe_issue_turn` empties the queue under the same lock before `turn/start`. The varying delay
+/// is a window explorer only: the tick is 50ms, so an immediate delete would win every round.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_racing_issuance_never_lands_in_a_third_state() {
     const TEXT: &str = "the racing sentence";
@@ -525,10 +435,7 @@ async fn a_delete_racing_issuance_never_lands_in_a_third_state() {
 
         let (status, body) = delete_entry(&boot, &entry_id, 0).await;
 
-        // Let an issuance that was already in flight finish before reading the
-        // daemon. This decides nothing — both branches are asserted below
-        // whichever way it goes — it only stops the read from racing the write
-        // it is reading.
+        // Let an issuance already in flight finish before reading the daemon; this decides nothing, it only stops the read from racing the write.
         for _ in 0..2_000 {
             if boot.harness.snapshot().await.pending_entries().is_empty() {
                 break;
@@ -569,22 +476,11 @@ async fn a_delete_racing_issuance_never_lands_in_a_third_state() {
         ROUNDS,
         "every round landed in one of the two states"
     );
-    // For the record, and not asserted: on the machine this was written on the
-    // split is a stable 17 accepted / 7 refused. Asserting a split would be
-    // asserting a schedule, which is the thing this test is built not to do.
 }
 
-/// The 404 half of the disjunction above, reached without a clock.
-///
-/// The fake daemon is told to block inside `turn/start` after it has recorded
-/// what it was handed. So at the moment the delete is submitted, the entry has
-/// provably left the queue and provably reached the daemon — and the delete
-/// must say 404 rather than claim to have removed something already on its way.
-///
-/// It also shows GAP-L from the other side: the delete cannot be answered while
-/// issuance is in flight, because both are arms of the same `select!`. That is
-/// why the request is spawned and the daemon released before it is awaited —
-/// awaiting it first would hang until the 30s request timeout.
+/// The fake daemon blocks inside `turn/start` after recording what it was handed, so the entry has provably left the
+/// queue when the delete is submitted. The delete cannot be answered while issuance is in flight (both are arms of the
+/// same `select!`), so the request is spawned and the daemon released before it is awaited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_arriving_while_turn_start_is_in_flight_is_404_and_was_delivered() {
     const TEXT: &str = "already on its way";

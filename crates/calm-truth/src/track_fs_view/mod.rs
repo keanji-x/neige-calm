@@ -1,10 +1,6 @@
-//! Shared read-only file views for a track.
-//!
-//! This module owns the path projection used by both the MCP
-//! `calm.track.{ls,cat}` tools and the authenticated HTTP track file
-//! endpoints. Callers are responsible for their own entry gates:
-//! MCP resolves the track from the bound card identity, while HTTP
-//! resolves it from the route path and session middleware.
+//! Shared read-only file views for a track, used by both the MCP
+//! `calm.track.{ls,cat}` tools and the HTTP track file endpoints; callers own
+//! their entry gates.
 
 use crate::db::{RouteRepo, TrackEvent};
 use crate::error::CalmError;
@@ -33,12 +29,8 @@ pub(crate) const HOOK_EVENT_TRANSCRIPT_CAP: usize = 500;
 pub struct TrackFsView<'a> {
     repo: &'a dyn RouteRepo,
     write: &'a WriteContext,
-    /// Issue #644 PR-C (§6.5) — `plan/<key>/gate.log` access:
-    /// `(caller role, gate-logs dir)`. `None` (the default) keeps the
-    /// path unavailable — surfaces that don't carry a card identity
-    /// (HTTP track routes) never expose gate logs. Even when wired, only
-    /// `CardRole::Planner` passes (§6.7: workers must not read gate
-    /// material).
+    /// `plan/<key>/gate.log` access: `(caller role, gate-logs dir)`. `None` keeps
+    /// the path unavailable; even when wired, only `CardRole::Planner` passes.
     gate_log_access: Option<(CardRole, std::path::PathBuf)>,
 }
 
@@ -51,9 +43,7 @@ impl<'a> TrackFsView<'a> {
         }
     }
 
-    /// Enable the `plan/<key>/gate.log` view for a caller with the
-    /// given card role (issue #644 PR-C). The role gate itself is
-    /// enforced at read time so a worker gets a Forbidden, not a 404.
+    /// The role gate is enforced at read time so a worker gets a Forbidden, not a 404.
     pub fn with_gate_log_access(
         mut self,
         role: CardRole,
@@ -185,17 +175,8 @@ impl<'a> TrackFsView<'a> {
                         content_json(&hook_events_json(&hook_events))
                     }
                     "conversation.md" => {
-                        // #695 PR3: prefer the captured worker-flow transcript
-                        // when the sink has populated `worker_flow_items` for
-                        // this card. The SOURCES that feed the table land in
-                        // PR4, so for real cards it is empty today — fall back
-                        // to the existing hook-event projection (no regression).
-                        //
-                        // Page through ALL rows: the db layer clamps `limit` to
-                        // 500, so a single call would drop the tail (including
-                        // the final answer) for sessions with >500 flow items.
-                        // The hook path renders the full transcript uncapped, so
-                        // this path must too.
+                        // Prefer the captured worker-flow transcript when populated, else the hook
+                        // projection. Page through ALL rows: the db layer clamps `limit` to 500.
                         let rows = worker_flow_rows_all(self.repo, card.id.as_str()).await?;
                         if rows.is_empty() {
                             let hook_events = self.hook_events_for_card(track, &card.id).await?;
@@ -204,10 +185,8 @@ impl<'a> TrackFsView<'a> {
                                 &hook_events,
                             )))
                         } else {
-                            // Version-tolerant: a row whose payload fails to
-                            // deserialize (a future variant this binary does
-                            // not know) becomes an `Unknown` placeholder rather
-                            // than failing the whole read.
+                            // Version-tolerant: a payload this binary cannot deserialize becomes an
+                            // `Unknown` placeholder rather than failing the whole read.
                             let items: Vec<calm_types::worker_flow::WorkerFlowItem> = rows
                                 .iter()
                                 .map(|row| deserialize_flow_row(&row.kind, &row.payload))
@@ -237,10 +216,8 @@ impl<'a> TrackFsView<'a> {
                     Err(path_not_available(path))
                 }
             }
-            // Issue #644 PR-C (§6.5) — the gate runner's log for the
-            // task's CURRENT gate attempt, read straight off disk
-            // (file-backed; the row's `gate_result_json.log_tail` is
-            // only the trailing 8 KiB).
+            // The gate runner's log for the task's CURRENT attempt, read off disk; the
+            // row's `gate_result_json.log_tail` is only the trailing 8 KiB.
             path if path.starts_with("plan/") => {
                 let parts: Vec<&str> = path.split('/').collect();
                 if parts.len() != 3 || parts[2] != "gate.log" {
@@ -593,10 +570,8 @@ fn project_runs(
                     ),
                 );
             }
-            // Issue #644 PR-B — the scheduler's claim record (§5.6).
-            // Collected separately and merged below as the fallback
-            // requested-record for keys with no `*.worker_requested`
-            // event (scheduler-dispatched tasks emit none).
+            // The scheduler's claim record: merged below as the fallback requested-record
+            // for keys with no `*.worker_requested` event.
             Event::TaskDispatched {
                 idempotency_key,
                 kind,
@@ -617,10 +592,8 @@ fn project_runs(
                 if is_planner_verdict_event(&row.scope, &row.actor) {
                     record_latest(&mut verdict, idempotency_key, event);
                 } else {
-                    // Track-scoped verdicts are routed to `verdict`, not `completed`.
-                    // The remaining competition here is between worker self-reports
-                    // for the same run, such as a dispatcher retry after spawn
-                    // failure, so the latest completion is the most informative one.
+                    // Track-scoped verdicts are routed to `verdict`, not `completed`; the latest
+                    // worker self-report for the same run is the most informative one.
                     record_latest(&mut completed, idempotency_key, event);
                 }
             }
@@ -638,9 +611,8 @@ fn project_runs(
         }
     }
 
-    // §5.6 fallback: a key with a `task.dispatched` record but no
-    // `*.worker_requested` event treats the dispatch record as its
-    // requested-record (`requested_at`, kind, requested/running status).
+    // Fallback: a key with a `task.dispatched` record but no `*.worker_requested`
+    // event treats the dispatch record as its requested-record.
     for (key, event) in dispatched {
         requested.entry(key).or_insert(event);
     }
@@ -701,9 +673,7 @@ fn project_runs(
         .collect()
 }
 
-/// Map a `task.dispatched` event's worker-kind field onto the static
-/// run-kind vocabulary the projection uses. Unknown values degrade to
-/// `"unknown"` (same convention as a key with no kind source at all).
+/// Unknown values degrade to `"unknown"`.
 pub(crate) fn run_kind_static(kind: &str) -> &'static str {
     match kind {
         "codex" => "codex",
@@ -761,13 +731,8 @@ fn latest_final_event<'a>(
     }
 }
 
-/// Planner verdicts are task terminal events emitted at Track scope by the
-/// `update_task_meta` MCP tool in `track_state.rs`, where
-/// `identity.to_actor_id()` produces the planner actor. Non-verdict task events
-/// may also be Track-scoped: the dispatcher spawn-failure path in
-/// `dispatcher.rs` emits `Event::TaskFailed` as `ActorId::KernelDispatcher`
-/// while preserving the request scope. Those dispatcher failures remain run
-/// failures, not verdicts, even though they share the Track scope.
+/// Planner verdicts are Track-scoped task terminal events; the dispatcher's
+/// spawn-failure `TaskFailed` is also Track-scoped but remains a run failure.
 fn is_planner_verdict_event(scope: &EventScope, actor: &ActorId) -> bool {
     matches!(scope, EventScope::Track { .. }) && !matches!(actor, ActorId::KernelDispatcher)
 }
@@ -1002,11 +967,9 @@ fn flow_truncate(s: &str) -> String {
     format!("{head}…")
 }
 
-/// #695 PR3 — render the captured worker-flow transcript a verifying planner
-/// agent reads via `cards/<id>/conversation.md`. This is the meaningful
-/// transcript (messages, commands + outcomes, file changes, tool calls),
-/// not a bare tool log. Items are grouped by `env().turn` and rendered in
-/// the order given (callers pass them in ascending `seq`).
+/// Render the captured worker-flow transcript a verifying planner reads via
+/// `cards/<id>/conversation.md`. Items are grouped by `env().turn`, in the
+/// order given (ascending `seq`).
 pub(crate) fn worker_flow_markdown(
     card_id: &CardId,
     items: &[calm_types::worker_flow::WorkerFlowItem],
@@ -1227,17 +1190,9 @@ pub(crate) fn worker_flow_markdown(
     out
 }
 
-/// Deserialize a `worker_flow_items` row payload into a [`WorkerFlowItem`],
-/// degrading to an `Unknown` placeholder (carrying the row's `kind`) when the
-/// payload cannot be parsed by this binary — forward-version tolerance so one
-/// future-shaped row never blanks the whole transcript.
-/// Page through EVERY `worker_flow_items` row for a card in ascending `id`
-/// order. The db layer clamps `limit` to 500 (see `worker_flow_item_list_by_card`),
-/// so a single call would silently drop the tail of a long session — including
-/// the final `AgentMessage{is_final:true}` answer. We advance the exclusive
-/// cursor by the last row's id and stop on a short page (table exhausted),
-/// preserving order and turn grouping. Mirrors the hook path's
-/// render-everything contract (no artificial bound).
+/// Deserialize a row payload, degrading to an `Unknown` placeholder when this
+/// binary cannot parse it. `worker_flow_rows_all` pages through EVERY row: the
+/// db layer clamps `limit` to 500, and a short page means the table is exhausted.
 async fn worker_flow_rows_all(
     repo: &dyn RouteRepo,
     card_id: &str,

@@ -20,10 +20,8 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const TRACK_B = { ...TRACK, id: 'w2', title: 'Second track', sort: 2 };
 const CARD_B = { ...CARD, id: 'card-2', track_id: 'w2', title: 'Second chat' };
 const CARD_SAME_TRACK = { ...CARD, id: 'card-other', title: 'Other chat' };
-/* #1505 S4-3 — `model` and `reasoning_effort` are required in the response
-   schema, not optional: the server reads them off the card, which always
-   exists on this route, so their absence would be drift rather than a state.
-   `null` in both is a conversation following the installation default. */
+/* `model` and `reasoning_effort` are required in the response schema; `null` in
+   both is a conversation following the installation default. */
 const PLANNER_RUN_IDLE = {
   card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null,
 };
@@ -32,13 +30,8 @@ function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
 }
 
-/*
- * The kernel's `kernel/track/activity` overlay for `w1` (#1722 §4.1), the ONE
- * source every indicator reads — here only its per-card verdicts, in the same
- * shape `track-conversation.test.tsx` seeds. A wedged planner's verdict is
- * still `working` (its harness row sits at `turn_pending`, the registry lists
- * it) until the next tick, which is the case the wedge branch below seeds.
- */
+/* The kernel's `kernel/track/activity` overlay for `w1`: a wedged planner's verdict
+   is still `working` until the next tick. */
 const trackActivityOverlay = (cards: readonly { card_id: string; state: 'working' | 'input' | 'failed' }[]) => ({
   id: 'activity-w1', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity',
   payload: { schemaVersion: 1, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
@@ -109,26 +102,12 @@ function drawerElement(): HTMLElement {
   return screen.getByRole('complementary', { name: 'Planner chat' });
 }
 
-/*
- * `combobox`, not `textbox`, since #1189.
- *
- * The track route is a `'rows'` route now, which means the composer carries the
- * `/` command menu — and `useTriggerMenu` only emits the combobox role when a
- * trigger is really configured. The accessibility tree is where that difference
- * is honest, so the lookup follows it rather than hiding it behind a `*ByRole`
- * that would match either.
- */
+/* `combobox`, not `textbox`: the composer carries the `/` command menu, and
+   `useTriggerMenu` only emits the combobox role when a trigger is configured. */
 function messageField(): HTMLElement {
   return screen.getByRole('combobox', { name: 'Message' });
 }
 
-/*
- * A conversation that actually has a transcript. It used to exist because the
- * reset control was only offered when there was something to throw away; reset
- * is gone (#1139) and this survives because "the drawer over a non-empty
- * transcript" is still the state the destructive-control sweep below has to be
- * run against — an empty drawer proves nothing about what a full one offers.
- */
 function setupWithTurns(reply?: Reply) {
   return setup(async (request) => await reply?.(request)
     ?? (request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined));
@@ -150,15 +129,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/*
- * Drive the composer the way a person does.
- *
- * `fireEvent.change` cannot: Astryx's `ChatComposerInput` is a
- * `contenteditable` div with no value setter, so `change` throws — and there is
- * no `<form>` to submit either, because `ChatComposer` is a div that sends on a
- * bare `Enter` keydown. So the text is written into the editable and an `input`
- * event fires (which is what feeds the field's React state), and Enter sends.
- */
+/* `fireEvent.change` cannot drive Astryx's `contenteditable` composer (no value
+   setter) and there is no `<form>`: text is written into the editable, an `input`
+   event feeds React state, and Enter sends. */
 async function typeInto(field: HTMLElement, text: string) {
   field.textContent = text;
   const range = document.createRange();
@@ -180,12 +153,7 @@ async function sendWithEnter(field: HTMLElement) {
   });
 }
 
-/**
- * Wait out exactly one `POST /planner/input`: the request itself, then one
- * macrotask, which is past the promise chain's own `finally` and therefore past
- * the point where `sending` is released. What is still holding the composer
- * shut after this is the echo and nothing else.
- */
+/** Wait out one `POST /planner/input` plus one macrotask, past the promise chain's `finally` where `sending` is released. */
 async function settleOneSend(requests: ApiRequest[], expected = 1) {
   await waitFor(() => {
     expect(requests.filter((request) => request.path.endsWith('/planner/input')))
@@ -194,23 +162,7 @@ async function settleOneSend(requests: ApiRequest[], expected = 1) {
   await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
 }
 
-/**
- * ── Every phase, against the kernel's own whitelist ──────────────────────
- *
- * `HarnessState::can_issue_turn()` is `Idle | TurnCompleted`; everything else
- * queues. This is that list transcribed, and it is a table rather than one test
- * about `turn_running` because the criterion is now a phase whitelist, and a
- * whitelist is only pinned by naming what is on each side of it. The first
- * version of this slice keyed off `working` (`issuing_turn || turn_running`)
- * and a single-phase test could not see the four it left out — one of which,
- * `issuing_interrupt`, the composer will happily send in, because `stopShown`
- * is `working || stopping`.
- *
- * The kernel would also queue in `wedged`, but that queue never drains.
- * #1500 F6 deliberately blocks a new submission when that phase is known and
- * offers recovery while preserving existing drafts. The exhaustive policy
- * table records that one exception without weakening healthy-phase queueing.
- */
+/** `HarnessState::can_issue_turn()` is `Idle | TurnCompleted`; everything else queues, except `wedged`, whose queue never drains and is blocked instead. */
 type PhaseSendPolicy = 'issued' | 'queued' | 'stalled';
 const PHASE_SEND_TABLE: Readonly<Record<HarnessPhaseTag, PhaseSendPolicy>> = Object.freeze({
   idle: 'issued',
@@ -223,24 +175,8 @@ const PHASE_SEND_TABLE: Readonly<Record<HarnessPhaseTag, PhaseSendPolicy>> = Obj
   wedged: 'stalled',
 } satisfies Record<HarnessPhaseTag, PhaseSendPolicy>);
 
-/*
- * Exhaustive by the compiler rather than by care: the annotation rejects a
- * missing key and the `satisfies` rejects an extra one, so a ninth phase cannot
- * land quietly on either side of this table — `tsc -b` is a gate and it stays
- * red until somebody chooses the column. The `satisfies` is not decoration:
- * excess properties are checked only against a fresh literal and `Object.freeze`
- * is a call, so the annotation alone let an unknown key through (measured).
- *
- * `HarnessPhaseTag` is ts-rs output from the Rust enum
- * (`core/api/generated/wire.ts`) and CI re-runs the generator and
- * `git diff --exit-code`s it, so the type cannot drift from `HarnessState`
- * unnoticed either. The repository's two hand-written zod copies of this list
- * were deliberately not used as the authority — a hand-written table checked
- * against a hand-written list looks machine-checked and is not.
- *
- * It pins the table's *shape*. Each column follows `can_issue_turn()` plus
- * the explicit wedged recovery policy; those semantics still need review.
- */
+/* The annotation rejects a missing key and `satisfies` rejects an extra one, so a
+   new phase cannot land quietly on either side of this table. */
 const PHASE_SENDS = Object.freeze(Object.entries(PHASE_SEND_TABLE));
 
 describe('planner conversation regressions', () => {
@@ -253,50 +189,6 @@ describe('planner conversation regressions', () => {
     expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
   });
 
-  /*
-   * Three tests used to stand here, all of them about *when* the reset control
-   * appeared: it had to be labelled rather than a glyph, it had to be absent
-   * over a zero-turn conversation, and it had to arrive with the first turn.
-   * The control is gone (#1139), so none of the three has a subject.
-   *
-   * What replaces them is a **set equality over every control the drawer
-   * offers**, and the reason it is stated that way is worth recording, because
-   * the obvious replacement does not work.
-   *
-   * The obvious one was `querySelectorAll('[data-nc-action="destructive"]')`,
-   * on the reasoning that it catches the class of control rather than one
-   * label. It catches nothing: the removed reset was a `DrawerAction`, which
-   * renders `data-nc-role="icon"` plus a CSS-module `actionDanger` class and
-   * has **never** carried `data-nc-action="destructive"`. That sweep was green
-   * on `origin/main` with the reset button on screen — zero coverage of the
-   * exact shape it claimed to fence, and the `/reset/i` query it disparaged in
-   * prose was the only line in the test doing any work.
-   *
-   * So the fence is: these two buttons, and nothing else. It is red if the old
-   * control comes back verbatim, red if it comes back under a new label or a
-   * new glyph, red if it comes back with no `data-nc-action` at all — and red
-   * for any *other* unannounced control that grows in here, which is more than
-   * was asked for and is the right amount. Adding a control to this drawer is a
-   * decision that should have to be written down; this is where it gets
-   * written.
-   *
-   * The name used is the accessible name, because that is what a reader
-   * actually meets. The two legitimate members are the close chevron and the
-   * composer's Send.
-   *
-   * It is run over the *non-empty* drawer on purpose. The removed control was
-   * conditional on there being a transcript, so an empty drawer is precisely
-   * the state that never had one — proving nothing.
-   */
-  /*
-   * #1505 S4 review — the picker's REST call, from the drawer.
-   *
-   * `model-pill.test.tsx` renders the pill in isolation and asserts what it
-   * hands its `onChange`, so deleting the router's `store.setModel` body — the
-   * part that actually issues `PUT /api/cards/{id}/planner/model` — left every
-   * one of those green while the control silently did nothing. This presses
-   * the real control on the real route and looks at the wire.
-   */
   it('sends the chosen model to the server when the picker is used', async () => {
     const { requests } = setupWithTurns((request) => request.method === 'PUT'
         && request.path.endsWith('/planner/model')
@@ -308,30 +200,18 @@ describe('planner conversation regressions', () => {
     await openConversationWithTurns();
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
     fireEvent.click(within(drawer).getByRole('button', { name: /^Model:/ }));
-    /* Nothing answers `GET /api/models` here, so "Default" is the one choice
-       the menu can offer — which is enough: it is a real selection with a real
-       body, and it is the one that must reach the server. */
+    /* Nothing answers `GET /api/models` here, so "Default" is the one choice the menu can offer. */
     fireEvent.click(await screen.findByRole('menuitem', { name: /^Default/ }));
 
     await waitFor(() => {
       const writes = requests.filter((request) => request.path.endsWith('/planner/model'));
       expect(writes).toHaveLength(1);
       expect(writes[0]?.method).toBe('PUT');
-      /* Both keys, always. The server answers 422 for a body missing one, so a
-         client that spread a partial selection would be conforming and
-         broken. */
+      /* Both keys, always: the server answers 422 for a body missing one. */
       expect(writes[0]?.body).toEqual({ model: null, reasoning_effort: null });
     });
   });
 
-  /*
-   * #1505 S4 review round 2. The kernel can refuse to issue for a reason no
-   * amount of waiting fixes — codex's config naming no default model, or a
-   * stored selection it cannot read. Round 1 answered those with a silent
-   * retry, so the person's sentence sat in the queue rendering as healthy
-   * forever. The reason now rides on `planner-run`; this pins that it reaches
-   * the screen rather than stopping at the store.
-   */
   it('shows why a queued message is not being sent when the reader has to act', async () => {
     setupWithTurns((request) => request.path.endsWith('/planner/run')
       ? ok({
@@ -344,8 +224,6 @@ describe('planner conversation regressions', () => {
     expect(await screen.findByText(/Pick a model to start it again/)).toBeTruthy();
   });
 
-  /* And it says nothing when there is nothing to act on, which is almost
-     always. A notice that is usually present is one the reader stops seeing. */
   it('says nothing when the conversation is not blocked', async () => {
     setupWithTurns();
     await openConversationWithTurns();
@@ -359,46 +237,14 @@ describe('planner conversation regressions', () => {
     const names = within(drawer)
       .getAllByRole('button', { hidden: true })
       .map((button) => button.getAttribute('aria-label') ?? button.textContent);
-    /*
-     * The third member is #1505 S4-3's model picker, and this line is where
-     * that decision is written down, as the note above requires.
-     *
-     * `Model: Default` and not a model's name: nothing in this setup answers
-     * `GET /api/models`, so the catalog is absent and the trigger says what is
-     * actually known — that this conversation follows whatever the
-     * installation is configured to use. Naming a model here would be the pill
-     * asserting something it has not been told.
-     *
-     * There is deliberately no effort control beside it. The effort menu is a
-     * property of the *chosen model* — it renders only when that model offers
-     * more than one — so with no catalog there is nothing to offer, and a
-     * second trigger appearing here would be the regression.
-     *
-     * `Attach an image` joined the list when the attach control became an
-     * `IconButton` — the composer's `headerActions` slot is specified to hold
-     * icon-only buttons, and the version before it was a `<label>` wrapping a
-     * file input, which is why the inventory never saw it. It is one control
-     * either way; what changed is that it is now announced, focusable and
-     * disable-able as one.
-     */
+    /* No catalog answers `GET /api/models`, so the trigger reads `Model: Default` and no effort control appears. */
     expect([...names].sort()).toEqual([
       'Attach an image', 'Close conversation', 'Model: Default', 'Send',
     ]);
     expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
   });
 
-  /*
-   * And the browser never calls the endpoint. The server still serves
-   * `POST /planner/reset`; this pins that the front end has no path to it — a
-   * UI-only removal that left a live caller wired to some other control would
-   * be invisible to the set-equality above, which only reads the tree.
-   *
-   * This version **presses things**. The one it replaces opened the drawer,
-   * clicked the wordmark, and asserted no reset POST — so the only caller it
-   * could ever have caught was one that fired on mount by itself. Every control
-   * the drawer offers is now pressed, the composer sends a message, and Escape
-   * closes it, and none of that reaches the endpoint.
-   */
+  /* The server still serves `POST /planner/reset`; this pins that the front end has no path to it. */
   it('never posts to the planner reset endpoint, however the drawer is driven', async () => {
     const { requests, router } = setupWithTurns();
     await openConversationWithTurns();
@@ -408,9 +254,6 @@ describe('planner conversation regressions', () => {
     await typeInto(field, 'a message');
     await sendWithEnter(field);
 
-    /* Every button in the drawer, in tree order, ending on the close — reversed
-       so the close is pressed last and the rest are pressed while the drawer is
-       still up. */
     const controls = within(drawer)
       .getAllByRole('button', { hidden: true })
       .filter((button) => button.getAttribute('aria-label') !== 'Close conversation');
@@ -418,31 +261,14 @@ describe('planner conversation regressions', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     fireEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
 
-    /* And once more from a fresh mount of the route, since a caller that fires
-       on mount is the only kind the version this replaced could have caught.
-       Today no longer lists another track's conversations (#1341), so it is a
-       neutral mounted route to cross before returning here. */
     await act(async () => { await router.navigate({ to: '/' }); });
     await act(async () => { await router.navigate({ to: '/track/w1' }); });
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
     expect(requests.filter((request) => request.path.endsWith('/planner/reset'))).toHaveLength(0);
-    /* And the pressing above actually did something, so an inert sweep cannot
-       pass this by touching nothing. */
+    /* The pressing above actually did something, so an inert sweep cannot pass. */
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
   });
 
-  /*
-   * The track route used to be the one route with a `+` and no `/new`: it had
-   * exactly one planner card, `start()` reopened the row already open, and a
-   * command named `New conversation` that reopens the conversation you are
-   * reading is a lie told by a control.
-   *
-   * #1189 removed the premise. A track holds as many assistant conversations as
-   * you start, so `/new` here means what it means on an area, and the composer
-   * becomes the combobox `useTriggerMenu` emits when a trigger is configured.
-   * Asserted through the accessibility tree, which is where the difference is
-   * visible to a reader.
-   */
   it('offers /new in the track composer, now that a track can hold a second conversation', async () => {
     setupWithTurns();
     await openConversationWithTurns();
@@ -451,13 +277,6 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
   });
 
-  /*
-   * No turn count on these labels since #1189: a track route lists rows, and a
-   * row it has not opened is one it cannot count the turns of. `ChatList` says
-   * nothing rather than `0 turns`, which would be a claim. The open row still
-   * counts, because the drawer is reading its transcript — that is what the
-   * Today test below asserts.
-   */
   it('keeps a track route conversation list scoped after visiting another track', async () => {
     const { router } = setup();
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
@@ -466,95 +285,24 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByRole('button', { name: 'Conversation Planner chat' })).toBeNull();
   });
 
-  /*
-   * ── Three Today tests stood here, and #1341 revoked all three ──────────────
-   *
-   * They were `keeps a track conversation on Today after navigating away from
-   * the track`, `lists a track conversation on Today after merely visiting the
-   * track` and `navigates from a Today conversation to its track before opening
-   * it` — the #1189 S5 deliverable that Today lists the tab's cross-track
-   * visiting history and navigates into whichever track a row belongs to.
-   *
-   * Owner reversed the contract: Today lists the LAUNCHPAD track's own
-   * conversations, by the same rule this route uses for itself, and it opens
-   * them in place. A track other than the launchpad therefore contributes
-   * nothing to Today however often it is visited, so all three describe a
-   * behaviour that is not merely unimplemented but deliberately gone. The new
-   * contract, including the inverse of these three, is
-   * `today-conversation.test.tsx`; the cross-track index they were reaching for
-   * becomes its own card on its own issue.
-   *
-   * One assertion from the third is not about Today and survived the move: that
-   * no `/api/cards//` request is ever made — a card path built from an empty id.
-   * It is asserted there, where the empty id is now possible (a workspace with
-   * no launchpad yet).
-   */
-
-  /*
-   * Three "after reset …" registry tests stood here. All three drove the same
-   * machinery — `suppressRememberRef` / `suppressedRememberSnapshotRef` in
-   * `useConversationStore`, which existed *only* to stop a stale pre-reset
-   * snapshot being written back into the session registry while the
-   * invalidation raced. Reset was that mechanism's one and only writer, so the
-   * fields are deleted with it and there is nothing left to suppress.
-   *
-   * What was worth keeping from them is the part that is not about reset, and
-   * #1341 narrowed even that — so the claim is worth stating exactly, because a
-   * wider one was written here first and was not true.
-   *
-   * This asserts the **route**, not the registry: the list follows the track
-   * detail through a card swap and back, and the row the drawer is on is
-   * replaced in place by the counted one, twice, on one mounted panel. It used
-   * to end on Today and read the registry's memory of the swapped-out card;
-   * Today lists the launchpad's own conversations now (#1341) and this track is
-   * not the launchpad, so that ending is gone. Stubbing `registry.remember` to a
-   * no-op leaves this test green — which is the honest statement of its scope.
-   * What the registry still holds, and who still reads it, is
-   * `track-conversation.test.tsx`'s `registry write-through` block.
-   */
   it('follows a card swapped out and back, counting whichever row is open', async () => {
     const { client } = setup((request) => request.path.includes('/harness/items')
       ? ok(harnessRows(3)) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
-    /* The open row is the one this route can count, so it is the one that grows
-       a turn count — and waiting for it is also how we know the transcript has
-       arrived before the card is swapped underneath it. */
+    /* Waiting for the count is also how we know the transcript has arrived before the card is swapped. */
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
 
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
       track: TRACK, can_resume: false, cards: [CARD_SAME_TRACK], overlays: [],
     });
-    /* The listed row is the swapped-in card, and the drawer's row is gone with
-       the old one — a `'rows'` route lists what the server (here, the track
-       detail) says, so the count only comes back when this one is opened. */
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
     await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
       track: TRACK, can_resume: false, cards: [CARD], overlays: [],
     });
-    /* Swapped back, and reopened: the original row is listed again and counts
-       again. Both directions on one panel instance, which is what a route that
-       forked on its planner card could not do. */
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
   });
-
-  /*
-   * `clears an unclaimed open request after a track without a planner card
-   * resolves` stood here, and #1341 took its producer away.
-   *
-   * An "open request" is a card id one route leaves in the registry for another
-   * route to redeem, and Today's cross-track list was the only thing that ever
-   * left one for a card the arriving track might not have. The one producer
-   * left is #1211's planner-open intent, which names a card of the very route it
-   * arms on and never names a missing one (`TrackRouteBody` returns early when
-   * there is no planner card). So this test had no production driver left, and
-   * keeping it would have meant driving the registry by hand to prove a rule
-   * about a request nothing makes.
-   *
-   * The clears themselves are kept as fail-safes and say so at their site; the
-   * cross-track card, on its own issue, is what would bring the producer back.
-   */
 
   it('renders a server-sent reply from the history fixture', async () => {
     setup((request) => request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined);
@@ -579,9 +327,7 @@ describe('planner conversation regressions', () => {
     ];
     setup((request) => request.path.includes('/harness/items') ? ok(rows) : undefined);
     await openConversation();
-    /* The history is fetched when the row is *opened* now — the track route no
-       longer holds a card scope before that — so the transcript lands a round
-       trip after the drawer does. */
+    /* The history is fetched when the row is opened, so the transcript lands a round trip after the drawer. */
     await screen.findByText('interleaved reply');
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
     const actionIndex = drawer.textContent?.indexOf('Ran') ?? -1;
@@ -591,14 +337,7 @@ describe('planner conversation regressions', () => {
     expect(actionIndex).toBeLessThan(replyIndex);
   });
 
-  /*
-   * The route's own read path — `harness/items` rows through `buildTranscript`
-   * into `ChatThread` — folds a run of actions into one Astryx group. Pinned
-   * here rather than only in the component tier because the rows the component
-   * is handed are built from this fixture's wire shape: `item/started` and
-   * `item/completed` pairing on `item_uuid` is what keeps the group's identity
-   * while its last call finishes.
-   */
+  /* `item/started` and `item/completed` pair on `item_uuid`, which is what keeps the group's identity while its last call finishes. */
   it('folds consecutive actions into one closed group that stays open as a call completes', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, uuid: string, method: string, item: Record<string, unknown>) => ({
@@ -633,21 +372,12 @@ describe('planner conversation regressions', () => {
     expect(screen.getByRole('group', { name: '3 tool calls' })).toBe(group);
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(within(group).queryByText('Running')).toBeNull();
-    /* The failed call's detail is there on demand, quoted from the machine. */
     fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
     expect(within(group).getByText('error: no test specified')).toBeTruthy();
   });
 
-  /*
-   * The page boundary is the route's own — `TRANSCRIPT_PAGE_LIMIT` rows,
-   * cut wherever the count says — and it can fall inside a run of calls. The
-   * first page then shows the run's tail as a group; *Load earlier* must
-   * extend that group rather than replace it: the reader's open group and the
-   * failure detail they opened stay open, and the run's earlier calls land
-   * above the ones already shown, in transcript order. Pinned at this tier
-   * because the boundary is made here, by the infinite query's cursor
-   * (`after_id` = the oldest id of the page before), not by the component.
-   */
+  /* The page boundary is made here by the infinite query's cursor (`after_id` = the
+     oldest id of the page before), and can fall inside a run of calls. */
   it('extends a group cut by the page boundary when Load earlier brings the rest of its run', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, uuid: string, method: string, item: Record<string, unknown>) => ({
@@ -681,24 +411,14 @@ describe('planner conversation regressions', () => {
     expect(within(group).getByText('error: no test specified')).toBe(detail);
     const order = ['old command 1', 'old command 2', 'npm test', 'pwd'].map((target) => (group.textContent ?? '').indexOf(target));
     expect(order.every((position, index) => position >= 0 && (index === 0 || position > order[index - 1]))).toBe(true);
-    /* The reply that preceded the run sits above it, and the second read asked
-       for the rows before the first page's oldest. */
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
     expect((drawer.textContent ?? '').indexOf('Let me check.')).toBeLessThan((drawer.textContent ?? '').indexOf('old command 1'));
     expect(requests.filter((request) => request.path.includes('/harness/items'))
       .map((request) => new URL(request.path, 'http://localhost').searchParams.get('after_id'))).toEqual(['0', '101']);
   });
 
-  /*
-   * The page shifts under a refetch once newer rows exist: the newest 300 are
-   * re-read from the top, and the run the reader has open can be left with one
-   * call in the window — which is a line, not a group — until *Load earlier*
-   * restores the rest. The group's element does not survive that (the vendor
-   * is unmounted for the line), so what is pinned here is not the element but
-   * what the reader had: the run open again, the failure detail they opened
-   * still open, and both calls in order. The detail stays readable on the
-   * line in between.
-   */
+  /* A refetch re-reads the newest page from the top and can leave the open run with
+     one call in the window (a line, not a group); the vendor element does not survive that. */
   it('keeps an open group and its opened failure detail through a refetch that leaves it one call', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, uuid: string, item: Record<string, unknown>) => ({
@@ -740,19 +460,11 @@ describe('planner conversation regressions', () => {
     expect(within(restored).getByRole('button', { expanded: true }).getAttribute('aria-expanded')).toBe('true');
     expect(within(restored).getByText('failure detail')).toBeTruthy();
     expect((restored.textContent ?? '').indexOf('pwd')).toBeLessThan((restored.textContent ?? '').indexOf('npm test'));
-    /* The restored row is the reader's to close again. */
     fireEvent.click(within(restored).getByRole('button', { name: /npm test/ }));
     expect(within(restored).queryByText('failure detail')).toBeNull();
   });
 
-  /*
-   * The same shift, one row wider: a three-call run loses its first call and
-   * keeps two, so the vendor's element stays mounted while the row the reader
-   * had open is unmounted from inside it. *Load earlier* brings that row back
-   * as a new element, closed by the vendor; the detail the reader opened must
-   * be open on it again. Pinned at this tier because the row's identity
-   * (`item_uuid`) and the window that drops it are both made here.
-   */
+  /* One row wider: the vendor's element stays mounted while the row the reader had open is unmounted from inside it. */
   it('restores an opened failed row after a multi-call refetch window shift', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, item: Record<string, unknown>) => ({
@@ -789,15 +501,7 @@ describe('planner conversation regressions', () => {
     expect(within(group).getByText('failure evidence')).toBeTruthy();
   });
 
-  /*
-   * And the shift that takes the whole run: the newest page is nothing but
-   * replies, the run is gone from the transcript — not one call, not the
-   * element — and *Load earlier* returns the same stable ids. They are the
-   * same run to the reader: open again, the failure detail they opened open.
-   * A run that vanished whole used to be forgotten with the window that held
-   * it; it is now remembered by its calls' ids for as long as the
-   * conversation is open.
-   */
+  /* The shift that takes the whole run: it is remembered by its calls' ids for as long as the conversation is open. */
   it('restores the same group after it leaves the latest page whole', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, item: Record<string, unknown>) => ({
@@ -871,23 +575,8 @@ describe('planner conversation regressions', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('Transport request failed');
   });
 
-  /*
-   * ── #1505 ────────────────────────────────────────────────────────────────
-   *
-   * The whole bug and the whole fix, at the one tier that can see both: a real
-   * transport, a real phase query, and the composer the app actually builds.
-   *
-   * Before the fix this test's first assertion read `toHaveLength(0)` if you
-   * wrote it honestly — Enter during `turn_running` reached
-   * `ChatComposer`'s `onSubmit`, hit `if (… || stopShown) return;`, and no POST
-   * was ever attempted. Nothing else on the path refused: `send_planner_input`
-   * accepts at any phase and queues the text behind the running turn.
-   *
-   * The second half is what the reader is owed for it. A queued message and a
-   * message being worked on are the same paragraph on the same side of the
-   * transcript; `data-nc-queued` is the difference, and it is present only on
-   * the send that was actually queued.
-   */
+  /* `send_planner_input` accepts at any phase and queues the text behind the running
+     turn; `data-nc-queued` is present only on the send that was actually queued. */
   it('posts a message sent while a turn is running, and marks it queued', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/run')
       ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
@@ -911,15 +600,8 @@ describe('planner conversation regressions', () => {
       .toContain('sends when this turn ends');
   });
 
-  /*
-   * #1505 PR4 rule 3 — one renderer per message.
-   *
-   * Once the POST answers with an entry id and `GET /planner/run` lists that
-   * id, the queue region owns the message: it is the only surface that can
-   * offer Edit and Delete, so the transcript echo must step aside. The bug
-   * this pins is the double render — the same sentence twice, once with
-   * controls and once without.
-   */
+  /* Once the POST answers with an entry id and `GET /planner/run` lists it, the queue
+     region owns the message and the transcript echo steps aside. */
   it('draws a queued message once, in the queue region, after its entry id is listed', async () => {
     const entry = { entry_id: 'entry-9', text: 'queued once', rev: 0, queued_at_ms: 5 };
     let listed = false;
@@ -943,7 +625,6 @@ describe('planner conversation regressions', () => {
     await typeInto(field, 'queued once');
     await sendWithEnter(field);
 
-    // The queue region takes it over, and the transcript's copy goes away.
     await waitFor(() => {
       expect(document.querySelector('[data-nc-pending-queue]')).not.toBeNull();
     });
@@ -955,14 +636,8 @@ describe('planner conversation regressions', () => {
     expect(document.querySelector('[data-nc-queued]')).toBeNull();
   });
 
-  /*
-   * #1625 P2 review round 1 (C4) — rule 3 holds for the kernel's own row too.
-   *
-   * The drain writes the projection row and emits `harness.item.added` before
-   * `turn/start` goes out; the queue region drops the entry only when
-   * `planner-run` is refetched after `turn/start` answers. In that window the
-   * transcript would draw the sentence beside the queue region's copy of it.
-   */
+  /* The drain writes the projection row before `turn/start` goes out; the queue region
+     drops the entry only once `planner-run` is refetched after `turn/start` answers. */
   it('draws a drained message once while the queue region still lists its entry', async () => {
     const entry = { entry_id: 'entry-9', text: 'sent once', rev: 0, queued_at_ms: 5 };
     const projection = {
@@ -988,16 +663,13 @@ describe('planner conversation regressions', () => {
     });
     await openConversation();
 
-    // The row is on the server and the queue region still lists the entry:
-    // one renderer, the queue region.
     await waitFor(() => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain('sent once');
     });
     expect(screen.getAllByText('sent once')).toHaveLength(1);
     expect(document.querySelector('[data-nc-turn="you"]')).toBeNull();
 
-    // The phase change after `turn/start` refetches `planner-run`; the entry
-    // is gone from it, and the row is the sentence's one renderer now.
+    // The phase change after `turn/start` refetches `planner-run`.
     listed = false;
     await act(async () => {
       await client.invalidateQueries({ queryKey: queryKeys.plannerRun(CARD.id) });
@@ -1009,19 +681,7 @@ describe('planner conversation regressions', () => {
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
   });
 
-  /*
-   * #1505 PR4 — the compare-and-swap reaches the wire.
-   *
-   * The revision is the entry's, read from the page the reader was shown, not
-   * a constant and not the client's guess. Sending the wrong one is how a
-   * take-back silently removes a message somebody else already changed —
-   * which is the whole reason the endpoint takes it.
-   *
-   * It is a DELETE and no longer a PATCH: the strip's one control removes the
-   * message, and editing it in place was removed with the pencil. The
-   * guarantee under test did not move — the revision the reader was shown is
-   * the revision the wire carries.
-   */
+  /* The revision is the entry's, read from the page the reader was shown, not the client's guess. */
   it('sends the listed revision as if_entry_rev when removing a queued message', async () => {
     const entry = { entry_id: 'entry-9', text: 'first words', rev: 3, queued_at_ms: 5 };
     const { requests } = setup((request) => {
@@ -1048,16 +708,8 @@ describe('planner conversation regressions', () => {
     expect(removal?.body).toEqual({ if_entry_rev: 3 });
   });
 
-  /*
-   * #1625 P3 — "Say it now" is offered in `turn_running` and nowhere else.
-   *
-   * `issuing_turn` is the phase that decides the criterion: it is `working`
-   * (the composer shows Stop, the send is queued) and yet a steer there
-   * answers 409, because the turn it would go into does not exist yet. A
-   * gate written on `working` would draw a button whose only possible answer
-   * is a refusal, which is the regression the first draft of #1505 PR4's
-   * queued-send criterion had (see `kernelQueuesInput` above).
-   */
+  /* `issuing_turn` is `working` and yet a steer there answers 409, because the turn
+     does not exist yet: the gate is on `turn_running`, not `working`. */
   it('offers "Say it now" while a turn is running, and posts the listed revision to the steer route', async () => {
     const entry = { entry_id: 'entry-9', text: 'now please', rev: 3, queued_at_ms: 5 };
     const { requests } = setup((request) => {
@@ -1089,23 +741,9 @@ describe('planner conversation regressions', () => {
     });
   });
 
-  /*
-   * #1625 P3 review round 2 — the steer's tombstone is reversible.
-   *
-   * Codex took the message (200), and then the turn ended before codex
-   * recorded it; the kernel puts the entry back under the SAME id, one rev
-   * up (`QueueEntry::bump_rev_for_restore`), and announces `restored`. This
-   * client never saw the queue without the entry: the page it holds is the
-   * one from before the steer (rev 3), and the next one it fetches lists the
-   * same id again. Before this round the tombstone was retired only by a
-   * page that OMITTED the id, so the restored message — and its controls —
-   * stayed hidden for good.
-   *
-   * Two pages, in order, and the first is the negative that keeps the rule
-   * honest: a refetch that still lists rev 3 is a stale page and keeps the
-   * bubble hidden; a page that lists rev 4 is the kernel's own word that the
-   * entry came back, and the strip draws it with both controls.
-   */
+  /* After a steer's 200 the turn can end before codex records the message; the kernel
+     puts the entry back under the same id, one rev up. A refetch still listing rev 3
+     is a stale page and keeps the bubble hidden; rev 4 is the kernel's word it came back. */
   it('shows a steered message again, with its controls, once the server lists it at a higher rev', async () => {
     let served = { entry_id: 'entry-9', text: 'came back', rev: 3, queued_at_ms: 5 };
     let runReads = 0;
@@ -1132,9 +770,8 @@ describe('planner conversation regressions', () => {
     await waitFor(() => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
     });
-    /* The refetch the 200 triggers lands, and it still lists the entry at the
-       rev this client steered against — a page from before the write. The
-       bubble stays hidden. */
+    /* The refetch the 200 triggers still lists the rev this client steered against: a
+           stale page, so the bubble stays hidden. */
     await waitFor(() => { expect(runReads).toBeGreaterThan(readsBeforeSteer); });
     await waitFor(() => { expect(client.isFetching({ queryKey: queryKeys.plannerRun(CARD.id) })).toBe(0); });
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
@@ -1169,13 +806,10 @@ describe('planner conversation regressions', () => {
     await waitFor(() => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
-    /* The strip is drawn — the cross is there — and the steer is not. */
     expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Say it now' })).toBeNull();
   });
 
-  /* The steer's 409: the message is still queued and the notice says so. The
-     bubble stays, because nothing was taken. */
   it('says the message stays queued when the steer finds no running turn', async () => {
     const entry = { entry_id: 'entry-9', text: 'too late', rev: 0, queued_at_ms: 5 };
     setup((request) => {
@@ -1204,9 +838,8 @@ describe('planner conversation regressions', () => {
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
   });
 
-  /* The steer's other 409 (review round 1): codex never answered. The notice
-     must not say nothing happened — the message may have reached the turn
-     AND is queued again — and the bubble stays, because it is queued. */
+  /* The steer's other 409: codex never answered, so the message may have reached the
+       turn AND be queued again. */
   it('says the outcome is not known when the steer times out on the kernel side', async () => {
     const entry = { entry_id: 'entry-9', text: 'did it land', rev: 0, queued_at_ms: 5 };
     setup((request) => {
@@ -1237,15 +870,8 @@ describe('planner conversation regressions', () => {
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
   });
 
-  /*
-   * #1505 PR4 rule 4 — a deleted queued message is gone, not hidden.
-   *
-   * Deleting removes the entry from `pending`, which un-hides the transcript
-   * echo by rule 3. Nothing else can ever retire that echo: the message never
-   * reaches the model, so no transcript row will arrive to reconcile it. Left
-   * alone it is a permanent ghost of a message the reader explicitly took
-   * back — which is worse than the confusion the slice set out to fix.
-   */
+  /* Deleting un-hides the transcript echo, and nothing else can retire it: the message
+     never reaches the model, so no row will arrive to reconcile it. */
   it('does not put a deleted queued message back into the transcript', async () => {
     const entry = { entry_id: 'entry-9', text: 'take this back', rev: 0, queued_at_ms: 5 };
     let deleted = false;
@@ -1286,9 +912,6 @@ describe('planner conversation regressions', () => {
     });
   });
 
-  /* The same send from an idle conversation is not queued behind anything, and
-     must not claim to be — the marker is a fact about the send, so the negative
-     is what keeps it from decaying into decoration on every optimistic turn. */
   it('does not mark a message sent from an idle conversation as queued', async () => {
     setup();
     await openConversation();
@@ -1300,9 +923,7 @@ describe('planner conversation regressions', () => {
     expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
   });
 
-  /* Sending during a turn does not repeal the one-POST-at-a-time rule: that is
-     `sendBlocked`, and it is about the request in flight rather than about the
-     agent. Same shape as the idle test above, on the running path. */
+  /* `sendBlocked` is about the request in flight, not the agent. */
   it('still prevents a second send while the first is pending, with a turn running', async () => {
     let settle!: (response: ApiTransportResponse) => void;
     const pending = new Promise<ApiTransportResponse>((resolve) => { settle = resolve; });
@@ -1321,20 +942,8 @@ describe('planner conversation regressions', () => {
     await sendWithEnter(field);
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
 
-    /*
-     * ── The settle is asserted, not merely performed ─────────────────────────
-     *
-     * The count above is read *before* `settle`, so for as long as nothing
-     * looked at the release this line could hand back a body the response
-     * schema rejects and the test would stay green — the send would take the
-     * failure path instead of the success path it was written for, silently.
-     * `worker_session_id` is exactly that hazard: #1423 renamed the wire field,
-     * and this literal still carried the pre-#1423 field name until the rebase.
-     *
-     * So the release is followed through: no error strip, and — the fact only
-     * the success path can produce — the queued send has freed the composer for
-     * a second message.
-     */
+    /* The release is followed through: a body the response schema rejects would take
+         the failure path and leave the count above green. */
     settle(ok({ card_id: CARD.id, worker_session_id: 'runtime' }));
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
     expect(screen.queryByRole('alert')).toBeNull();
@@ -1345,19 +954,8 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  /*
-   * ── The composer survives its own queued message ─────────────────────────
-   *
-   * `hasUnreconciledSend` used to count *every* standing echo, and a queued one
-   * can never be counted down: the pending queue writes no transcript row
-   * (`should_persist_item_method` persists `item/started` / `item/completed`
-   * only, and both are Codex's, after the turn is issued), so the row that
-   * would clear it cannot exist until the turn ends. One message and the
-   * composer was dead for the rest of the turn — which is half the feature.
-   *
-   * Requests, not DOM: what is being claimed is that a second message actually
-   * *left*, and only the transport can say that.
-   */
+  /* A queued echo can never be counted down: the pending queue writes no transcript
+     row until the turn ends. Requests, not DOM: only the transport says a second message left. */
   it('keeps taking messages after one has been queued behind a running turn', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/run')
       ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
@@ -1371,9 +969,7 @@ describe('planner conversation regressions', () => {
     await sendWithEnter(field);
     await waitFor(() => { expect(input()).toHaveLength(1); });
 
-    /* The composer is still a composer — the field takes text and Enter still
-       reaches the handler. Asserted through the send rather than through an
-       attribute: `disabled` is one of several ways the box could be dead. */
+    /* Asserted through the send: `disabled` is one of several ways the box could be dead. */
     await typeInto(field, 'second queued');
     await sendWithEnter(field);
     await waitFor(() => { expect(input()).toHaveLength(2); });
@@ -1381,29 +977,9 @@ describe('planner conversation regressions', () => {
       .toEqual(['first queued', 'second queued']);
   });
 
-  /*
-   * The other side of the split, and the reason it is a split rather than a
-   * removal: an echo minted from **idle** still closes the composer until the
-   * server hands it back. Its turn is issued at once, so the reconciling row is
-   * one round trip away — a moment, not a turn — and waiting for it is what
-   * keeps a second message from being sent into an account nobody has squared.
-   *
-   * Read off `contenteditable`, which is Astryx's own rendering of
-   * `isDisabled` (`ChatComposerInput`: `contentEditable={!isDisabled}`), rather
-   * than off a refused Enter: a settled send has already emptied the draft, so
-   * a second Enter would be refused for having no words in it and would prove
-   * nothing about the block.
-   *
-   * This and the queued test below run the **same helper** — `settleOneSend`,
-   * one `waitFor` for the request and one macrotask past the POST's own
-   * `finally` — and then assert with a bare `expect`. That symmetry is the
-   * point of the pair and it was not there at first: the closed side polled
-   * with `waitFor` and the open side read once, so the closed side was given
-   * time for a late-arriving block that the open side was not, and the pair did
-   * not compare like with like. Neither needs polling — `hasUnreconciledSend`
-   * is derived at render from `echoes`, which `send` sets synchronously, so the
-   * answer is settled before the first of these two lines runs.
-   */
+  /* An echo minted from idle closes the composer until the server hands it back. Read
+     off `contenteditable` (Astryx's rendering of `isDisabled`), not a refused Enter:
+     a settled send has emptied the draft, so a second Enter proves nothing. */
   it('still closes the composer after an idle send until the server hands it back', async () => {
     const { requests } = setup();
     await openConversation();
@@ -1413,8 +989,6 @@ describe('planner conversation regressions', () => {
     expect(messageField().getAttribute('contenteditable')).toBe('false');
   });
 
-  /* And the same reading, in the state the split exists for: after a queued
-     send the box is still open. Same helper, same assertion, opposite answer. */
   it('leaves the composer open after a queued send', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/run')
       ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
@@ -1432,20 +1006,15 @@ describe('planner conversation regressions', () => {
     async (phase, policy) => {
       const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
         ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null })
-        /* The wedged case also carries the kernel's stale `working` verdict for
-           the card (#1722 S2b r1): the drawer's own wedge must outrank it. */
+        /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
+                   own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
           ? ok({ track: TRACK, can_resume: false, cards: [CARD],
               overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] })
           : undefined);
       await openConversation();
-      /*
-       * The transport already serves this phase; seeding the same value into
-       * the cache removes the window between the drawer opening and that answer
-       * landing, in which `phase` is `null` and every row would look queued for
-       * the wrong reason. The two agree, so a refetch cannot contradict the
-       * seed, and the wire decode is exercised by the tests around this one.
-       */
+      /* Seeding the cache removes the window in which `phase` is `null` and every row
+             would look queued for the wrong reason. */
       await act(async () => {
         client.setQueryData(queryKeys.plannerRun(CARD.id),
           { card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null });
@@ -1456,15 +1025,12 @@ describe('planner conversation regressions', () => {
         expect(messageField().getAttribute('contenteditable')).toBe('false');
         expect((await screen.findByRole('alert')).textContent).toContain('This conversation is stuck');
         expect(screen.getByRole('button', { name: 'Start a new conversation' })).toBeTruthy();
-        /* The wedged row is the drawer's own `failed`, not a request for input
-           (#1722 S2a r3): the `failed` indicator, described as `Needs attention`.
-           Mapped to `attention` it would read, in amber, as "waiting for you". */
+        /* The wedged row is `failed`, not a request for input: mapped to `attention` it
+                   would read as "waiting for you". */
         const row = screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
         expect(row.closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('failed');
         expect(document.getElementById(row.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs attention');
-        /* And the drawer agrees with its own row: the overlay above says
-           `working` for this card, the local wedge says stuck, and stuck wins
-           in both places — no spinner, no spoken `Working` beside the alert. */
+        /* The overlay says `working`, the local wedge says stuck, and stuck wins in both places. */
         expect(row.getAttribute('aria-label')).not.toContain(', working');
         expect(drawerElement().querySelector('[data-nc-activity="working"]')).toBeNull();
         expect(within(drawerElement()).queryByText('Working')).toBeNull();
@@ -1481,8 +1047,6 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-queued]') !== null).toBe(queues);
       expect(messageField().getAttribute('contenteditable')).toBe(queues ? 'true' : 'false');
 
-      /* And the consequence the reader actually feels: whether there is any way
-         to say a second thing. */
       await typeInto(messageField(), 'second');
       await sendWithEnter(messageField());
       await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
@@ -1490,15 +1054,6 @@ describe('planner conversation regressions', () => {
     },
   );
 
-  /*
-   * Stop is the only control in that corner now.
-   *
-   * `Queue message` used to stand beside it so a mouse had a way to send
-   * during a turn; it is gone, and this pins the half that matters: Stop is
-   * still there and still stops. That queuing itself survives its removal is
-   * held down by the `[F4]`/`[F5]`/`[F6]` cases in `track-conversation.test.tsx`,
-   * which drive the same `POST /planner/input` through Enter.
-   */
   it('keeps Stop working, and offers nothing else beside it', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/run')
       ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
@@ -1530,19 +1085,6 @@ describe('planner conversation regressions', () => {
     });
   });
 
-  /*
-   * Two reset-failure tests stood here — one pinning "one POST for two
-   * confirmations, and the rejection surfaced", the other "a turn count that
-   * moved while the reset was in flight is the one Today keeps". Both are
-   * gone with the action.
-   *
-   * The first one's non-reset half survives above, in `surfaces send failures
-   * and prevents a second send while the first is pending`: same shape (a
-   * pending request, a double press, one call, the error surfaced) on the one
-   * mutation the drawer still has. The second's survives in the registry test
-   * further up, which is now driven by the card list rather than by a reset.
-   */
-
   it('uses Escape to interrupt a working turn without closing the drawer', async () => {
     let resolveInterrupt!: (response: ApiTransportResponse) => void;
     const pendingInterrupt = new Promise<ApiTransportResponse>((resolve) => { resolveInterrupt = resolve; });
@@ -1570,12 +1112,4 @@ describe('planner conversation regressions', () => {
     resolveInterrupt(ok({ card_id: CARD.id, worker_session_id: 'runtime', stopped: true }));
   });
 
-  /*
-   * `cancels reset on Escape without also closing the drawer` stood here. The
-   * Escape layering it protected — an inner surface eats the key before the
-   * drawer does — is unchanged and still needs a guard; its new subject is the
-   * `/` command menu, and that test lives in `area-conversation.test.tsx`
-   * beside the rest of the slash-command behaviour, because the track route
-   * deliberately has no `/` menu (see `startAnother` in the router).
-   */
 });

@@ -1,7 +1,5 @@
-// One editor for both Area creation and Area settings. It is intentionally a
-// pure form: the shell owns the Dialog, API mutations, template read and
-// directory transport, so this feature can preserve drafts across a failed
-// write without importing app composition.
+// One editor for both Area creation and Area settings; a pure form, the shell owns
+// the Dialog, mutations, template read and directory transport.
 
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -19,10 +17,8 @@ import {
 } from '../default-pills/public.tsx';
 import styles from './area-editor.module.css';
 
-// Astryx forwards unknown base props to its native input, but its public type
-// does not expose the HTML `required` constraint. Keep that semantic without
-// turning on `isRequired`, whose visible “· Required” duplicates this compact
-// dialog's only field label.
+// Astryx's public type does not expose the native `required` constraint, and
+// `isRequired` would duplicate this dialog's only field label with "· Required".
 const NATIVE_REQUIRED_INPUT_PROPS = Object.freeze({ required: true });
 
 export type AreaEditorValues = Readonly<{
@@ -101,9 +97,8 @@ export function AreaEditorForm({
   const submit = (event: FormEvent<HTMLElement>) => {
     event.preventDefault();
     if (submitting || normalizedName === '') return;
-    // Keep focus inside the modal when the request flips every editable field
-    // to disabled. This matters for Enter from Name: without the explicit move,
-    // the browser unfocuses that input and leaves the busy Dialog on <body>.
+    // Keep focus inside the modal when the request disables every field: on Enter
+    // from Name the browser would otherwise leave the busy Dialog on <body>.
     event.currentTarget.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus();
     onSubmit({
       name: normalizedName,

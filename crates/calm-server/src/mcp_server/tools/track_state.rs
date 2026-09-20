@@ -1,62 +1,5 @@
-//! Track-state tools for reading track shape and recording planner verdicts on
-//! worker outcomes.
-//!
-//! These tools complete the planner-card closed loop: a planner daemon reads
-//! the current track snapshot and marks individual worker results as
-//! accepted / rejected during validation. The dispatcher then closes the
-//! loop by pushing the next worker-emitted event onto the planner's thread
-//! as a turn input (#293 — no polling).
-//!
-//! ## Tool surface
-//!
-//! * `calm.track.state` — Planner **or** Worker callable. Returns the
-//!   thread-mapped card's track row + the track's card list
-//!   (id/kind/role/runtime) as one JSON snapshot. No event emission.
-//!   Workers occasionally peek track state before they report; the planner
-//!   gets a full snapshot every loop iteration.
-//!
-//!   `next` (Planner feedback #3) lists the lifecycle targets the planner
-//!   may write from the track's current state, each with the tools whose
-//!   optional `lifecycle` argument carries it. It is derived from the FSM
-//!   (`track_lifecycle::planner_allowed_targets`), never hand-written, so a
-//!   planner that did the work itself without dispatching sees that
-//!   `planning → reviewing → done` is the way to conclude.
-//!
-//! * `calm.task.verdict` — Planner only. Records the planner's
-//!   accept/reject verdict on a worker's prior result. Lowers to
-//!   either `Event::TaskCompleted` (verdict = "accepted") or
-//!   `Event::TaskFailed` (verdict = "rejected"); the `idempotency_key`
-//!   echoes the original `*.worker_requested` so consumers can correlate.
-//!
-//!   ### Variant choice (TaskCompleted/TaskFailed reuse vs. new variant)
-//!
-//!   The earliest-stage design considered adding
-//!   `Event::TaskMetaUpdated { idempotency_key, metadata: Value }` as
-//!   an explicit metadata channel. We picked the reuse path because:
-//!     * the only PR7b use case is the planner's accept/reject verdict on
-//!       a completed worker run — perfectly captured by the existing
-//!       success/failure semantics;
-//!     * the planner's verdict *is* a terminal outcome from the planner's
-//!       point of view, mirroring how the worker would report its own
-//!       outcome — a single kind for "this idempotency_key is done"
-//!       keeps consumer code (and the dispatcher's correlator)
-//!       simpler;
-//!     * a future PR that needs richer task metadata (per-iteration
-//!       checkpoints, partial progress, structured artifacts) can add
-//!       the dedicated variant then without rewriting today's
-//!       call sites — the MCP tool name stays stable while the wire
-//!       event shape evolves under it.
-//!
-//!   The verdict + optional reason are folded into the
-//!   `TaskCompleted.result` JSON (`{status, reason}`) so the audit log
-//!   carries the planner's rationale verbatim.
-//!
-//! ## Scope construction
-//!
-//! Unlike PR7a's emit tools (which scope to the caller's *card*), the
-//! the verdict write scopes to the caller's *track*. The verdict is
-//! track-level metadata about a worker the planner supervises, not the
-//! planner's own card state.
+//! Track-state tools: `calm.track.state` (Planner or Worker snapshot read, no event emission) and
+//! `calm.task.verdict` (Planner-only accept/reject, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track).
 
 use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
@@ -88,8 +31,6 @@ pub fn register_into(registry: &mut ToolRegistry) {
     register_deprecated_alias(registry, "calm.update_task_meta", TOOL_TASK_VERDICT);
 }
 
-/// Common wrapper that turns a typed async fn into the boxed-future
-/// `ToolHandler` the registry expects. Mirrors `emit::wrap`.
 fn wrap<F, Fut>(f: F) -> ToolHandler
 where
     F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
@@ -104,10 +45,6 @@ where
         })
     })
 }
-
-// ---------------------------------------------------------------------------
-// calm.track.state
-// ---------------------------------------------------------------------------
 
 fn track_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -143,11 +80,7 @@ async fn track_state(
     .await
     .map_err(|e| RpcError::internal(format!("track_state: runtime projection: {e}")))?;
 
-    // We re-query the role cache rather than fetching `cards.role` on
-    // the card row — the cache is the canonical source the role gate
-    // already trusts, and `Card` doesn't carry `role` on the struct
-    // (it's a column the cache mirrors). One cache hit per card; the
-    // cache is in-process and lock-free for reads.
+    // The role cache is the canonical source the role gate already trusts; `Card` doesn't carry `role` on the struct.
     let cards_json: Vec<Value> = cards
         .iter()
         .map(|c| {
@@ -181,10 +114,7 @@ async fn track_state(
     }))
 }
 
-/// Planner feedback #3 — the lifecycle targets the planner may write from
-/// `current`, each with the tools that can carry the write. `calm.task.verdict`
-/// and `calm.plan.cancel` need a declared task to act on, so a track with no
-/// tasks lists only the report tools.
+/// `calm.task.verdict` and `calm.plan.cancel` need a declared task to act on, so a track with no tasks lists only the report tools.
 fn planner_next_steps(current: TrackLifecycle, tasks_declared: usize) -> Vec<Value> {
     let mut via = vec![TOOL_REPORT_WRITE, TOOL_REPORT_EDIT];
     if tasks_declared > 0 {
@@ -224,11 +154,7 @@ fn planner_next_note(current: TrackLifecycle, target: TrackLifecycle) -> &'stati
     }
 }
 
-/// #1110 S3 — false only for an unwritten report (#1635 D3: empty summary,
-/// block 0 nothing but HTML comments, every later block a bare
-/// `# <h1>` the header declares — or the frozen pre-header body byte for
-/// byte) or when the track has no report card. Unparseable payloads are not
-/// that placeholder, so they require a startup read.
+/// False only for an unwritten report (the header placeholder, or the frozen pre-header body byte for byte) or when the track has no report card.
 fn report_startup_read_required(cards: &[Card]) -> bool {
     match cards.iter().find(|card| card.kind == "track-report") {
         Some(card) => serde_json::from_value::<TrackReportPayload>(card.payload.clone())
@@ -237,10 +163,6 @@ fn report_startup_read_required(cards: &[Card]) -> bool {
         None => false,
     }
 }
-
-// ---------------------------------------------------------------------------
-// calm.task.verdict
-// ---------------------------------------------------------------------------
 
 fn task_verdict_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -292,13 +214,7 @@ async fn task_verdict(
     let event = match status {
         "accepted" => Event::TaskCompleted {
             idempotency_key,
-            // Fold the verdict + reason into `result` so audit replay
-            // sees the planner's rationale verbatim. Workers' own
-            // task.completed emits leave `result` to free-form agent
-            // output; the planner's emits use this structured shape so a
-            // downstream consumer can pattern-match on
-            // `result.status == "accepted"` to tell verdicts apart
-            // from worker self-reports.
+            // Structured `{status, reason}` so a consumer can tell planner verdicts (`result.status == "accepted"`) apart from workers' free-form self-reports.
             result: json!({
                 "status": "accepted",
                 "reason": reason.unwrap_or_default(),
@@ -308,10 +224,7 @@ async fn task_verdict(
         },
         "rejected" => Event::TaskFailed {
             idempotency_key,
-            // `reason` is required-by-convention for rejections; an
-            // empty string is a valid value (the planner might reject
-            // for "no reason given" — we don't second-guess the
-            // verdict).
+            // An empty reason is a valid value; the verdict is not second-guessed.
             reason: reason.unwrap_or_default(),
             details: None,
             agent_message: Some(write_args.message.clone()),
@@ -338,15 +251,7 @@ async fn task_verdict(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Look up the track the calling card belongs to, returning the card +
-/// track rows. Mirrors PR7a's `emit_event_for_identity` resolve step:
-/// the thread-mapped card must exist while its daemon is active; a
-/// missing row means a delete-while-active race, which we surface as
-/// `InternalError` (the operator wants to see this loud).
+/// A missing thread-mapped card while its daemon is active is a delete-while-active race, surfaced as `InternalError`.
 async fn resolve_track_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,

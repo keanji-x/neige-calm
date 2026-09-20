@@ -10,18 +10,15 @@ use crate::state::WriteContext;
 use calm_truth::track_fs_view::TrackFsView;
 use serde_json::Value;
 
-/// The three receipt-detail fragments (#1635 S1c). Which one is appended is
-/// decided here; what it says is the file's business. `pub(super)` so the
-/// run-loop tests can build their oracle from the fragment (with values of
-/// their own) instead of from a copy of its sentence.
+/// The three receipt-detail fragments; `pub(super)` so the run-loop tests can build their
+/// oracle from the fragment instead of from a copy of its sentence.
 pub(super) const RECORDED_WITH_EVENT: &str =
     include_str!("../../prompts/result-receipt/recorded-with-event.md");
 pub(super) const RECORDED_LEGACY: &str =
     include_str!("../../prompts/result-receipt/recorded-legacy.md");
 pub(super) const UNAVAILABLE: &str = include_str!("../../prompts/result-receipt/unavailable.md");
 
-/// What `enrich` found for one receipt, i.e. which fragment it appends and
-/// with which values bound.
+/// Which fragment `enrich` appends for one receipt, and with which values bound.
 enum Detail<'a> {
     /// The run record still holds the queued event (the queue carried its ID).
     RecordedWithEvent {
@@ -40,8 +37,7 @@ enum Detail<'a> {
     Unavailable,
 }
 
-/// Render one receipt's detail text. The fragment/value seam is checked in
-/// both directions by `render_named`; a mismatch is our bug and surfaces as
+/// Render one receipt's detail text; a fragment/value mismatch is our bug and surfaces as
 /// `CalmError::Internal`.
 fn render_detail(detail: &Detail<'_>) -> Result<String> {
     Ok(match detail {
@@ -143,10 +139,8 @@ pub(super) async fn enrich(
             };
             if let Some(run) = run {
                 let event = &run["events"][kind];
-                // A run projection can advance. Only advertise it when it still
-                // contains the queued event, or (legacy queues lack envelope IDs)
-                // the exact recorded payload and identity. Legacy matching does
-                // not establish original event identity or artifact version.
+                // A run projection can advance. Only advertise it when it still contains the queued event,
+                // or (legacy queues lack envelope IDs) the exact recorded payload and identity.
                 if run["idempotency_key"].as_str() == Some(&identity)
                     && event["payload"]["idempotency_key"].as_str() == Some(&identity)
                     && event["payload"].get(field) == Some(&report)
@@ -175,9 +169,8 @@ pub(super) async fn enrich(
     Ok(())
 }
 
-// This address is an existing virtual run record, not a filesystem path or a
-// task-key alias. The gate-log helper validates a different address shape; here
-// also exclude the reader's reserved index.json and bound the full filename.
+// An existing virtual run record, not a filesystem path or a task-key alias; also exclude
+// the reader's reserved index.json and bound the full filename.
 fn run_detail_path(identity: &str) -> Option<String> {
     if identity.is_empty()
         || identity.len() > 507

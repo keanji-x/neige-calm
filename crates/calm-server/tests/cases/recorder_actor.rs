@@ -1,11 +1,4 @@
-//! RECORD_SESSION recorder × `BroadcastEnvelope.actor` integration test.
-//!
-//! Before issue #39 closed, `spawn_session_recorder` hardcoded
-//! `"actor": "unknown"` on every recorded line because the bus envelope
-//! didn't carry the producing actor. This test pins the post-#39 behavior:
-//! the recorder captures whatever actor the producing `write_with_event` /
-//! `log_pure_event` call threaded through, so replayed traces preserve real
-//! attribution end-to-end.
+//! RECORD_SESSION recorder × `BroadcastEnvelope.actor`: recorded lines carry the producing actor.
 
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
@@ -22,7 +15,6 @@ use calm_server::replay::spawn_session_recorder;
 use serde_json::{Value, json};
 use tempfile::NamedTempFile;
 
-/// Boot an in-memory repo, an event bus, and a tempfile-backed recorder.
 async fn boot() -> (
     Arc<dyn Repo>,
     EventBus,
@@ -40,14 +32,12 @@ async fn boot() -> (
     let wcc = calm_server::track_area_cache::TrackAreaCache::new();
     let tmp = NamedTempFile::new().expect("tempfile");
     spawn_session_recorder(&bus, tmp.path().to_path_buf());
-    // Recorder subscribes inside `tokio::spawn` — give it a tick to land
-    // its subscription before we start emitting.
+    // The recorder subscribes inside `tokio::spawn`; give it a tick to land its subscription.
     tokio::task::yield_now().await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     (repo, bus, cache, wcc, tmp)
 }
 
-/// Drive one `write_with_event_typed` area create with the supplied actor.
 async fn create_area_as(
     repo: &dyn Repo,
     bus: &EventBus,
@@ -80,9 +70,7 @@ async fn create_area_as(
     event_id
 }
 
-/// Read all NDJSON lines off the recorded session file, parsed as JSON.
 fn read_recorded(tmp: &NamedTempFile) -> Vec<Value> {
-    // Reopen via std::fs so we observe the recorder's flushed bytes.
     let file = std::fs::File::open(tmp.path()).expect("reopen session file");
     BufReader::new(file)
         .lines()
@@ -95,12 +83,6 @@ fn read_recorded(tmp: &NamedTempFile) -> Vec<Value> {
 #[tokio::test]
 async fn recorder_captures_real_actor_per_envelope() {
     let (repo, bus, cache, wcc, tmp) = boot().await;
-    // Three writes with three distinct actors that match the design doc's
-    // grammar — exactly the shape RECORD_SESSION needs to preserve for
-    // `replay --assert` to be useful as a bug-report artifact. PR2 of
-    // #136 typed the actor field; the recorder now writes the JSON form
-    // of [`ActorId`] (`{"kind":"User"}`, etc.) — round-trippable into
-    // the new typed surface without ambiguity.
     let _id_user = create_area_as(&*repo, &bus, &cache, &wcc, ActorId::User, "u").await;
     let _id_plugin = create_area_as(
         &*repo,
@@ -112,8 +94,6 @@ async fn recorder_captures_real_actor_per_envelope() {
     )
     .await;
 
-    // Pure event with `Kernel` actor — same `BroadcastEnvelope` shape via
-    // `log_pure_event`. Carries no entity write.
     let _kernel_id = repo
         .log_pure_event(
             ActorId::Kernel,
@@ -131,7 +111,6 @@ async fn recorder_captures_real_actor_per_envelope() {
         .await
         .expect("log_pure_event ok");
 
-    // Give the recorder a beat to drain the bus and flush all three lines.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let lines = read_recorded(&tmp);
@@ -141,20 +120,16 @@ async fn recorder_captures_real_actor_per_envelope() {
         "expected three recorded lines, got {lines:?}"
     );
 
-    // Each line's `actor` is now the typed [`ActorId`] JSON shape.
     let actors: Vec<&Value> = lines.iter().map(|l| &l["actor"]).collect();
     assert_eq!(actors[0], &json!({"kind": "User"}));
     assert_eq!(actors[1], &json!({"kind": "Plugin", "id": "plugin-7"}));
     assert_eq!(actors[2], &json!({"kind": "Kernel"}));
 
-    // And no line should have the pre-#39 placeholder or the legacy
-    // bare-string form.
     for l in &lines {
         assert!(
             l["actor"].is_object(),
             "actor must be the typed ActorId JSON object: {l}"
         );
-        // Sanity: payload + kind are still recorded.
         assert!(l["kind"].is_string(), "kind missing: {l}");
         assert!(!l["payload"].is_null(), "payload missing: {l}");
     }
@@ -162,8 +137,6 @@ async fn recorder_captures_real_actor_per_envelope() {
 
 #[tokio::test]
 async fn envelope_carries_actor_alongside_event() {
-    // Unit-level pin: the bus envelope itself carries `actor` so any
-    // future subscriber (not just the recorder) can read it directly.
     let (repo, bus, cache, wcc, _tmp) = boot().await;
     let mut sub = bus.subscribe();
     let event_id = create_area_as(

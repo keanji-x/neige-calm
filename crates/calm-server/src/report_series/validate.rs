@@ -1,16 +1,5 @@
-//! The kernel-side reply checklist (#1628 D2 step 6, S2.9).
-//!
-//! One rule set, two executions: the plugin applies the inclusion rules when
-//! it aggregates, and the kernel re-checks every point at its own boundary
-//! before anything is stored. Any failure turns the whole row `unavailable`
-//! with the reason recorded; a partially wrong reply is never partially
-//! stored.
-//!
-//! Branching is by `(mode, period)` only — the kernel knows no venues. The
-//! single relaxed branch is `live ∧ day`, which checks `date ≤ as_of` and
-//! nothing about `complete_through`; every other combination requires each
-//! period's end date to be strictly earlier than the series'
-//! `complete_through` (a later daily bar is what proves the period closed).
+//! The kernel-side reply checklist: the kernel re-checks every point at its own boundary, and any failure turns the whole row `unavailable` — a partially wrong reply is never partially stored.
+//! Branching is by `(mode, period)` only. `live ∧ day` checks `date ≤ as_of`; every other combination requires each period's end date strictly earlier than `complete_through`.
 
 use chrono::{Datelike, Days, NaiveDate, Weekday};
 use serde_json::Value;
@@ -81,9 +70,8 @@ impl ValidatedReply {
         serde_json::json!({ "series": series })
     }
 
-    /// Every series `ok` and every `complete_through` strictly later than
-    /// `as_of` — the frozen pinning predicate (D3). The caller applies it to
-    /// frozen requests only.
+    /// Every series `ok` and every `complete_through` strictly later than `as_of` — the frozen pinning
+    /// predicate. The caller applies it to frozen requests only.
     pub fn all_complete_past(&self, as_of: NaiveDate) -> bool {
         self.series.iter().all(|entry| match entry {
             SeriesReply::Ok {

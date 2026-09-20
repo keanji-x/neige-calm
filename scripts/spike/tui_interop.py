@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
-"""#293 real-TUI interop test.
-
-A programmatic WS client (A) starts a thread and runs one turn (creating a
-rollout). Then the REAL `codex resume <threadId> --remote unix://PATH` TUI is
-launched in a PTY, attached to the SAME thread. We type a prompt into the TUI
-and check whether the programmatic client A observes the TUI-driven turn's
-notifications on the shared thread.
-
-This is the end-to-end version of the linchpin: a real TUI client and a
-programmatic app-server client driving/observing the SAME codex thread.
-"""
+"""Real-TUI interop test: a programmatic WS client starts a thread, then the real
+`codex resume <threadId> --remote unix://PATH` TUI is driven in a PTY on the same thread."""
 import asyncio
 import json
 import os
@@ -95,7 +86,6 @@ async def main():
     await A.wait("turn/completed", t=90, since=since)
     print("[A] rollout flushed (turn 1 complete)")
 
-    # Launch real TUI attached to this thread via resume + --remote
     a_before = len(A.rx)
     env = dict(os.environ)
     env["HTTP_PROXY"] = "http://127.0.0.1:2080"
@@ -107,7 +97,6 @@ async def main():
                              "--remote", f"unix://{SOCK}"], env)
         os._exit(1)
 
-    # read TUI output, wait for it to settle, then type a prompt
     def drain(seconds):
         buf = b""
         t = time.time()
@@ -124,20 +113,15 @@ async def main():
         return buf
 
     boot = drain(5)
-    # Type a prompt and submit (Enter)
     os.write(fd, b"Reply with the single word FOUR.")
     time.sleep(0.5)
     os.write(fd, b"\r")
-    # let the TUI-driven turn run
     drain(6)
 
-    # Check whether A observed a NEW turn (TUI-driven) after a_before
     new = A.methods(a_before)
     print(f"[A] methods after TUI attached + typed: {new}")
-    # wait a bit more for completion
     comp = await A.wait("turn/completed", t=40, since=a_before)
     print(f"[A] observed a turn/completed from TUI-driven turn: {comp is not None}")
-    # any agentMessage items from the TUI turn?
     got_items = [o for o in A.rx[a_before:]
                  if o.get("method") in ("turn/started", "item/started",
                                         "item/completed")]
@@ -145,7 +129,6 @@ async def main():
 
     txt = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', boot.decode("utf-8", "replace"))
     txt = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', txt)
-    # show whether the TUI loaded the prior conversation (preview "OK")
     print("--- TUI boot (first 600 cleaned chars) ---")
     print(txt[:600])
 

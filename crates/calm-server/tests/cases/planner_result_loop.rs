@@ -17,8 +17,6 @@ use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 
 async fn start(boot: &Boot, scheduler: &Arc<Scheduler>, task: &Task, worker_card: &str) -> Value {
-    // Let the actual scheduler freeze context and emit the dispatch record.
-    // Stop at its existing provider seam; this test supplies the worker report.
     let claimed = Arc::new(tokio::sync::Notify::new());
     scheduler.set_post_claim_drive_test_hook(PostClaimDriveTestHook {
         claimed: claimed.clone(),
@@ -127,8 +125,6 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         "A.done must not activate an unready B"
     );
 
-    // Follow the actual production prompt's result-reading instruction. Do not
-    // duplicate TrackFsView's path dispatch or synthesize a completion event.
     let prompt = render_planner_developer_instructions_for_test(boot.track_id.as_str(), None, None);
     let advertised = prompt
         .split_once("never assume relative files are shared. Read")
@@ -191,7 +187,6 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         Err(TrackFsError::Forbidden(_))
     ));
 
-    // A fixture Planner judges an accurate audit, not the invalid configuration.
     let selected = run["events"]["completed"]["payload"]["result"]["findings"][0].clone();
     assert_eq!(selected["actual"], -1);
     let decision = "Accept the accurate audit; recommend 30 seconds without changing config-v1.";
@@ -230,7 +225,6 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     .await
     .unwrap();
     let b = current(&boot, "recommendation").await;
-    // Each task has its own bound worker/session, even with one-at-a-time execution.
     let pool = boot.repo.sqlite_pool().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     let card = card_create_with_id_tx(
@@ -263,7 +257,6 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     b_identity.session_id = "recommendation-session".into();
     let worker_payload = start(&boot, &scheduler, &b, card.id.as_str()).await;
     assert_eq!(worker_payload["context"], context);
-    // B consumes the real operation payload at the fixture provider seam.
     let recommendation = json!({"timeout_secs":worker_payload["context"]["selected"]["recommendation"],
         "source_attempt_id":worker_payload["context"]["source_attempt_id"]});
     call_tool(

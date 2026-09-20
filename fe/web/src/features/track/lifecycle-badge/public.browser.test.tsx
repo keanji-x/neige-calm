@@ -41,13 +41,7 @@ function badgeRgb(lifecycle: 'failed' | 'blocked' | 'working'): Rgb {
   return paintedRgb(getComputedStyle(badge).color);
 }
 
-/*
- * #1722 §5.3 — three tones, painted with the same two semantic families the
- * activity indicator uses: `failed` is `--error-text`, `blocked` / `reviewing`
- * are `--warn-text`, and a running phase is plain `--text-3`. Measured on the
- * painted pixel in both themes, so a `.failed` rule that quietly fell back to
- * the warn family reddens here.
- */
+// Measured on the painted pixel in both themes, so a rule that quietly fell back to another family reddens here.
 describe.each(['light', 'dark'] as const)('%s: lifecycle badge tones', (theme) => {
   it('paints failed with the error family, attention with the warn family, and a running phase neutral', () => {
     if (theme === 'dark') document.documentElement.dataset.theme = 'dark';

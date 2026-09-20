@@ -127,12 +127,8 @@ async fn post_empty(app: axum::Router, uri: String) -> (StatusCode, Value) {
 #[tokio::test]
 async fn reset_planner_card_clears_persisted_harness_items() {
     let boot = boot().await;
-    // #1252 S0 R1/F4 — backdate the planner card so `card_age_ms_at_clear` has a
-    // value only `created_at` can produce. Without this the card is
-    // milliseconds old and the age assertion passes just as well when the
-    // production expression reads `updated_at` — which the reset transaction
-    // itself rewrites, so in production the field would read ~0 on every
-    // reset forever while the test stayed green.
+    // Backdate the planner card so `card_age_ms_at_clear` has a value only `created_at` can produce; the reset
+    // transaction rewrites `updated_at`, so a production expression reading it would pass a fresh card just as well.
     const BACKDATE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
     let backdated_created_at = boot.planner_card.created_at - BACKDATE_MS;
     sqlx::query("UPDATE cards SET created_at = ?1 WHERE id = ?2")
@@ -141,10 +137,7 @@ async fn reset_planner_card_clears_persisted_harness_items() {
         .execute(boot.repo.pool())
         .await
         .unwrap();
-    // #1252 S0-2: the reset hard-deletes these rows, so the emitted event is
-    // the only surviving record of what was destroyed. Keep the seeded
-    // payloads so the expected byte total is computed from the same strings
-    // the production measurement sees.
+    // The reset hard-deletes these rows, so the emitted event is the only surviving record; keep the seeded payloads for the expected byte total.
     let mut seeded_params: Vec<String> = Vec::new();
     for index in 1..=3 {
         let item_uuid = format!("item-before-reset-{index}");
@@ -232,8 +225,7 @@ async fn reset_planner_card_clears_persisted_harness_items() {
                     && track == &boot.planner_card.track_id
                     && *cleared_item_count == Some(expected_item_count)
                     && *cleared_params_bytes == Some(expected_params_bytes)
-                    // The card was backdated a week; the age must reflect
-                    // that, not the age of a row the reset tx just touched.
+                    // The age must reflect the backdate, not the age of a row the reset tx just touched.
                     && cleared_age.is_some_and(|age| {
                         (BACKDATE_MS..BACKDATE_MS + 600_000).contains(&age)
                     })

@@ -1,9 +1,6 @@
-//! #1628 S2 — `calm.report.read` hydration of `chart.series` blocks through
-//! the real tool (design §6 A4, A5 read-side, A6, A9e, A9h, A10, A10b, A11).
-//!
-//! The resolver is unstarted here: a read records what it would enqueue and
-//! the test runs the job by hand, so "the read did not call the plugin" is
-//! a count of calls the fake plugin logged, not a timing argument.
+//! `calm.report.read` hydration of `chart.series` blocks through the real tool. The resolver is
+//! unstarted: a read records what it would enqueue and the test runs the job by hand, so "the
+//! read did not call the plugin" is a count, not a timing argument.
 
 #![cfg(unix)]
 
@@ -23,10 +20,6 @@ use crate::report_series_fixture::{
 fn frozen_block() -> Value {
     seam_fixture()["block"].clone()
 }
-
-// ---------------------------------------------------------------------------
-// A4 — the default read hands out the stored summary
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn read_hydrates_chart_series_summary_from_row() {
@@ -79,10 +72,6 @@ async fn read_hydrates_chart_series_summary_from_row() {
     assert_eq!(fx.resolver().recorded_outcomes().len(), 1);
 }
 
-// ---------------------------------------------------------------------------
-// A5 (read side) — route misses are `pending` with a reason, no row, no job
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn read_reports_route_misses_as_pending_without_rows() {
     let fx = SeriesFixture::boot(FixtureOptions {
@@ -127,10 +116,6 @@ async fn read_reports_route_misses_as_pending_without_rows() {
     assert_eq!(fx.resolver().inflight_len(), 0, "keys released on miss");
     assert!(read["docRev"].is_u64(), "the read itself is whole: {read}");
 }
-
-// ---------------------------------------------------------------------------
-// A6 — `resolve: { id: "full" }` is the only way to get points
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn read_full_is_opt_in_per_block() {
@@ -217,11 +202,6 @@ async fn read_full_is_opt_in_per_block() {
     assert_eq!(err.code, -32602, "{err:?}");
 }
 
-// ---------------------------------------------------------------------------
-// A9e — a pre-check miss freezes nothing: the next read after the plugin
-// starts queues the job
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn precheck_miss_never_lands_a_row() {
     let fx = SeriesFixture::boot(FixtureOptions {
@@ -288,10 +268,6 @@ async fn precheck_miss_never_lands_a_row() {
     let row = fx.row(&block_id).await.expect("row landed");
     assert_eq!(row.status, "ok");
 }
-
-// ---------------------------------------------------------------------------
-// A9h — admission and the read end select the row for the CURRENT hash
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn admission_selects_current_hash_row() {
@@ -361,10 +337,6 @@ async fn admission_selects_current_hash_row() {
     assert_eq!(resolved["series"][0]["last"], json!(["2026-09-10", 3.0]));
 }
 
-// ---------------------------------------------------------------------------
-// A10 — the read path never calls the plugin
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn read_never_calls_the_plugin() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -387,16 +359,11 @@ async fn read_never_calls_the_plugin() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// A10b — the write path does not trigger resolution
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn write_does_not_trigger_resolution() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
     fx.reply_structured(seam_fixture()["reply"].clone());
-    // `commit` without any read: docRev of a fresh report is known (S1 pins
-    // the initial document at 3 after boot's seeding).
+    // `commit` without any read: the initial document is pinned at docRev 3 after boot's seeding.
     let if_doc_rev = {
         let card = fx
             .boot
@@ -430,10 +397,6 @@ async fn write_does_not_trigger_resolution() {
     assert!(fx.rows().await.is_empty());
     assert_eq!(fx.call_count(), 0);
 }
-
-// ---------------------------------------------------------------------------
-// A11 — `aa_b` is looked up exactly, never re-parsed into `aa` + `b_c`
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn underscore_plugin_id_never_routes() {

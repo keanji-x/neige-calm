@@ -34,18 +34,8 @@ function luminance(color) { return 0.2126 * color[0] + 0.7152 * color[1] + 0.072
 function ratio(a, b) { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); }
 
 /**
- * ── Recipes that live outside `tokens.css` ────────────────────────────────
- *
- * Settings › Plugins paints its five state chips with per-theme `oklch()`
- * declared in its own CSS module rather than with tokens — they are
- * use-specific fills for one column, not new semantic steps, and the module
- * says why at length. That reasoning is only allowed to stand if the fills are
- * still *measured*, so this reads the declarations back out of the stylesheet
- * that owns them: lowering one of those ten values reddens this gate.
- *
- * Fail-closed in both directions. A missing block is an error rather than a
- * skipped recipe, and so is a block that stops declaring a name this expects —
- * the failure mode of the alternative is a rule silently checking nothing.
+ * Reads a recipe's declarations back out of the stylesheet that owns it. Fail-closed: a missing
+ * block is an error, not a skipped recipe.
  *
  * @param {URL} url @param {string} selector
  */
@@ -76,32 +66,11 @@ const chipPairs = [
 
 let failed = false;
 
-/**
- * ── The list above is checked against the stylesheet, not trusted ─────────
- *
- * `chipPairs` used to be five hand-written rows and nothing tied them to the
- * rule they claim to measure. That made the gate silent on exactly the change
- * it exists for: a sixth `--color-*` override added to `.pluginStateChip` — a
- * new tone for a new state, which is the only reason anyone edits that block —
- * would be painted, shipped and never measured, and this file would still print
- * five green numbers.
- *
- * So the relation is set equality, both ways, over every `--color-*` the rule
- * declares in either theme:
- *
- *   * a declared name the pairs do not mention is an unmeasured colour, and
- *     it is an error rather than a skipped recipe;
- *   * a name the pairs mention that the rule no longer declares is a recipe
- *     measuring an inherited value the chip does not override — the rule went
- *     away and the number kept printing.
- *
- * The `--color-<v>` / `--color-on-<v>` convention is what makes the first half
- * decidable without a browser: astryx's variants paint `--color-on-<v>` on
- * `--color-<v>`, so a declared pair *is* a text-on-fill recipe and owes a
- * ratio. `neutral` is the one that breaks the convention — astryx takes its
- * type from `--color-text-primary` — which is why the check is stated over the
- * declaration set as a whole and not as a rule about name suffixes: an
- * exception has to be listed above to pass, and listing it is the point.
+/*
+ * `chipPairs` is checked against the stylesheet by set equality over every `--color-*` the rule
+ * declares in either theme: a declared name no pair measures is an error, and so is a measured name
+ * the rule no longer declares. `neutral` breaks the `--color-<v>` / `--color-on-<v>` convention, which
+ * is why the check is over the declaration set and not name suffixes.
  */
 {
   const declared = new Set(
@@ -140,13 +109,8 @@ for (const [theme, vars] of chipThemes) {
   for (const { label, foreground, background } of chipPairs) {
     const fill = rgb(resolve(background, vars));
     const type = rgb(resolve(foreground, vars));
-    /* Both sides, not only the fill. The ratio is computed from this crude
-       linear-sRGB conversion, and a channel outside [0, 1] means the value is
-       outside the space the number was computed in — a ratio derived from one
-       is not a measurement of anything a screen will show, whichever side of
-       the pair it came from. The chip owns both names (§6.8 freezes
-       `web/src/styles`, and these are scoped overrides, not tokens), so
-       checking the type as well costs nothing borrowed. */
+    /* Both sides: a channel outside [0, 1] means the value is outside the space the ratio was computed
+           in, whichever side of the pair it came from. */
     /** @type {ReadonlyArray<[string, readonly number[]]>} */
     const sides = [['fill', fill], ['type', type]];
     for (const [side, color] of sides) {
@@ -164,12 +128,7 @@ for (const [theme, vars] of chipThemes) {
   }
 }
 
-/**
- * This is deliberately a small semantic-pair check, not a CSS/DOM contrast
- * audit. It protects only the explicitly listed text/fill recipes below.
- * Actual inherited foregrounds and ancestor backgrounds require a browser
- * render audit and are tracked separately.
- */
+/** A small semantic-pair check over the listed text/fill recipes, not a CSS/DOM contrast audit. */
 const pairs = [
   { label: 'destructive action text on solid error fill', foreground: '--text-on-accent', background: '--error', underlay: '--error' },
   { label: 'warning text on soft warning over card', foreground: '--warn-text', background: '--warn-soft', underlay: '--surface-card' },
@@ -196,11 +155,8 @@ for (const [theme, vars] of themes) {
     const fill = rgb(resolve(background, vars));
     const underlayRgb = rgb(resolve(underlay, vars));
     const painted = composite(fill, underlayRgb);
-    /* `alpha` is the element's own opacity, which is not a property of the
-       token and so is composited here rather than resolved above. Recipes
-       without one are left exactly as they were — an opaque foreground
-       composites to itself, but doing it unconditionally would silently change
-       the number for any token that ships an alpha channel. */
+    /* `alpha` is the element's own opacity, not a property of the token, so it is composited here;
+           recipes without one are left exactly as they were. */
     /** @type {[number, number, number, number]} */
     const dimmed = [foregroundRgb[0], foregroundRgb[1], foregroundRgb[2], foregroundRgb[3] * (alpha ?? 1)];
     const measured = alpha === undefined

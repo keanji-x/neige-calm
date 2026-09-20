@@ -1,35 +1,6 @@
-//! #1449 — the set of statements that write `worker_sessions.handle_state_json`.
-//!
-//! # Why this is frozen
-//!
-//! A runtime's pending queue lives on its row, and the rule that makes the
-//! transfers in #1449 sound is that a writer of that column takes the queue
-//! FROM the row rather than from a copy it has been carrying. That rule was
-//! adopted after converting `spawn_side_effect`, and it was wrong for a whole
-//! review round: `app_server_interact` writes the same column from the snapshot
-//! frozen in `operations.tx_output_json` at mint time, so an operation
-//! re-driven after a crash put a transferred queue back and the sentence was in
-//! two places again.
-//!
-//! The mistake was not the missed site. It was declaring a rule about "the
-//! writers" without enumerating them. This freezes the enumeration so that the
-//! next writer has to be classified by a person instead of inheriting the claim.
-//!
-//! # What this can and cannot see
-//!
-//! Lexical, and line at a time. No tool owns "which source lines write this
-//! column", and the property is textual rather than semantic, so a scan is the
-//! right instrument — but it is worth being exact about its reach.
-//!
-//! It sees a write spelled out in a string literal. It does NOT see a statement
-//! assembled across lines, and this repository does assemble SQL that way
-//! (`WS_CARD_KEYED_RUNTIME_SELECT`, `PROJECTABLE_RUNTIMES_FOR_CARDS_SQL`) —
-//! those are reads today, and nothing here would notice if one became a write.
-//!
-//! It also cannot decide the interesting question, whether a writer takes its
-//! queue from the row; that is what the classification beside each entry is
-//! for, and it is written by a person. What this gate does is make a new
-//! literal writer VISIBLE.
+//! The frozen set of SQL literals that write `worker_sessions.handle_state_json`, each classified
+//! by whether it takes the pending queue from the row. Lexical and line-at-a-time: a statement
+//! assembled across lines is invisible to it.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -74,19 +45,9 @@ fn repo_relative(path: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// Does this line write `worker_sessions.handle_state_json`?
-///
-/// An ASSIGNMENT to the column, or an insert into the table. Not the bare
-/// column name: every SELECT in the session row mappers lists it, and matching
-/// those would bury the writers in reads. Not `SET handle_state_json` either —
-/// that misses the column when it is one assignment among several in a
-/// multi-column `SET`, which is how `session_refresh_deferred_placeholder_tx`
-/// writes it, and the counter-fixture below caught exactly that. The `let`
-/// guard keeps Rust bindings of the same name out.
-///
-/// The scan and the counter-fixture both call THIS. A counter-fixture with its
-/// own copy of the predicate stays green while the real one rots, which is a
-/// gate that only ever proves itself.
+/// An ASSIGNMENT to the column or an insert into the table — not the bare column name (every
+/// SELECT lists it) and not `SET handle_state_json` (misses a multi-column `SET`). The scan and
+/// the counter-fixture both call THIS.
 fn line_writes_handle_state(trimmed: &str) -> bool {
     let assigns_column = trimmed
         .match_indices("handle_state_json")
@@ -95,14 +56,12 @@ fn line_writes_handle_state(trimmed: &str) -> bool {
         || trimmed.contains("INSERT INTO worker_sessions")
 }
 
-/// Every production function whose body contains a SQL statement that assigns
-/// `handle_state_json`.
+/// Every production function whose body contains a SQL statement that assigns `handle_state_json`.
 fn writers_of_handle_state() -> BTreeSet<String> {
     writers_in_files(production_sources())
 }
 
-/// The same scan, pointed at an arbitrary tree. The counter-fixture uses this
-/// so that it exercises the real walk — prefixes and all — rather than a copy.
+/// The same scan, pointed at an arbitrary tree, so the counter-fixture exercises the real walk.
 fn writers_in_tree(root: &Path) -> BTreeSet<String> {
     let mut files = Vec::new();
     collect_sources(root, &mut files);
@@ -141,22 +100,12 @@ fn writers_in_files(files: Vec<PathBuf>) -> BTreeSet<String> {
     found
 }
 
-/// The frozen inventory, each entry classified.
-///
-/// `row` — takes the queue it writes from the runtime's own row (directly, or
-/// from a snapshot this transaction just read from it).
-/// `carried` — writes a queue that did not come from the row. Each one needs a
-/// written argument for why it cannot resurrect a transferred queue; each
-/// argument is next to its entry.
-/// `not-a-queue` — writes the column without touching `pending_queue`.
+/// The frozen inventory, each entry classified: `row` (queue taken from the runtime's own row),
+/// `carried` (queue that did not come from the row; needs an argument beside the entry),
+/// `not-a-queue` (writes the column without touching `pending_queue`).
 const FROZEN_WRITERS: &[(&str, &str)] = &[
-    // Insert/refresh primitives. They write whatever their caller assembled,
-    // and their callers are NOT in this list: the scan only sees functions that
-    // contain a SQL literal, so the Rust-level writers — `persist_snapshot_inner`,
-    // `spawn_side_effect`, the deferred arm's clearing write — are invisible to
-    // it. That is the gate's main blind spot and the reason the classification
-    // beside each entry has to be read as being about this statement, not about
-    // everything that reaches it.
+    // Insert/refresh primitives write whatever their caller assembled; the Rust-level callers
+    // contain no SQL literal and are invisible to the scan.
     (
         "crates/calm-truth/src/db/sqlite/session_mirror.rs::session_refresh_deferred_placeholder_tx",
         "row",
@@ -165,24 +114,15 @@ const FROZEN_WRITERS: &[(&str, &str)] = &[
         "crates/calm-truth/src/db/sqlite/session_mirror.rs::session_set_handle_state_mirror_tx",
         "row",
     ),
-    // `carried`, and it is the one writer that has to be: the give-back writes
-    // message text read back out of `operations.tx_output_json`. It is sound
-    // for the same reason the journal is — it writes ONLY ids the failing
-    // runtime still holds, so it cannot resurrect a queue somebody else has
-    // taken — but by this file's own definition the queue it writes did not
-    // come from the row, and calling it `row` would be a false entry in the one
-    // place that exists to keep this honest.
+    // `carried`: the give-back writes message text read back out of `operations.tx_output_json`.
+    // Sound because it writes ONLY ids the failing runtime still holds.
     (
         "crates/calm-truth/src/db/sqlite/session_projection.rs::session_set_handle_state_of_any_runtime_tx",
         "carried",
     ),
-    // `carried`: its only caller, `persist_issuance_outcome`, serialises
-    // `snapshot_for(inner)` — the run loop's in-process queue. That is sound
-    // because it writes what this runtime still owes after its own drain, but
-    // it is not the row, and the consequence is real: on the `turn/start` error
-    // arm it writes a re-buffered batch back onto a row the harvest has already
-    // taken from, which is why the give-back has to be idempotent against the
-    // source row.
+    // `carried`: `persist_issuance_outcome` serialises the run loop's in-process queue; on the
+    // `turn/start` error arm it re-buffers onto a row the harvest may already have taken from, so
+    // the give-back has to be idempotent against the source row.
     (
         "crates/calm-truth/src/db/sqlite/session_projection.rs::session_set_handle_state_of_retired_runtime_tx",
         "carried",
@@ -191,17 +131,13 @@ const FROZEN_WRITERS: &[(&str, &str)] = &[
         "crates/calm-truth/src/db/sqlite/session_row.rs::session_insert_tx",
         "row",
     ),
-    // Recovery changes only phase/reason in the existing JSON document after
-    // exact ownership and snapshot comparison; it never replaces the queue.
+    // Recovery changes only phase/reason in the existing JSON document; it never replaces the queue.
     (
         "crates/calm-truth/src/db/sqlite/session_system_error_recovery.rs::session_resume_system_error_tx",
         "not-a-queue",
     ),
-    // This queue is owned by the live loop, not read back from the database.
-    // A failed completion or the loop's quiesce command flushes it only while
-    // this is the card's current, uncompleted, unharvested failed session.
-    // The owner-loop barrier prevents an advanced replay watermark from being
-    // paired with an earlier queue; the row guards exclude transferred input.
+    // Queue owned by the live loop; flushed only while this is the card's current, uncompleted,
+    // unharvested failed session. The owner-loop barrier and row guards exclude transferred input.
     (
         "crates/calm-truth/src/db/sqlite/session_system_error_recovery.rs::session_set_failed_harness_snapshot_tx",
         "carried",
@@ -244,15 +180,8 @@ fn every_writer_of_handle_state_json_is_classified() {
     }
 }
 
-/// The counter-fixture. A gate only ever observed green proves nothing, so the
-/// real scanner is pointed at a tree containing a writer it has never been told
-/// about and must report it.
-///
-/// It calls `writers_of_handle_state` itself rather than re-running the
-/// predicate: an earlier version of this test copied the outer walk, so
-/// deleting a prefix from the real scanner's list — `pub(super) async fn`, the
-/// one `session_refresh_deferred_placeholder_tx` and
-/// `session_set_handle_state_mirror_tx` need — left it green.
+/// The counter-fixture: the real scanner is pointed at a tree containing a writer it has never
+/// been told about and must report it. Calls the real walk, not a copy of the predicate.
 #[test]
 fn the_inventory_sees_a_writer_that_is_not_in_it() {
     let dir = tempfile::TempDir::new().expect("temp dir");

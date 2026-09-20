@@ -1,78 +1,9 @@
-/*
- * The exchange rail **as a finger gets it**, rendered.
- *
- * ── Why this is a file and not three more cases next door ─────────────────
- *
- * `pointer: coarse` is a media *feature*. Nothing inside a page can set one,
- * and the one lever a test had — `Emulation.setTouchEmulationEnabled` over CDP
- * — is a one-way door: turning it on gives `pointer: coarse`, turning it off
- * leaves the page at `pointer: none`, where **neither** branch of a
- * pointer-split stylesheet matches. Vitest's browser mode reuses one page for
- * every file in a project, so a single case that opened that door poisoned
- * every case after it, in every file. The coarse branch of
- * `thread.module.css` was therefore guarded for three rounds by reading its own
- * `cssText` out of `document.styleSheets` — a declaration-level read that
- * proved the rule was *written*, never that a coarse device *got* it.
- *
- * The way out is a browser context, not a page: `@vitest/browser-playwright`
- * takes `contextOptions`, and a project of its own gets a context of its own.
- * `vitest.config.ts` opens this one with `hasTouch` + `isMobile` and a tablet
- * viewport, and the first case below asserts the media queries that make the
- * rest of the file mean anything — including that `pointer: none` is *false*,
- * which is the shape of poisoning this arrangement exists to avoid.
- *
- * ── The device is a tablet and not a phone (#1191) ───────────────────────
- *
- * It was a 420 × 900 phone until #1191's mobile IA landed, and the change is a
- * ruling between two features that are each right. `pointer: coarse` is *a
- * finger*, not *a narrow screen*; a handset was simply the cheapest device that
- * has one. #1191 turns the drawer's whole page seam off under
- * `@media (width < 60rem)` — a full-width mobile Chat has no seam beside the
- * card, and conversation history moves to the Report's Conversations list — so
- * at a phone width the rail this file measures is deliberately not painted, and
- * the three geometry cases below read 0 for a product reason rather than a
- * regression. A tablet in portrait is the device where both invariants hold at
- * once: a finger on the glass and a seam to reach into.
- *
- * So: **do not put this project back at a phone viewport to "fix" a failure
- * here.** If the rail stops rendering at 1024 wide, the seam is gone for some
- * other reason and that is the bug. The reverse contract — that a phone-width
- * page paints no seam at all — is pinned in `ui/drawer/mobile.browser.test.tsx`
- * against the rule that does it, so the two halves cannot both drift.
- *
- * ── What that lets go ────────────────────────────────────────────────────
- *
- * `thread.browser.test.tsx` used to carry a case that read the coarse rule's
- * text, copied it onto a probe div, and asserted the block's ordinal position
- * in the document — because equal specificity means source order is the whole
- * of why the coarse block wins. Every part of that is subsumed here: a rendered
- * 28px row on a coarse page is only possible if the coarse block came last, so
- * moving it above `.rail` — the mutation that left the old file green at 35/35
- * — now shows up as a measured 12.
- *
- * The one claim a render cannot make is the universal negative, so it moves
- * here rather than being deleted: "no rule anywhere reads `--nc-dot-lift`
- * where a finger can reach it" is a statement about rules that do not exist
- * yet, and the engine can only be asked about the ones that do. It is a
- * *sweep* over the loaded stylesheets, but every condition it finds is still
- * put to `matchMedia` rather than read — which is only possible because this
- * file, unlike the one it came from, runs on the device in question.
- *
- * ── The fixture is a copy, deliberately ──────────────────────────────────
- *
- * `RailPane` and its helpers are duplicated from `thread.browser.test.tsx`
- * rather than shared. Importing them would mean importing a module whose
- * top-level `describe` blocks would then run in this project too, at a
- * viewport and a pointer type none of them was written for. A copy that
- * travels with the file is the same trade `registeredLayerOrder` takes there.
- */
+/* The exchange rail as a finger gets it, in a browser context of its own (`vitest.config.ts`): `pointer: coarse` is a
+   media feature nothing in a page can set. A tablet, not a phone: a phone width paints no seam at all. */
 import { act, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-/* The whole cascade, and before the component — the same import-order
-   requirement `thread.browser.test.tsx` opens with, for the same reason: a CSS
-   Module imported first registers `@layer features` ahead of everything and
-   hands this app's overrides the lowest priority in the document. */
+/* The whole cascade before the component: a CSS Module imported first registers `@layer features` ahead of everything. */
 import '../../../styles/entry.css';
 
 import { ChatThread } from './public.tsx';
@@ -97,24 +28,10 @@ function railTurns(count: number): ConversationTurn[] {
   ]);
 }
 
-/** `--space-9` + `--space-11`, from `.drawer`'s `inset-block`: how much taller
- *  than its pane the host has to be for the card — and therefore the seam — to
- *  come out at exactly `paneHeight`. */
+/** `--space-9` + `--space-11`, from `.drawer`'s `inset-block`: how much taller than its pane the host has to be for the seam to come out at exactly `paneHeight`. */
 const DRAWER_BLOCK_INSETS = 20 + 28;
 
-/**
- * The drawer as four boxes — host, card, pane, seam — carrying `ui/drawer`'s
- * own classes, so the rail is portalled into a real seam and clipped by a real
- * `overflow: hidden`. A hand-rolled pane renders no rail at all and every case
- * below would pass vacuously.
- *
- * The host is 380 wide because that is a drawer card's own inline size, not
- * because it is all the room there is: the page is 1024 wide (see the header),
- * so the seam sits well inside the screen with the fixture at its natural size.
- * Nothing below turns on the number — every claim is about the seam's block
- * axis — but a host wider than the viewport would push the seam off the side,
- * so it stays a card.
- */
+/** The drawer as four boxes carrying `ui/drawer`'s own classes, so the rail is portalled into a real seam; a hand-rolled pane renders no rail at all. */
 function RailPane({ turns, paneHeight = 400 }: {
   turns: readonly ConversationTurn[];
   paneHeight?: number;
@@ -186,170 +103,26 @@ function centre(index: number): number {
   return box.top + box.height / 2;
 }
 
-/**
- * One place the cascade could hand `--nc-dot-lift` to this page, with the media
- * conditions standing between it and the page.
- *
- * `media` is every `@media` condition enclosing the site, outermost first, each
- * one kept as its own string. It is **not** joined: the two escapes that killed
- * the joined form are `@media not (pointer: fine)` and
- * `@media (pointer: fine), (pointer: coarse)`, and neither survives being
- * concatenated with ` and ` into something a parser will take. Keeping them
- * apart means each is asked of the engine on its own and the conjunction is
- * done over the booleans, which is what nesting means anyway.
- *
- * `where` is the container chain, for the failure message only. Nothing is
- * decided from it.
- */
+/** One place the cascade could hand `--nc-dot-lift` to this page. `media` is every enclosing `@media` condition, outermost first, kept separate: `not (pointer: fine)` and `(pointer: fine), (pointer: coarse)` do not survive being joined with ` and `. */
 type LiftSite = { media: readonly string[]; where: string };
 
-/**
- * Whether `site` names a fine pointer as a *requirement* — the text half of the
- * verdict below.
- *
- * Only a plain conjunction counts. `not`, `,` and `or` each turn the named
- * feature from something the device must have into something it may lack, and
- * all three were measured to matter: `not (pointer: fine)` and the list
- * `(pointer: fine), (pointer: coarse)` both hold on this context, and
- * `((pointer: fine) or (orientation: landscape))` does *not* hold here yet
- * applies to the same tablet turned on its side. `any-pointer` counts alongside
- * `pointer`: a device with no fine pointer at all can satisfy neither, in any
- * orientation, which is exactly the claim being made.
- * The rejection is coarser than the grammar, deliberately, and the cost is
- * written down rather than left to be discovered: a condition that *is*
- * fine-only but says so with a disjunction — `(pointer: fine) and
- * ((orientation: portrait) or (orientation: landscape))` — is refused here and
- * its site reported. That is the safe direction for a universal negative, and
- * the remedy is to rewrite it as a plain conjunction, not to grow a
- * media-query parser inside a test.
- */
+/** Whether `condition` names a fine pointer as a requirement. Only a plain conjunction counts: `not`, `,` and `or` each turn the feature into something the device may lack, so a fine-only disjunction is refused and reported rather than parsed. */
 function narrowsToFine(condition: string): boolean {
   const text = condition.toLowerCase();
   if (/,|(?:^|[\s(])(?:not|or)(?:[\s(]|$)/.test(text)) return false;
   return /\((?:any-)?pointer:\s*fine\)/.test(text);
 }
 
-/**
- * Whether `site` still has to be reported — which is **not** "does the cascade
- * reach this page right now", and the gap between the two is one rotation.
- *
- * Two half-checks, and a site is let go only when **both** clear it, because
- * each closes precisely the class the other is blind to:
- *
- * - **The engine half** — every enclosing condition put to `matchMedia`, since
- *   nesting is a conjunction — closes negations and lists, which no substring
- *   test survives. Measured on this context, all three of the forms a text test
- *   tracks through are true: `not (pointer: fine)`, the list
- *   `(pointer: fine), (pointer: coarse)`, and the inner `(pointer: coarse)` of
- *   a pair whose outer text carries the needle. The list, swapped in for the
- *   stylesheet's one real fine block, left this case green with the rail fully
- *   magnified under a finger.
- * - **The text half** closes every device state that is not *this* one. A
- *   `matches` reading is a snapshot of one 1024 × 1366 portrait tablet, and
- *   `@media (pointer: coarse) and (orientation: landscape)` is false on it
- *   while being a rule the same finger gets the instant the tablet is turned.
- *   The invariant is "a finger can never reach it", not "a finger does not
- *   reach it from here", so a non-match is evidence only when what fails is the
- *   device's *pointer* rather than some state it can be put into.
- *
- * The two halves are **not** symmetric, and the asymmetry is worth writing down
- * rather than rounding off to "each closes the other's hole". The engine half
- * alone is fail-**open**, measured: returning `matchesHere` on its own reds the
- * landscape fixture and leaves the other nineteen cases green. The text half
- * alone is not the mirror of that — `narrowsToFine` refuses `not`, `,` and `or`
- * itself, so returning `!site.media.some(narrowsToFine)` on its own leaves all
- * twenty green here. What the three forms below kill is the bare substring test
- * this replaced, and that is gone; **nothing in this file kills the
- * `matchesHere` term.**
- *
- * It is kept regardless, and that is a decision and not an oversight. On this
- * context the term is provably vacuous: a plain conjunction holds only when
- * every conjunct does, and the first case measures both `(pointer: fine)` and
- * `(any-pointer: fine)` false here, so no condition `narrowsToFine` accepts can
- * match. What it buys is a verdict that does not rest on a parser once that
- * argument stops holding. A hybrid laptop — the device the case two above
- * exists for — reports a fine pointer while a finger is on the glass, and there
- * `@media (any-pointer: fine) and (pointer: coarse)` reads as narrowing to the
- * text and genuinely applies under that finger. The engine half reports it;
- * `narrowsToFine` waves it through. Requiring both therefore leaves a site out
- * of reach only when it fails here *and* the reason it fails is a pointer the
- * device does not have.
- *
- * `some`, not `every`: one fine condition anywhere in the chain already puts
- * the rule beyond a fingers-only device, and demanding it of every enclosing
- * `@media` would false-red the ordinary `@media (pointer: fine) { @media … }`.
- */
+/** Whether `site` still has to be reported. Both halves must clear it: `matchMedia` on every enclosing condition closes negations and lists, and the text half closes device states that are not this one (a landscape rule is false on this portrait tablet and true the moment it is turned). `some`, not `every`: one fine condition anywhere in the chain is enough. */
 function reachesHere(site: LiftSite): boolean {
   const matchesHere = site.media.every((condition) => matchMedia(condition).matches);
   return matchesHere || !site.media.some(narrowsToFine);
 }
 
-/**
- * A serialisation this sweep **cannot decide**: a backslash escape inside a
- * custom-property name. `var(--nc-dot-l\69 ft)` names the same property as
- * `var(--nc-dot-lift)` and computes identically — measured, ungated and in a
- * keyframe — but Chromium keeps the escape verbatim in `cssText`, so the needle
- * is not there to be found.
- *
- * The round before this decoded it, and the decoder cost three defects for the
- * one hole it closed. `String.fromCodePoint` throws `RangeError: Invalid code
- * point 1114112` on `\110000` — which CSS itself merely replaces with U+FFFD —
- * so one unrelated declaration in any sheet killed the whole sweep. CRLF is
- * preprocessed to a single newline while the escape's trailing-whitespace rule
- * swallows one character, so `--nc-dot-l\69\r\nft` decoded to `--nc-dot-li\nft`
- * and was missed. And `--x: "\2d\2d nc-dot-lift"`, a string literal that reads
- * no property at all, decoded *into* the needle and came back as a live
- * consumer at `<inline> › .railDot::before`.
- *
- * So nothing is decoded. An undecidable serialisation is *reported*, on the
- * same footing as an unreadable sheet: nobody escapes a custom-property name on
- * purpose, so the price is a loud red naming the construct rather than a silent
- * miss or a thrown sweep. Only the name position is matched — `--`, name
- * characters, backslash — which is why a value's string literal is not one and
- * neither is `--x: \110000`. The residue is a name whose leading `--` is itself
- * an escape (`\2d\2dnc-dot-lift`): all that separates it from that string
- * literal is the parse this deliberately does not do.
- */
+/** A backslash escape inside a custom-property name (`--nc-dot-l\69 ft`) names the same property, but Chromium keeps the escape verbatim in `cssText`. Nothing is decoded; an undecidable serialisation is reported, on the same footing as an unreadable sheet. */
 const ESCAPED_NAME = /--[\w-]*\\/;
 
-/**
- * Every place a loaded stylesheet could hand `needle` to this page.
- *
- * This walk backs a universal negative — "no rule anywhere reads
- * `--nc-dot-lift` where a finger can get it" — so **the whole of its design is
- * that nothing is skipped**. Three shapes of skip have each been demonstrated
- * to hide a live consumer, and each is closed here rather than reasoned about:
- *
- * - **A container the walk does not descend into.** Descending only into
- *   `@media` and `@layer` hid `@supports` and `@container` whole. Descending
- *   into every `CSSGroupingRule` still hid `@keyframes` and `@property`, which
- *   are not grouping rules at all: a `translate: 0 var(--nc-dot-lift)` inside
- *   an ungated `@keyframes`, and `@property --nc-dot-lift { initial-value: 1 }`,
- *   both came back as no finding.
- * - **A sheet the walk never sees.** `document.styleSheets` does not list an
- *   `@import`ed sheet, and `CSSImportRule` is not a grouping rule either, so a
- *   consumer behind one produced nothing at all. Adopted sheets are the same
- *   shape of miss; this page has none today (measured: zero), and the list is
- *   walked anyway rather than the count being trusted to stay zero.
- * - **A sheet the walk cannot read.** `sheet.cssRules` throws `SecurityError`
- *   on a cross-origin sheet while that sheet's rules still take effect, and
- *   swallowing the throw was a silent pass on a stylesheet whose whole contents
- *   are unknown. It is recorded as a site instead.
- *
- * What is left is one allowlist, and it is the only one, so it is worth being
- * precise about why it is safe: a rule that is **not** descended into is judged
- * by `rule.cssText`, its own complete serialisation. If the property's name
- * does not appear in it, no declaration inside it names the property — that is
- * a property of the serialisation, not a marker convention. `@import` is the
- * one construct that defeats it, because its serialisation is a URL, and it is
- * therefore the one construct handled by name.
- *
- * Only `@media` narrows a site. `@supports`, `@container`, `@scope`,
- * `@starting-style` and `@layer` are conditions on the document, the element or
- * the cascade, never on the device, so none of them can put a rule out of a
- * finger's reach and none of them contributes to `media`. A consumer inside one
- * therefore comes back with an empty condition list and is reported.
- */
+/** Every place a loaded stylesheet could hand `needle` to this page. Nothing is skipped: every container is descended into (`@keyframes` and `@property` are not grouping rules), `@import`ed and adopted sheets are walked, and a sheet whose `cssRules` throws is recorded as a site. Only `@media` narrows a site. */
 function liftSites(needle: string): LiftSite[] {
   const found: LiftSite[] = [];
   const carries = (text: string) => text.includes(needle) || ESCAPED_NAME.test(text);
@@ -375,13 +148,7 @@ function liftSites(needle: string): LiftSite[] {
         continue;
       }
       if (rule instanceof CSSImportRule) {
-        /* `@import url(…) (pointer: fine)` narrows everything in the sheet it
-           pulls in, and the condition lives on the *rule*: Chromium reports it
-           on `rule.media.mediaText` while the imported sheet's own
-           `media.mediaText` is the empty string. Descending without carrying it
-           handed every consumer inside a gated import an empty condition list
-           and reported it — a false red, not a fail-open, and one nothing bound
-           because the fixture below imported unconditionally. */
+        /* `@import url(…) (pointer: fine)` narrows the whole sheet and the condition lives on the rule: Chromium reports it on `rule.media.mediaText`, and the imported sheet's own `media.mediaText` is empty. */
         const own = rule.media.mediaText;
         const at = label(own === '' ? `@import ${rule.href}` : `@import ${rule.href} ${own}`);
         const inside = own === '' ? media : [...media, own];
@@ -414,49 +181,7 @@ function liftSites(needle: string): LiftSite[] {
 }
 
 describe('the exchange rail on a coarse pointer, as the engine lays it out', () => {
-  /*
-   * ── The premise, asserted before anything is measured ─────────────────────
-   *
-   * Every other case in this file is a statement about a device, and a device
-   * that is not the one claimed makes all of them vacuous — worse than absent,
-   * because they would be green. So the three queries are read off the engine
-   * first.
-   *
-   * `pointer: none` is here for a specific failure and not for symmetry. That
-   * is the state CDP touch emulation leaves behind when it is switched off, and
-   * in it *neither* branch of the rail's geometry matches: the file would then
-   * measure whatever the base rule happened to say, and the coarse branch would
-   * be untested again with no sign of it. Measured under this project's
-   * context: coarse true, fine false, none false.
-   *
-   * The screen is asserted for the same reason `isMobile` is set with a
-   * viewport: `isMobile` on a host-sized page is a device claim with no screen
-   * behind it, and the 320px cap two cases below is a block-axis fact that only
-   * means anything against a real one. Measured — this project 1024 × 1366 with
-   * `maxTouchPoints` 1, the plain `browser` project 1280 × 720 with 0.
-   *
-   * **Both screen axes, and `isMobile` itself, because the name of this case
-   * promises all three.** The height is the one the cap is read against, and
-   * it was unasserted: a context dropped to 300 tall left this green. And
-   * `isMobile` is a separate switch from `hasTouch` — deleting it leaves
-   * `pointer: coarse`, `hover: none` and `maxTouchPoints` all exactly as they
-   * are, so nothing above notices. What it does change is that Chromium stops
-   * running the page in mobile emulation, and the two things that says so are
-   * measured here: legacy `window.orientation` exists only under it (present
-   * and 0 with `isMobile`, absent without), and `screen.orientation` reports
-   * the orientation the 1024 × 1366 box actually has rather than the host's —
-   * `portrait-primary` with it, and `landscape-primary` on the identical
-   * viewport without it.
-   *
-   * **And the *inner* box, which is a separate setting and the one #1191 turns
-   * on.** `screen` is the Playwright context; the suite itself runs in an
-   * iframe Vitest sizes from `browser.viewport`, and that defaults to 414 × 896
-   * however wide the page behind it is. `@media (width < 60rem)` — the rule
-   * that takes the drawer's seam away on mobile — is evaluated against *this*
-   * box, so with only the context widened every geometry case below still reads
-   * 0. Asserted as the media condition itself rather than as a number, because
-   * that condition is the thing the rail's existence here depends on.
-   */
+  /* Every other case is a statement about a device, so the queries are read off the engine first. `pointer: none` is the state CDP touch emulation leaves behind; the inner box is Vitest's iframe (`browser.viewport`), which is what `@media (width < 60rem)` is evaluated against. */
   it('runs in a context that reports a coarse pointer and nothing else', () => {
     expect(matchMedia('(pointer: coarse)').matches).toBe(true);
     expect(matchMedia('(pointer: fine)').matches).toBe(false);
@@ -467,50 +192,12 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     expect(navigator.maxTouchPoints).toBeGreaterThan(0);
     expect('orientation' in window).toBe(true);
     expect(screen.orientation.type).toBe('portrait-primary');
-    /* Coarse **and wide**: the seam the rail mounts in exists only above the
-       60rem breakpoint (#1191). */
+    /* Coarse and wide: the seam the rail mounts in exists only above the 60rem breakpoint. */
     expect(matchMedia('(width >= 60rem)').matches).toBe(true);
     expect(window.innerWidth).toBeGreaterThanOrEqual(960);
   });
 
-  /*
-   * ── The geometry, measured instead of read ────────────────────────────────
-   *
-   * The coarse block redeclares three custom properties at the same specificity
-   * as the base rule, so **source order is the entire reason a finger gets
-   * them**. The case this replaces asserted that ordinal as a number, because
-   * it had no other way to see it. A render does not need to: a 28px row can
-   * only be laid out if the coarse block came last, and the mutation that
-   * defeated the old assertion — the whole `@media (pointer: coarse)` block
-   * moved above `.rail` — reads here as a 12px row and a 4px dot.
-   *
-   * The numbers, all measured under this context: the button box is 24 × 28,
-   * consecutive centres are 28 apart, a resting dot's ink is 6px and the lit
-   * one's is 8px. 28 is the same number as `--control-h` and the same number as
-   * `--nc-rail-pitch-open` on the fine branch, and it is neither derived from
-   * nor coupled to either — the stylesheet says so, and this case reads the
-   * rendered box rather than any of the three.
-   *
-   * **The shoulders are asserted at zero, which is a claim about what a finger
-   * does *not* pay for.** The fine branch spends two openings of blank at each
-   * end of the column so that a spread cannot slide the rail out from under
-   * the pointer. There is no spread here, so that blank would buy nothing and
-   * is not spent; the rules that write it live inside `@media (pointer: fine)`.
-   *
-   * **A bare `0px` does not say that, and for one round it was what was
-   * written here.** The shoulder is
-   * `(--nc-rail-pitch-open − --nc-rail-pitch) × lead`, and this branch sets
-   * `--nc-rail-pitch` to `--control-h` while leaving `--nc-rail-pitch-open` at
-   * the 28px it always was — so the expression is `0px` gated or not, and
-   * copying both shoulder rules verbatim out of the fine block left the file
-   * green at 6/6. The measurement below is taken at a pitch where the two
-   * numbers differ instead: `--nc-rail-pitch` is forced to the fine branch's
-   * own 12px inline on the rail's element, where it outranks the coarse
-   * block's declaration, and the rows are read back at 12 so the override is
-   * known to have landed rather than assumed. The shoulder the fine rules
-   * would write there is `(28 − 12) × 2 = 32px` at each end — measured, with
-   * the two rules lifted out of the media block, exactly 32. Gated, 0.
-   */
+  /* Source order is the entire reason a finger gets the coarse block. The shoulders are measured at a forced 12px pitch, where the fine rules would write 32px; at the coarse pitch the expression is `0px` gated or not. */
   it('lays out a 24 by 28 target at a flat 28px pitch, with no shoulders', async () => {
     render(<RailPane turns={railTurns(8)} />);
     await settle();
@@ -523,33 +210,19 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
 
     expect(box.height).toBe(28);
     expect(box.width).toBe(24);
-    /* WCAG 2.5.8's number, on the branch that meets it by target size outright.
-       Asserted as the criterion and then as the build, so cutting 28 back to
-       the floor has to come past both. */
     expect(box.height).toBeGreaterThanOrEqual(24);
     expect(box.width).toBeGreaterThanOrEqual(24);
 
-    /* Centre to centre, off the laid-out boxes, which is the distance a finger
-       actually has to land inside. */
     expect(centre(2) - centre(1)).toBe(28);
     expect(centre(3) - centre(2)).toBe(28);
 
-    /* The ink: 6 at rest, 8 on the exchange you are in. Both were the untested
-       half of the coarse block — cut to `1px`, the old declaration-level case
-       stayed green. */
     expect(dotInk(resting)).toBe(6);
     expect(dotInk(lit)).toBe(8);
 
-    /* The shoulder rules are `:first-child` / `:last-child` on the track, so
-       what they land on is the track's end *children* — which are the end dots
-       only for as long as nothing else is rendered in there. Anchored, because
-       otherwise a sibling slipped in ahead of the dots would give the reading
-       below a third, unrelated reason to be zero. */
+    /* The shoulder rules are `:first-child` / `:last-child` on the track, so the end children must be the end dots. */
     expect(railTrack().firstElementChild).toBe(dots()[0]);
     expect(railTrack().lastElementChild).toBe(dots().at(-1));
 
-    /* And now the fine branch's shoulders are absent at a pitch that would
-       show them: 12px, inline on the rail's own element. */
     const rail = railTrack().parentElement!;
     rail.style.setProperty('--nc-rail-pitch', '12px');
     await frame();
@@ -559,43 +232,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     rail.style.removeProperty('--nc-rail-pitch');
   });
 
-  /*
-   * ── Nothing swells, and one thing is written that nothing reads ───────────
-   *
-   * A finger has no hover, so the spread is not offered here at all: what it
-   * would produce is a swell — and now also a gap, which moves every dot below
-   * it — latched under wherever a tap landed, with no second event to clear it.
-   *
-   * Two independent mechanisms say so, and this case holds both apart.
-   *
-   * **The component's guard**, which is the one that matters on a hybrid
-   * device: a laptop with a touchscreen reports `pointer: fine`, so the media
-   * query is not the guard there and `public.tsx`'s `pointerType === 'touch'`
-   * check is the whole of it. Asserted here by dispatching a touch
-   * `pointermove` over the track and reading zero `--nc-dot-lift` properties
-   * off the dots.
-   *
-   * **The stylesheet's guard**, asserted as what it actually produces. A
-   * `pointermove` carrying `pointerType: 'mouse'` on *this* page — a page with
-   * no mouse — does publish a lift, and this case asserts that it does rather
-   * than pretending otherwise: measured, dots 2 through 7 carry
-   * `0.156 / 0.5 / 0.844 / 1 / 0.844 / 0.5`. **It is dead style.** Every rule
-   * that reads the property sits inside `@media (pointer: fine)`, and the one
-   * the shoulder consumers scale by — `(--nc-rail-pitch-open − --nc-rail-pitch)`
-   * — is 28 − 28 = 0 on this branch, so there is nothing for a lift to
-   * multiply even if a rule reached it. That is measured here, not argued: with
-   * the full envelope published, the pitch is still 28 and the ink is still 6.
-   *
-   * It is left as a written fact rather than fixed. Fixing it means the
-   * component asking `matchMedia('(pointer: fine)')` before it publishes —
-   * a second copy of the stylesheet's condition, living in the file whose whole
-   * point is that it must *not* trust the media query (that is the hybrid case
-   * above). The cost of leaving it is roughly forty inline property writes per
-   * frame on a device where a mouse `pointermove` over the rail is not a real
-   * gesture; the cost of the fix is a duplicated condition that a hybrid device
-   * would then be laid out by. Recorded so the next reader finds a decision
-   * instead of an oversight.
-   */
+  /* Two guards held apart: the component's `pointerType` check (the only one on a hybrid laptop, which reports `pointer: fine`) and the stylesheet's. A mouse `pointermove` on this page does publish a lift, and it is dead style: every consumer sits inside `@media (pointer: fine)`. Left as written rather than fixed, since the fix is a duplicated media condition. */
   it('publishes no lift for a finger, and lays nothing out from the one a mouse leaves', async () => {
     render(<RailPane turns={railTurns(8)} />);
     await settle();
@@ -613,8 +250,6 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     expect(centre(6) - centre(5)).toBe(28);
     expect(dotInk(4)).toBe(6);
 
-    /* The identical dispatch with a mouse, so the assertion above is about the
-       component's guard rather than about the events not arriving. */
     move('mouse');
     await settle();
     await pause(150);
@@ -631,56 +266,14 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     await pause(150);
   });
 
-  /*
-   * ── The universal negative, which is the part a render cannot do ──────────
-   *
-   * The case above measures that today's lift-reading rules produce nothing
-   * here. It cannot say anything about a rule that does not exist yet — a new
-   * declaration reading `--nc-dot-lift` outside a fine condition would change
-   * some property this file never measures and stay green. So the sweep is over
-   * every loaded stylesheet: no site that can hand the property to a page may
-   * be reachable from *this* page.
-   *
-   * **The question is put to the engine *and* to the condition's text**, and
-   * the reason both are asked is written on `reachesHere`: a bare substring
-   * test for `pointer: fine` lets `not (pointer: fine)` and the list
-   * `(pointer: fine), (pointer: coarse)` through, and asking only the engine
-   * lets through everything that is false on this one device but true on the
-   * same device rotated. Each fixture below is one of those escapes, and each
-   * is a form that was measured to walk past the check it was aimed at rather
-   * than one imagined for symmetry.
-   *
-   * The count is asserted first because the sweep's own failure mode is
-   * finding nothing: three consumers live in `thread.module.css` today.
-   */
+  /* A render cannot rule out a rule that does not exist yet, so the sweep is over every loaded stylesheet. The count is asserted first because the sweep's own failure mode is finding nothing. */
   it('keeps every rule that reads the published lift out of a finger’s reach', () => {
     const sites = liftSites('--nc-dot-lift');
     expect(sites.length).toBeGreaterThanOrEqual(3);
     expect(sites.filter(reachesHere).map(({ where }) => where)).toEqual([]);
   });
 
-  /*
-   * ── And the sweep above is only worth its name if it cannot be walked past ─
-   *
-   * A universal negative asserted by a walk is only as strong as the walk's
-   * coverage, so every container the walk has ever been shown to miss gets a
-   * fixture, and each fixture is **one** violation: injected on its own, the
-   * sweep must come back with exactly one reachable site, and its trail must
-   * name the construct that carried it. A fixture that produced two would be
-   * proving something about the other one.
-   *
-   * The list is the history of the misses, not a survey of CSS. Descending
-   * only into `@media` and `@layer` hid `@supports` and `@container`;
-   * descending into every grouping rule still hid `@keyframes` and `@property`;
-   * reading condition text instead of asking the engine let the three media
-   * forms below through; asking only the engine let the landscape form through,
-   * because it is the one that is false on this tablet and true on the same
-   * tablet turned; and matching `cssText` raw let the escaped spelling through,
-   * which is the same property under a name the serialisation keeps verbatim
-   * and which is now reported as undecidable rather than decoded.
-   * `@supports (color: red)` and `@container (min-width: 1px)` are written to
-   * genuinely match — a block the engine drops is not a test of anything.
-   */
+  /* Each fixture is one violation the sweep was once shown to miss; injected alone it must come back as exactly one reachable site naming the construct. `@supports (color: red)` and `@container (min-width: 1px)` are written to genuinely match. */
   it.each([
     ['@supports (color: red) { .railDot::before { --nc-dot-lift: 1; } }', 'CSSSupportsRule (color: red)'],
     ['@container (min-width: 1px) { .railDot::before { --nc-dot-lift: 1; } }', 'CSSContainerRule (min-width: 1px)'],
@@ -690,14 +283,9 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     ['@media not (pointer: fine) { .railDot::before { --nc-dot-lift: 1; } }', '@media not (pointer: fine)'],
     ['@media (pointer: fine), (pointer: coarse) { .railDot::before { --nc-dot-lift: 1; } }', '@media (pointer: fine), (pointer: coarse)'],
     ['@media not (pointer: fine) { @media (pointer: coarse) { .railDot::before { --nc-dot-lift: 1; } } }', '@media not (pointer: fine) › @media (pointer: coarse)'],
-    /* False on this portrait context and true the moment it is rotated: the
-       engine's answer here is not the invariant, and nothing in this condition
-       names a pointer the device lacks. */
+    /* False on this portrait context and true the moment it is rotated. */
     ['@media (pointer: coarse) and (orientation: landscape) { .railDot::before { --nc-dot-lift: 1; } }', '@media (pointer: coarse) and (orientation: landscape)'],
-    /* `--nc-dot-l\69 ft` *is* `--nc-dot-lift`, and Chromium serialises the
-       escape back out unchanged, so the needle is absent and the site is
-       reported for being undecidable instead. Ungated, so what is being tested
-       is the matching and not the verdict. */
+    /* `--nc-dot-l\69 ft` is `--nc-dot-lift`; Chromium serialises the escape back out unchanged. */
     ['.railDot::before { translate: 0 var(--nc-dot-l\\69 ft); }', '.railDot::before'],
   ])('reports the single lift consumer hidden in %s', (css, trail) => {
     const style = document.createElement('style');
@@ -712,17 +300,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     }
   });
 
-  /*
-   * ── And the other direction of the nesting, which is what keeps it honest ─
-   *
-   * Reporting every nested site would satisfy every fixture above and be
-   * useless. Nesting is a conjunction, so an inner condition that matches sits
-   * behind an outer one that does not and the rule is genuinely out of reach.
-   * `(any-pointer: fine)` is that outer condition here — measured false on this
-   * context, alongside `(any-pointer: coarse)` true — and a walk that took the
-   * *disjunction* of the answers instead would report this and turn the case
-   * above into noise on any stylesheet that nests at all.
-   */
+  /* Nesting is a conjunction: an inner condition that matches behind an outer one that does not is genuinely out of reach. */
   it('leaves a coarse block alone when the query around it does not match', () => {
     const style = document.createElement('style');
     style.textContent = '@media (any-pointer: fine) { @media (pointer: coarse) { .railDot::before { --nc-dot-lift: 1; } } }';
@@ -737,17 +315,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     }
   });
 
-  /*
-   * ── The other direction of the escape rule ────────────────────────────────
-   *
-   * Both declarations are backslashes naming no property, so neither is a
-   * violation and one sheet carries them together. Measured against the decoder
-   * this round removed: the string literal alone reds this case at
-   * `<inline> › .railDot::before`, and `\110000` alone reds it with
-   * `RangeError: Invalid code point 1114112` — a false site and a thrown sweep,
-   * the two failure modes a decoding rule cannot avoid and this one has no way
-   * to reach.
-   */
+  /* Both declarations are backslashes naming no property, so neither is a violation and the sweep must not throw. */
   it('reports nothing for backslashes that name no property, and does not throw', () => {
     const style = document.createElement('style');
     style.textContent = '.railDot::before { --x: "\\2d\\2d nc-dot-lift"; --y: \\110000; }';
@@ -759,28 +327,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     }
   });
 
-  /*
-   * ── Two containers that are not rules in this document at all ─────────────
-   *
-   * `document.styleSheets` does not list an `@import`ed sheet and
-   * `CSSImportRule` is not a grouping rule, so a consumer behind one was not
-   * missed by a wrong condition — it produced no finding whatsoever. The
-   * fixture imports a blob, which is a sheet arriving over the network as far
-   * as the CSSOM is concerned, so it is awaited rather than assumed: the
-   * `styleSheet` back-reference is null until it lands, and a null one is
-   * itself reported, because a sheet whose contents are unknown is not a sheet
-   * that has been checked.
-   *
-   * The unreadable sheet is the other half. A cross-origin sheet still applies
-   * while `cssRules` throws `SecurityError`, and the walk used to `continue` on
-   * that throw — a silent pass over a stylesheet nobody can see inside. It is
-   * reachable here for real rather than stubbed: the runner serves this page
-   * from `localhost`, so the identical URL under `127.0.0.1` is a different
-   * origin to the same server. Measured, that link produces a sheet in
-   * `document.styleSheets` whose `cssRules` throws — asserted below before the
-   * sweep is asked anything, so a runner where it does not fails loudly instead
-   * of passing on an empty page.
-   */
+  /* `document.styleSheets` does not list an `@import`ed sheet, and a cross-origin sheet's `cssRules` throws `SecurityError` while it still applies: the runner serves from `localhost`, so `127.0.0.1` is a different origin to the same server. */
   it('reports a lift consumer behind an @import', async () => {
     const url = URL.createObjectURL(new Blob(['.railDot::before { --nc-dot-lift: 1; }'], { type: 'text/css' }));
     const style = document.createElement('style');
@@ -800,23 +347,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     }
   });
 
-  /*
-   * ── And an import's own condition, which is not the imported sheet's ──────
-   *
-   * `@import url(…) (pointer: fine)` is the ordinary way to gate a whole sheet,
-   * and it is the one condition that sits on a rule the walk does not stop at:
-   * Chromium reports it on `CSSImportRule.media`, while the sheet handed back
-   * by `rule.styleSheet` reports the empty string for its own `media`. Dropped,
-   * every consumer inside such an import arrives with an empty condition list
-   * and is reported — a **false red** on a rule a finger cannot reach, which is
-   * the opposite failure to everything above it and would have fired on the
-   * first real gated import anyone wrote. The fixture above imports
-   * unconditionally, so nothing bound it.
-   *
-   * The site is asserted *found* before it is asserted out of reach, because a
-   * walk that had simply stopped descending into imports would pass the second
-   * half on its own.
-   */
+  /* `@import url(…) (pointer: fine)` carries its condition on `CSSImportRule.media`; the imported sheet's own `media` is empty. */
   it('carries an @import’s own condition into the sheet it pulls in', async () => {
     const url = URL.createObjectURL(new Blob(['.railDot::before { --nc-dot-lift: 1; }'], { type: 'text/css' }));
     const style = document.createElement('style');
@@ -844,10 +375,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
   it('reports a stylesheet whose rules it is not allowed to read', async () => {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    /* The runner's own stylesheet, asked for as CSS (`?direct`, which is what
-       makes the dev server answer `text/css` rather than a JS module) from the
-       other name for the same host. A cross-origin sheet with the right type
-       loads and applies; only its rules are off limits. */
+    /* The runner's own stylesheet as CSS (`?direct` makes the dev server answer `text/css`), from the other name for the same host: cross-origin, so it applies but its rules are off limits. */
     link.href = `${location.origin.replace('localhost', '127.0.0.1')}/web/src/features/chat/thread/thread.module.css?direct`;
     document.head.append(link);
     try {
@@ -869,22 +397,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     }
   });
 
-  /*
-   * ── The floating prompt never appears ─────────────────────────────────────
-   *
-   * The preview is a hover affordance. A touchscreen's first pointer event on a
-   * control is the press, so the only thing it could do here is paint a
-   * description of where the reader has *already been taken*.
-   *
-   * Both halves are bound, and they are different mechanisms. The component's
-   * `pointerType` guard is what stops the layer being created at all — the one
-   * that matters on a hybrid laptop, where the media query does not fire. The
-   * stylesheet's `display: none` is the backstop, and it is asserted the only
-   * way a backstop can be: force the layer up through a mouse `pointerover` on
-   * this coarse page, then read the *computed* display off the element. The
-   * case this replaces read `.style.display` off the rule object, which is a
-   * claim that the declaration was written.
-   */
+  /* The component's `pointerType` guard stops the layer being created; the stylesheet's `display: none` is the backstop, asserted by forcing the layer up with a mouse `pointerover` and reading the computed display. */
   it('never paints the prompt, by the guard and by the rule behind it', async () => {
     render(<RailPane turns={railTurns(8)} />);
     await settle();
@@ -902,39 +415,10 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     const preview = railPreview();
     expect(preview).not.toBeNull();
     expect(getComputedStyle(preview!).display).toBe('none');
-    /* Not merely invisible: it occupies nothing, so it cannot be what a finger
-       lands on. */
     expect(preview!.getBoundingClientRect().height).toBe(0);
   });
 
-  /*
-   * ── Scroll-within-scroll arrives at twelve, not at twenty-two ─────────────
-   *
-   * `--nc-rail-max` is 320px and the reason is on the property: a full-height
-   * column of ink in the seam is scrollbar-shaped and gets dragged. What
-   * nothing in this repository said until now is that **the cap is reached at
-   * half the conversation length under a finger**, because the coarse pitch is
-   * more than twice as tall.
-   *
-   * Measured, both branches, same 320px cap, at rest:
-   *
-   *   coarse   11 exchanges → 308px, fits · 12 → 336px, overflows
-   *   fine     21 exchanges → 320px, fits · 22 → 328px, overflows
-   *
-   * The fine numbers are not 320 ÷ 12: the fine branch also spends two
-   * shoulders of 32px, so 256px of the cap is dots. Neither branch is wrong —
-   * the track is a scrollport, `safe center` hands the overflow to the end, and
-   * every dot stays reachable, which is asserted below rather than assumed. But
-   * a reader on a touchscreen meets the rail's second scroll at a
-   * *twelve*-exchange conversation, which is an ordinary one, and that is worth
-   * having written down somewhere that fails when it stops being true. (On a
-   * *phone* the question does not arise: #1191 takes the seam and the rail with
-   * it, and history is read from the Report's Conversations list instead.)
-   *
-   * The cap is read off the engine rather than repeated here, so a change to
-   * `--nc-rail-max` moves this case's arithmetic with it and the thresholds are
-   * what break.
-   */
+  /* Under a finger the 320px cap is reached at twelve exchanges (11 → 308px, 12 → 336px); the fine branch reaches it at twenty-two. The cap is read off the engine. */
   it('overflows the 320px cap at twelve exchanges, and stays reachable past it', async () => {
     render(<RailPane turns={railTurns(11)} paneHeight={700} />);
     await settle();
@@ -942,11 +426,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     const cap = Number.parseFloat(getComputedStyle(railTrack()).maxBlockSize);
     expect(cap).toBe(320);
     expect(railTrack().clientHeight).toBe(cap);
-    /* Eleven rows of 28 is 308, which is inside the cap: no second scroll.
-       Read off the column rather than off `scrollHeight`, which cannot say it:
-       `scrollHeight` is floored at `clientHeight`, so at eleven rows it is 320
-       for the same reason it would be at one row, and asserting it against the
-       cap pins nothing. The dots' own extent is the number that moves. */
+    /* Read off the column rather than `scrollHeight`, which is floored at `clientHeight` and would be 320 at one row too. */
     const column = dots().at(-1)!.getBoundingClientRect().bottom - dots()[0].getBoundingClientRect().top;
     expect(column).toBe(308);
     expect(railTrack().scrollHeight).toBe(railTrack().clientHeight);
@@ -959,11 +439,6 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     expect(railTrack().scrollHeight).toBe(336);
     expect(railTrack().scrollHeight).toBeGreaterThan(railTrack().clientHeight);
 
-    /* Accessibility holds, and this is the half that must not be lost with it:
-       the overflow all goes to the *end*, so the first dot is inside the box at
-       `scrollTop: 0` and the last is reachable by scrolling. A plain `center`
-       instead of `safe center` fails the first of these — the early dots sit at
-       a negative offset no gesture can reach. */
     const track = railTrack();
     track.scrollTop = 0;
     await settle();

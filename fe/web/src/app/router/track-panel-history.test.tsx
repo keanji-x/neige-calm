@@ -1,16 +1,8 @@
 // @vitest-environment jsdom
 /*
- * The mobile panel's history strategy (#1191 §1.1), driven through a real
- * router and a real memory history — never a mocked `useGo`. `responsive.
- * contract.test.tsx` mocks `@tanstack/react-router` wholesale, which is why it
- * cannot say anything about pushes, replaces, or the Back button; the pattern
- * copied here is `track-cards-panel.test.tsx` / `read-fallbacks.contract.test.tsx`
- * instead. The route below is a stand-in for `/track/$trackId` only in its
- * *component*: its `validateSearch` is the production `validateTrackSearch`, so
- * a broken validator fails here.
- *
- * History assertions read `router.history.length`. `window.history.length` is
- * pinned at 1 under jsdom and would pass no matter what this code did.
+ * The mobile panel's history strategy over a real memory history. History
+ * assertions read `router.history.length`: `window.history.length` is pinned at 1
+ * under jsdom and would pass no matter what this code did.
  */
 import {
   Outlet, RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter,
@@ -77,7 +69,6 @@ function setup(initialEntries: readonly string[]) {
 }
 
 const href = (router: ReturnType<typeof setup>) => router.state.location.href;
-/* Probe values are read as text, not through a dynamic DOM query. */
 const probe = (name: string, value: string) => screen.getByText(`${name}:${value}`);
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -113,12 +104,7 @@ describe('opening the mobile panel', () => {
     await waitFor(() => { probe('panel', 'none'); });
 
     await userEvent.click(screen.getByText('open cards'));
-    /*
-     * Two facts in one URL, both owned by `validateTrackSearch` (which
-     * `buildLocation` runs on the way out): `panel=cards` is recognised and
-     * kept, and `debug=1` is not on the whitelist and is gone. Strip the
-     * `panel` branch from the validator and this href loses the panel.
-     */
+    /* Both facts are `validateTrackSearch`'s: `panel=cards` is kept and `debug=1` is not on the whitelist. */
     await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
   });
 
@@ -139,12 +125,8 @@ describe('closing the mobile panel', () => {
     await userEvent.click(screen.getByText('close panel'));
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
 
-    /*
-     * The decisive step. A `replace`-only close leaves `[/, /track/w1,
-     * /track/w1]`, so this Back would land on the track again and the reader
-     * would have to press twice to leave — the silent growth §0.3 records.
-     * Stepping back must reach Today.
-     */
+    /* A `replace`-only close leaves `[/, /track/w1, /track/w1]`, so this Back would
+         land on the track again. */
     router.history.back();
     await waitFor(() => { expect(router.state.location.pathname).toBe('/'); });
     expect(await screen.findByText('today')).toBeTruthy();

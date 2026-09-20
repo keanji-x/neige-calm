@@ -71,12 +71,7 @@ export default tseslint.config(
     },
   },
   {
-    /*
-     * #1191 §3.2 — one owner for "is this a compact viewport?". The rule's two
-     * branches (the breakpoint import, and a static width `matchMedia`) are
-     * independent, and `web/src/ui/viewport/` is the one directory exempt from
-     * both. Scoped to `web/src` because `core` has no DOM to ask.
-     */
+    /* One owner for "is this a compact viewport?"; scoped to `web/src` because `core` has no DOM to ask. */
     files: ['web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     rules: {
       'architecture/single-viewport-source': ['error', { owner: 'web/src/ui/viewport/' }],

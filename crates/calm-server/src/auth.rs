@@ -1,51 +1,5 @@
-//! Global session gate (issue #189).
-//!
-//! Single-user owner auth: one configured username/password pair signs in
-//! and obtains a session, every protected REST/WS endpoint then checks that
-//! the request carries a valid `calm-session` cookie. No user table, no
-//! registration, no permissions beyond the implicit `owner` role.
-//!
-//! ## Wire shape
-//!
-//! * `POST /api/auth/login` — body `{username, password}` → 200 with whoami
-//!   payload + `Set-Cookie: calm-session=<id>; HttpOnly; SameSite=Strict;
-//!   Path=/`. Wrong credentials → 401.
-//! * `GET /api/auth/whoami` — 200 with `{userId, displayName, role,
-//!   sessionId}` if the session cookie is valid (or dev_autologin is on);
-//!   401 otherwise.
-//! * `POST /api/auth/logout` — 200, drops the session and clears the cookie.
-//!
-//! 401 responses share the standard `{error: "unauthorized", code:
-//! "unauthorized"}` body via `CalmError::Unauthorized`.
-//!
-//! ## Session storage
-//!
-//! In-memory `HashMap<session_id, Session>` behind an `Arc<Mutex<_>>`. We're
-//! single-user single-process; persistence across restarts (the user would
-//! have to log in again) is acceptable and the simplest possible thing.
-//! Cookie value is a UUIDv4 string — high entropy, opaque on the wire.
-//!
-//! ## Dev autologin
-//!
-//! `CALM_DEV_AUTOLOGIN=true` (or `auth.dev_autologin = true`) skips the
-//! whole flow: the middleware just promotes every request to the owner
-//! principal without any cookie. Production must NEVER enable this — the
-//! default is `false` and the boot path only opens it via explicit
-//! env/config.
-//!
-//! ## Trust model
-//!
-//! Cookies are unsigned. Anyone with the `calm-session` value can act as
-//! owner, which is fine because:
-//!
-//!   - cookies are `HttpOnly` (JS can't read them),
-//!   - cookies are `SameSite=Strict` (cross-site requests can't carry them),
-//!   - sessions live in memory and die on server restart.
-//!
-//! Optional mobile access uses a separate HTTPS ingress, owner-approved
-//! one-time pairing, Secure cookies, and transport revocation. It never mounts
-//! password login, local worker hooks, or access-management endpoints. See
-//! `mobile_access` for that bounded session lifecycle.
+//! Global session gate: single-user owner login, in-memory sessions keyed by an unsigned `calm-session` cookie (HttpOnly, SameSite=Strict, dies on restart).
+//! `dev_autologin` promotes every request to the owner without a cookie; production must never enable it.
 
 use crate::config::Config;
 use crate::error::{CalmError, Result};
@@ -64,47 +18,33 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-/// Name of the session cookie. Frontend and backend MUST agree on this —
-/// see issue #189 acceptance criteria.
+/// Name of the session cookie. Frontend and backend MUST agree on this.
 pub const SESSION_COOKIE: &str = "calm-session";
 
-/// Owner principal id. Single-user model — every successful login lands on
-/// this exact string. Surfaced via `whoami.userId`.
+/// Owner principal id; every successful login lands on this exact string.
 pub const OWNER_USER_ID: &str = "local-owner";
 
-/// Default display name used when no `auth.username` is configured (e.g.
-/// dev autologin without a credential set).
+/// Display name used when no `auth.username` is configured.
 pub const DEFAULT_DISPLAY_NAME: &str = "Owner";
 
 /// Role string returned by `whoami`. Single-user model has exactly one role.
 pub const OWNER_ROLE: &str = "owner";
 
-/// Boot-time auth config derived from the process `Config` + env. Held in
-/// `AuthState` so the routes + middleware can consult it without re-reading
-/// env vars at every request.
+/// Boot-time auth config, held in `AuthState` so requests never re-read env vars.
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
-    /// Configured owner username. `None` only allowed when `dev_autologin`
-    /// is on; production boots panic otherwise (see `AuthConfig::from_env`).
+    /// `None` only allowed when `dev_autologin` is on; production boots panic otherwise.
     pub username: Option<String>,
-    /// Configured owner password. Same `None`-only-in-dev rule as
-    /// `username`.
+    /// Same `None`-only-in-dev rule as `username`.
     pub password: Option<String>,
-    /// When true, every request is automatically promoted to the owner
-    /// principal without any cookie / login flow. ALWAYS off by default;
-    /// explicit env/config opt-in only.
+    /// Promote every request to the owner principal without any cookie. Off by default; explicit opt-in only.
     pub dev_autologin: bool,
-    /// Display name surfaced via `whoami`. Falls back to
-    /// [`DEFAULT_DISPLAY_NAME`] when `auth.username` isn't set (dev
-    /// autologin).
+    /// Display name surfaced via `whoami`; falls back to [`DEFAULT_DISPLAY_NAME`].
     pub display_name: String,
 }
 
 impl AuthConfig {
-    /// Derive auth config from the process `Config`. Panics if auth is
-    /// "live" (`dev_autologin = false`) but no password is configured —
-    /// that's a misconfiguration the operator MUST fix, not a request-
-    /// time 500.
+    /// Panics if auth is live (`dev_autologin = false`) but no password is configured: a boot-time misconfiguration, not a request-time 500.
     pub fn from_config(cfg: &Config) -> anyhow::Result<Self> {
         let username = cfg.auth_username.clone();
         let password = cfg.auth_password.clone();
@@ -146,9 +86,7 @@ pub enum SessionAuthority {
     PairedDevice,
 }
 
-/// In-memory session store. `Arc<Mutex<...>>` is plenty for the single-user
-/// case: lock contention is negligible (one login per browser tab) and a
-/// process restart wipes sessions anyway.
+/// In-memory session store; a process restart wipes sessions.
 #[derive(Debug, Clone, Default)]
 pub struct SessionStore {
     inner: Arc<Mutex<HashMap<String, Session>>>,
@@ -159,17 +97,14 @@ impl SessionStore {
         Self::default()
     }
 
-    /// Mint a fresh session, store it, and return the new id. Caller sets
-    /// the cookie.
+    /// Mint a fresh session, store it, and return the new id. Caller sets the cookie.
     pub fn create(&self, authority: SessionAuthority) -> String {
         let id = Uuid::new_v4().to_string();
         let session = Session {
             session_id: id.clone(),
             authority,
         };
-        // Poisoned-mutex policy: log + recover. We never panic out of the
-        // lock-poison branch because that would take the whole server down
-        // for one bad request that's already in flight.
+        // Poisoned-mutex policy: log + recover, never take the whole server down for one bad in-flight request.
         if let Ok(mut guard) = self.inner.lock() {
             guard.insert(id.clone(), session);
         } else {
@@ -178,7 +113,6 @@ impl SessionStore {
         id
     }
 
-    /// Look up a session by id. Returns `None` for unknown ids.
     pub fn get(&self, id: &str) -> Option<Session> {
         match self.inner.lock() {
             Ok(g) => g.get(id).cloned(),
@@ -189,8 +123,7 @@ impl SessionStore {
         }
     }
 
-    /// Remove a session by id. Idempotent — removing an unknown id is a
-    /// no-op (matches what `POST /api/auth/logout` wants).
+    /// Idempotent — removing an unknown id is a no-op.
     pub fn remove(&self, id: &str) {
         if let Ok(mut g) = self.inner.lock() {
             g.remove(id);
@@ -198,9 +131,7 @@ impl SessionStore {
     }
 }
 
-/// State the auth routes + middleware need. Cloned into `AppState` so
-/// handlers reach it via `State<AuthState>` extractors (same pattern as
-/// the existing `AppState` shape).
+/// State the auth routes + middleware need; cloned into `AppState`.
 #[derive(Debug, Clone)]
 pub struct AuthState {
     pub config: Arc<AuthConfig>,
@@ -219,11 +150,7 @@ impl AuthState {
     }
 }
 
-/// Authenticated principal. Inserted into request extensions by
-/// [`require_session`]; handlers that need to know "this came in
-/// authenticated as owner" pluck it via `FromRequestParts`. Today every
-/// authenticated principal is owner, so this carries the bare minimum
-/// `session_id` for logout to know which session to drop.
+/// Authenticated principal, inserted into request extensions by [`require_session`]; today every principal is owner.
 #[derive(Debug, Clone)]
 pub struct Principal {
     pub user_id: String,
@@ -233,8 +160,7 @@ pub struct Principal {
 }
 
 impl Principal {
-    /// Construct the standard owner principal from the auth config + a
-    /// (possibly synthetic) session id.
+    /// The standard owner principal from the auth config + a (possibly synthetic) session id.
     pub fn owner(cfg: &AuthConfig, session_id: String) -> Self {
         Self {
             user_id: OWNER_USER_ID.to_string(),
@@ -269,16 +195,10 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
     jar.get(SESSION_COOKIE).map(|c| c.value().to_string())
 }
 
-/// Resolve a principal for the incoming request, honoring dev_autologin.
-/// Returns `None` when there's no valid session AND dev_autologin is off
-/// — caller decides whether to 401 or continue (whoami treats no-session
-/// as 401 itself; the middleware treats it as block).
+/// `None` when there is no valid session AND dev_autologin is off; the caller decides whether to 401.
 fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal> {
     if state.config.dev_autologin {
-        // Dev mode: synthesize a stable session id so whoami / logout etc.
-        // behave consistently across requests. We don't write it back into
-        // the store — there's no validation to do later, since the same
-        // promotion happens on every request.
+        // Dev mode: a stable synthetic session id so whoami / logout behave consistently; nothing is written to the store.
         return Some(Principal::owner(&state.config, "dev-autologin".to_string()));
     }
     let cookie = session_cookie(headers)?;
@@ -286,13 +206,7 @@ fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal
     Some(Principal::owner(&state.config, session.session_id))
 }
 
-/// Axum middleware: gate every protected endpoint. Routes excluded from
-/// the gate (login, whoami, logout, version, openapi.json) must NOT have
-/// this layer applied to them — see `main.rs` where the routing trees are
-/// split. On success the resolved [`Principal`] lands in request
-/// extensions for downstream handlers (none consume it today; we still
-/// stash it so future code can reach `Principal::session_id` / `role`
-/// without re-parsing the cookie).
+/// Axum middleware: gate every protected endpoint. Login, whoami, logout, version and openapi.json must NOT have this layer applied.
 pub async fn require_session(
     State(auth): State<AuthState>,
     headers: HeaderMap,
@@ -306,10 +220,7 @@ pub async fn require_session(
     Ok(next.run(request).await)
 }
 
-/// Same as [`require_session`] but for the WS upgrade routes. Identical
-/// semantics; pulled out so future divergence (e.g. relaxing cookie checks
-/// for a token-in-query-param fallback) has a clean seam. Today it's a
-/// thin wrapper.
+/// Same as [`require_session`] but for the WS upgrade routes; a separate seam for future divergence.
 pub async fn require_session_ws(
     State(auth): State<AuthState>,
     headers: HeaderMap,
@@ -322,10 +233,6 @@ pub async fn require_session_ws(
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
-
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginBody {
@@ -353,9 +260,7 @@ impl From<&Principal> for WhoamiBody {
     }
 }
 
-/// Build the auth router. Mounted in `main.rs` BEFORE the session gate is
-/// applied to the protected routes; the routes here must remain reachable
-/// without a prior login (otherwise nobody could ever log in).
+/// Mounted BEFORE the session gate: these routes must remain reachable without a prior login.
 pub fn router() -> Router<AuthState> {
     session_router().route("/api/auth/login", post(login_handler))
 }
@@ -373,10 +278,7 @@ async fn login_handler(
     headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Result<Response> {
-    // Dev autologin: any login is a no-op success — we still hand back a
-    // synthetic whoami so the frontend's "login form" path stays usable
-    // for screenshot/e2e flows. No cookie set; the middleware promotes
-    // every request anyway.
+    // Dev autologin: any login is a no-op success with a synthetic whoami; no cookie set, the middleware promotes every request anyway.
     if auth.config.dev_autologin {
         let principal = Principal::owner(&auth.config, "dev-autologin".to_string());
         return Ok(Json(WhoamiBody::from(&principal)).into_response());
@@ -386,9 +288,7 @@ async fn login_handler(
         auth.config.username.as_deref(),
         auth.config.password.as_deref(),
     ) else {
-        // Impossible in practice (boot panics if password is unset + dev
-        // autologin is off), but defense-in-depth: if config is somehow
-        // half-set, refuse rather than locking the user out by accident.
+        // Impossible in practice (boot panics if password is unset + dev autologin is off); refuse rather than lock the user out by accident.
         return Err(CalmError::Unauthorized);
     };
 
@@ -396,9 +296,7 @@ async fn login_handler(
         return Err(CalmError::Unauthorized);
     }
 
-    // Tear down any previous session that might still be sitting on this
-    // request — keeps a successful login from leaving zombie sessions
-    // behind. Idempotent.
+    // Tear down any previous session on this request so a successful login leaves no zombie sessions.
     if let Some(existing) = session_cookie(&headers) {
         auth.sessions.remove(&existing);
     }
@@ -415,10 +313,7 @@ async fn login_handler(
     Ok(resp)
 }
 
-/// GET /api/auth/whoami — returns owner whoami if authenticated (or
-/// dev_autologin); 401 otherwise. NOT behind the session middleware (it's
-/// the discovery endpoint the frontend hits *before* it knows whether
-/// it's logged in), so it has to check inline.
+/// GET /api/auth/whoami — NOT behind the session middleware (the frontend hits it before it knows whether it is logged in), so it checks inline.
 async fn whoami_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Result<Response> {
     let Some(principal) = resolve_principal(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
@@ -426,9 +321,7 @@ async fn whoami_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Re
     Ok(Json(WhoamiBody::from(&principal)).into_response())
 }
 
-/// POST /api/auth/logout — drops the session id (if any) and clears the
-/// cookie. Always 200; idempotent. Dev autologin: same response shape, no
-/// store touch (there's nothing to drop).
+/// POST /api/auth/logout — always 200; idempotent.
 async fn logout_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Result<Response> {
     if let Some(id) = session_cookie(&headers) {
         auth.sessions.remove(&id);
@@ -442,12 +335,7 @@ async fn logout_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Re
     Ok(resp)
 }
 
-/// Build the cookie we send on successful login. `HttpOnly`, `SameSite=Strict`,
-/// path `/`. We do NOT set `Secure` so that dev http on `localhost:5175` /
-/// `localhost:4040` keeps working — production deployments (when they
-/// happen) sit behind https terminators that can layer `Secure` on at the
-/// proxy edge if needed. (Setting `Secure` here would silently break local
-/// dev with no signal — the cookie just wouldn't be sent.)
+/// `HttpOnly`, `SameSite=Strict`, path `/`. NOT `Secure`: that would silently break dev http on localhost (the cookie just would not be sent).
 pub(crate) fn build_session_cookie(value: &str) -> Cookie<'static> {
     let mut c = Cookie::new(SESSION_COOKIE, value.to_string());
     c.set_http_only(true);
@@ -456,13 +344,7 @@ pub(crate) fn build_session_cookie(value: &str) -> Cookie<'static> {
     c
 }
 
-/// Build the cookie used to clear the session on logout. Same attributes
-/// as the live cookie but with `Cookie::make_removal()` which sets value
-/// to empty + `Max-Age=0` so the browser drops the stored cookie. We
-/// preserve `Path=/` on the removal so the browser matches the same
-/// cookie scope as the original set; the cookie specification keys cookies by
-/// (name, domain, path), and a path mismatch would leave the original
-/// installed.
+/// Removal cookie with the same `Path=/`: browsers key cookies by (name, domain, path), so a path mismatch would leave the original installed.
 fn build_logout_cookie() -> Cookie<'static> {
     let mut c = Cookie::new(SESSION_COOKIE, "");
     c.set_http_only(true);
@@ -496,7 +378,6 @@ mod tests {
 
     #[test]
     fn auth_config_panics_without_password_in_prod_mode() {
-        // Build a Config with no auth fields set and dev_autologin off.
         let cfg = Config {
             emit_kernel_compatibility_json: false,
             listen: "127.0.0.1:0".into(),

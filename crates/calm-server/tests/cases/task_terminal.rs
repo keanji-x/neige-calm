@@ -353,11 +353,6 @@ async fn task_completion_revokes_control_but_preserves_current_output() {
     stop(&h, &w).await;
 }
 
-/// The readback wait can outlive the task. A control readback with a change
-/// wait parks on a quiet worker terminal; once it has subscribed to the
-/// projection (so its pre-wait resolution is over) the task is finished and
-/// output is injected to end the wait. The emitted status must be the
-/// post-wait one: `done` and not controllable.
 #[tokio::test]
 async fn readback_reports_a_task_that_finished_during_the_wait() {
     let h = Harness::start().await;
@@ -412,18 +407,6 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
     stop(&h, &w).await;
 }
 
-/// Write authority is decided under the connection's serial lock (#1618
-/// round 2). An input readback with a long change wait holds the serial on a
-/// quiet task terminal (no echo, so typing changes nothing); a second input is
-/// called while the task still runs and queues behind it; the task then
-/// finishes and injected output ends the first wait. The task is finished
-/// only once the second input is counted as waiting for the serial
-/// (`serial_waiters`), so it provably reached the lock while the task still
-/// ran. When the queued input's turn comes it must be refused with the
-/// write-authority error. A check taken before the serial would have passed
-/// while the task was running and, with the revision moved and the saved
-/// control still current, answered `stale_observation` although write
-/// authority is gone.
 #[tokio::test]
 async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_serial() {
     let h = Harness::start().await;

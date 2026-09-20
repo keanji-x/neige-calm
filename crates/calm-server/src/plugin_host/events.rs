@@ -1,29 +1,5 @@
-//! Event-subscription filter matching.
-//!
-//! Plugins subscribe via `neige.event.subscribe { filter }`. The filter is a
-//! conjunction of optional clauses: event-name (glob), plugin id, entity kind,
-//! entity id. This module owns the `matches()` predicate the per-subscription
-//! bridge task runs on every broadcast.
-//!
-//! Wire shape (design doc §3.2 — `neige.events.subscribe`):
-//! ```jsonc
-//! {
-//!   "filter": {
-//!     "events":      ["card.added", "overlay.*"],   // empty = all
-//!     "plugin_id":   "dev.example",                  // optional
-//!     "entity_kind": "track",                         // optional
-//!     "entity_id":   "uuid"                          // optional
-//!   }
-//! }
-//! ```
-//!
-//! Glob semantics on `events`: very narrow — we only support `"*"` (match
-//! anything) and exact-name matches against the kernel's internal discriminant
-//! strings (`"card.added"`, `"overlay.set"`, etc.). Trailing-`*` segment
-//! globs (`"card.*"`) are also accepted because they cost ~3 lines and the
-//! design doc explicitly mentions glob-style. We intentionally do NOT pull a
-//! glob crate — the filter input arrives from plugin processes we don't
-//! audit, and a regex DoS would be a Slice-C-shaped foot-gun.
+//! Event-subscription filter matching: a conjunction of optional clauses (event-name glob, plugin id, entity kind, entity id).
+//! Globs are deliberately narrow — literal names, `"*"`, and a trailing `.*` segment — with no glob crate, since the input comes from unaudited plugin processes.
 
 use serde::Deserialize;
 
@@ -33,39 +9,29 @@ use crate::event::Event;
 /// The filter clause the plugin sends. All fields optional; missing == match.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SubscriptionFilter {
-    /// Event-name globs. Empty list = match every event. Each entry is matched
-    /// independently — any match advances. Supported shapes: literal name,
-    /// `"*"` (everything), `"<prefix>.*"` (one-segment wildcard suffix).
+    /// Event-name globs; empty = match every event. Supported shapes: literal name, `"*"`, `"<prefix>.*"`.
     #[serde(default)]
     pub events: Vec<String>,
 
-    /// If set, only events carrying a plugin_id field equal to this value
-    /// match. Applies to `overlay.*` and `plugin.state`; other events have
-    /// no plugin_id and will fail the filter when this clause is present.
+    /// Only events carrying a matching plugin_id (`overlay.*`, `plugin.state`); other events fail the filter when this clause is present.
     #[serde(default)]
     pub plugin_id: Option<String>,
 
-    /// If set, only events whose entity is of this kind match. Currently
-    /// meaningful for `overlay.*` (carries `entity_kind` directly) and for
-    /// `track.*`/`card.*` (mapped to `"track"` / `"card"` respectively).
+    /// `overlay.*` carries `entity_kind` directly; `track.*`/`card.*` map to `"track"` / `"card"`.
     #[serde(default)]
     pub entity_kind: Option<String>,
 
-    /// If set, only events touching this specific entity id match. Comparison
-    /// is exact-string against the kernel's id columns.
     #[serde(default)]
     pub entity_id: Option<String>,
 }
 
 impl SubscriptionFilter {
-    /// Predicate the bridge task runs on every broadcasted event.
     pub fn matches(&self, ev: &Event) -> bool {
         let name = event_name(ev);
         if !self.events.is_empty() && !self.events.iter().any(|g| glob_matches(g, name)) {
             return false;
         }
-        // Optional filters require metadata; skip derivation for the common
-        // events-only subscriber path.
+        // Optional filters require metadata; skip derivation for the common events-only subscriber path.
         if self.plugin_id.is_none() && self.entity_kind.is_none() && self.entity_id.is_none() {
             return true;
         }
@@ -89,17 +55,10 @@ impl SubscriptionFilter {
     }
 }
 
-/// The dotted wire name for an event, identical to the `ev` field the WS
-/// serializer emits (`crate::event::Event`'s `#[serde(tag = "ev")]` rename).
-/// Delegates to [`Event::kind_tag`] so adding a new variant only needs one
-/// site (the enum match in `event.rs`) — see PR4 of #136.
+/// The dotted wire name for an event, identical to the `ev` field the WS serializer emits.
 fn event_name(ev: &Event) -> &'static str {
     ev.kind_tag()
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -251,7 +210,6 @@ mod tests {
         assert!(f.matches(&Event::OverlaySet(overlay(
             "p", "track", "w-target", "progress"
         ))));
-        // Wrong entity_id.
         assert!(!f.matches(&Event::OverlaySet(overlay(
             "p", "track", "w-other", "status"
         ))));

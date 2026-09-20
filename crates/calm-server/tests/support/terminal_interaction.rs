@@ -41,16 +41,13 @@ pub struct Harness {
     socket: PathBuf,
     pub token: String,
     pub track: String,
-    /// The Planner card behind `token`, for direct service calls that bypass
-    /// the MCP layer (`identity()`).
+    /// The Planner card behind `token`, for direct service calls that bypass the MCP layer (`identity()`).
     pub card_id: String,
     pub session_id: String,
     pub area_id: String,
-    /// #1620 — the production REST router over the same state, for hook
-    /// POSTs (`tower::ServiceExt::oneshot`) and card deletes.
+    /// The production REST router over the same state, for hook POSTs and card deletes.
     pub app: axum::Router,
-    /// Loopback HTTP server serving `app`, the `NEIGE_CALM_BASE_URL` a
-    /// terminal's bridge command POSTs to.
+    /// Loopback HTTP server serving `app`, the `NEIGE_CALM_BASE_URL` a terminal's bridge command POSTs to.
     pub base_url: String,
     /// Test stand-in for `neige-codex-bridge` honoring the same env contract.
     pub bridge: PathBuf,
@@ -127,14 +124,11 @@ impl Harness {
         let supervisor = InProcessProcSupervisor::start().await.unwrap();
         let events = EventBus::new();
         let write = WriteContext::new(roles.clone(), areas.clone());
-        // #1620 — a real loopback ingest endpoint and a bridge stand-in so a
-        // terminal's generated hook command reaches `/internal/claude/hook`.
+        // A real loopback ingest endpoint and a bridge stand-in so a terminal's generated hook command reaches `/internal/claude/hook`.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let bridge = root.path().join("fake-bridge.sh");
-        // Same env contract (NEIGE_HOOK_URL) and the same per-invocation
-        // `neige_hook_occurrence` stamp as the real bridge (#1620, see
-        // calm-codex-bridge/src/main.rs); POSTs stdin as the hook body.
+        // Same env contract (NEIGE_HOOK_URL) and per-invocation `neige_hook_occurrence` stamp as the real bridge; POSTs stdin as the hook body.
         std::fs::write(&bridge, FAKE_BRIDGE).unwrap();
         {
             use std::os::unix::fs::PermissionsExt;
@@ -228,9 +222,7 @@ impl Harness {
             http,
         }
     }
-    /// The identity the MCP transport builds for `token` (card-bound), for
-    /// calling `TerminalInteraction` directly where the MCP layer would
-    /// refuse first.
+    /// The identity the MCP transport builds for `token` (card-bound), for calling `TerminalInteraction` directly.
     pub fn identity(&self) -> ToolCallIdentity {
         ToolCallIdentity {
             card_id: self.card_id.clone(),
@@ -265,8 +257,7 @@ impl Harness {
             .unwrap();
         self.app.clone().oneshot(request).await.unwrap().status()
     }
-    /// Rows of `events` persisted as worker hook events (`codex.hook` /
-    /// `claude.hook`).
+    /// Rows of `events` persisted as worker hook events (`codex.hook` / `claude.hook`).
     pub async fn persisted_hook_events(&self) -> i64 {
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM events WHERE kind IN ('codex.hook', 'claude.hook')",
@@ -278,8 +269,7 @@ impl Harness {
     pub async fn call(&self, name: &str, args: Value) -> Value {
         self.call_with_token(&self.token, name, args).await
     }
-    /// `call` as another Planner (#1704 S2 — a child track's Planner card
-    /// minted by `planner_token`).
+    /// `call` as another Planner (a child track's Planner card minted by `planner_token`).
     pub async fn call_with_token(&self, token: &str, name: &str, args: Value) -> Value {
         let stream = UnixStream::connect(&self.socket).await.unwrap();
         let (read, mut write) = stream.into_split();
@@ -305,8 +295,7 @@ impl Harness {
             .unwrap();
         serde_json::from_str(&line).unwrap()
     }
-    /// #1704 S2 — mint a Planner card (and its MCP token) on `track_id`,
-    /// the way `start` does for the harness track.
+    /// Mint a Planner card (and its MCP token) on `track_id`, the way `start` does for the harness track.
     pub async fn planner_token(&self, track_id: &str, cwd: &str) -> (String, String) {
         let mut tx = self.sql.pool().begin().await.unwrap();
         let (card_id, session_id) = (new_id(), new_id());
@@ -381,8 +370,7 @@ pub fn assert_text_observation(response: &Value) -> &Value {
     assert_eq!(content.len(), 1, "text observation must not include images");
     assert_eq!(content[0]["type"], "text");
     let metadata = &response["result"]["structuredContent"];
-    // #1618: the text block is a one-line summary, never a second copy of the
-    // state and never the screen text.
+    // The text block is a one-line summary, never a second copy of the state and never the screen text.
     let summary = content[0]["text"].as_str().unwrap();
     assert!(!summary.contains('\n'), "{summary}");
     assert!(
@@ -411,10 +399,8 @@ pub fn assert_text_observation(response: &Value) -> &Value {
     metadata
 }
 
-/// A human client on `terminal` (its own pump, no command channel) that has
-/// just taken control: returns once its `OwnerChanged` names `user`. The
-/// pump is aborted through the returned handle (its drop releases the
-/// lease); the sender keeps it alive.
+/// A human client on `terminal` (its own pump, no command channel) that has just taken control: returns once
+/// its `OwnerChanged` names `user`. Aborting the pump through the returned handle releases the lease.
 pub async fn human_takeover(
     entry: &Arc<calm_server::terminal_renderer::RendererEntry>,
     terminal: &str,

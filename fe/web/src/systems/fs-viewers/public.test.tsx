@@ -1,10 +1,5 @@
 // @vitest-environment jsdom
-//
-// The panes are mocked. Not to make the suite faster: CodeMirror measures a
-// layout jsdom does not have, so a real pane here would assert nothing about
-// the viewer and would fail for reasons that have nothing to do with it. What
-// is under test is the shell around the panes — which read runs when, what the
-// selection means, and what each failure looks like on screen.
+// The panes are mocked: CodeMirror measures a layout jsdom does not have.
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -156,15 +151,11 @@ describe('FileViewer', () => {
     expect(pane.getAttribute('data-path')).toBe('/repo/notes.txt');
     expect(pane.textContent).toBe('body');
 
-    // A folder navigates: it is not a file, and reading it would 400.
     await userEvent.click(screen.getByRole('button', { name: /src/ }));
     await waitFor(() => { expect(listDirectory).toHaveBeenCalledWith('/repo/src'); });
     expect(await screen.findByRole('button', { name: /main\.rs/ })).toBeTruthy();
   });
 
-  /* The card's own path is a folder here, so nothing is selected until the
-     reader picks something — the alternative (reading the folder as a file)
-     is a guaranteed 400 on every open. */
   it('reads nothing until a file is picked', async () => {
     const readFile = vi.fn(() => Promise.resolve({
       path: '/repo', size: 0, text: '', truncated: false,
@@ -220,16 +211,10 @@ describe('FileViewer', () => {
       }));
       renderViewer(port({ gitDiff }));
       await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
-      // The status list is relative to the repo root; the diff endpoint takes an
-      // absolute path. Sending the relative one 400s on every row.
+      // The status list is repo-root-relative; the diff endpoint takes an absolute path.
       await waitFor(() => { expect(gitDiff).toHaveBeenCalledWith('/repo/src/main.rs', undefined); });
     });
 
-    /* `<parent>/<name>` is `ui/directory-browser`'s rule (`joinDirectoryPath`),
-       imported rather than re-implemented here — `core/domain/fs.ts`'s own
-       header names that module as its owner. These are the two edges the rule
-       exists for, pinned on this caller so a second copy cannot creep back with
-       different answers. */
     it('joins against the repository root at the two edges of the shared rule', async () => {
       const gitDiff = vi.fn(() => Promise.resolve({
         path: 'main.rs', status: 'modified', head_text: 'was', working_text: 'is', truncated: false,
@@ -239,7 +224,6 @@ describe('FileViewer', () => {
         gitStatus: () => Promise.resolve({ repo_root: '/', files: [{ path: 'main.rs', status: 'modified' }] }),
       }));
       await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
-      // The filesystem root takes no second slash…
       await waitFor(() => { expect(gitDiff).toHaveBeenCalledWith('/main.rs', undefined); });
 
       cleanup();
@@ -248,7 +232,6 @@ describe('FileViewer', () => {
         gitStatus: () => Promise.resolve({ repo_root: '/repo/', files: [{ path: 'main.rs', status: 'modified' }] }),
       }));
       await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
-      // …and a trailing one is not doubled either.
       await waitFor(() => { expect(gitDiff).toHaveBeenCalledWith('/repo/main.rs', undefined); });
     });
 
@@ -275,16 +258,7 @@ describe('FileViewer', () => {
       expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('not inside a git repository'));
     });
 
-    /*
-     * The pane must not outlive the folder it belongs to.
-     *
-     * Navigating the tree while the Diff tab is open re-reads `gitStatus` for
-     * the new folder, and that read takes a round-trip. If the old folder's
-     * root, changed-file list and diff survive until the answer lands, the card
-     * spends that whole window showing one repository's changes under another
-     * repository's path — the assertion below is deliberately on that
-     * *intermediate* state, with the second `gitStatus` still pending.
-     */
+    /* Asserted on the intermediate state, with the second `gitStatus` still pending. */
     it('drops the previous folder\'s changes while the new status is still in flight', async () => {
       let releaseSub: ((value: { repo_root: string; files: never[] }) => void) | undefined;
       const gitStatus = vi.fn((requested: string) => (requested === '/repo'
@@ -305,15 +279,10 @@ describe('FileViewer', () => {
       await userEvent.click(screen.getByRole('button', { name: /sub/ }));
       await waitFor(() => { expect(gitStatus).toHaveBeenCalledWith('/repo/sub'); });
 
-      // `/repo/sub`'s status has not answered yet — and `/repo`'s answer is no
-      // longer about the folder this card is on.
       expect(releaseSub).toBeTypeOf('function');
       expect(screen.queryByRole('button', { name: /src\/main\.rs/ })).toBeNull();
       expect(screen.queryByTestId('diff-pane')).toBeNull();
       expect(screen.getByText('No changed file selected')).toBeTruthy();
-      /* The list is off screen because it is *loading*, not because the rows
-         were cleared — pinned here so a change that stops raising the loading
-         flag on a folder move cannot quietly bring the old rows back. */
       expect(screen.getByText('Loading changes…')).toBeTruthy();
     });
 
@@ -324,14 +293,7 @@ describe('FileViewer', () => {
     });
   });
 
-  /*
-   * ── The card's own path, when the listing refuses it ──────────────────────
-   *
-   * A card created on a *file* is the case that needs the climb: `seedNav` puts
-   * the file's path in `folderPath`, and `listDirectory` answers 400 for a file.
-   * Without the climb the card sits on that listing error forever and shows
-   * nothing at all — not the folder the file is in, and not the file either.
-   */
+  /* `listDirectory` answers 400 for a file; without the climb the card sits on that error forever. */
   it('shows a card opened on a file, listing the folder it lives in', async () => {
     const listDirectory = vi.fn((requested: string) => (requested === '/repo'
       ? Promise.resolve({
@@ -348,15 +310,12 @@ describe('FileViewer', () => {
     const pane = await screen.findByTestId('code-pane');
     expect(pane.getAttribute('data-path')).toBe('/repo/notes.md');
     expect(pane.textContent).toBe('body');
-    // And the climb landed: the left column is the file's own folder.
     expect(screen.getByRole('button', { name: /notes\.md/ })).toBeTruthy();
     expect(listDirectory.mock.calls.map(([requested]) => requested))
       .toEqual(['/repo/notes.md', '/repo']);
   });
 
-  /* Only the card's own path climbs. A folder the reader walked *into* is told
-     why it could not be read — and one climb per unreadable ancestor would
-     otherwise walk the card all the way up to `/`. */
+  /* Only the card's own path climbs; one climb per unreadable ancestor would walk up to `/`. */
   it('reports a folder the reader navigated into rather than climbing back out', async () => {
     const listDirectory = vi.fn((requested: string) => (requested === '/repo'
       ? Promise.resolve({ path: '/repo', parent: '/', entries: [{ name: 'src', is_dir: true }] })
@@ -369,8 +328,6 @@ describe('FileViewer', () => {
       .toEqual(['/repo', '/repo/src']);
   });
 
-  /* A host assembled without the port is a real configuration, and the card has
-     to say what is missing rather than render an empty frame or throw. */
   it('states the missing capability when the host has no filesystem port', () => {
     renderViewer(null);
     expect(screen.getByText('This board was built without filesystem access.')).toBeTruthy();

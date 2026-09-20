@@ -74,10 +74,7 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "child-track",
 ];
 
-/// Registered adapters whose payloads are not tied to a scheduler task row.
-/// Kept explicit so the registry coverage test fails when a new production
-/// adapter has not been classified on either side of the context fence.
-/// Retained artifact actions require completed-task authority, never start admission.
+/// Kept explicit so the registry coverage test fails when a new production adapter has not been classified on either side of the context fence.
 pub const POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS: [&str; 2] =
     ["task-file-publication", "candidate-verify"];
 
@@ -113,10 +110,7 @@ pub async fn refuse_if_context_stale(tx: &mut Tx<'_>, task_id: Option<&str>) -> 
     crate::task_recovery::require_attempt_startable_tx(tx, task_id).await
 }
 
-/// Call immediately before new provider/process effects, after checking whether
-/// a previously recorded terminal exit already makes the adapter a no-op.
-/// Existing initial attempts retain their already-prepared context semantics;
-/// recovered attempts additionally recheck their admitted frozen contract.
+/// Call immediately before new provider/process effects; recovered attempts additionally recheck their admitted frozen contract.
 pub(crate) async fn admit_task_side_effect(
     repo: &dyn crate::db::RepoEventWrite,
     task_id: &str,
@@ -130,27 +124,8 @@ pub(crate) async fn admit_task_side_effect(
     .await
 }
 
-/// Issue #1149 — the plan `key` of the task a worker operation is bound
-/// to, read inside the spawning transaction so a worker card can be
-/// titled after its task.
-///
-/// The key is DERIVED here rather than carried on the worker operation
-/// payload on purpose: worker payloads feed `stable_payload_hash`
-/// (see `scheduler::build_worker_payload`), so adding a field would make
-/// in-flight tasks minted by older builds collide on payload hash after
-/// an upgrade.
-///
-/// **Infallible on purpose — the return type has no error arm.** A card
-/// title is cosmetic; a dispatch is not. `tasks` is not a STRICT table, so
-/// `key` can hold a value that does not decode as TEXT, and every other
-/// failure mode a `SELECT` has (a closed connection, a schema the running
-/// binary did not expect) is equally not a reason to refuse a worker spawn
-/// that would otherwise have succeeded. So an absent `tasks` row (legacy
-/// `calm.task.dispatch` idempotency keys), an empty key argument, a blank
-/// stored key, *and any sqlx error at all* collapse to the same answer:
-/// `None`, i.e. "leave the card untitled". Errors are logged, never
-/// propagated — returning `Result` here would put a caller one `?` away
-/// from making a title outage a dispatch outage.
+/// DERIVED here rather than carried on the worker payload, which feeds `stable_payload_hash` (a new field would collide in-flight tasks after an upgrade).
+/// Infallible on purpose: a title is cosmetic, a dispatch is not — an absent row, a blank key and any sqlx error all collapse to `None`.
 pub async fn task_key_for_card_title(tx: &mut Tx<'_>, task_id: &str) -> Option<String> {
     if task_id.trim().is_empty() {
         return None;
@@ -186,16 +161,10 @@ pub struct OperationKey {
     pub payload_hash: String,
 }
 
-/// Fragment shared by every `(kind, idempotency_key)` payload-hash
-/// conflict message — kept in one place so
-/// [`is_idempotency_payload_conflict`] can match reliably.
+/// Kept in one place so [`is_idempotency_payload_conflict`] can match reliably.
 const IDEMPOTENCY_PAYLOAD_CONFLICT_MSG: &str = "already used with different payload";
 
-/// The submit/insert idempotency conflict: the `(kind, idempotency_key)`
-/// pair already exists with a DIFFERENT payload hash. Built in one place
-/// (used by both [`OperationRuntime::submit`] and the repo's
-/// `insert_operation`) so callers can classify it via
-/// [`is_idempotency_payload_conflict`].
+/// The `(kind, idempotency_key)` pair already exists with a DIFFERENT payload hash; built in one place so callers can classify it.
 pub(crate) fn idempotency_payload_conflict(idempotency_key: Option<&str>) -> CalmError {
     let key = idempotency_key.unwrap_or("<missing idempotency key>");
     CalmError::Conflict(format!(
@@ -203,12 +172,7 @@ pub(crate) fn idempotency_payload_conflict(idempotency_key: Option<&str>) -> Cal
     ))
 }
 
-/// True iff `e` is the [`idempotency_payload_conflict`] error — the key
-/// is already bound to an operation with a different payload hash. The
-/// scheduler classifies this as a PERMANENT spawn error (round-3 review
-/// F1): its payloads are pure functions of the frozen task row, so the
-/// mismatch can only be a foreign/legacy operation owning the key, and
-/// retrying can never self-heal.
+/// The scheduler classifies this as a PERMANENT spawn error: its payloads are pure functions of the frozen task row, so retrying can never self-heal.
 pub fn is_idempotency_payload_conflict(e: &CalmError) -> bool {
     matches!(e, CalmError::Conflict(msg) if msg.contains(IDEMPOTENCY_PAYLOAD_CONFLICT_MSG))
 }
@@ -388,9 +352,6 @@ impl SpawnCtx {
     }
 }
 
-// #679 PR1 — `SpawnHandle` moved to `calm_exec::provider` (it is part of
-// the execution contract: `WorkerProvider::resume` returns it). Re-exported
-// so every `crate::operation::SpawnHandle` path is unchanged.
 pub use calm_exec::SpawnHandle;
 
 pub type ParkedObserver = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -837,7 +798,6 @@ pub trait OperationRepo: Send + Sync {
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>>;
-    /// Reserved for PR2 background driver loop (design §B.3).
     async fn abandoned_running_operations_steady_state(&self) -> Result<Vec<Operation>>;
     async fn claim_operation_for_recovery(&self, op_id: &str) -> Result<Option<Operation>>;
     async fn record_spawn_artifacts(

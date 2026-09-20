@@ -1,20 +1,4 @@
-//! #1727 S1 — the worker worktree facts a Planner can read instead of being
-//! woken for them.
-//!
-//! `workspace.leased` / `worktree.provisioned` / `worktree.committed` no longer
-//! push a Planner turn (`dispatcher::event_warrants_planner_push_with_role`),
-//! and nothing else Planner-readable carried a worker's lease path, slice
-//! branch or the commit the kernel recorded for it (the track-fs projection
-//! drops those kinds, `track_vcs/delta.rs`). A Codex worker reports
-//! `task.completed` BEFORE the kernel's auto `git.commit` runs, so it cannot
-//! self-report that sha either. This is the one lookup that turns those rows
-//! back into facts; today `calm.plan.list` renders it as `worktree`, and
-//! #1727 S3 reuses it for `recovery.guidance.retained`.
-//!
-//! `last_commit` is exactly "the latest `worktree.committed` event scoped to
-//! the card". A failed auto-commit after an earlier successful kernel commit
-//! leaves the earlier sha in place — it is indistinguishable from success
-//! here (KNOWN GAP, #1615 A).
+//! The worker worktree facts a Planner can read instead of being woken for them.
 
 use serde::Serialize;
 
@@ -22,16 +6,6 @@ use super::{Tx, row_to_workspace_lease, workspace_lease_target_from_lease};
 use crate::error::Result;
 
 /// What `calm.plan.list` shows as `worktree` for the current attempt.
-///
-/// #1727 S1 fix H5 — a lease's `state` alone cannot say whether the
-/// directory still exists: `release_workspace_lease_by_id` removes the
-/// worktree (`git worktree remove` + `git branch -D`) and emits
-/// `worktree.removed`, while `release_workspace_lease_for_card_tx` only flips
-/// the row to `released` and leaves the checkout on disk. `removed` carries
-/// that distinction: the latest `worktree.removed` event for the card is
-/// newer than its latest `worktree.provisioned` (no provisioned event → any
-/// removed event counts). A removed worktree has no `path` and no `branch`
-/// to name; `last_commit` stays — the sha is still a fact about the card.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct WorkerWorktreeFacts {
     /// The lease's worktree path, whatever the lease's `state`; omitted once
@@ -40,33 +14,20 @@ pub(crate) struct WorkerWorktreeFacts {
     pub path: Option<String>,
     /// `held` | `releasing` | `released` — the lease row's own column.
     pub state: String,
-    /// The slice branch: from the latest `worktree.committed` event when there
-    /// is one, otherwise the lease's own naming (`workspace_lease_target_from_lease`).
-    /// Omitted once the kernel has removed the worktree (`git branch -D` goes
-    /// with `git worktree remove`).
+    /// The slice branch: from the latest `worktree.committed` event when there is one,
+    /// otherwise the lease's own naming. Omitted once the kernel has removed the worktree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// `commit_sha` of the latest `worktree.committed` event scoped to the
-    /// worker card — the latest commit the KERNEL recorded. Absent when the
-    /// kernel never recorded one. A FAILED auto-commit changes nothing here
-    /// (the previous successful sha, or the absence, stays — #1615 A).
+    /// `commit_sha` of the latest `worktree.committed` event scoped to the worker card.
+    /// A FAILED auto-commit changes nothing here (the previous sha, or the absence, stays).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
-    /// `true` when the kernel removed the worktree after its last
-    /// provisioning (see the struct doc); `false` when it has not — whatever
-    /// the lease `state`, and saying nothing about the filesystem beyond the
-    /// kernel's own removals.
+    /// `true` when the kernel removed the worktree after its last provisioning, whatever the lease `state`.
     pub removed: bool,
 }
 
-/// The latest `workspace_leases` row for `worker_card_id` (by `created_at_ms`,
-/// any state) joined with the latest `worktree.committed` event scoped to that
-/// card and the `worktree.removed` / `worktree.provisioned` ordering that
-/// decides `removed`. `None` when the card never held a lease.
-///
-/// Keep this signature: `calm.plan.list` reads it once per entry and derives
-/// both `worktree` and `recovery.guidance.retained` (#1727 PR-B) from the one
-/// result.
+/// The latest `workspace_leases` row for `worker_card_id` (any state) joined with the latest
+/// `worktree.committed` event and the removed/provisioned ordering. `None` when the card never held a lease.
 pub(crate) async fn worker_worktree_facts_tx(
     tx: &mut Tx<'_>,
     worker_card_id: &str,
@@ -128,13 +89,6 @@ pub(crate) async fn worker_worktree_facts_tx(
     }))
 }
 
-/// `worktree.removed` newer than the card's latest `worktree.provisioned`
-/// (every `worktree.*` event is scoped to the card that owns the lease —
-/// `forge_action_adapter::event_scope_for` for the plugin-emitted ones,
-/// `EventScope::Card` on the lease's card for the kernel's own). A card
-/// with no provisioned event at all is removed iff a removed event exists;
-/// a re-provision after a removal (a newer provisioned id) puts the path
-/// back.
 async fn worktree_removed_after_last_provision_tx(
     tx: &mut Tx<'_>,
     worker_card_id: &str,

@@ -1,14 +1,5 @@
-//! OpenAPI document aggregator. We register every route's
-//! `#[utoipa::path]` attribute and every wire model's `ToSchema` derive
-//! here so `GET /api/openapi.json` returns a single self-contained spec
-//! the frontend consumes to generate TypeScript types.
-//!
-//! The document is the source-of-truth contract between `calm-server` and
-//! `web-calm` — adding a new public model or route means adding a path
-//! entry below alongside the handler annotation. The aggregator does not
-//! pull in WebSocket endpoints (those don't roundtrip JSON request/response
-//! pairs and aren't part of the wire-types contract) nor any plugin-host
-//! internal types.
+//! OpenAPI document aggregator: every route's `#[utoipa::path]` and every wire model's `ToSchema` registered here so
+//! `GET /api/openapi.json` is one self-contained spec. WebSocket endpoints and plugin-host internal types are not included.
 
 use crate::error::ErrorBody;
 use crate::harness::HarnessPhaseTag;
@@ -87,13 +78,11 @@ use utoipa::OpenApi;
         crate::mobile_access::routes::revoke,
         crate::mobile_access::routes::claim,
         crate::mobile_access::routes::redeem,
-        // ---- areas ----
         crate::routes::areas::list_areas,
         crate::routes::areas::create_area,
         crate::routes::areas::get_or_create_system_area,
         crate::routes::areas::update_area,
         crate::routes::areas::delete_area,
-        // ---- area_folders (#250 PR 1) ----
         crate::routes::area_folders::list_folders,
         crate::routes::area_folders::create_folder,
         crate::routes::area_folders::delete_folder,
@@ -103,14 +92,12 @@ use utoipa::OpenApi;
         crate::routes::isolated_tasks::report,
         crate::routes::task_artifacts::get_file,
         crate::routes::task_recovery::recover,
-        // ---- tracks ----
         crate::routes::track_templates::list_track_templates,
         crate::routes::track_recipes::list_recipes,
         crate::routes::track_recipes::get_recipe,
         crate::routes::track_recipes::create_recipe,
         crate::routes::track_recipes::update_recipe,
         crate::routes::track_recipes::delete_recipe,
-        // ---- track conversations (#1189) ----
         crate::routes::track_conversations::list_track_conversations,
         crate::routes::track_conversations::create_track_conversation,
         crate::routes::tracks::list_tracks_by_area,
@@ -120,16 +107,13 @@ use utoipa::OpenApi;
         crate::routes::tracks::update_track,
         crate::routes::tracks::delete_track,
         crate::routes::tracks::get_track_backlinks,
-        // Issue #247 PR3 — user-facing track-report edit endpoint
         crate::routes::tracks::update_track_report,
         crate::routes::tracks::get_track_report,
         crate::routes::track_report_blocks::create_block,
         crate::routes::track_report_blocks::update_block,
         crate::routes::track_report_blocks::delete_block,
         crate::routes::track_report_blocks::move_block,
-        // #1628 S4 — one `chart.series` block's resolved data
         crate::routes::track_report_series::get_report_series,
-        // #1669 S1 — captured sources
         crate::routes::track_sources::list_track_sources,
         crate::routes::track_sources::get_track_source,
         crate::routes::tracks::list_track_files,
@@ -138,7 +122,6 @@ use utoipa::OpenApi;
         crate::routes::today::resolve_today_launchpad,
         crate::routes::today::reset_today_launchpad_report,
         crate::routes::today_summary::write_today_summary,
-        // ---- cards ----
         crate::routes::cards::list_cards_by_track,
         crate::routes::cards::create_card,
         crate::routes::cards::update_card,
@@ -148,32 +131,21 @@ use utoipa::OpenApi;
         crate::routes::cards::interrupt_planner_card,
         crate::routes::cards::get_planner_run,
         crate::routes::cards::reset_planner_card,
-        // #1505 PR2. Mounted in `routes::cards::router()`, declared here
-        // because this list is hand-maintained: omitting a handler is not a
-        // compile error and not a drift failure — the endpoint simply never
-        // reaches either generated client.
+        // This list is hand-maintained: omitting a handler is not a compile error and not a drift failure — the endpoint simply never reaches either generated client.
         crate::routes::planner_input::edit_planner_input,
         crate::routes::planner_input::delete_planner_input,
-        // #1625 P3. Same list, same failure mode.
         crate::routes::planner_input::steer_planner_input,
-        // #1505 S4-3. Same hand-maintained list, same failure mode: omitting
-        // a handler is neither a compile error nor a drift failure.
         crate::routes::planner_model::set_planner_model,
         crate::routes::cards::delete_card,
-        // ---- overlays ----
         crate::routes::overlays::list_overlays,
         crate::routes::overlays::upsert_overlay,
         crate::routes::overlays::delete_overlay,
-        // ---- terminals ----
         crate::routes::terminal_cards::create_terminal_card,
         crate::routes::terminal::get_terminal_for_card,
-        // ---- codex ----
         crate::routes::codex_cards::create_codex_card,
         crate::routes::threads::resolve_card_for_thread,
-        // ---- claude ----
         crate::routes::claude_cards::create_claude_card,
         crate::routes::claude_cards::restart_claude_card,
-        // ---- fs ----
         crate::routes::fs::listdir,
         crate::routes::fs::readfile,
         crate::routes::fs::readfile_raw,
@@ -181,10 +153,8 @@ use utoipa::OpenApi;
         crate::routes::fs::read_track_workspace_file_raw,
         crate::routes::fs::gitstatus,
         crate::routes::fs::gitdiff,
-        // ---- settings ----
         crate::routes::settings::get_settings,
         crate::routes::settings::put_settings,
-        // ---- plugins ----
         crate::routes::plugins::list_plugins,
         crate::routes::plugins::get_plugin_detail,
         crate::routes::plugins::install_plugin,
@@ -199,12 +169,9 @@ use utoipa::OpenApi;
         crate::routes::plugins::list_plugin_views,
         crate::routes::plugins::get_plugin_view_html,
         crate::routes::plugins::plugin_tool_call,
-        // ---- models (#1505 S4-2) ----
         crate::routes::models::list_models,
-        // ---- planner attachments (#1505 S6) ----
         crate::planner_attachments::routes::upload_planner_attachment,
         crate::planner_attachments::routes::read_planner_attachment,
-        // ---- version ----
         crate::routes::version::get_version,
     ),
     components(schemas(
@@ -227,7 +194,6 @@ use utoipa::OpenApi;
         calm_types::mobile_access::PairingClaimed,
         calm_types::mobile_access::PairingRedeem,
         crate::mobile_access::routes::MobileAction,
-        // domain models
         Area,
         AreaKind,
         NewArea,
@@ -269,19 +235,16 @@ use utoipa::OpenApi;
         TrackFsRunEvents,
         TrackFsRunDetail,
         TrackFsHookEvent,
-        // Issue #247 PR3 — request body for `POST /api/tracks/:id/report`
         UpdateTrackReportBody,
         CreateReportBlockBody,
         UpdateReportBlockBody,
         DeleteReportBlockBody,
         MoveReportBlockBody,
         ReportBlockWriteResponse,
-        // #1628 S4 — `GET /api/tracks/{id}/report/series/{block_id}`
         crate::routes::track_report_series::ReportSeriesDetail,
         crate::routes::track_report_series::ReportSeriesEntry,
         crate::routes::track_report_series::ReportSeriesResolved,
         crate::routes::track_report_series::ReportSeriesRevConflict,
-        // #1669 S1 — `GET /api/tracks/{id}/sources[/{source_id}]` (calm-types, TS-exported)
         calm_types::report_sources::SourceProvenance,
         calm_types::report_sources::SourceOrigin,
         calm_types::report_sources::SourceQuote,
@@ -317,15 +280,11 @@ use utoipa::OpenApi;
         PlannerSteerConflictBody,
         HarnessPhaseTag,
         ResetPlannerCardResponse,
-        // Issue #229 PR B — track-report card payload shape (kernel-owned;
-        // surfaced in the OpenAPI doc so frontend codegen + external
-        // consumers see the v1 contract).
         crate::track_report::TrackReportPayload,
         Overlay,
         NewOverlay,
         Terminal,
         Plugin,
-        // route-local DTOs
         CreateCardBody,
         ViaToolCall,
         NewTerminalCardBody,
@@ -350,15 +309,6 @@ use utoipa::OpenApi;
         ViewCatalogEntry,
         ViewSizeWire,
         VersionInfo,
-        // ---- models (#1505 S4-2) ----
-        // Listed for consistency with the rest of this block, NOT because
-        // omitting them would break the document: utoipa already walks a
-        // registered path's response body and emits every schema it reaches.
-        // Measured on this tree by deleting these names and re-emitting —
-        // the two documents differed in nothing but the entry for the query
-        // struct, which utoipa inlines as parameters anyway. The list in
-        // `paths(...)` above is the hand-maintained one that really is
-        // load-bearing; this one is house style.
         crate::routes::planner_model::SetPlannerModelBody,
         crate::routes::planner_model::SetPlannerModelResponse,
         CatalogModel,
@@ -367,9 +317,7 @@ use utoipa::OpenApi;
         DefaultSource,
         ModelSource,
         ModelsResponse,
-        // #177 — required theme field on card/track creation DTOs
         crate::routes::theme::RequestTheme,
-        // shared error response
         ErrorBody,
     )),
     tags(

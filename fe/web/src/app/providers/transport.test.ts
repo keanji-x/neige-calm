@@ -51,14 +51,7 @@ describe('fetch transport bodies', () => {
     return seen;
   }
 
-  /*
-   * #1505 S6 — `POST /planner/attachments` takes the image itself.
-   *
-   * `JSON.stringify` of a typed array is `{"0":137,"1":80,…}`: not the file,
-   * not an error, and nothing in the type system objects. The server would
-   * answer "not one of PNG/JPEG/GIF/WebP" and the reason would be a transport
-   * detail three layers away, so the bytes are asserted here.
-   */
+  /* `JSON.stringify` of a typed array is `{"0":137,"1":80,…}` — not the file, not an error, and nothing in the type system objects. */
   it('sends a Uint8Array body as the bytes themselves', async () => {
     const seen = capture();
     const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);

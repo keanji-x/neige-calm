@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// #1450 — the production seam from the Track header through app/router and the
-// shared mutation port. Component tests own the menu itself; this file proves
-// the selected action becomes the existing PATCH request and the returned row
-// replaces Done with Working on screen.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';

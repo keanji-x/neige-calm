@@ -17,8 +17,7 @@ describe('CLAUDE_CARD_ENTRY', () => {
     expect(CLAUDE_CARD_ENTRY.fromKernel?.({
       id: 'c1', kind: 'claude', payload: { terminal_id: 't1' },
     })).toEqual({ type: 'claude', id: 'c1', title: null, terminalId: 't1', sessionState: null, cwd: null, gateCwd: null });
-    // The kernel projects `terminal_id` on read; a card observed between mint
-    // and projection resolves with a null terminal rather than not at all.
+    // The kernel projects `terminal_id` on read; a card observed between mint and projection resolves with a null terminal rather than not at all.
     expect(CLAUDE_CARD_ENTRY.fromKernel?.({
       id: 'c2', kind: 'claude', payload: { goal: 'do the thing' },
     })).toEqual({ type: 'claude', id: 'c2', title: null, terminalId: null, sessionState: null, cwd: null, gateCwd: null });
@@ -39,13 +38,6 @@ describe('CLAUDE_CARD_ENTRY', () => {
       .toBe('claude');
   });
 
-  /*
-   * The bug this card exists to fix. A claude card with no adapter fell into
-   * `unknown`, so `app/router` left it out of `gridItems`, `knownCard` stayed
-   * false and the route effect replaced the requested `?card=` straight back
-   * out — clicking a claude row in the CARDS panel did nothing at all, while
-   * the terminal row beside it opened the board.
-   */
   it('lands claude cards in the visible partition beside terminal cards', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);

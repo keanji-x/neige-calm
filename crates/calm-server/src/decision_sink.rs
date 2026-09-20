@@ -1,10 +1,4 @@
-//! MCP identity decision-write sink for the pre-PR7 MCP tool paths.
-//!
-//! This module is a structural seam for #679 PR6a-2. The production MCP
-//! handlers derive their session-shaped persisted actor from
-//! `ToolCallIdentity::to_actor_id()` and call the card-aware inherent methods
-//! below. The principal-based
-//! `DecisionSink::commit` entry remains inert until PR7 flips authority.
+//! MCP identity decision-write sink for the MCP tool paths; the principal-based `DecisionSink::commit` entry is still inert.
 
 mod worker_report;
 
@@ -40,15 +34,11 @@ pub struct CardDecisionSink {
     repo: Arc<dyn RouteRepo>,
     events: EventBus,
     write: WriteContext,
-    /// #1669 §2.3 — read-only, for the post-commit `report_sources` lookup
-    /// behind the receipt warnings. `None` (no sqlite behind the repo) means
-    /// no warnings are computed.
+    /// Read-only, for the post-commit `report_sources` lookup behind the receipt warnings; `None` means no warnings are computed.
     sqlite_pool: Option<sqlx::SqlitePool>,
 }
 
-/// What [`CardDecisionSink::commit_report_op`] hands back: the updated
-/// card, the block-level outcome where the op has one, and (#1669 §2.3)
-/// the unresolved `neige://source/` links of the prose the write touched.
+/// The updated card, the block-level outcome where the op has one, and the unresolved `neige://source/` links of the prose the write touched.
 #[derive(Debug, Clone)]
 pub struct ReportOpCommit {
     pub card: Card,
@@ -131,14 +121,9 @@ impl CardDecisionSink {
                         &event,
                     )
                     .await?;
-                    // Admission, task CAS, report event, and lifecycle promotion
-                    // share one transaction. Same-outcome repeats roll back as
-                    // idempotent success; foreign or conflicting reports fail.
-                    // Planner verdicts retain their separate authority path.
+                    // Admission, task CAS, report event, and lifecycle promotion share one transaction; same-outcome repeats roll back as idempotent success.
                     let now = crate::model::now_ms();
-                    // #1147 ① — the failure branch keeps the worker's own
-                    // `reason` (it used to be dropped by `..`) so the row
-                    // can carry it beside the `worker-reported` classifier.
+                    // The failure branch keeps the worker's own `reason` beside the `worker-reported` classifier.
                     let flip = match &event {
                         Event::TaskCompleted {
                             idempotency_key, ..
@@ -150,26 +135,11 @@ impl CardDecisionSink {
                         } => Some((idempotency_key.clone(), Some(reason.clone()))),
                         _ => None,
                     };
-                    // Issue #644 PR-C (§3): the `Working → Reviewing`
-                    // auto-promotion is SUPPRESSED for a gated task's
-                    // success report — the self-report is a claim, not
-                    // evidence; the gate-result tx performs the promotion
-                    // instead, on ANY gate verdict. Worker `task.failed`
-                    // promotes as today (no gate runs on failure), and
-                    // legacy keys with no tasks row keep today's behavior.
+                    // The `Working → Reviewing` auto-promotion is SUPPRESSED for a gated task's success report: the self-report is a claim, not evidence; the gate-result tx promotes instead.
                     let mut suppress_promotion = false;
                     if let Some((task_id, failure_reason)) = flip {
                         let success = failure_reason.is_none();
-                        // Round-4 review F1 — unstamped-row ownership proof:
-                        // the REPORTING card must be the card the task's
-                        // worker-spawn operation created (immutable op
-                        // target, stamped in the same tx as the card). The
-                        // card payload's `idempotency_key` is NOT proof —
-                        // payloads are patchable via `PATCH /api/cards/{id}`,
-                        // so a forged sibling payload could otherwise steal
-                        // the report-beats-running-stamp window. For rows
-                        // already stamped, the `worker_card_id = card` guard
-                        // inside the flip implies the same binding.
+                        // Unstamped-row ownership proof: the REPORTING card must be the card the task's worker-spawn operation created. The card payload's `idempotency_key` is NOT proof — payloads are patchable via `PATCH /api/cards/{id}`.
                         let reporter = crate::db::sqlite::TaskReporter::Card {
                             card_id: worker_card_id.as_str(),
                             owns_key: crate::db::sqlite::worker_op_targets_card_tx(
@@ -202,8 +172,7 @@ impl CardDecisionSink {
                             {
                                 crate::db::sqlite::SuccessReportFlip::Done => 1,
                                 crate::db::sqlite::SuccessReportFlip::Verifying => {
-                                    // Gated row handed to the gate runner —
-                                    // the gate-result tx promotes (§3).
+                                    // Gated row handed to the gate runner — the gate-result tx promotes.
                                     suppress_promotion = true;
                                     1
                                 }
@@ -498,27 +467,8 @@ impl CardDecisionSink {
         Ok(updated)
     }
 
-    /// #960 PR2 — the generalized agent-MCP report write: same recorder
-    /// shadow gate, same persist boundary as
-    /// [`Self::commit_report_write`], but the mutation is an arbitrary
-    /// [`ReportDocOp`] (typed `blocks.*` op or marker-aware
-    /// `write_markdown`) executed inside the persist transaction against
-    /// the CRDT truth.
-    ///
-    /// #1189 §3.2a / §3.4 — this is the single funnel every block-channel
-    /// write passes through, so the two things that must differ for an
-    /// assistant caller are decided here, once, from `identity.role`:
-    ///
-    /// * **attribution** (`EditAuthor`). Hard-coding `Planner` would let an
-    ///   assistant's edits land in the event log under the planner's name —
-    ///   and would silently undo the `author_name(Assistant) == None`
-    ///   line in `track_report_edit_guard`, which is half of the P2 task
-    ///   guard.
-    /// * **auto-promote** (P1). A block write must not walk a Draft track
-    ///   out of Draft on an assistant's behalf; that is the state machine
-    ///   §3.2 keeps on the far side of the line. The REST user block
-    ///   endpoint already passes `false`, so "a Draft track with a report"
-    ///   is a long-standing legal state, not a new one.
+    /// The generalized agent-MCP report write: same recorder shadow gate and persist boundary as [`Self::commit_report_write`], with an arbitrary [`ReportDocOp`] executed inside the transaction.
+    /// The single funnel every block-channel write passes through, so attribution and auto-promote are decided here, once, from `identity.role`: hard-coding `Planner` would attribute an assistant's edits to the planner and walk a Draft track out of Draft on its behalf.
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_op(
         &self,
@@ -539,10 +489,7 @@ impl CardDecisionSink {
                 track_id: track.id.clone(),
             });
         let (author, auto_promote_draft) = report_op_attribution(identity.role)?;
-        // #1318 §1 — the writer is private to its module; this funnel
-        // reaches it through the one entry point that accepts a
-        // caller-decided attribution, because the decision above is genuinely
-        // this funnel's to make. The two REST entries cannot pass one at all.
+        // The writer is private to its module; this is the one entry point that accepts a caller-decided attribution.
         let (card, trace) = track_report::write::agent_report_op(
             self.repo.as_ref(),
             &self.events,
@@ -557,10 +504,7 @@ impl CardDecisionSink {
             recorder_shadow,
         )
         .await?;
-        // #1669 §2.3 step 2 — after the transaction committed, before the
-        // receipt is assembled: the final snapshot (the card's own payload)
-        // plus one `report_sources` read. Never blocks the write; a lookup
-        // failure here is the receipt's problem, not the row's.
+        // After the transaction committed, before the receipt is assembled. Never blocks the write; a lookup failure here is the receipt's problem, not the row's.
         let warnings = match self.sqlite_pool.as_ref() {
             Some(pool) if !trace.written_prose_block_ids.is_empty() => {
                 let blocks = card
@@ -591,18 +535,8 @@ impl CardDecisionSink {
     }
 }
 
-/// #1189 §3.2a / §3.4 — the role → (attribution, auto-promote) decision for
-/// every write that reaches [`CardDecisionSink::commit_report_op`].
-///
-/// Exhaustive on purpose (no `_` arm): a future role reaching this funnel has
-/// to state its attribution and its auto-promote verdict rather than inherit
-/// the planner's by default.
-///
-/// `Worker` and `ReportCard` are refused outright rather than folded in with
-/// `Planner`. Folding them in would attribute their edits to the planner *and* hand
-/// them auto-promote; today the five entry points' `require_role_any([Planner,
-/// Assistant])` masks that, but S3 is about to move the role surface, and this
-/// funnel must not be the thing that has to be re-audited when it does.
+/// The role → (attribution, auto-promote) decision for every write reaching [`CardDecisionSink::commit_report_op`].
+/// Exhaustive on purpose: a future role must state its own verdict rather than inherit the planner's. `Worker` and `ReportCard` are refused outright rather than folded in with `Planner`.
 fn report_op_attribution(role: CardRole) -> Result<(EditAuthor, bool), CalmError> {
     Ok(match role {
         CardRole::Assistant => (EditAuthor::Assistant, false),
@@ -683,11 +617,7 @@ impl DecisionSink for CardDecisionSink {
     }
 }
 
-/// Structural-only planner-harness reactor for #679 PR6a-2.
-///
-/// No `worker_sessions` row backs a planner harness yet, and nothing reads this
-/// principal until PR7. The live run loop still delivers observations through
-/// the existing turn queue and is deliberately not wired to this stub.
+/// Structural-only planner-harness reactor: no `worker_sessions` row backs a planner harness yet, and the live run loop is deliberately not wired to this stub.
 #[derive(Clone, Debug)]
 pub struct PlannerHarnessAgentReactor {
     worker_session_id: String,
@@ -746,12 +676,7 @@ mod tests {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{Layer, registry as tracing_registry};
 
-    /// #1189 §3.2a — the report-write funnel's role table, pinned at the one
-    /// layer where every role is reachable. On the production path the five
-    /// block-channel entry points carry `require_role_any([Planner, Assistant])`,
-    /// so Worker/ReportCard never arrive today; S3 moves that surface, and
-    /// this is the assertion that catches it if the funnel is left assuming
-    /// "anything not Assistant is the planner".
+    /// The funnel's role table, pinned at the one layer where every role is reachable (the entry points' `require_role_any` masks Worker/ReportCard today).
     #[test]
     fn report_op_attribution_refuses_worker_and_report_cards() {
         assert_eq!(
@@ -987,17 +912,7 @@ mod tests {
         assert_eq!(removed_events, 0);
     }
 
-    /// #1189 §3.6 renamed this cell rather than re-expecting it. The old
-    /// name ("non-root") described the criterion that slice removed; what
-    /// the body always actually built was an identity whose `session_id`
-    /// has no `worker_sessions` row at all, and an unresolvable session is
-    /// still a denial — now for the reason the new criterion gives.
-    ///
-    /// What it pins is the fail-closed shape around that denial: a
-    /// `Forbidden`, one divergence record, one warning, and — the part no
-    /// other test covers — the report row and the event log both untouched,
-    /// i.e. the gate aborts the transaction rather than refusing after a
-    /// partial write.
+    /// An identity whose `session_id` has no `worker_sessions` row is a denial. Pins the fail-closed shape: `Forbidden`, one divergence record, one warning, and the report row and event log both untouched.
     #[tokio::test(flavor = "current_thread")]
     async fn report_write_from_an_unresolvable_session_is_forbidden_under_recorder_enforce() {
         let repo = Arc::new(
@@ -1051,8 +966,7 @@ mod tests {
 
         let root_session_id = WorkerSessionId::from("root-session");
         seed_track_root_session(repo.as_ref(), &track.id, &planner_card.id, &root_session_id).await;
-        // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
-        // `card_create` persists `worker` regardless of kind.
+        // The recorder gate reads `cards.role` in-tx; `card_create` persists `worker` regardless of kind.
         sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
             .bind(planner_card.id.as_str())
             .execute(repo.pool())
@@ -1200,8 +1114,7 @@ mod tests {
 
         let root_session_id = WorkerSessionId::from("root-session");
         seed_track_root_session(repo.as_ref(), &track.id, &planner_card.id, &root_session_id).await;
-        // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
-        // `card_create` persists `worker` regardless of kind.
+        // The recorder gate reads `cards.role` in-tx; `card_create` persists `worker` regardless of kind.
         sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
             .bind(planner_card.id.as_str())
             .execute(repo.pool())

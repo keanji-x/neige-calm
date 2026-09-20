@@ -1,15 +1,9 @@
-//! Text conditions on a wait (#1677 r16): the target screen as literal
-//! patterns that must be PRESENT (any of `wait_text` on any live viewport
-//! row) and patterns that must be ABSENT (none of `wait_text_absent` on any
-//! row). Text mode ends on them; signal mode's repaint phase settles only
-//! while they hold, so a Claude readback can wait until the busy hint
-//! (`esc to interrupt`) is gone as well as until the screen is quiet. Pure
-//! functions over rendered rows; the loops live in `text_wait.rs` and
-//! `repaint.rs`.
+//! Text conditions on a wait: patterns that must be PRESENT (any of `wait_text` on any live
+//! viewport row) and patterns that must be ABSENT (none of `wait_text_absent` on any row).
+//! Pure functions over rendered rows.
 use serde_json::{Value, json};
 
-/// The conditions of one wait. Either list may be empty: an empty list is
-/// vacuously true and reported as `null`.
+/// The conditions of one wait. An empty list is vacuously true and reported as `null`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextConditions {
     pub present: Vec<String>,
@@ -33,8 +27,7 @@ impl ConditionState {
     }
 }
 
-/// First pattern in argument order, then first row top-down; a pattern is a
-/// substring of a row as rendered (rows are already trailing-trimmed).
+/// First pattern in argument order, then first row top-down (rows are already trailing-trimmed).
 pub fn find_match(patterns: &[String], rows: &[String]) -> Option<(String, usize)> {
     patterns.iter().find_map(|pattern| {
         rows.iter()
@@ -47,8 +40,7 @@ impl TextConditions {
     pub fn is_empty(&self) -> bool {
         self.present.is_empty() && self.absent.is_empty()
     }
-    /// Test `rows`: the present match (first pattern in argument order,
-    /// then first row top-down), if any, and the state of both conditions.
+    /// Test `rows`: the present match, if any, and the state of both conditions.
     pub fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState) {
         let matched = find_match(&self.present, rows);
         let state = ConditionState {
@@ -80,9 +72,6 @@ mod tests {
         assert_eq!(find_match(&list(&["a"]), &[]), None);
     }
 
-    /// Present-only, absent-only and both: each list is null when empty,
-    /// `holds` is the conjunction of the non-null ones, and the present
-    /// match is reported whenever a present pattern is on a row.
     #[test]
     fn conditions_report_each_side_and_hold_on_their_conjunction() {
         let rows = list(&["❯ answer", "· Noodling… (esc to interrupt)"]);

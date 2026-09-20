@@ -1,7 +1,5 @@
-//! #1666 S1 — `wait_for=text`: wait until the live viewport shows a target,
-//! through the real MCP tools, renderer and PTY. Exact timing is covered by
-//! the paused-clock tests in `terminal_interaction/text_wait.rs`; here the
-//! budget is an upper bound and the settle window a lower bound.
+//! `wait_for=text`: wait until the live viewport shows a target. Exact timing is covered by paused-clock
+//! unit tests; here the budget is an upper bound and the settle window a lower bound.
 use crate::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -46,9 +44,8 @@ async fn open(h: &Harness, program: &str, request: &str) -> String {
         .unwrap()
         .to_owned()
 }
-/// Run `call` and write `marker` into the workspace only once the call's
-/// wait has subscribed to the projection (same device as the change-wait
-/// tests), so the program's output lands after the wait began.
+/// Run `call` and write `marker` into the workspace only once the call's wait has subscribed to the
+/// projection, so the program's output lands after the wait began.
 async fn call_then_release(
     h: &Harness,
     terminal: &str,
@@ -80,9 +77,6 @@ fn text_wait(terminal: &str, patterns: Value, extra: Value) -> Value {
     args
 }
 
-/// The target appears on a later revision (a trust dialog painted 300 ms
-/// after the marker): one observe returns it, settled, naming the pattern,
-/// the row and the revision it was confirmed on.
 #[tokio::test]
 async fn text_wait_matches_a_later_screen_and_settles() {
     let h = Harness::start().await;
@@ -153,9 +147,7 @@ async fn text_wait_matches_a_later_screen_and_settles() {
     h.stop(&terminal).await;
 }
 
-/// "Until the screen shows X": a screen that already matches returns once
-/// it has been quiet for `settle_ms`, with `already: true`; tie-breaking is
-/// the first pattern in argument order, then the first row top-down.
+/// Tie-breaking is the first pattern in argument order, then the first row top-down.
 #[tokio::test]
 async fn text_wait_on_an_already_matching_screen_returns_after_settle() {
     let h = Harness::start().await;
@@ -201,9 +193,6 @@ async fn text_wait_on_an_already_matching_screen_returns_after_settle() {
     h.stop(&terminal).await;
 }
 
-/// A match that vanishes before the quiet window ends does not end the
-/// wait: READY is painted, cleared 50 ms later, and painted again 600 ms
-/// after that; the observe returns the second screen with `already: false`.
 #[tokio::test]
 async fn text_wait_ignores_a_match_that_vanishes_before_the_quiet_window() {
     let h = Harness::start().await;
@@ -258,10 +247,6 @@ async fn text_wait_reports_process_exit() {
     h.stop(&terminal).await;
 }
 
-/// The argument contract on every carrier: `wait_text` and `wait_for=text`
-/// require each other, patterns are bounded, a history view is refused,
-/// action readbacks need `observe=true`; and a readback in text mode works
-/// on input and control.
 #[tokio::test]
 async fn text_wait_validation_and_readbacks_on_every_carrier() {
     let h = Harness::start().await;

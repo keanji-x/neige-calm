@@ -1,35 +1,5 @@
-//! #1013 T3b — an end-to-end pass through the new
-//! `siginfo -> (status, signalled)` conversion, for three real exit shapes.
-//!
-//! # Read this before treating it as a gate: it is not one
-//!
-//! The hard lock on the conversion table is the `--lib` case
-//! `wnowait_tests::proc_exit_parts_from_siginfo_maps_every_wexited_code`. It is
-//! hermetic and enumerates every `si_code`. This file exists for a different,
-//! narrower reason: to run the *whole* production path — `waitid(.., WNOWAIT)`
-//! → `proc_exit_parts_from_siginfo` → seal → `Exited` frame — at least once per
-//! exit shape, so that a waiter which stops calling the conversion function is
-//! caught by something other than reading the diff.
-//!
-//! **The third arm is deliberately weak and must not be mistaken for a lock on
-//! the core-dump row.** From inside the test process we cannot observe
-//! `si_code`; it lives in the code under test. All the arm can assert is
-//! `{status: None, signalled: true}`, and under a *correct* implementation
-//! `CLD_KILLED` and `CLD_DUMPED` produce exactly that. So it cannot distinguish
-//! "the environment produced no core dump" from "the code is right". If you
-//! want the core-dump row locked, the `--lib` case is where it is locked.
-//!
-//! **Always runs, never `#[ignore]`, never reddens the suite for environment
-//! reasons.** The third arm checks `RLIMIT_CORE` and
-//! `/proc/sys/kernel/core_pattern` at runtime and, if dumps are disabled,
-//! skips *loudly* on stderr and passes. A silently skipped arm and a
-//! `#[ignore]`d one are the same fake gate wearing different clothes; a loud
-//! one at least tells you what you did not run.
-//!
-//! What it does catch, and this is the main reason it exists: a waiter that
-//! bypasses `proc_exit_parts_from_siginfo` (e.g. `(Some(si_status), false)`)
-//! reddens the second and third arms, and the second arm needs no core-dump
-//! support at all.
+//! End-to-end pass through `waitid(.., WNOWAIT)` → `proc_exit_parts_from_siginfo` → `Exited` for three exit shapes.
+//! The third (core-dump) arm cannot observe `si_code` and skips loudly when dumps are disabled; the `--lib` table test is the lock for that row.
 
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_session::control::{AttachRequest, ControlMsg, ControlReply, EnsureProcRequest, IoMode};
@@ -46,24 +16,20 @@ async fn exit_status_survives_the_wnowait_split() {
         .await
         .expect("start supervisor");
 
-    // Arm 1: a normal exit keeps its code.
     assert_eq!(
         run_and_await_exit(supervisor.sock(), "wnowait-exit", "exit 42", None).await,
         (Some(42), false),
         "a normal exit must survive the WNOWAIT split with its code intact"
     );
 
-    // Arm 2: a fatal signal is reported as signalled, with no code. This arm
-    // needs nothing from the environment, and it is the one that catches a
-    // waiter that stops routing through the conversion function.
+    // This arm needs nothing from the environment and catches a waiter that bypasses the conversion function.
     assert_eq!(
         run_and_await_exit(supervisor.sock(), "wnowait-killed", "kill -9 $$", None).await,
         (None, true),
         "a SIGKILLed child must be reported as signalled"
     );
 
-    // Arm 3: a core dump is *also* signalled (WIFSIGNALED = 1), not an exit
-    // with code 6. Weak, per the module doc.
+    // A core dump is also signalled (WIFSIGNALED = 1), not an exit with code 6. Weak, per the module doc.
     match core_dumps_disabled_because() {
         Some(reason) => {
             eprintln!(
@@ -110,10 +76,7 @@ fn core_dumps_disabled_because() -> Option<String> {
     if pattern.is_empty() {
         return Some("core_pattern (empty)".into());
     }
-    // A `|handler` pattern pipes the dump to a userspace program, which may or
-    // may not exist here. The dump is still produced by the kernel and the
-    // child still gets CLD_DUMPED, so this is not disqualifying — noted so the
-    // next reader does not "fix" it into a skip.
+    // A `|handler` pattern still produces a kernel dump and CLD_DUMPED, so it is not disqualifying.
     None
 }
 

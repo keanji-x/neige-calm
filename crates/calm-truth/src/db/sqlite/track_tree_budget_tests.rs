@@ -1,12 +1,4 @@
-//! #985 slice 6 PR-B — acceptance for the tree-level budget: the
-//! deterministic quota split in `evaluate_schedulability`, the fail-closed
-//! root resolution, bounded singleton evaluation, and the downward CTE's
-//! termination guard.
-//!
-//! Everything here drives the production functions
-//! (`track_create_tx`, `track_update_tx`, `track_tree_term`,
-//! `evaluate_schedulability`, `project_tasks_tx`); no fixture re-implements
-//! the predicate under test.
+//! Acceptance for the tree-level budget, driven through the production functions.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -41,8 +33,6 @@ async fn seed_area(repo: &SqlxRepo) -> String {
     area.id.to_string()
 }
 
-/// Production track creation. Every track in these tests is born through the
-/// same writer the `child-track` operation uses.
 async fn seed_track(repo: &SqlxRepo, area_id: &str, title: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
     let track = track_create_tx(
@@ -78,9 +68,8 @@ async fn link(repo: &SqlxRepo, child: &str, parent: &str) {
         .unwrap();
 }
 
-/// `created_at` is the primary key of the quota order. Tracks minted inside one
-/// millisecond would otherwise tie-break on the random id, which makes the
-/// EXPECTED order unknowable to the test (not to the code).
+/// Tracks minted inside one millisecond would tie-break on the random id,
+/// making the EXPECTED order unknowable to the test.
 async fn stamp_created_at(repo: &SqlxRepo, track: &str, created_at: i64) {
     sqlx::query("UPDATE tracks SET created_at=?1 WHERE id=?2")
         .bind(created_at)
@@ -168,8 +157,6 @@ async fn mark_all_tasks_as_running(repo: &SqlxRepo, track: &str) {
         .unwrap();
 }
 
-/// Byte-level snapshot of every projected row, the same shape the PR-A
-/// rebuild-stability acceptance uses.
 async fn task_bytes(repo: &SqlxRepo) -> Vec<String> {
     sqlx::query_scalar(
         "SELECT json_object('id',id,'track_id',track_id,'key',key,'kind',kind,'goal',goal, \
@@ -192,14 +179,8 @@ async fn share_of(repo: &SqlxRepo, track: &str) -> TreeShare {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Single source of truth: the budget column lives only on the root.
-// ---------------------------------------------------------------------------
-
-/// POSITIVE assertion on the column, not on "the budget took effect" — with
-/// the kernel default equal to the configured value, a behavioral assertion
-/// would be vacuous. Every track-create path (the `child-track` operation
-/// included) goes through `track_create_tx`.
+/// Assert on the column, not on "the budget took effect": the kernel default
+/// equals the configured value, so a behavioral assertion would be vacuous.
 #[tokio::test]
 async fn every_created_track_lands_a_null_tree_task_budget() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -217,7 +198,6 @@ async fn every_created_track_lands_a_null_tree_task_budget() {
                 .unwrap();
         assert_eq!(budget, None, "track {track} must be born without a budget");
     }
-    // And the column has no DB DEFAULT that a future INSERT could fall into.
     let default: Option<String> = sqlx::query_scalar(
         "SELECT dflt_value FROM pragma_table_info('tracks') WHERE name='tree_task_budget'",
     )
@@ -227,8 +207,6 @@ async fn every_created_track_lands_a_null_tree_task_budget() {
     assert_eq!(default, None);
 }
 
-/// Root-only, enforced by the shared in-tx writer rather than the route, so a
-/// direct repository caller cannot slip a second budget onto a child.
 #[tokio::test]
 async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -261,7 +239,6 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
         .unwrap();
     assert_eq!(budget, None);
 
-    // The same patch on the root succeeds, and a present-null resets it.
     set_tree_budget(&repo, &root, 4).await;
     let budget: Option<i64> = sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
         .bind(&root)
@@ -288,8 +265,6 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
         .unwrap();
     assert_eq!(budget, None);
 
-    // The shared writer, not only the REST route, owns the fixed bound that
-    // keeps whole-tree reprojection from becoming an unbounded writer hold.
     let mut tx = repo.pool().begin().await.unwrap();
     let error = track_update_tx(
         &mut tx,
@@ -305,12 +280,6 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
     assert!(error.to_string().contains("between 0 and 64"), "{error}");
 }
 
-// ---------------------------------------------------------------------------
-// The quota split.
-// ---------------------------------------------------------------------------
-
-/// `Σ share = B` over a REAL tree, including the non-divisible case where the
-/// remainder is handed to a prefix of the `(created_at, id)` order.
 #[tokio::test]
 async fn shares_over_a_real_tree_sum_to_the_budget() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -340,7 +309,6 @@ async fn shares_over_a_real_tree_sum_to_the_budget() {
     }
     assert_eq!(total, 7);
 
-    // The divisible case, same tree.
     set_tree_budget(&repo, &root, 8).await;
     let total: i64 = {
         let mut sum = 0;
@@ -352,18 +320,15 @@ async fn shares_over_a_real_tree_sum_to_the_budget() {
     assert_eq!(total, 8);
 }
 
-/// The quota order itself is part of the split definition. Insertion order is
-/// deliberately the reverse of `created_at`; deleting the ORDER BY must make
-/// this fail instead of inheriting SQLite's current scan order by accident.
+/// Insertion order is deliberately the reverse of `created_at`.
 #[tokio::test]
 async fn quota_remainder_follows_created_at_not_insertion_order() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = seed_area(&repo).await;
     let root = seed_track(&repo, &area, "root-first").await;
     let child = seed_track(&repo, &area, "child-second").await;
-    // Fix ids opposite to created_at order. Without the final ORDER BY,
-    // SQLite is free to return the GROUP BY's id order (`a-child` first), so
-    // the oracle does not depend on today's query plan or random UUIDs.
+    // Fix ids opposite to created_at order so the oracle does not depend on
+    // today's query plan or random UUIDs.
     sqlx::query("UPDATE tracks SET id='z-root' WHERE id=?1")
         .bind(&root)
         .execute(repo.pool())
@@ -383,8 +348,6 @@ async fn quota_remainder_follows_created_at_not_insertion_order() {
     assert_eq!(share_of(&repo, "a-child").await.share, 0);
 }
 
-/// Equal-millisecond creation is common. The secondary id key is therefore a
-/// correctness input, not decorative SQL.
 #[tokio::test]
 async fn quota_remainder_breaks_equal_created_at_ties_by_id() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -410,10 +373,6 @@ async fn quota_remainder_breaks_equal_created_at_ties_by_id() {
     assert_eq!(share_of(&repo, "z-root").await.share, 0);
 }
 
-/// The share is a function of the tree's SHAPE only. Adding pending rows in a
-/// sibling — the projection's own OUTPUT — must not move anybody's share.
-/// This is the property that keeps rebuild ≡ incremental true on a tree; a
-/// shared sibling count would fail it.
 #[tokio::test]
 async fn shares_do_not_move_when_siblings_accumulate_pending_rows() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -432,11 +391,6 @@ async fn shares_do_not_move_when_siblings_accumulate_pending_rows() {
     assert_eq!(after.share, 3);
 }
 
-/// Two rebuild orders over the same tree produce the same rows, byte for byte.
-///
-/// The mutation this buys: replace `share` with a shared count that subtracts
-/// sibling pending rows. Then whichever track projects first takes the whole
-/// budget and the two orders diverge.
 #[tokio::test]
 async fn two_rebuild_orders_over_one_tree_agree_byte_for_byte() {
     async fn run(order: [usize; 2]) -> Vec<String> {
@@ -448,21 +402,18 @@ async fn two_rebuild_orders_over_one_tree_agree_byte_for_byte() {
         stamp_created_at(&repo, &root, 1).await;
         stamp_created_at(&repo, &child, 2).await;
         set_tree_budget(&repo, &root, 4).await;
-        // Both tracks want more than their share of 2.
         let tracks = [root, child];
         let keys: [&[&str]; 2] = [&["a1", "a2", "a3"], &["b1", "b2", "b3"]];
         for index in order {
             project(&repo, &tracks[index], keys[index]).await;
         }
-        // Re-project both in the same order: a rebuild is idempotent.
         for index in order {
             project(&repo, &tracks[index], keys[index]).await;
         }
         let mut rows: Vec<String> = task_bytes(&repo)
             .await
             .into_iter()
-            // Row ids and track ids are random per run; compare the projection
-            // shape (which key landed where) rather than the identifiers.
+            // Row ids and track ids are random per run; compare the projection shape.
             .map(|row| {
                 let mut value: serde_json::Value = serde_json::from_str(&row).unwrap();
                 let object = value.as_object_mut().unwrap();
@@ -471,8 +422,6 @@ async fn two_rebuild_orders_over_one_tree_agree_byte_for_byte() {
                 value.to_string()
             })
             .collect();
-        // Track ids are random per run, so the SQL order is not comparable
-        // across runs; the KEY identifies which track admitted the row.
         rows.sort();
         rows
     }
@@ -483,8 +432,6 @@ async fn two_rebuild_orders_over_one_tree_agree_byte_for_byte() {
     assert_eq!(forward, backward);
 }
 
-/// Projecting the same document twice changes nothing — no row churn, no
-/// second round of kernel events. The tree term must not read its own output.
 #[tokio::test]
 async fn projecting_the_same_document_twice_inside_a_tree_is_identical() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -523,8 +470,6 @@ async fn projecting_the_same_document_twice_inside_a_tree_is_identical() {
     assert_eq!(after_second.len(), 2, "share of 2 admits two of three keys");
 }
 
-/// The rejected declaration is attributed to the TREE, naming the root track —
-/// not to this track's own ceiling, which is not what stopped it.
 #[tokio::test]
 async fn over_share_declarations_are_diagnosed_against_the_root_track() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -569,8 +514,6 @@ async fn over_share_declarations_are_diagnosed_against_the_root_track() {
         "{sentence}"
     );
     assert!(!sentence.contains("elsewhere in the tree"), "{sentence}");
-    // The track's own ceiling is NOT the binding constraint here, so the
-    // ceiling diagnostic must not be what the reader sees.
     assert!(
         !verdicts[1]
             .diagnostics
@@ -605,8 +548,6 @@ async fn zero_share_diagnostic_explains_the_shape_and_effective_actions() {
     assert!(!diagnostic.message.contains("finish"));
 }
 
-/// When the track's own ceiling is the tighter bound, the existing ceiling
-/// diagnostic still wins — the tree code does not swallow it.
 #[tokio::test]
 async fn a_tighter_track_ceiling_still_reports_the_ceiling_diagnostic() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -631,26 +572,9 @@ async fn a_tighter_track_ceiling_still_reports_the_ceiling_diagnostic() {
     );
 }
 
-/// Operability property for capacity diagnostics over a bounded input space.
-///
 /// Exhaust `N=1..=3`, `B=0..=6`, every target member, `ceiling=0..=5`, and
-/// target-member block-in-flight occupancy of either zero or three rows. The
-/// occupancy axis crosses all three documented local relations:
-/// ceiling above, equal to, and below immutable in-flight occupancy. This is
-/// the smallest dense grid that crosses two remainder boundaries for every
-/// supported member count and includes both local and tree self-overage.
-///
-/// The bounded grid deliberately excludes exactly two families, each covered
-/// by a named acceptance below: sibling overage (tree-wide freeze) and the
-/// production maximum (`B=64`) no-solution boundary. Exhaustive dimensions
-/// must be derived from the design's declared state set; any excluded family
-/// must be listed here with its independent acceptance, rather than selected
-/// from states the implementation happens to produce.
-///
-/// Perform every capacity action named on each rejection, using the minimum
-/// tree target carried by the diagnostic, then the SAME member/report must
-/// admit more declarations. The assertion is deliberately on the effect, not
-/// on which code or prose happens to describe it.
+/// target occupancy of zero or three rows. Sibling overage and the `B=64`
+/// no-solution boundary are excluded here and covered by named cases below.
 #[tokio::test]
 async fn the_diagnosed_capacity_action_increases_admission() {
     async fn project_and_capacity_diagnostics(
@@ -826,9 +750,6 @@ async fn the_diagnosed_capacity_action_increases_admission() {
     );
 }
 
-/// At the product maximum there may be no legal B that gives the target one
-/// more slot. The diagnostic must not advertise an impossible PATCH, whether
-/// the tree is ordinarily full or frozen by immutable in-flight occupancy.
 #[tokio::test]
 async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
     async fn rejected_tree_diagnostic(
@@ -937,9 +858,6 @@ async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
     );
 }
 
-/// The exhaustive grid owns all documented local occupancy relations. This
-/// focused wiring case also pins the exact recovery targets and server prose
-/// when the configured ceiling is below nonzero in-flight occupancy.
 #[tokio::test]
 async fn a_frozen_track_with_nonzero_ceiling_occupancy_names_both_bounds() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1026,20 +944,12 @@ async fn a_frozen_track_with_nonzero_ceiling_occupancy_names_both_bounds() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Fail-closed root resolution and bounded singleton evaluation.
-// ---------------------------------------------------------------------------
-
-/// A track whose root cannot be resolved gets NOTHING scheduled. "No resolvable
-/// tree ⇒ skip the tree term" would leave the whole subtree unbounded, which is
-/// the single outcome the tree budget exists to prevent.
 #[tokio::test]
 async fn unresolvable_root_fails_closed_for_every_declaration() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = seed_area(&repo).await;
     let a = seed_track(&repo, &area, "a").await;
     let b = seed_track(&repo, &area, "b").await;
-    // A 2-cycle: neither track has a NULL-parent ancestor.
     link(&repo, &a, &b).await;
     link(&repo, &b, &a).await;
 
@@ -1065,13 +975,10 @@ async fn unresolvable_root_fails_closed_for_every_declaration() {
         );
     }
 
-    // And the write path materializes nothing.
     project(&repo, &a, &["k1", "k2"]).await;
     assert!(task_bytes(&repo).await.is_empty());
 }
 
-/// Root failure closes tree admission without skipping the independent §6.5
-/// withdrawal/read-state path.
 #[tokio::test]
 async fn unresolved_root_preserves_withdrawal_and_deleted_block_read_verdicts() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1117,8 +1024,6 @@ async fn unresolved_root_preserves_withdrawal_and_deleted_block_read_verdicts() 
     );
 }
 
-/// A chain deeper than the legal bound is also unresolvable, not "rooted at
-/// whatever the truncated walk happened to reach".
 #[tokio::test]
 async fn an_over_deep_chain_fails_closed() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1143,7 +1048,6 @@ async fn an_over_deep_chain_fails_closed() {
     );
 }
 
-/// A binding singleton budget is still N=1 and share=B.
 #[tokio::test]
 async fn an_explicit_budget_applies_to_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1171,8 +1075,7 @@ async fn an_explicit_budget_applies_to_a_singleton_root() {
     ));
 }
 
-/// A present-null ceiling means the kernel default (32), not zero; with B=1
-/// the tree term therefore remains binding.
+/// A present-null ceiling means the kernel default (32), not zero.
 #[tokio::test]
 async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1221,10 +1124,8 @@ async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
     ));
 }
 
-/// Truth-layer fail-closed behavior for a pre-existing overage. Raw SQL builds
-/// this state so the occupancy subtraction remains directly testable; the
-/// production tree-budget PATCH rejects this input atomically and cannot
-/// commit the degraded state.
+/// Raw SQL builds the overage: the production tree-budget PATCH rejects this
+/// input atomically and cannot commit the degraded state.
 #[tokio::test]
 async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1234,8 +1135,6 @@ async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
     set_tree_budget(&repo, &root, 3).await;
     project(&repo, &root, &["in-flight-a", "in-flight-b", "in-flight-c"]).await;
     mark_all_tasks_as_running(&repo, &root).await;
-    // This is the degraded state under test: K=3 pre-existing in-flight rows
-    // meet a newly effective B=2.
     sqlx::query("UPDATE tracks SET tree_task_budget=2 WHERE id=?1")
         .bind(&root)
         .execute(repo.pool())
@@ -1309,8 +1208,6 @@ async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
     );
 }
 
-/// r6 B1/codex construction: a default-budget singleton with two existing
-/// live rows must not stack 31 new block rows on top and commit 33 > B=32.
 #[tokio::test]
 async fn singleton_default_budget_counts_in_flight_occupancy_before_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1336,8 +1233,6 @@ async fn singleton_default_budget_counts_in_flight_occupancy_before_admission() 
     assert_eq!(new_rows, 30, "in-flight occupancy must consume two of B=32");
 }
 
-/// r6 B1/subagent construction: B=6, ceiling=8 and four existing live rows
-/// leave exactly two slots; the report must not admit all four new keys.
 #[tokio::test]
 async fn singleton_explicit_budget_counts_in_flight_occupancy_before_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1366,9 +1261,6 @@ async fn singleton_explicit_budget_counts_in_flight_occupancy_before_admission()
     assert_eq!(new_rows, 2, "in-flight occupancy must leave only B-K slots");
 }
 
-/// The overage freeze is tree-wide, not merely local to the member carrying
-/// excess in-flight rows. With K=B but root fixed occupancy 5 > share 4, the
-/// child must not use its otherwise-free fourth slot and push Σ to 9.
 #[tokio::test]
 async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1470,9 +1362,8 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     }
     drop(conn);
 
-    // A sibling's overage freezes the tree even though this target has unused
-    // share. A zero local ceiling is another binding setting, but not a tie:
-    // its copy must name the freeze without claiming this track's share is full.
+    // A zero local ceiling is another binding setting, but not a tie: its copy
+    // must name the freeze without claiming this track's share is full.
     set_ceiling(&repo, &child, 0).await;
     let mut conn = repo.pool().acquire().await.unwrap();
     let frozen_at_zero = evaluate_schedulability(
@@ -1610,9 +1501,6 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     );
 }
 
-/// Equal creation timestamps deliberately fall through to the persisted id
-/// order. When the child id sorts first it receives B=9's remainder, leaving
-/// the root's five in-flight rows over its share until B reaches 10.
 #[tokio::test]
 async fn equal_created_at_with_child_id_first_requires_ten_to_unfreeze() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1684,8 +1572,6 @@ async fn equal_created_at_with_child_id_first_requires_ten_to_unfreeze() {
     );
 }
 
-/// PATCH back to NULL restores the kernel default; it does not remove the
-/// bound. Both enforcement points must therefore read B=32 for this track.
 #[tokio::test]
 async fn resetting_an_explicit_budget_to_null_keeps_the_default_bound() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1745,13 +1631,8 @@ async fn resetting_an_explicit_budget_to_null_keeps_the_default_bound() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// The downward CTE's termination guard.
-// ---------------------------------------------------------------------------
-
-/// A downward 2-cycle terminates fast. Deleting `WHERE down.depth <= ?2` from
-/// the descendant CTE hangs this test instead of failing it — which is exactly
-/// why the static gate in `track_tree.rs` exists alongside it.
+/// Deleting `WHERE down.depth <= ?2` from the descendant CTE hangs this test
+/// instead of failing it.
 #[tokio::test]
 async fn a_downward_two_cycle_terminates_quickly() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1763,8 +1644,8 @@ async fn a_downward_two_cycle_terminates_quickly() {
 
     let started = Instant::now();
     let mut conn = repo.pool().acquire().await.unwrap();
-    // Enumerate members starting AT the cycle, bypassing root resolution so
-    // the descendant walk itself is what has to terminate.
+    // Start AT the cycle, bypassing root resolution, so the descendant walk itself
+    // is what has to terminate.
     let members: Vec<(String, i64)> = sqlx::query_as(super::track_tree::TRACK_TREE_MEMBERS_SQL)
         .bind(&a)
         .bind(MAX_TRACK_TREE_DEPTH + 1)
@@ -1781,7 +1662,6 @@ async fn a_downward_two_cycle_terminates_quickly() {
 
 #[test]
 fn share_helper_matches_the_documented_formula() {
-    // floor(B/N) with the remainder on a prefix of the order.
     assert_eq!(deterministic_share(7, 4, 0), 2);
     assert_eq!(deterministic_share(7, 4, 3), 1);
     assert_eq!(deterministic_share(0, 4, 0), 0);

@@ -54,8 +54,7 @@ pub struct TerminalAdapter {
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     spawn_hook: Option<SpawnHook>,
-    /// #1620 — how a `planner_hooks` terminal gets its generated settings
-    /// file and bridge env. `None` refuses such requests explicitly.
+    /// `None` refuses `planner_hooks` terminal requests explicitly.
     hook_settings: Option<TerminalHookSettings>,
 }
 
@@ -99,7 +98,6 @@ impl TerminalAdapter {
         }
     }
 
-    /// #1620 — enable `planner_hooks` terminal creation.
     pub fn with_hook_settings(mut self, hook_settings: Option<TerminalHookSettings>) -> Self {
         self.hook_settings = hook_settings;
         self
@@ -165,26 +163,13 @@ impl TerminalWorkerAdapter {
 pub struct TerminalCreateOperationPayload {
     pub actor: ActorId,
     #[serde(default)]
-    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
-    /// but leaves `operations.payload_json` alone — see that migration's §4.
-    /// The `rename` is the load-bearing half: an operation parked across a
-    /// restart is resumed by re-reading its stored payload, and without the
-    /// rename a row that stores a real id under the frozen key would
-    /// deserialize to `None`, so the `unwrap_or_else(new_id)` below would mint
-    /// a FRESH session id for a row that already had one.
+    /// Wire key frozen as `runtime_id`: stored payloads keep it, and without the rename a parked operation would resume with a fresh session id.
     #[serde(rename = "runtime_id")]
     pub worker_session_id: Option<String>,
-    /// #1620 — set only by `calm.terminal.open`: the adapter derives the
-    /// generated hook env and settings file from the card id it allocates
-    /// (see `crate::terminal_hooks`). REST-created terminals leave it false
-    /// and get exactly the env they asked for.
+    /// Set only by `calm.terminal.open`; REST-created terminals leave it false and get exactly the env they asked for.
     #[serde(default)]
     pub planner_hooks: bool,
-    /// #1704 S1 — set only by `calm.terminal.open` when the Planner declared
-    /// a scope (validated by the handler): rendered against the resolved cwd
-    /// in `prepare_tx`, stamped on the card and persisted in the spawn
-    /// output. Wire key frozen as `claude_permissions`; absent from every
-    /// stored payload of a non-scoped open.
+    /// Set only by `calm.terminal.open` when the Planner declared a scope. Wire key frozen as `claude_permissions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_permissions: Option<ClaudePermissionsScope>,
     #[serde(flatten)]
@@ -228,11 +213,6 @@ pub fn normalize_terminal_create_request(
 
 /// The cwd the caller actually named, or `None` when it named none — an absent
 /// field and a blank string are the same request.
-///
-/// #1147 S6 — this used to fall back to `$HOME` here. The default is no longer
-/// a process-environment constant: it is the track's workspace, and only
-/// [`terminal_cwd_or_track_workspace`] can resolve it, because that needs the
-/// transaction.
 pub(crate) fn explicit_terminal_cwd(cwd: Option<String>) -> Option<String> {
     cwd.as_deref()
         .map(str::trim)
@@ -240,24 +220,8 @@ pub(crate) fn explicit_terminal_cwd(cwd: Option<String>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// #1147 S6 — resolve a terminal card's working directory: whatever the caller
-/// named, else **the track's workspace**.
-///
-/// This is the slice's whole point. Design §产品契约 says every track owns a
-/// repository; before S6 nothing made that true at a terminal prompt, because
-/// both terminal paths fell back to `$HOME` and never read
-/// `tracks.workspace_path`. A user who opened a terminal in a track landed
-/// outside the track's repository — the same "the track is not where you think it
-/// is" defect #1147 was opened on, one layer up.
-///
-/// Read inside the transaction that is about to write the terminal row, so the
-/// path cannot move between the read and the write (the row creation freezes
-/// the workspace in that same transaction).
-///
-/// An empty stored path is refused rather than silently falling back. Every
-/// track has had a materialized workspace since S2, so an empty one means the
-/// row is broken; inheriting the server's cwd instead is exactly how #1147's
-/// original `spawn-failed` reached a user with no explanation.
+/// Resolve a terminal card's cwd: whatever the caller named, else the track's workspace.
+/// Read inside the transaction that writes the terminal row so the path cannot move between read and write; an empty stored path is refused rather than falling back.
 pub(crate) async fn terminal_cwd_or_track_workspace(
     tx: &mut Tx<'_>,
     track_id: &str,
@@ -310,9 +274,7 @@ impl ProviderAdapter for TerminalAdapter {
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         let program = payload.request.program.clone();
         let card_id = new_id();
-        // #1620 — the generated hook env depends on the card id allocated
-        // here, so it is derived here and persisted identically in the
-        // terminal row and the spawn output; the request env stays as sent.
+        // The hook env depends on the card id allocated here; it is persisted identically in the terminal row and the spawn output.
         let env = if payload.planner_hooks {
             let settings = self.hook_settings.as_ref().ok_or_else(|| {
                 CalmError::Internal(
@@ -326,26 +288,14 @@ impl ProviderAdapter for TerminalAdapter {
         };
         let runtime_id = payload.worker_session_id.clone().unwrap_or_else(new_id);
         let track_id = payload.request.track_id.clone();
-        // #1147 S6 — an empty request `cwd` means "the track's workspace". It is
-        // resolved here rather than in `normalize_terminal_create_request` for
-        // the same reason the dispatcher keeps `cwd: None` on the terminal-worker
-        // payload (see `scheduler::build_*_payload`): materializing a default
-        // into the operation payload puts it into `stable_payload_hash`.
+        // An empty request `cwd` is resolved here, not in normalization: a default materialized into the operation payload would enter `stable_payload_hash`.
         let cwd = terminal_cwd_or_track_workspace(
             tx,
             &track_id,
             explicit_terminal_cwd(Some(payload.request.cwd.clone())),
         )
         .await?;
-        // #1704 S1 — the declared scope is rendered against the resolved cwd
-        // here, before any row exists: a cwd that cannot be written into a
-        // rule refuses the open and the transaction rolls back. S2 — the
-        // Track tree's policy is read on this same write transaction (the
-        // handler's pre-check is a courtesy; this re-check is the verdict:
-        // a policy narrowed between the two is refused here, `BadRequest` →
-        // the operation fails from Pending, no row, no file) and merged with
-        // the declaration into the ONE scope rendered. Only a Planner open
-        // reads the policy: REST terminal cards and task terminals never do.
+        // The Track policy is re-read on this write transaction and merged with the declaration; a policy narrowed since the handler's pre-check is refused here. Only a Planner open reads the policy.
         let ceiling = if payload.planner_hooks {
             track_claude_permissions_ceiling_read(tx, &track_id).await?
         } else {
@@ -380,14 +330,9 @@ impl ProviderAdapter for TerminalAdapter {
             true,
             &self.card_role_cache,
             payload.request.theme,
-            // #1620 — the durable provenance marker the hook ingest route
-            // keys on; stamped in the same transaction as the card.
             payload.planner_hooks,
         )
         .await?;
-        // #1704 S1 — the effective block goes onto the card in the same
-        // transaction; the stamped card is what the CardAdded event, the
-        // broadcast projection and the saved result carry.
         let card = match &claude_permissions {
             Some((block, source)) => {
                 card_stamp_claude_permissions_tx(tx, &card, serde_json::to_value(block)?, *source)
@@ -425,10 +370,7 @@ impl ProviderAdapter for TerminalAdapter {
             "planner_hooks": payload.planner_hooks,
         });
         if let Some((block, source)) = &claude_permissions {
-            // The recovery input of `spawn_side_effect`: a restart rewrites
-            // the settings file from this persisted block, never from the
-            // card or the request. The source rides beside it (S2) for the
-            // audit trail; `spawn_side_effect` never reads it.
+            // Recovery input of `spawn_side_effect`: a restart rewrites the settings file from this persisted block, never from the card or the request.
             output.data["claude_permissions"] = serde_json::to_value(block)?;
             output.data[TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY] = json!(source.as_str());
         }
@@ -469,10 +411,7 @@ impl ProviderAdapter for TerminalAdapter {
         let program = output.output_string("program", "terminal")?;
         let cwd = output.output_string("cwd", "terminal")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
-        // #1620 — the settings file must exist before the child starts, and
-        // operation recovery re-runs this step, so it is (re)written here
-        // rather than by the MCP handler (mkdir → write → spawn, like the
-        // Claude card adapter).
+        // The settings file must exist before the child starts, and operation recovery re-runs this step, so it is (re)written here rather than by the MCP handler.
         if output.data.get("planner_hooks").and_then(Value::as_bool) == Some(true) {
             let settings = self.hook_settings.as_ref().ok_or_else(|| {
                 CalmError::Internal(
@@ -480,8 +419,6 @@ impl ProviderAdapter for TerminalAdapter {
                         .into(),
                 )
             })?;
-            // #1704 S1 — the declared scope, if any, travels in the persisted
-            // output; a present but malformed block fails closed.
             let permissions: Option<EffectiveClaudePermissions> = output
                 .data
                 .get("claude_permissions")
@@ -732,16 +669,11 @@ impl ProviderAdapter for TerminalWorkerAdapter {
     ) -> Result<TxOutput> {
         let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
         super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
-        // #1149 — title the worker card after its task key. Derived from
-        // the `tasks` row inside this tx (never carried on the payload,
-        // which would move `stable_payload_hash`), and fail-soft: `None`
-        // just leaves the card untitled.
+        // Derived from the `tasks` row inside this tx (never carried on the payload, which would move `stable_payload_hash`); `None` leaves the card untitled.
         let card_title = super::task_key_for_card_title(tx, &payload.idempotency_key).await;
         let card_id = new_id();
         let runtime_id = new_id();
         let track_id = TrackId::from(payload.track_id.clone());
-        // #1147 S6 — the task row's cwd if it named one, else the track's
-        // workspace (was `$HOME`).
         let cwd = terminal_cwd_or_track_workspace(
             tx,
             &payload.track_id,
@@ -1103,10 +1035,7 @@ fn normalize_program(program: String) -> String {
     }
 }
 
-/// #1147 S6 — trim only. An empty cwd stays empty all the way into the
-/// operation payload and is resolved to the track's workspace inside
-/// `prepare_tx` (`terminal_cwd_or_track_workspace`). Filling `$HOME` in here
-/// would bake the server's environment into `stable_payload_hash`.
+/// Trim only: an empty cwd is resolved to the track's workspace inside `prepare_tx`; filling `$HOME` here would bake the server's environment into `stable_payload_hash`.
 fn normalize_cwd(cwd: String) -> String {
     cwd.trim().to_string()
 }

@@ -12,24 +12,13 @@ use serde_json::json;
 use support::mcp::{CardBoot, boot_with_role, wait_for_kind};
 
 fn neige_bin() -> PathBuf {
-    // Never set in practice: cargo only injects CARGO_BIN_EXE_* for bins of
-    // the package under test (calm-server), and `neige` lives in the separate
-    // neige-cli package. Kept in case the bin ever moves in-package.
+    // Never set in practice: cargo only injects CARGO_BIN_EXE_* for bins of the package under test, and `neige` lives in neige-cli.
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_neige") {
         return PathBuf::from(path);
     }
 
-    // cargo puts workspace bins next to the integration-test binary
-    // (target/{debug,release}/neige), so a workspace test build has already
-    // produced it — short-circuit before shelling out to cargo build.
-    //
-    // CI-only: exists() proves neither provenance nor freshness. In GHA
-    // (CI=true is always set) the workspace-level test build runs first in
-    // the same invocation, so the sibling bin is guaranteed current. Locally
-    // a developer may edit neige-cli and then run only this test file — that
-    // build doesn't touch neige-cli (not a calm-server dependency), and the
-    // short-circuit would silently pick up a stale bin. So unless CI=true we
-    // keep the original semantics: always rebuild via the cargo fallback.
+    // Under CI=true the workspace test build has already produced target/{debug,release}/neige, so use the sibling
+    // bin; locally a stale bin could be picked up (neige-cli is not a calm-server dependency), so always rebuild.
     if std::env::var("CI").is_ok_and(|v| v == "true") {
         let mut candidate = std::env::current_exe().expect("current_exe");
         candidate.pop(); // .../deps/

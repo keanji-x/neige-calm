@@ -69,10 +69,7 @@ func start(dir string) string {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return failure(err)
 	}
-	// tsnet accepts an explicit state directory, but its Android socket logger
-	// still calls logpolicy.LogsDir without that option. Bridge our explicit,
-	// app-private directory to the upstream setting before creating the node.
-	// Never use /tmp, the process working directory, or change HOME on Android.
+	// tsnet's Android socket logger calls logpolicy.LogsDir regardless of the explicit state directory; bridge the app-private directory to it. Never use /tmp or change HOME on Android.
 	logsDir := filepath.Join(dir, "logs")
 	if err := os.MkdirAll(logsDir, 0700); err != nil {
 		return failure(err)
@@ -104,9 +101,7 @@ func start(dir string) string {
 	return encoded(map[string]any{"ok": true})
 }
 
-// A failed tsnet.Start must release the partially created writer before retry.
-// This flight is independent of JNI status/proxy calls and can never block the
-// Java command worker or installation of the exact-origin loopback fence.
+// A failed tsnet.Start must release the partially created writer before retry; this flight must never block the Java command worker.
 func (e *engine) startNode() {
 	e.mu.Lock()
 	if e.ready || e.starting {

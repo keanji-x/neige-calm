@@ -34,8 +34,7 @@ function task(overrides: Partial<ReportTaskRow> = {}): ReportTaskRow {
   };
 }
 
-/** Every worker card the tasks name, which is what these cases mean by
- *  "a card is running the task" unless one says otherwise (#1722 S2b r5). */
+/** Every worker card the tasks name — what these cases mean by "a card is running the task". */
 function everyWorkerOf(tasks: readonly ReportTaskRow[]): ReadonlySet<string> {
   return new Set(tasks.flatMap((entry) => {
     const workerCardId = entry.execution === undefined ? entry.workerCardId : entry.execution.workerCardId;
@@ -75,7 +74,6 @@ describe('deriveTrackPageView cards', () => {
     expect(row.kind).toBe('shell');
   });
 
-  /* §5.1 — mutation: make `kind` unconditional. */
   it('gives an untitled card no separate kind field: its kind is already its name', () => {
     const [row] = cardsModule([card({ title: null, kind: 'harness' })]).rows;
 
@@ -83,7 +81,6 @@ describe('deriveTrackPageView cards', () => {
     expect(row.kind).toBeNull();
   });
 
-  /* §5.2 — mutation: invert the `deletable` test. */
   it('badges a kernel-owned card, and only a kernel-owned one', () => {
     const [owned, user] = cardsModule([
       card({ id: 'card-owned', deletable: false }),
@@ -124,21 +121,7 @@ describe('deriveTrackPageView cards', () => {
     ]);
   });
 
-  /*
-   * The four control sentences (§Δ1), pinned per row.
-   *
-   * They existed only in `public.tsx` until this slice; with two painters
-   * about to be written, wording that is not in the view model is wording each
-   * painter invents for itself — which is precisely how the mobile surface
-   * ended up with no status wording at all.
-   *
-   * `label` and `hint` are asserted **separately and on both sides of null**,
-   * because they are two channels on purpose (WCAG 2.5.3; the painter's
-   * `wording` in `track/page/desktop-painter.tsx` emits each one separately, and
-   * emits neither for a null):
-   * a control with visible text must get no `aria-label`, and asserting only
-   * "some string reaches the control" would not see the two channels swapped.
-   */
+  /* `label` and `hint` are asserted separately and on both sides of null: two channels on purpose (WCAG 2.5.3). */
   it('gives the Cards row body neither an accessible name nor a hint: it has visible text', () => {
     const [row] = cardsModule([card({ title: 'Main pane' })]).rows;
     const [open] = row.actions;
@@ -157,10 +140,6 @@ describe('deriveTrackPageView cards', () => {
     expect(remove.hint).toBe('Delete card');
   });
 
-  /* The delete label uses the name the row actually prints — for an untitled
-     card that is the kind, which is exactly the `title ?? card.kind` the track
-     page's Cards row printed before this slice and that `cardRow` here derives
-     into `row.title` now. */
   it('falls back to the printed name — the kind — when the card has no title', () => {
     const [row] = cardsModule([card({ title: null, kind: 'harness', deletable: true })]).rows;
     const remove = row.actions[1];
@@ -213,12 +192,6 @@ describe('deriveTrackPageView tasks', () => {
     ]);
   });
 
-  /*
-   * Both Task-row controls wrap visible text — the reveal button and the kind
-   * button in `track/page/desktop-painter.tsx`'s `taskRow` — so
-   * neither may carry an `aria-label`; each carries only a pointer `title`
-   * naming its destination.
-   */
   it('keeps the task reveal quiet and gives only the worker control a destination hint', () => {
     const [row] = tasksModule([
       task({ key: 'gate-alpha', kind: 'codex', workerCardId: 'card-9' }),
@@ -231,12 +204,6 @@ describe('deriveTrackPageView tasks', () => {
     expect(open.hint).toBe('Open the worker card for gate-alpha');
   });
 
-  /*
-   * The wording is **not a function of `kind`**: the same `open-card` reads
-   * `Open the worker card for …` on a Task row and has no wording at all on a
-   * Cards row. A painter that looked its sentences up per kind would collapse
-   * these two, so the difference is pinned as its own obligation.
-   */
   it('words `open-card` differently on a Task row than on a Cards row', () => {
     const [cardsRow] = cardsModule([card({ id: 'card-9', title: 'Main pane' })]).rows;
     const [tasksRow] = tasksModule([
@@ -251,17 +218,8 @@ describe('deriveTrackPageView tasks', () => {
     expect(fromCards?.hint).not.toBe(fromTasks?.hint);
   });
 
-  /*
-   * The desktop's outer test, which the derivation must copy even though the
-   * upstream never produces this row: `report.ts` ties `kind === null` to
-   * withdrawn/unreadable/tombstoned and gives those states a null
-   * `workerCardId`, so this input is production-unreachable. It is asserted
-   * anyway because the rule being copied is the page's two-level condition
-   * (`kind !== null` **and** a worker card, now `taskRow`'s two conditions in
-   * `track/page/desktop-painter.tsx`), not the upstream's invariant — a derivation that
-   * only tested `workerCardId` would be right by coincidence and would hand
-   * S1b's painters an action the page never draws.
-   */
+  /* Production-unreachable input (`report.ts` nulls `workerCardId` whenever `kind` is null); asserted because
+   * the copied rule is the page's two-level condition, not the upstream's invariant. */
   it('offers no worker card when the task declares no kind, whatever the card id says', () => {
     const [row] = tasksModule([
       task({ blockId: 'b-k', key: 'k-k', kind: null, workerCardId: 'card-9' }),
@@ -276,19 +234,8 @@ describe('deriveTrackPageView tasks', () => {
     }]);
   });
 
-  /*
-   * #1722 S2b r5 (Codex P2) — identity and openability are two facts. The
-   * worker card id keys the row's activity verdict (INV-APP-118, §4.2 W) and
-   * its `open-card` action; only the action is gated on the registry being
-   * able to draw the card. `app/router` used to null the id for an unopenable
-   * worker, which erased the verdict along with the control, while the Cards
-   * module (INV-CARD-226 keeps such a card listed) still showed it.
-   *
-   * The r5 mutation (manifest `s2b-task-row-loses-worker-identity`): look the
-   * verdict up through the openable subset (`openableCards.has(id) ? id :
-   * null`), or null the id upstream again — the first expectation below goes
-   * red; the twin stays green.
-   */
+  /* Identity and openability are two facts: the worker card id keys the activity verdict, only the
+   * `open-card` action is gated on the registry being able to draw the card. */
   it('keeps the worker’s identity for the activity verdict when the card is not openable, and only drops the control', () => {
     const activity: TrackPageActivity = { cards: { 'card-9': 'failed', 'card-7': 'working' } };
     const [failed, working] = tasksModule([
@@ -344,19 +291,8 @@ describe('deriveTrackPageView tasks', () => {
     expect(row.actions[0]?.description).toBe('pending — Queued 1/1');
   });
 
-  /*
-   * §5.3 — the declaration/status precedence.
-   *
-   * `deriveReportTasks` already guarantees a row never carries both, so a
-   * mutation that *re-applies* that rule here (drop the declaration badge when
-   * a status exists) is invisible against production-shaped input: it agrees
-   * with the upstream on every row the upstream can produce. The property that
-   * is actually load-bearing at this layer is therefore the negative one — this
-   * derivation holds **no** precedence of its own — and pinning it needs a row
-   * the upstream would not emit. That is the point: the day the join changes
-   * its mind, the panel must follow it rather than out-vote it in a second
-   * place.
-   */
+  /* `deriveReportTasks` never emits a row with both, so the load-bearing property here is the negative one:
+   * this derivation holds no precedence of its own. */
   it('reads declaration and status independently, imposing no precedence of its own', () => {
     const [row] = tasksModule([task({
       declaration: 'Not ready',
@@ -384,7 +320,6 @@ describe('deriveTrackPageView tasks', () => {
     expect(row.status).toBeNull();
   });
 
-  /* §5.4 — mutation: drop `statusDetail`. */
   it('keeps the kernel’s reason in the phrase while the token stays the bare word', () => {
     const [row] = tasksModule([task({ status: 'failed', statusDetail: 'track is not a git repository' })]).rows;
 
@@ -395,8 +330,6 @@ describe('deriveTrackPageView tasks', () => {
   });
 });
 
-/* §5.5 — mutation: drop the ` — detail` join. Same site as §5.4 when exercised
-   through the derivation, so the wording is pinned at its own function too. */
 describe('taskStatusPhrase', () => {
   it('is the bare status when the kernel gave no reason', () => {
     expect(taskStatusPhrase('running', null)).toBe('running');
@@ -407,11 +340,7 @@ describe('taskStatusPhrase', () => {
   });
 });
 
-/* The card's task status is keyed by the worker's *identity*, so it holds for
-   a card the board cannot draw too (`openableCards` empty here) — INV-CARD-226
-   lists that card, and which task ran on it is not a question of openability
-   (#1722 S2b r5). Mutation: fold `taskStatusByCard` over the `open-card`
-   actions again → `running`. */
+/* The card's task status is keyed by the worker's identity, so it holds for a card the board cannot draw too. */
 it('groups a completed task’s card as completed even while its worker process remains alive', () => {
   const view = deriveTrackPageView({
     cards: [card({ id: 'finished-worker', runtime: { worker_session_id: 'runtime', kind: 'codex', status: 'running' } })],

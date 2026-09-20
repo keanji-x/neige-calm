@@ -1,7 +1,4 @@
-//! #1628 S2 — the resolver driven directly (`enqueue` + `resolve`), design
-//! §6 A5 (call-side), A7, A7b, A8, A9b, A9c, A11 (read-only refusal), A13,
-//! A20. Lane mechanics are in `report_series_lanes.rs`, the reply checklist
-//! in `report_series_checklist.rs`.
+//! The series resolver driven directly (`enqueue` + `resolve`).
 
 #![cfg(unix)]
 
@@ -21,11 +18,6 @@ fn wrote(status: &str, pinned: bool) -> ResolveOutcome {
         pinned,
     }
 }
-
-// ---------------------------------------------------------------------------
-// A5 — hung / erroring / malformed replies land `unavailable` with distinct
-// reasons
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn resolve_marks_a_hung_plugin_unavailable() {
@@ -97,10 +89,6 @@ async fn resolve_marks_error_and_malformed_replies_unavailable() {
     assert_eq!(fx.call_count(), 2);
 }
 
-// ---------------------------------------------------------------------------
-// A7 — the first complete frozen resolution pins; nothing overwrites it
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -117,13 +105,8 @@ async fn frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten
         ok_series("US:NVDA", "2026-09-14", &[("2026-08-11", 7.0), ("2026-09-10", 8.0)]),
         ok_series("HK:9988", "2026-09-14", &[("2026-08-11", 70.0), ("2026-09-10", 80.0)]),
     ]});
-    // Two independent resolvers so two jobs for ONE key exist at once (the
-    // in-flight set would otherwise coalesce them). The order is forced by
-    // events, not by delays: job 1 runs first and is parked by the
-    // `hold_before_write` seam with reply A validated and its row built;
-    // job 2 then runs to completion (admission sees no row, the plugin
-    // answers B, the write pins); job 1 is released last, so its write is
-    // the LATER one whatever the scheduler does.
+    // Two independent resolvers so two jobs for ONE key exist at once (the in-flight set would
+    // otherwise coalesce them). Job 1 is parked at `hold_before_write`; job 2 runs to completion; job 1 is released last.
     let second = SeriesResolver::new_unstarted(fx.boot.repo.sqlite_pool())
         .with_now(std::sync::Arc::new(|| T0_MS));
     fx.program(json!({ "mode": "sequence", "replies": [
@@ -145,8 +128,6 @@ async fn frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten
     fx.resolver().failpoints.hold_before_write();
     let resolver_1 = fx.resolver().clone();
     let resolving_1 = tokio::spawn(async move { resolver_1.resolve(job_1).await });
-    // Request 1 reached the plugin (so it is the one answered with A) and
-    // job 1 is parked at its write.
     fx.wait_for_calls(1, Duration::from_secs(5)).await;
     let failpoints = &fx.resolver().failpoints;
     wait_until(
@@ -184,8 +165,6 @@ async fn frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten
         "job 1's later write did not overwrite the pinned row (byte-identical)"
     );
 
-    // A third resolution with different data: admission drops it (pinned),
-    // and even a job that reached the write could not overwrite.
     let (enqueued, outcomes) = fx.resolve_block(&block_id).await;
     assert_eq!(enqueued, Enqueue::Queued);
     assert_eq!(
@@ -200,11 +179,6 @@ async fn frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten
     assert_eq!(fx.call_count(), 2, "no third call");
 }
 
-// ---------------------------------------------------------------------------
-// A7b — a reply whose `complete_through` is not strictly past the cutoff
-// is not pinned; the next resolution that is, pins
-// ---------------------------------------------------------------------------
-
 async fn frozen_not_pinned_then_pinned(as_of: &str) {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
     let block_id = fx
@@ -212,8 +186,7 @@ async fn frozen_not_pinned_then_pinned(as_of: &str) {
             "source": SOURCE, "series": ["US:NVDA"], "range": "1M", "as_of": as_of
         }))
         .await;
-    // Source's latest daily bar is Friday 2026-09-11; Friday's bar itself has
-    // no later bar proving it closed, so the reply stops at Thursday.
+    // Friday's bar has no later bar proving it closed, so the reply stops at Thursday.
     fx.reply_structured(json!({ "series": [
         ok_series("US:NVDA", "2026-09-11", &[("2026-09-09", 1.0), ("2026-09-10", 2.0)])
     ]}));
@@ -233,15 +206,13 @@ async fn frozen_not_pinned_then_pinned(as_of: &str) {
         json!(["2026-09-10", 2.0])
     );
 
-    // Fresh (all-ok, 6h): enqueue is a no-op at admission.
     assert_eq!(
         fx.resolve_block(&block_id).await.1,
         vec![ResolveOutcome::Dropped("row is fresh or pinned".into())]
     );
     assert_eq!(fx.call_count(), 1);
 
-    // TTL expired: the enqueue is not a no-op any more. Monday's bar is out,
-    // so Friday's bar is proven closed and included; the row pins.
+    // TTL expired: Monday's bar is out, so Friday's bar is proven closed and included; the row pins.
     fx.advance_clock(SERIES_TTL_MS + 1);
     fx.reply_structured(json!({ "series": [
         ok_series("US:NVDA", "2026-09-14", &[
@@ -270,10 +241,6 @@ async fn frozen_reply_behind_cutoff_is_not_pinned() {
     frozen_not_pinned_then_pinned("2026-09-13").await;
 }
 
-// ---------------------------------------------------------------------------
-// A8 — live rows: stale-while-revalidate, yesterday-UTC cutoff, as_of moves
-// ---------------------------------------------------------------------------
-
 struct LiveRun {
     fx: SeriesFixture,
     block_id: String,
@@ -282,11 +249,8 @@ struct LiveRun {
     refresh_outcomes: Vec<ResolveOutcome>,
 }
 
-/// Day one at `T0` (Monday 2026-09-14 12:00Z, yesterday = 09-13): resolve a
-/// live 1Y daily block. Day two (`T0 + 1d`, yesterday = 09-14): the row is
-/// older than its TTL, a read serves it and enqueues, the plugin has one
-/// more bar (dated 09-14, `complete_through` 09-14 — equal, which the
-/// `live ∧ day` branch accepts), the job refreshes the row.
+/// Day one at `T0` (Monday, yesterday = 09-13): resolve a live 1Y daily block. Day two (`T0 + 1d`):
+/// the row is older than its TTL; a read serves it and enqueues; the plugin has one more bar and the job refreshes the row.
 async fn live_two_days() -> LiveRun {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
     let block_id = fx
@@ -383,16 +347,11 @@ async fn live_daily_row_includes_yesterday() {
     assert_eq!(row.summary_json()["series"][0]["last"][0], "2026-09-14");
 }
 
-// ---------------------------------------------------------------------------
-// A9b — admission runs the row TTL
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn fresh_row_is_not_re_resolved_by_late_reader() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
     let block_id = fx.write_series_block(seam_fixture()["block"].clone()).await;
-    // A frozen reply that does NOT pin (complete_through == as_of), so the
-    // only thing standing between a late job and a second call is the TTL.
+    // A frozen reply that does NOT pin (complete_through == as_of), so only the TTL stands between a late job and a second call.
     fx.reply_structured(json!({ "series": [
         ok_series("US:NVDA", "2026-09-10", &[("2026-08-11", 1.0), ("2026-09-09", 2.0)]),
         ok_series("HK:9988", "2026-09-10", &[("2026-08-11", 1.0), ("2026-09-09", 2.0)]),
@@ -402,7 +361,6 @@ async fn fresh_row_is_not_re_resolved_by_late_reader() {
         vec![wrote("ok", false)]
     );
     assert_eq!(fx.call_count(), 1);
-    // A late reader's stale observation: enqueue again right away.
     let (enqueued, outcomes) = fx.resolve_block(&block_id).await;
     assert_eq!(enqueued, Enqueue::Queued, "the key is free, so it queues");
     assert_eq!(
@@ -448,13 +406,11 @@ async fn partial_ok_row_is_retried_after_two_minutes() {
     other["range"] = json!("3M");
     let all_ok = fx.write_series_block(other).await;
 
-    // Partial: NVDA ok, 9988 transiently unavailable.
     fx.reply_structured(json!({ "series": [
         ok_series("US:NVDA", "2026-09-11", &[("2026-08-11", 1.0), ("2026-09-10", 2.0)]),
         { "asset": "HK:9988", "status": "unavailable", "reason": "source 503" },
     ]}));
     assert_eq!(fx.resolve_block(&partial).await.1, vec![wrote("ok", false)]);
-    // All ok (not pinned: complete_through == as_of).
     fx.reply_structured(json!({ "series": [
         ok_series("US:NVDA", "2026-09-10", &[("2026-08-11", 1.0), ("2026-09-09", 2.0)]),
         ok_series("HK:9988", "2026-09-10", &[("2026-08-11", 1.0), ("2026-09-09", 2.0)]),
@@ -463,8 +419,7 @@ async fn partial_ok_row_is_retried_after_two_minutes() {
     assert_eq!(fx.call_count(), 2);
 
     fx.set_clock(T0_MS + 3 * 60 * 1000);
-    // The second reply DIFFERS in the series that already succeeded, so
-    // "new row = second reply" is not satisfied by a merge with the old row.
+    // The second reply DIFFERS in the series that already succeeded, so a merge with the old row would not pass.
     fx.reply_structured(json!({ "series": [
         ok_series("US:NVDA", "2026-09-11", &[("2026-08-11", 100.0), ("2026-09-10", 200.0)]),
         ok_series("HK:9988", "2026-09-11", &[("2026-08-11", 10.0), ("2026-09-10", 20.0)]),
@@ -494,10 +449,6 @@ async fn partial_ok_row_is_retried_after_two_minutes() {
     assert_eq!(fx.call_count(), 3);
 }
 
-// ---------------------------------------------------------------------------
-// A9c — a failed write releases the key
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn failed_resolve_releases_inflight_key() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -523,11 +474,6 @@ async fn failed_resolve_releases_inflight_key() {
     assert_eq!(fx.call_count(), 2);
 }
 
-// ---------------------------------------------------------------------------
-// A11 — tools that are not ordinary read-only tools are refused without a
-// call
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn resolve_refuses_non_read_only_tools() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -552,10 +498,6 @@ async fn resolve_refuses_non_read_only_tools() {
     assert_eq!(fx.call_count(), 0, "refused before any call");
 }
 
-// ---------------------------------------------------------------------------
-// A13 — a resolution that outlives its track writes nothing
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn late_resolution_after_track_delete_leaves_no_orphan() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -566,9 +508,7 @@ async fn late_resolution_after_track_delete_leaves_no_orphan() {
     fx.resolver().failpoints.hold_before_write();
     let resolver = fx.resolver().clone();
     let resolving = tokio::spawn(async move { resolver.resolve(job).await });
-    // The job is past admission, has its reply and is parked at the write
-    // when the track goes away: the delete cannot lose a race with the
-    // write, however slow the box is.
+    // The job is parked at the write when the track goes away, so the delete cannot lose a race with the write.
     let failpoints = &fx.resolver().failpoints;
     wait_until(
         "the job parked before its write",
@@ -595,10 +535,6 @@ async fn late_resolution_after_track_delete_leaves_no_orphan() {
     assert_eq!(orphans, 0, "no orphan row");
     assert_eq!(fx.resolver().inflight_len(), 0, "key released");
 }
-
-// ---------------------------------------------------------------------------
-// A20 — `reason` is capped at 256 characters
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn reason_is_capped() {

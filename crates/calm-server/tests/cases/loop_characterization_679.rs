@@ -1,32 +1,6 @@
-//! #679 PR0-E — dispatch→push→observation loop characterization.
-//!
-//! These tests pin the CURRENT behavior of the dispatch→push→observation
-//! loop as a regression anchor for the PR5-8 dispatcher rewrite. They are
-//! deliberately black-box-ish (events table + `Dispatcher` public surface +
-//! `PlannerHarness` observation channel) and run with **zero real processes**:
-//! the planner harness is constructed via `run_unstarted_for_test` (its run
-//! loop never starts, so deliveries are read deterministically from the
-//! observation channel — no wall-clock polling against a live turn loop),
-//! the shared daemon is the in-process fake, and the worker "spawn" in the
-//! stall test is a no-op test adapter.
-//!
-//! Coverage (gaps only — see the existing estate before adding here):
-//!
-//!   1. `catch_up_push` with persisted `task.completed` / `task.failed`
-//!      envelopes → exact `Observation` content + push-cursor advance +
-//!      watermark dedup (the existing `planner_harness_dual_run_filter` test
-//!      only covers `track.report_edited` through this path).
-//!   2. A live worker-actor `task.failed` push is **observation-only**:
-//!      it must not touch the track lifecycle and must not append events
-//!      (T2 precursor: observation delivery leaves the event log
-//!      unchanged). The Working→Reviewing fallback exists ONLY on the
-//!      dispatcher's own spawn-failure path (pinned by
-//!      `dispatcher_spawn_failure_auto_promotes_working_to_reviewing`).
-//!   3. AiPlanner-authored task events never push back into the harness
-//!      (anti-feedback-loop), asserted at the live transport level.
-//!   4. The dead-worker stall: a worker that spawns successfully and then
-//!      never reports leaves the track parked in `Working` forever — no
-//!      kernel-side convergence event of any kind is produced.
+//! Dispatch→push→observation loop characterization with zero real processes: the planner
+//! harness is `run_unstarted_for_test`, so deliveries are read deterministically from the
+//! observation channel.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,13 +48,8 @@ use calm_types::worker::{
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
-// Fixture: planner card + worker card + unstarted harness + live dispatcher.
-// ---------------------------------------------------------------------------
-
 struct LoopFixture {
     repo: Arc<SqlxRepo>,
-    /// Live bus the dispatcher subscribes to.
     events: EventBus,
     role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
@@ -89,9 +58,7 @@ struct LoopFixture {
     planner_card: Card,
     worker_card: Card,
     harness: PlannerHarness,
-    /// Observation deliveries the dispatcher pushes into the harness. The
-    /// harness run loop is intentionally NOT started, so every delivery
-    /// stays in this channel and can be received deterministically.
+    /// Observation deliveries; the harness run loop is NOT started, so every delivery stays here.
     obs_rx: mpsc::Receiver<HarnessObservationDelivery>,
     dispatcher: Dispatcher,
 }
@@ -159,9 +126,8 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     .unwrap();
     tx.commit().await.unwrap();
 
-    // Harness-backed SharedPlanner runtime row — `harness_runtime_id_for_planner_card`
-    // requires an active SharedPlanner runtime whose handle_state is a harness
-    // snapshot.
+    // `harness_runtime_id_for_planner_card` requires an active SharedPlanner runtime whose
+    // handle_state is a harness snapshot.
     let thread_id = format!("thread-{tag}");
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
@@ -194,9 +160,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let registry = HarnessRegistry::new();
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
-    // Unstarted: the run loop never consumes the observation channel, so
-    // the test reads deliveries deterministically (no debounce / turn
-    // issuance racing the assertions).
+    // Unstarted: no debounce / turn issuance racing the assertions.
     let (harness, obs_rx) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
             worker_session_id: runtime_id.clone(),
@@ -227,7 +191,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         None,
         registry,
         daemon,
-        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        // Attached fixtures: materialization on lease is a no-op.
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         4,
     );
@@ -263,8 +227,7 @@ impl LoopFixture {
         }
     }
 
-    /// Persist an event WITHOUT live broadcast (cold bus) — the catch-up
-    /// tests must prove `catch_up_push` alone moves the loop.
+    /// Persist an event WITHOUT live broadcast, so `catch_up_push` alone has to move the loop.
     async fn persist_cold(&self, actor: ActorId, scope: EventScope, event: Event) -> i64 {
         let cold_bus = EventBus::new();
         self.repo
@@ -297,9 +260,7 @@ impl LoopFixture {
             .unwrap()
     }
 
-    /// Lifecycle-bearing events persisted for this track (`track.lifecycle_changed`
-    /// / `track.updated`) plus any task terminal events. Used to assert the
-    /// push path appends nothing.
+    /// Lifecycle-bearing events persisted for this track plus any task terminal events.
     async fn track_audit_events(&self) -> Vec<Event> {
         self.repo
             .events_since(0, i64::MAX)
@@ -341,20 +302,8 @@ fn task_failed(idem: &str, reason: &str) -> Event {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 1. catch_up_push: persisted task events → observation content + cursor.
-// ---------------------------------------------------------------------------
-
-/// Inject persisted `task.completed` / `task.failed` envelopes through
-/// `Dispatcher::catch_up_push` and pin:
-///   - the exact `Observation` mapping the planner harness receives
-///     (`result` carried verbatim; `task.failed`'s `reason` becomes the
-///     observation's `error`);
-///   - the per-planner-card push cursor advancing to each delivered envelope id;
-///   - synthetic id-0 envelopes never delivering (cursor starts at 0,
-///     pushes require `envelope_id > cursor`);
-///   - watermark dedup: replaying an already-delivered (lower-or-equal id)
-///     envelope is a silent no-op.
+/// Synthetic id-0 envelopes never deliver (pushes require `envelope_id > cursor`), and
+/// replaying an already-delivered id is a silent no-op.
 #[tokio::test]
 async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
     let mut fx = loop_fixture("catchup-task").await;
@@ -362,9 +311,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
     let completed = task_completed("loop-pin-a", json!({"ok": true, "notes": "loop-pin"}));
     let failed = task_failed("loop-pin-b", "worker exploded");
 
-    // Synthetic id-0 envelope (the shape `EventBus::emit` would produce) is
-    // never above the initial 0 cursor — pinned as "only real persisted ids
-    // push".
+    // Synthetic id-0 envelope (the shape `EventBus::emit` would produce) is never above the 0 cursor.
     fx.dispatcher
         .catch_up_push(fx.track_id.clone(), completed.clone(), 0)
         .await;
@@ -374,8 +321,6 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
     );
     assert_eq!(fx.dispatcher.push_cursor_for_test(&fx.planner_card.id), 0);
 
-    // task.completed: persisted by the worker actor in its own card scope,
-    // replayed through catch_up_push.
     let completed_id = fx
         .persist_cold(
             ActorId::AiCodex(fx.worker_card.id.clone()),
@@ -434,8 +379,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         failed_id
     );
 
-    // Redelivery of an already-delivered envelope (id <= cursor) is a
-    // silent dedup: no observation, cursor unchanged.
+    // Redelivery (id <= cursor) is a silent dedup.
     fx.dispatcher
         .catch_up_push(fx.track_id.clone(), completed, completed_id)
         .await;
@@ -452,17 +396,8 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
     fx.harness.shutdown().await.unwrap();
 }
 
-// ---------------------------------------------------------------------------
-// 2 + 3. Live push is observation-only; AiPlanner self-events never push back.
-// ---------------------------------------------------------------------------
-
-/// A worker-actor `task.failed` arriving on the live bus is delivered to the
-/// planner harness as an observation and does NOTHING else: no track lifecycle
-/// change (the dispatcher's Working→Reviewing fallback fires only on its own
-/// spawn failures) and no new rows in the event log (T2 precursor —
-/// observation delivery leaves the event count unchanged). A subsequent
-/// AiPlanner-authored task event must not push back into the harness
-/// (anti-feedback-loop).
+/// The dispatcher's Working→Reviewing fallback fires only on its own spawn failures, so a live
+/// `task.failed` push must leave the lifecycle and the event log untouched.
 #[tokio::test]
 async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_not_push_back() {
     let mut fx = loop_fixture("live-task-failed").await;
@@ -485,8 +420,7 @@ async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_no
         )
         .await;
 
-    // Positive sync point: the dispatcher's live push lands in the harness
-    // observation channel.
+    // Positive sync point: the live push lands in the harness observation channel.
     let delivery = tokio::time::timeout(Duration::from_secs(5), fx.obs_rx.recv())
         .await
         .expect("live task.failed must reach the planner harness within 5s")
@@ -504,9 +438,7 @@ async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_no
         failed_id
     );
 
-    // Observation-only: the track lifecycle is untouched and the event log
-    // contains exactly the one task.failed we persisted — the push path
-    // appended nothing (no lifecycle fallback, no echo events).
+    // Observation-only: the event log contains exactly the one task.failed we persisted.
     let track = fx
         .repo
         .track_get(fx.track_id.as_str())
@@ -530,8 +462,7 @@ async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_no
         Event::TaskFailed { idempotency_key, .. } if idempotency_key == "live-loop-pin"
     ));
 
-    // AiPlanner self-event (higher envelope id, so the watermark cannot mask
-    // the warrant check): must never push back into the harness.
+    // Higher envelope id, so the watermark cannot mask the warrant check.
     let planner_self_id = fx
         .persist_live(
             ActorId::AiPlanner(fx.planner_card.id.clone()),
@@ -554,13 +485,7 @@ async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_no
     fx.harness.shutdown().await.unwrap();
 }
 
-// ---------------------------------------------------------------------------
-// 4. Dead-worker convergence.
-// ---------------------------------------------------------------------------
-
-/// No-op "spawn succeeds, worker never reports" adapter. Stands in for a
-/// worker process that launches and then dies without ever calling
-/// `calm.task.complete` / failing visibly.
+/// Stands in for a worker process that launches and then dies without ever reporting.
 struct SilentSpawnAdapter {
     spawned: Arc<tokio::sync::Notify>,
     card_id: String,
@@ -641,10 +566,6 @@ impl ProviderAdapter for SilentSpawnAdapter {
     }
 }
 
-/// A worker whose spawn succeeds but which never produces
-/// `task.completed` / `task.failed` is now converged by the reaper once the
-/// worker session is durably observed as exited: the session terminalizes,
-/// the kernel emits one `task.failed`, and the track parks at `Reviewing`.
 #[tokio::test]
 async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -722,8 +643,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         .await
         .unwrap();
 
-    // The dead worker's card exists in the track (the projection a real
-    // spawn would have left behind) — it just never reports anything.
+    // The projection a real spawn would have left behind.
     let worker_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -785,8 +705,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         .schedule_track(track.id.clone())
         .await;
 
-    // Positive sync points: the worker "spawn" ran, and the dispatcher
-    // promoted Dispatching → Working first.
+    // Positive sync points: the worker "spawn" ran, and the dispatcher promoted to Working first.
     tokio::time::timeout(Duration::from_secs(5), spawned.notified())
         .await
         .expect("silent worker spawn must run within 5s");
@@ -884,8 +803,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     reaper_on_boot();
     reaper.sweep_all().await;
 
-    // DB-level audit after the dispatcher reached Working: exactly one
-    // kernel task.failed plus exactly one Working → Reviewing promotion.
+    // Exactly one kernel task.failed plus exactly one Working → Reviewing promotion.
     let rows = repo.events_since(baseline_id, i64::MAX).await.unwrap();
     let mut failed_events = Vec::new();
     let mut lifecycle_changes = Vec::new();
@@ -928,9 +846,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
             ..
         } => {
             assert_eq!(idempotency_key, &task_id);
-            // FIX 3: the kernel TaskFailed carries the provider's interpreted
-            // reason — the `-1` probe sentinel is hidden behind "outcome
-            // unknown", not leaked as the old `"exit Some(-1)"` format.
+            // The `-1` probe sentinel is hidden behind "outcome unknown", not leaked.
             assert!(
                 reason.contains("outcome unknown") && reason.contains("supervisor probe"),
                 "expected provider reason, got {reason:?}"
@@ -948,7 +864,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
 
     let task_row = repo.task_get(&task_id).await.unwrap().expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Failed);
-    // #1147 ① — classifier + reason tail (the reaper path).
+    // Classifier + reason tail (the reaper path).
     let detail = task_row.status_detail.clone().unwrap_or_default();
     assert_eq!(
         calm_server::db::sqlite::status_detail_class(&detail),

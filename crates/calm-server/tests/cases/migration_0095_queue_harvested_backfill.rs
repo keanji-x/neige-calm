@@ -1,21 +1,5 @@
-//! #1449 — migration 0095 backfills `queue_harvested_at_ms` over RETIRED rows
-//! only.
-//!
-//! The backfill exists so that the first restart after the upgrade does not
-//! replay a sentence from days ago into a brand new thread: a legacy
-//! `superseded` row can carry a non-empty `pending_queue`, and that stranding is
-//! #1449 itself.
-//!
-//! The `state` predicate is what keeps it from doing the opposite of its job.
-//! Boot recovery reuses a runtime's id, so a row that is `idle` at upgrade time
-//! goes on living afterwards and receives NEW input — `observe_user_message_durable`
-//! writes that very row. Stamping it during the upgrade would make the first
-//! sentence a user types AFTER the upgrade permanently unharvestable: exactly
-//! the silent loss this slice exists to end, introduced by the fix for it.
-//!
-//! Staged one migration short of head and replayed the way production boot
-//! replays, so the assertion is about the shipped statement rather than about a
-//! copy of it.
+//! Migration 0095 backfills `queue_harvested_at_ms` over RETIRED rows only. Boot recovery reuses a runtime's id,
+//! so stamping an `idle` row at upgrade would make the first post-upgrade sentence permanently unharvestable.
 
 use crate::support::migration_replay::{replay_to_head, stage_db_at};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};

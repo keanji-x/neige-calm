@@ -1,7 +1,4 @@
-//! #679 PR5 full-loop and fake contract tests.
-//!
-//! Implementations live in `calm-truth-test-harness` so `calm-exec/src`
-//! stays implementation-free.
+//! Full-loop and fake contract tests; implementations live in `calm-truth-test-harness`.
 
 #[tokio::test]
 async fn full_loop_dispatch_to_lifecycle_done() {

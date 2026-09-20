@@ -1,10 +1,5 @@
-//! #1667 A5 — `calm.user.notify` over the real MCP transport: a planner
-//! token gets `{"ok": true}` back for a bounded text, and the two argument
-//! refusals (empty, over-long) come back as `-32602` with a message that
-//! names the field. The role refusal for an assistant token is asserted in
-//! `mcp_assistant_tool_gate` (it lists the tool under the planner-reachable
-//! denials), and its absence from the assistant's `tools/list` in
-//! `mcp_tools_list_role_filter`; neither is restated here.
+//! `calm.user.notify` over the real MCP transport: `{"ok": true}` for a bounded text, and `-32602`
+//! naming the field for the empty / over-long refusals.
 
 #![cfg(unix)]
 

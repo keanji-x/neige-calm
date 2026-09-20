@@ -1,5 +1,4 @@
-//! Process and socket utilities retained for shared codex app-server
-//! supervision and boot recovery.
+//! Process and socket utilities for shared codex app-server supervision and boot recovery.
 
 use std::path::Path;
 use std::time::Duration;
@@ -13,10 +12,7 @@ pub enum SockDirCleanupOutcome {
     Error(std::io::Error),
 }
 
-/// Remove the listen socket and its now-empty per-card dir
-/// (`<data_dir>/appserver/<card_id>/`). Best-effort: a missing socket /
-/// non-empty dir is fine. Mirrors the PTY `remove_file(sock)` cleanup in
-/// [`crate::terminal_sweeper::reap_terminal_artifacts`].
+/// Best-effort: a missing socket or a non-empty dir is fine.
 pub fn cleanup_sock_dir(sock: &Path) -> SockDirCleanupOutcome {
     let outcome = match std::fs::remove_file(sock) {
         Ok(()) => SockDirCleanupOutcome::Removed,
@@ -24,34 +20,14 @@ pub fn cleanup_sock_dir(sock: &Path) -> SockDirCleanupOutcome {
         Err(e) => SockDirCleanupOutcome::Error(e),
     };
     if let Some(dir) = sock.parent() {
-        // `remove_dir` only succeeds when empty — exactly what we want
-        // (don't nuke a dir that unexpectedly holds other files).
+        // `remove_dir` only succeeds when empty; don't nuke a dir that unexpectedly holds other files.
         let _ = std::fs::remove_dir(dir);
     }
     outcome
 }
 
-/// #313 problem #1 round-3 (B1) + #335 PR2 — verify that the shared codex
-/// app-server socket at `sock` has a live listener BEFORE the caller signals
-/// the process group.
-///
-/// **Why this exists.** After a host reboot a stale process group id could
-/// belong to an unrelated process (PIDs/PGIDs are recycled), so a
-/// `kill(-pgid, SIGTERM/SIGKILL)` could target arbitrary user processes.
-/// Connect alone is not enough: a different listener on a stale path could
-/// otherwise authorize a kill. We require both WebSocket connect and a JSON-RPC
-/// `initialize` round-trip.
-///
-/// Returns `true` when the kill is **safe** (initialize succeeded — caller
-/// should proceed with `signal_process_group`), `false` when the caller
-/// should **skip** the kill (socket missing/refused, non-WS listener,
-/// initialize failure/timeout — caller should still `cleanup_sock_dir` to
-/// wipe the stale path before respawn).
-///
-/// Any probe failure is conservative-skip. A false-negative (we skip a kill
-/// we could have done) is harmless because boot recovery's `cleanup_sock_dir`
-/// plus respawn still works; a false-positive (we kill the wrong process) is
-/// the bug we're guarding against.
+/// Verify the socket has a live listener BEFORE the caller signals the process group: after a reboot the persisted pgid may be recycled to an unrelated process, so both WebSocket connect and a JSON-RPC `initialize` round-trip are required.
+/// Returns `true` when the kill is safe; any probe failure is a conservative skip (the caller should still `cleanup_sock_dir`).
 pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
     match tokio::time::timeout(Duration::from_secs(3), CodexAppServer::connect(sock)).await {
         Err(_) => {
@@ -62,10 +38,6 @@ pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
             false
         }
         Ok(Ok((client, _notifs))) => {
-            // Connect + WebSocket upgrade succeeded. Finish the ownership
-            // probe with a JSON-RPC initialize round-trip so a random
-            // non-codex listener on the same stale path cannot authorize a
-            // process-group kill.
             let client = client.with_request_timeout(Duration::from_secs(2));
             match tokio::time::timeout(
                 Duration::from_secs(3),
@@ -107,11 +79,7 @@ pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
                 || msg.contains("Connection refused")
                 || msg.contains("os error 111")
             {
-                // ENOENT — socket file gone (graceful teardown / host
-                // wipe) → no listener exists, nothing to kill.
-                // ECONNREFUSED — socket path exists, no listener bound
-                // (stale dirent from a crashed process) → likewise
-                // nothing of ours to kill.
+                // ENOENT / ECONNREFUSED: no listener exists, nothing to kill.
                 tracing::info!(
                     sock = %sock.display(),
                     error = %e,
@@ -121,17 +89,7 @@ pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
                 );
                 false
             } else {
-                // Any other error (EACCES, EAGAIN, WS handshake failure,
-                // non-JSON-RPC listener, …): we can't prove ownership.
-                // Default to skipping the kill — safety over reaping a
-                // leaked group (the respawn path can retry, but reviving a
-                // SIGKILLed user process can't).
-                //
-                // #315 round-4 (N3) — the conservative-skip-kill on
-                // unrecognized errors trades a worst-case "stale socket
-                // file leaks forever" for the worst-case "we SIGTERM/
-                // SIGKILL an unrelated process group whose pid was
-                // recycled into our persisted pgid slot post-reboot".
+                // Any other error: ownership unproven, skip the kill — the respawn path can retry, but reviving a SIGKILLed user process can't.
                 tracing::warn!(
                     sock = %sock.display(),
                     error = %e,

@@ -1,7 +1,5 @@
-//! Plugin manifest parsing and validation.
-//!
-//! Every plugin ships a `manifest.json` at the root of its install directory.
-//! This module owns its typed shape, validation, and shared error surface.
+//! Plugin manifest parsing and validation: the typed shape of `manifest.json`, its
+//! validation rules, and the shared error surface.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -13,73 +11,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-/// The wire key [`Manifest::config_schema`] serializes to.
-///
-/// It is the **error root path** every `config_schema` violation is reported
-/// under (`config_schema.properties.theme.default: …`), which is a string an
-/// operator reads next to their own `manifest.json`. Pinned to the real serde
-/// output by `config_schema_key_matches_the_serialized_manifest`, so renaming
-/// the field can not leave the diagnostics pointing at a key that no longer
-/// exists on the wire.
-///
-/// (S1 review: nothing reads the schema out of the persisted blob any more —
-/// `has_config` and the PATCH validator both go through the registry's typed
-/// [`Manifest`]. See `routes::plugins::registry_manifest` for why.)
+/// The wire key [`Manifest::config_schema`] serializes to; the error root path every `config_schema` violation is reported under.
 pub const CONFIG_SCHEMA_KEY: &str = "config_schema";
 
-/// Top-level manifest blob loaded from `<install_path>/manifest.json`.
-///
-/// Unknown fields are tolerated (forwards compatibility). Missing optional
-/// fields default; missing required fields fail in `parse`.
+/// Top-level manifest blob loaded from `<install_path>/manifest.json`. Unknown fields are tolerated.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
-    /// Which spelling of the template-binding array this file uses.
-    ///
-    /// * `1` — the array was spelled `workflows`. That spelling is **gone**
-    ///   (see [`Manifest::reject_retired_workflows_key`]), so a v1 file is
-    ///   still accepted only when it declares no bindings at all — nothing
-    ///   about such a file changed in #1268 and it reads identically on either
-    ///   kernel.
-    /// * `2` — the array is spelled `templates` (#1268).
-    /// * `3` — the manifest may declare a [`Self::config_schema`] with a
-    ///   non-empty `required` (#1284). Same rollback argument as `2`, one
-    ///   layer up: a pre-#1284 kernel ignores `config_schema` entirely, so a
-    ///   plugin whose configuration is *mandatory* would come up on that
-    ///   kernel with none of it — silently. Declaring `3` makes that old
-    ///   kernel refuse the file by version instead (it accepts only `1..=2`),
-    ///   which under `registry::load_from_dir` means the plugin **disappears
-    ///   from the list** rather than running mis-configured. A
-    ///   `config_schema` whose keys are all optional loses nothing on that
-    ///   kernel — it degrades to "no configuration", which is precisely what
-    ///   every default already means — so it stays at `2` and keeps loading.
-    ///
-    /// Any other value is rejected by [`Manifest::validate`].
-    ///
-    /// **Why a bump at all**, given the retired-key guard already covers the
-    /// upgrade direction: it is the *rollback* direction that needs it. A
-    /// `templates[]` manifest handed to a pre-#1268 kernel hits a parser that
-    /// ignores unknown top-level keys, so the binding list silently defaults
-    /// to empty and `issue-development` loses its `input_schema` with no error
-    /// and no log. Declaring `2` makes that old kernel's own
-    /// `manifest_version != 1` check refuse the file by version instead —
-    /// which is why [`Manifest::validate`] *requires* `2` from any manifest
-    /// that actually declares a binding.
-    ///
-    /// **And why the requirement is scoped to those manifests rather than to
-    /// all of them.** Requiring `2` everywhere would refuse every existing
-    /// binding-less manifest — and the boot loader turns a parse failure into
-    /// `warn!` + skip (`registry::load_from_dir`), so those plugins would just
-    /// disappear, which is the same silent-loss shape this bump exists to
-    /// remove. A manifest with no bindings has nothing to lose on rollback: it
-    /// reads identically on a pre-#1268 and a post-#1268 kernel, because the
-    /// only thing the two disagree about is the name of an array it does not
-    /// have. Scoping the requirement to manifests that *do* declare a binding
-    /// is therefore what keeps binding-less manifests working across both
-    /// kernels while still closing the rollback hazard completely — every
-    /// manifest that could lose a binding is forced onto `2`, and every
-    /// manifest that could not is left alone. This is not hypothetical: the
-    /// plugin roots on real deployments hold connector manifests
-    /// (`kind: "mcp-http"`, `cli-query`) that never declared one.
+    /// `1` — bindings spelled `workflows` (refused now, so only binding-less v1 files load); `2` —
+    /// `templates`; `3` — a `config_schema` with non-empty `required`. The bump is what makes an older
+    /// kernel refuse the file by version instead of silently ignoring the key.
     pub manifest_version: u32,
 
     /// Reverse-DNS or slug, see `is_valid_plugin_id`. Stable across versions.
@@ -88,25 +28,17 @@ pub struct Manifest {
     /// Semver string. Validated; stored verbatim.
     pub version: String,
 
-    /// Refuse to spawn if the running kernel is older than this. Validated as
-    /// semver here; the actual comparison runs at spawn time (Slice B).
+    /// Refuse to spawn if the running kernel is older than this. Validated as semver here.
     pub min_kernel_version: String,
 
     pub display_name: String,
 
-    /// #1164 §2.1 — connector kind. Absent ⇒ [`ConnectorKind::App`], which is
-    /// exactly today's plugin semantics (the tree's only checked-in manifest,
-    /// `plugins/git-forge`, carries no `kind` key). An *unknown* value is a
-    /// hard parse error, never a silent downgrade to `app` — serde's
-    /// `unknown variant` message names the accepted set.
-    ///
-    /// `#[serde(default)]` on the FIELD is load-bearing: deriving `Default`
-    /// on the enum alone does not make a missing key legal.
+    /// Connector kind. Absent ⇒ [`ConnectorKind::App`]; an unknown value is a hard parse error.
+    /// `#[serde(default)]` on the FIELD is load-bearing: deriving `Default` on the enum alone does not make a missing key legal.
     #[serde(default)]
     pub kind: ConnectorKind,
 
-    /// Remote streamable-HTTP MCP server config. Present iff
-    /// `kind == McpHttp` (enforced in [`Manifest::validate`]).
+    /// Remote streamable-HTTP MCP server config. Present iff `kind == McpHttp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_http: Option<McpHttpBlock>,
 
@@ -126,83 +58,30 @@ pub struct Manifest {
     #[serde(default)]
     pub homepage: Option<String>,
 
-    /// How to launch the plugin process. **Required for
-    /// [`ConnectorKind::App`], optional otherwise** (#1164 §2.1) — remote
-    /// MCP servers and query CLIs have no kernel-supervised child process.
+    /// How to launch the plugin process. Required for [`ConnectorKind::App`], optional otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entrypoint: Option<Entrypoint>,
 
-    /// At least one view recommended; an empty array is technically legal but
-    /// such a plugin can never surface a card. We don't reject — the validator
-    /// only enforces per-element rules. `AddPanel` will simply show nothing.
+    /// An empty array is legal but such a plugin can never surface a card.
     #[serde(default)]
     pub views: Vec<View>,
 
-    /// Worker-facing outbound tool allowlist (#760 slice 2). The kernel reads
-    /// and enforces this for MCP `tools/list` discovery and `tools/call`
-    /// routing; unrelated to iframe→kernel `permissions.tools`.
+    /// Worker-facing outbound tool allowlist; unrelated to iframe→kernel `permissions.tools`.
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
 
-    /// Track `template_input` contract (#891 / #1110 S2). One plugin, one
-    /// input shape — sibling of `exposes_tools`, not of a template
-    /// descriptor. Same JSON-Schema subset as `plugin_host::template_input`.
-    /// Absent: the plugin does not accept `template_input`.
+    /// Track `template_input` contract. Absent: the plugin does not accept `template_input`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
 
-    /// #1284 §2.1 — the plugin's **user-configuration** contract: what an
-    /// operator may set in Settings › Plugins, in the same JSON-Schema subset
-    /// as [`Self::input_schema`] (`plugin_host::template_input`, error paths
-    /// rooted at `config_schema…`).
-    ///
-    /// Unlike `input_schema` this is **not** app-only: all three kinds
-    /// (`app` / `mcp-http` / `cli-query`) grow a consumer in S2/S3a/S3b, so
-    /// [`Manifest::reject_app_only_surfaces`] deliberately leaves it alone.
-    ///
-    /// Absent ⇒ the plugin has **no** configurable surface, and
-    /// `PATCH /api/plugins/{id}/config` refuses the write with a 400. "No
-    /// config schema" and "config UI not built yet" must be two different
-    /// things on screen; `PluginListItem::has_config` is the list-side
-    /// projection of exactly this field's presence.
-    ///
-    /// Values declared here are **not** persisted at their defaults — see
-    /// [`super::effective_config`]: `default` is applied on read, so changing
-    /// a default in a later manifest version still reaches plugins whose
-    /// operator never touched that key.
-    ///
-    /// Declaring a schema with a non-empty `required` forces
-    /// `manifest_version >= 3`; see [`Manifest::manifest_version`].
+    /// The plugin's user-configuration contract, in the same JSON-Schema subset as [`Self::input_schema`].
+    /// Not app-only. Absent ⇒ no configurable surface (`PATCH …/config` is a 400). Defaults are applied
+    /// on read, not persisted. A non-empty `required` forces `manifest_version >= 3`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<Value>,
 
-    /// Trusted forge plugins may claim **kernel track-template ids**. Track
-    /// create binds `template_id` to one of these so the kernel can copy the
-    /// owning plugin into `plugin_scope` and validate `template_input` against
-    /// this Manifest's `input_schema` (#1110 S2/S5). Untrusted plugins'
-    /// ids are ignored by the binding layer; the parser still checks id
-    /// shape so broken entries fail close to the authoring point.
-    ///
-    /// **#1209 narrowed this capability, and this is the contract, not a
-    /// note.** Declaring an id is *claiming an existing template*, never
-    /// *creating* one. The ids the kernel knows are the track-template roster
-    /// (`crate::templates::TemplateRoster`, the built-in files
-    /// `templates/builtin/*.md`: today `issue-development`, `small-change`,
-    /// `investigation`, `investment-research`), and
-    /// `POST /api/tracks` admits an id **iff it is in that roster** — plugin
-    /// declarations do not widen the set. An id outside the roster is
-    /// therefore inert: it is parsed, it is not rejected here, and it can
-    /// never be bound **through `POST /api/tracks`** — the only production
-    /// writer of `tracks.template_id` — because that create is a 400. The
-    /// repo-layer `track_create` takes `template_id` / `plugin_scope`
-    /// verbatim and enforces nothing; its non-route callers are all test
-    /// fixtures passing `None` today, and a future in-process writer that
-    /// wanted this guarantee would have to call the admission itself. Before
-    /// #1209 a running trusted plugin *could* make an arbitrary id creatable;
-    /// that is the capability this field no longer has. Plugin-contributed
-    /// templates (which would need a title, tasks and a report) are a separate
-    /// piece of work — see `docs/architecture/1209-template-workflow-unify.md`
-    /// §5, option C.
+    /// Kernel track-template ids a trusted forge plugin claims. Claiming is never creating: `POST
+    /// /api/tracks` admits an id iff it is in the kernel's template roster, so an id outside it is inert.
     #[serde(default)]
     pub templates: Vec<TemplateDescriptor>,
 
@@ -211,15 +90,11 @@ pub struct Manifest {
     pub permissions: Permissions,
 }
 
-/// #1164 §2.1 — what kind of external capability this manifest describes.
-///
-/// `App` is the pre-#1164 plugin: a kernel-supervised child process speaking
-/// stdio MCP. The other two variants are *connectors* — no child process, no
-/// `neige.*` inbound router, no plugin token.
+/// What kind of external capability this manifest describes. Connectors have no child process, no `neige.*` inbound router, no plugin token.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConnectorKind {
-    /// Today's plugin. Semantics unchanged, byte for byte.
+    /// The kernel-supervised process-backed plugin.
     #[default]
     App,
     /// Remote streamable-HTTP MCP server.
@@ -238,57 +113,15 @@ impl ConnectorKind {
         }
     }
 
-    /// `true` for the pre-#1164 process-backed plugin.
+    /// `true` for the process-backed plugin.
     pub fn is_app(self) -> bool {
         matches!(self, Self::App)
     }
 }
 
-/// Where the API key rides on an outbound `mcp-http` request: `bearer` or
-/// `header:<name>` (§2.2).
-///
-/// **Where that set is actually enforced, stated exactly.** Two different
-/// scopes, and conflating them is an error this file made once already:
-///
-/// * the **retired** spelling `query:*` is refused by [`McpHttpBlock::validate`]
-///   **unconditionally** — with or without an `api_key_secret`;
-/// * the **rest** of the set is enforced only when `api_key_secret` is set. A
-///   keyless manifest may carry `api_key_in: "cookie:k"`, `"body:token"`,
-///   `"api_key"`, `"header:"`, `"header:bad name"` or `""` and parse
-///   successfully; the `(None, _)` arm of that match accepts them.
-///
-/// That is deliberate, not an oversight. Nothing reaches the auth branch in
-/// [`crate::plugin_host::http_mcp::HttpMcpClient::new`] without a credential —
-/// the whole branch is inside `if let Some(key)` — so a keyless connector with
-/// a nonsense `api_key_in` sends no credential anywhere and there is nothing to
-/// close. Tightening `(None, _)` would be a contract change with false-refusal
-/// risk against manifests that parse today, and this chain has opened a false
-/// refusal while closing a hole four times. So: **do not read "closed set" as a
-/// statement about every manifest.** It is a statement about manifests that
-/// name a credential, plus one unconditional refusal.
-///
-/// **`query:<name>` was retired by #1194** and is now a validation error, not a
-/// third variant. The credential rode in the request URL, which is the one
-/// string `ureq::Error`'s `Display` prints first — so every error path in
-/// `http_mcp` had to be shaped around never formatting one, and an upstream
-/// quoting the request line back at us echoed the credential by construction.
-/// Retiring it is what collapses that machinery; see [`RETIRED_QUERY_HINT`] for
-/// the operator-facing migration, and `http_mcp`'s module header for what the
-/// retirement structurally closed.
-///
-/// The two survivors differ in VALUE SHAPE, not just in location, and that is
-/// the whole reason [`Self::Bearer`] exists rather than being spelled
-/// `header:Authorization`:
-///
-/// * [`Self::Bearer`] sends `Authorization: Bearer <credential>`;
-/// * [`Self::Header`] sends `<name>: <credential>` **verbatim**, no prefix.
-///
-/// Measured 2026-09 against `https://mcp.wisburg.com/mcp`, the one real
-/// consumer: `Authorization: Bearer <key>` is accepted, `Authorization: <key>`
-/// without the prefix is rejected with `No API key provided`. So a manifest
-/// migrated from `query:api_key` to `header:Authorization` would have failed at
-/// REQUEST time, not at validation time. `header:<name>` is kept unchanged for
-/// the `X-API-Key`-style servers that want the bare credential.
+/// Where the API key rides on an outbound `mcp-http` request. `query:*` is refused unconditionally;
+/// the rest of the set is enforced only when `api_key_secret` is set (a keyless connector sends no
+/// credential anywhere). `Bearer` is not `header:Authorization`: upstreams reject the bare key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiKeyIn {
     /// `Authorization: Bearer <credential>`.
@@ -298,9 +131,6 @@ pub enum ApiKeyIn {
 }
 
 /// What an operator must do when their manifest still says `query:<name>`.
-///
-/// Rejection is deliberate and fail-closed: such a plugin must refuse to load
-/// loudly rather than quietly keep putting the credential in a URL.
 pub const RETIRED_QUERY_HINT: &str = "`query:<name>` was retired (#1194): the credential must not ride in the \
      request URL, where transport errors and upstream echoes reproduce it. Use \
      `bearer` (sends `Authorization: Bearer <credential>`) or, for a server \
@@ -308,16 +138,7 @@ pub const RETIRED_QUERY_HINT: &str = "`query:<name>` was retired (#1194): the cr
      `header:<name>` (sends `<name>: <credential>` verbatim)";
 
 impl ApiKeyIn {
-    /// Parse the manifest's `api_key_in` string. `None` for anything outside
-    /// the set.
-    ///
-    /// What the caller does with that `None` depends on whether a credential is
-    /// named: [`McpHttpBlock::validate`] turns it into a validation error only
-    /// when `api_key_secret` is set, and lets it through otherwise — see the
-    /// scope note on [`ApiKeyIn`]. The retired `query:` spelling is the one
-    /// exception, refused unconditionally and with its own message, and this
-    /// function deliberately does not distinguish it: [`Self::is_retired_query`]
-    /// is that judgement, and the validator owns it.
+    /// Parse the manifest's `api_key_in` string; `None` for anything outside the set, including the retired `query:` spelling.
     pub fn parse(s: &str) -> Option<Self> {
         if s == "bearer" {
             return Some(Self::Bearer);
@@ -332,26 +153,16 @@ impl ApiKeyIn {
         }
     }
 
-    /// Does `s` name the retired query placement? Answered on the SCHEME, so
-    /// `query:`, `query:api_key` and `query:a=b` all get the migration message
-    /// rather than the generic closed-set one.
+    /// Does `s` name the retired query placement? Answered on the SCHEME, so `query:a=b` also gets the migration message.
     pub fn is_retired_query(s: &str) -> bool {
         s == "query" || s.starts_with("query:")
     }
 }
 
-/// Default per-request timeout for a steady-state `tools/call` (§2.2).
-///
-/// **This value is deliberately NOT the bound that protects boot** — see
-/// [`MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`]. It may be raised without limit: a
-/// report-generating MCP tool legitimately runs for minutes, and nothing on the
-/// `tools/call` path is awaited by `AppState::new`.
+/// Default per-request timeout for a steady-state `tools/call`. Deliberately NOT the bound that protects boot; may be raised without limit.
 pub const MCP_HTTP_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 
-// #1282 — moved to `calm_types::boot_budget` with the rest of the boot-budget
-// chain (`MAX_CONNECTOR_BRINGUP_BUDGET` is derived from it). Re-exported so
-// `manifest::MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS` still names it here, where
-// parse-time validation enforces it.
+// Re-exported so parse-time validation names it here.
 pub use calm_types::boot_budget::MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS;
 
 /// `mcp_http` top-level block. Present iff `kind == "mcp-http"`.
@@ -365,8 +176,7 @@ pub struct McpHttpBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_secret: Option<String>,
 
-    /// `bearer` | `header:<name>`. Required when `api_key_secret` is set.
-    /// `query:<name>` was retired by #1194 and is rejected — see [`ApiKeyIn`].
+    /// `bearer` | `header:<name>`. Required when `api_key_secret` is set; `query:<name>` is rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_in: Option<String>,
 
@@ -374,33 +184,20 @@ pub struct McpHttpBlock {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub header_secrets: BTreeMap<String, String>,
 
-    /// Discover and expose the upstream's complete current catalog on every
-    /// enable/reload. Explicit rather than inferred from an empty allowlist so
-    /// manifests written before this field existed keep exposing nothing.
+    /// Discover and expose the upstream's complete catalog on every enable/reload. Explicit, so manifests written before this field keep exposing nothing.
     #[serde(default)]
     pub tools_all: bool,
 
-    /// Hand-written strict allowlist of upstream tool names to expose. Names
-    /// the upstream does not serve are warned about and skipped, not fatal
-    /// (§2.2). An absent or empty list still exposes nothing unless
-    /// `tools_all` is explicitly true.
+    /// Strict allowlist of upstream tool names to expose; names the upstream does not serve are warned about and skipped.
     #[serde(default)]
     pub tools_allow: Vec<String>,
 
-    /// Steady-state `tools/call` timeout. Overrides
-    /// [`MCP_HTTP_DEFAULT_TIMEOUT_MS`]. **No upper bound** — see that constant.
+    /// Steady-state `tools/call` timeout. No upper bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_timeout_ms: Option<u64>,
 
-    /// Bring-up (`initialize` + `tools/list`) timeout. Capped at
-    /// [`MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`], which `validate` refuses to let a
-    /// manifest exceed.
-    ///
-    /// Absent ⇒ `min(request_timeout_ms, ceiling)`. Deriving the default from
-    /// the call timeout keeps every manifest written before the split meaning
-    /// what it meant (a small `request_timeout_ms` was, in practice, an
-    /// operator asking for a fast bring-up), while the `min` is what makes the
-    /// boot bound hold regardless of what that field says.
+    /// Bring-up (`initialize` + `tools/list`) timeout, capped at [`MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`].
+    /// Absent ⇒ `min(request_timeout_ms, ceiling)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bringup_timeout_ms: Option<u64>,
 }
@@ -413,13 +210,7 @@ impl McpHttpBlock {
             .unwrap_or(MCP_HTTP_DEFAULT_TIMEOUT_MS)
     }
 
-    /// The bring-up budget — the one on the inline-awaited boot path.
-    ///
-    /// The trailing `.min(...)` is not belt-and-braces with `validate`: it is
-    /// what makes the bound total. `validate` refuses an explicit value over
-    /// the ceiling, but the DERIVED default comes from an unbounded field, so
-    /// without the clamp `"request_timeout_ms": 600000` would re-create exactly
-    /// the 20.5-minute boot stall the split exists to remove.
+    /// The bring-up budget. The trailing `.min(...)` is what makes the bound total: the DERIVED default comes from an unbounded field.
     pub fn bringup_timeout_ms(&self) -> u64 {
         self.bringup_timeout_ms
             .filter(|ms| *ms > 0)
@@ -436,38 +227,11 @@ impl McpHttpBlock {
 pub const CLI_QUERY_DEFAULT_TIMEOUT_MS: u64 = 20_000;
 pub const CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES: usize = 32_768;
 
-/// Ceiling on the effective `cli_query.max_output_bytes` (#1164 P3 r2 G1).
-///
-/// **Why a ceiling at all.** Without one the value was unbounded, and
-/// `usize::MAX` loaded — which made `cap + 1` in the capture path overflow: a
-/// debug panic, and in release a wrap to `take(0)` that returned an EMPTY
-/// stdout with `is_error: false`, i.e. silent data loss. The arithmetic is now
-/// saturating regardless, but a manifest that can ask for an unbounded answer
-/// is a memory bound nobody can reason about.
-///
-/// **Why 8 MiB.** This is ONE tool call's stdout, held whole in memory and then
-/// embedded in a JSON text block (which roughly doubles it) on its way to the
-/// agent — and an agent has to read it. Real query answers are kilobytes; the
-/// default is 32 KiB. 8 MiB is ~250× the default, so no legitimate author is
-/// squeezed, while the worst a manifest can cost per concurrent call stays in
-/// the tens of megabytes rather than "whatever the child felt like writing".
-///
-/// **Why this CLAMPS rather than refusing to parse** (r3 H7). A parse-time
-/// refusal is retroactive: `registry::load_from_dir` re-parses every installed
-/// manifest at boot and merely `warn!`s past one that fails, so raising or
-/// introducing a ceiling makes a connector that worked yesterday silently
-/// vanish. This module already argues exactly that against widening the
-/// `env_allow` denylist; adding the same hazard for a number would be
-/// inconsistent. A credential denylist has no safe fallback — forwarding the
-/// key anyway is the harm — whereas an over-large cap has an obviously correct
-/// one: give the author the maximum and say so. The memory bound holds either
-/// way, which is the only property that mattered.
+/// Ceiling on the effective `cli_query.max_output_bytes`: one tool call's stdout, held whole in memory.
+/// Clamped rather than refused at parse, so an existing manifest never silently vanishes at boot.
 pub const CLI_QUERY_MAX_OUTPUT_BYTES_CEILING: usize = 8 * 1024 * 1024;
 
 /// `cli_query` top-level block. Present iff `kind == "cli-query"`.
-///
-/// #1164 P1 parses and validates this block; the execution runtime lands in a
-/// later slice (§7 P3).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CliQueryBlock {
     /// Bare name (resolved against the service PATH + `search_path_extra` at
@@ -487,26 +251,9 @@ pub struct CliQueryBlock {
     #[serde(default)]
     pub secret_env: Vec<String>,
 
-    /// #1284 §2.3(b) — env keys whose values come from the plugin's
-    /// **effective configuration** (`defaults ⊕ user_config`).
-    ///
-    /// One entry is BOTH the child env key and the `config_schema` property it
-    /// is valued from: the manifest declares the key, the operator only ever
-    /// fills the value. That direction is the whole point — an operator (or an
-    /// agent) can never introduce an environment variable the manifest author
-    /// did not write down, so this is a value channel and not a
-    /// key-injection one.
-    ///
-    /// **Not subject to the `env_allow` credential denylist**, and that
-    /// asymmetry is the same one [`Self::secret_env`] already carries: the
-    /// denylist exists because `env_allow` forwards values out of the SERVICE
-    /// process environment, which is an escalation from the server's own
-    /// identity. A `config_env` value is typed in by the operator for this one
-    /// connector, exactly like a `secrets.json` entry, so naming `GH_TOKEN`
-    /// here sets it to whatever the operator wrote and escalates nothing.
-    /// What replaces the denylist is two rules that are actually enforceable:
-    /// every key must be a legal env name, and the three env sources must not
-    /// name the same target key (see `CliQueryBlock::validate`).
+    /// Env keys whose values come from the plugin's effective configuration. One entry is BOTH the child
+    /// env key and the `config_schema` property it is valued from. Not subject to the `env_allow` credential
+    /// denylist: the value is typed in by the operator for this one connector, so it escalates nothing.
     #[serde(default)]
     pub config_env: Vec<String>,
 
@@ -526,12 +273,7 @@ impl CliQueryBlock {
             .unwrap_or(CLI_QUERY_DEFAULT_TIMEOUT_MS)
     }
 
-    /// The cap the runtime actually uses: the manifest's value, defaulted when
-    /// absent or zero, and CLAMPED to [`CLI_QUERY_MAX_OUTPUT_BYTES_CEILING`].
-    ///
-    /// Clamped rather than refused so a manifest that used to load never stops
-    /// loading — see the ceiling's doc for why that asymmetry with the
-    /// `env_allow` denylist is deliberate.
+    /// The cap the runtime actually uses: defaulted when absent or zero, clamped to [`CLI_QUERY_MAX_OUTPUT_BYTES_CEILING`].
     pub fn max_output_bytes(&self) -> usize {
         let requested = self
             .max_output_bytes
@@ -549,27 +291,9 @@ impl CliQueryBlock {
     }
 }
 
-/// One hand-declared CLI tool. `args` is a fixed argv template: a `{{slot}}`
-/// element is replaced *wholesale* by one argument. No shell, no string
-/// concatenation (§2.3).
-///
-/// # A value cannot become two arguments — but it can become a flag
-///
-/// Whole-element substitution means a value is never re-split and never
-/// concatenated (partial forms like `--out={{x}}` are refused at manifest-parse
-/// time), so shell metacharacters and whitespace are inert: `; rm -rf /` is one
-/// literal argv element.
-///
-/// It can still be *option-shaped*: `{"path": "--output=/etc/cron.d/x"}` reaches
-/// the child as the literal element `--output=/etc/cron.d/x`, and a CLI that
-/// accepts options anywhere in its argv will read it as one. The kernel does
-/// **not** refuse leading dashes (that would break legitimate values) and does
-/// **not** insert `--` for you (many CLIs do not accept it).
-///
-/// **An author who wants positional-only values writes the separator into the
-/// template**: `"args": ["quote", "--", "{{symbol}}"]`. A literal `--` element
-/// passes validation like any other literal, and every CLI that follows the
-/// convention treats what follows as positional.
+/// One hand-declared CLI tool. `args` is a fixed argv template: a `{{slot}}` element is replaced
+/// wholesale by one argument — never re-split, but it can still be option-shaped (`--output=…`).
+/// An author who wants positional-only values writes `"--"` into the template.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CliQueryTool {
     pub name: String,
@@ -582,29 +306,13 @@ pub struct CliQueryTool {
 /// The `config.` namespace prefix inside a `{{…}}` argv slot.
 pub const CONFIG_SLOT_PREFIX: &str = "config.";
 
-/// What one `{{…}}` argv slot draws its value from — decided **here, at parse
-/// time**, and never re-decided at render time.
-///
-/// #1284 §2.3(b) / F18. Before this, a slot was just a name, the validator
-/// required every name to be a top-level `input_schema` property, and the
-/// runtime looked every name up in the agent's `arguments`. A configuration
-/// slot could therefore only exist by being declared as a tool input — at
-/// which point one `tools/call` carrying an argument literally named
-/// `"config.x"` would supply the operator's configuration value. Two
-/// populations (agent-supplied and operator-supplied) sharing one namespace is
-/// the defect; classifying once, at parse time, is the fix.
-///
-/// The alternatives were considered and refused: two substitution passes, or
-/// one lookup with a fallback to the other map, both leave "which source wins"
-/// as an ordering question, and an ordering question is a thing an attacker
-/// gets to answer.
+/// What one `{{…}}` argv slot draws its value from — decided at parse time, never re-decided at
+/// render time, so agent-supplied and operator-supplied values never share a namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgvSlot<'a> {
-    /// `{{name}}` — valued from the agent's `tools/call` `arguments`, and only
-    /// from there.
+    /// `{{name}}` — valued from the agent's `tools/call` `arguments`, and only from there.
     Argument(&'a str),
-    /// `{{config.key}}` — valued from the plugin's effective configuration,
-    /// and only from there.
+    /// `{{config.key}}` — valued from the plugin's effective configuration, and only from there.
     Config(&'a str),
 }
 
@@ -617,13 +325,8 @@ impl ArgvSlot<'_> {
     }
 }
 
-/// If `s` is exactly `{{name}}` or `{{config.key}}`, classify it. Partial
-/// occurrences (e.g. `--sym={{symbol}}`) deliberately do NOT match: the
-/// template only supports whole-argv substitution.
-///
-/// `{{config.}}` classifies as `Config("")` rather than as "not a slot", so the
-/// validator can refuse it by name instead of reporting the generic
-/// stray-braces error for something that is obviously a slot.
+/// If `s` is exactly `{{name}}` or `{{config.key}}`, classify it; partial occurrences do NOT match.
+/// `{{config.}}` classifies as `Config("")` so the validator can refuse it by name.
 pub fn argv_slot(s: &str) -> Option<ArgvSlot<'_>> {
     let inner = s.strip_prefix("{{")?.strip_suffix("}}")?;
     if inner.is_empty() {
@@ -635,12 +338,7 @@ pub fn argv_slot(s: &str) -> Option<ArgvSlot<'_>> {
     })
 }
 
-/// Is `key` a legal POSIX-shaped environment variable name?
-///
-/// `[A-Za-z_][A-Za-z0-9_]*`. Deliberately stricter than what `execve` will
-/// physically carry (anything without `=` or NUL): a manifest that declares
-/// `"2 FOO"` as an env key produces a variable no shell and no `getenv`-using
-/// program can name, which is a silent no-op rather than a configuration.
+/// Is `key` a legal POSIX-shaped environment variable name (`[A-Za-z_][A-Za-z0-9_]*`)?
 pub fn is_valid_env_key(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
@@ -657,12 +355,10 @@ pub struct Author {
     pub url: Option<String>,
 }
 
-/// How to launch the plugin process. Kernel-injected env (token, sock, data
-/// dir) merges over this at spawn time — that's Slice B.
+/// How to launch the plugin process. Kernel-injected env merges over this at spawn time.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Entrypoint {
-    /// Relative to `install_path`. Slice B is responsible for sandboxing the
-    /// path (no `../` escape); validation here only enforces non-emptiness.
+    /// Relative to `install_path`.
     pub command: String,
 
     #[serde(default)]
@@ -681,42 +377,26 @@ pub struct View {
     #[serde(default)]
     pub icon: Option<String>,
 
-    /// Closed set for M3: `"card"` only. The validator rejects anything else
-    /// with an explicit error pointing at this field.
+    /// Closed set: `"card"` only.
     pub scope: String,
 
     #[serde(default)]
     pub default_size: Option<ViewSize>,
 
-    /// Static-asset HTML rendered in the iframe. Optional: if absent, Slice D's
-    /// HTTP layer is expected to proxy to the plugin process at `/views/<id>`.
+    /// Static-asset HTML rendered in the iframe. If absent, the HTTP layer proxies to the plugin process at `/views/<id>`.
     #[serde(default)]
     pub entry_html: Option<String>,
 
-    /// MCP Apps `_meta.ui.csp` mirror (migration doc §6/M3). When set, the
-    /// kernel emits it under `_meta.ui` of the `resources/read` response so
-    /// AppBridge's sandbox proxy can enforce the right Content-Security-Policy
-    /// on the inner iframe. Absent → AppBridge falls back to its no-network
-    /// default. M3 is intentionally loose about the inner shape; refinement
-    /// (closed set of keys, glob validation) lands in M5 when we wire the
-    /// transport.
+    /// MCP Apps `_meta.ui.csp` mirror, emitted under `_meta.ui` of the `resources/read` response. Absent → AppBridge's no-network default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub csp: Option<CspBlock>,
 
-    /// MCP Apps `_meta.ui.permissions` mirror. Today only the `tools` slot is
-    /// populated (list of tool-name globs the iframe may call); the closed
-    /// camera/microphone/etc. set in the upstream specification will land alongside
-    /// AppBridge integration in M5.
+    /// MCP Apps `_meta.ui.permissions` mirror. Only the `tools` slot is populated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<UiPermissions>,
 }
 
-/// `_meta.ui.csp` mirror — kept open-shape so we can pass unmodeled directives
-/// straight through to AppBridge without bumping the manifest schema.
-///
-/// The five named fields are the ones the specification calls out explicitly
-/// (default_src, script_src, style_src, connect_src, img_src); everything
-/// else flows through `extras` via `#[serde(flatten)]`.
+/// `_meta.ui.csp` mirror — kept open-shape so unmodeled directives pass straight through to AppBridge.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CspBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -729,16 +409,12 @@ pub struct CspBlock {
     pub connect_src: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub img_src: Option<Vec<String>>,
-    /// Unmodeled directives — forwarded verbatim. Keeps us forward-compatible
-    /// with frame_src, font_src, worker_src, base_uri, etc. without a schema
-    /// bump every time AppBridge gains support for one.
+    /// Unmodeled directives — forwarded verbatim.
     #[serde(flatten)]
     pub extras: HashMap<String, Vec<String>>,
 }
 
-/// `_meta.ui.permissions` mirror. We only model `tools` for M3 (matches §1.2
-/// of the migration doc — the closed set of host-feature permissions land
-/// alongside AppBridge in M5).
+/// `_meta.ui.permissions` mirror; only `tools` is modeled.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct UiPermissions {
     /// Tool-name globs the iframe is allowed to invoke via
@@ -770,9 +446,7 @@ pub struct ExposedTool {
     pub description: Option<String>,
     #[serde(default)]
     pub kind: Option<ToolKind>,
-    /// Optional JSON Schema for the tool's MCP `inputSchema`. When absent the
-    /// kernel falls back to a permissive empty object schema. Without this a
-    /// real agent calls the tool with empty args (see #840 d1).
+    /// Optional JSON Schema for the tool's MCP `inputSchema`. Absent ⇒ a permissive empty object schema, and a real agent then calls the tool with empty args.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
     /// Optional MCP tool annotations (title/readOnlyHint/etc.) surfaced in tools/list.
@@ -780,22 +454,16 @@ pub struct ExposedTool {
     pub annotations: Option<Value>,
 }
 
-/// Track-create handle that names a plugin-owned template id.
-///
-/// #1110 S5 shrunk this to `{ id }`. Plan prose, gates, planner instructions,
-/// and card kinds left the parser; `input_schema` lives on [`Manifest`].
-/// Extra JSON keys are ignored (same forwards-compat as [`Manifest`]).
+/// Track-create handle that names a plugin-owned template id. Extra JSON keys are ignored.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TemplateDescriptor {
     pub id: String,
 }
 
-/// Permissions the plugin requests. Kernel enforces at the callback dispatch
-/// layer (Slice C). Defaults are the most-restrictive (nothing granted).
+/// Permissions the plugin requests; enforced at the callback dispatch layer. Defaults grant nothing.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Permissions {
-    /// Which `entity_kind` strings the plugin may overlay-write to (subset of
-    /// `["track", "card"]`). Empty = no overlay writes.
+    /// Which `entity_kind` strings the plugin may overlay-write to. Empty = no overlay writes.
     #[serde(default)]
     pub overlays_write: Vec<String>,
 
@@ -811,9 +479,7 @@ pub struct Permissions {
     #[serde(default)]
     pub events_subscribe: Vec<String>,
 
-    /// Deprecated compatibility field. The proposal channel was withdrawn;
-    /// persisted manifests may still contain this Tier-A field, so it remains
-    /// parseable but is intentionally ignored.
+    /// Deprecated: the proposal channel was withdrawn; still parseable, intentionally ignored.
     #[serde(default)]
     pub proposals: Vec<String>,
 
@@ -821,21 +487,13 @@ pub struct Permissions {
     #[serde(default)]
     pub kv_quota_bytes: u64,
 
-    /// Future expansion (declared roots). Validated as a list of strings; no
-    /// semantics in M3.
+    /// Future expansion (declared roots). Validated as a list of strings; no semantics.
     #[serde(default)]
     pub filesystem: Vec<String>,
 }
 
 impl Permissions {
-    /// `true` when this block grants literally nothing — i.e. it is
-    /// indistinguishable from an absent `permissions` key.
-    ///
-    /// #1164 §3 uses this to refuse a connector manifest that *requests*
-    /// anything: connectors have no `neige.*` channel, so a granted permission
-    /// would be a claim the kernel could never honour. `proposals` is excluded
-    /// on purpose — it is the withdrawn, ignored Tier-A compatibility field, so
-    /// a persisted manifest carrying it must not become unparseable.
+    /// `true` when this block grants literally nothing. `proposals` is excluded on purpose: it is the withdrawn, ignored compatibility field.
     pub fn grants_nothing(&self) -> bool {
         self.overlays_write.is_empty()
             && !self.cards_create
@@ -846,22 +504,14 @@ impl Permissions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/// Manifest parse / validation failure. The `Display` impl carries enough
-/// detail (field path, expected shape) to be useful in HTTP 400 bodies and in
-/// the `tracing::warn!` lines that the registry logs on skipped manifests.
+/// Manifest parse / validation failure.
 #[derive(Debug, Error)]
 pub enum ManifestError {
-    /// JSON syntax error. Wraps `serde_json::Error` so its line/col surface
-    /// directly to the user.
+    /// JSON syntax error.
     #[error("manifest JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// Field-level rule violation. `field` is a dotted path (e.g.
-    /// `views[0].scope`), `reason` is a short human string.
+    /// Field-level rule violation. `field` is a dotted path (e.g. `views[0].scope`).
     #[error("manifest validation failed at `{field}`: {reason}")]
     Invalid { field: String, reason: String },
 }
@@ -875,53 +525,25 @@ impl ManifestError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Parsing + validation
-// ---------------------------------------------------------------------------
-
 impl Manifest {
-    /// Parse a manifest from a JSON string and run every validation rule. The
-    /// returned `Manifest` is guaranteed shape-correct; semantic concerns
-    /// (does the entrypoint binary exist, etc.) are deferred to Slice B.
+    /// Parse a manifest from a JSON string and run every validation rule.
     pub fn parse(s: &str) -> Result<Manifest, ManifestError> {
-        // Reject empty input early — `serde_json` would already, but the error
-        // message is friendlier this way.
         if s.trim().is_empty() {
             return Err(ManifestError::invalid("<root>", "manifest is empty"));
         }
         let m: Manifest = serde_json::from_str(s)?;
-        // Raw-text guard first: when a file carries the retired key, "rename it
-        // to `templates`" is the actionable message, not "wrong version".
+        // Raw-text guard first: "rename it to `templates`" is the actionable message, not "wrong version".
         Self::reject_retired_workflows_key(s)?;
         m.validate()?;
         Ok(m)
     }
 
-    /// #1268 — refuse a manifest that still spells [`Self::templates`] the old
-    /// way (`workflows`).
-    ///
-    /// `Manifest` deliberately tolerates unknown top-level keys, so without
-    /// this the rename would be a **silent** contract break: an old manifest
-    /// would parse, declare zero bindings, and `issue-development` would
-    /// quietly lose its `input_schema` — every `POST /api/tracks` carrying
-    /// `template_input` would then 400 with nothing pointing at the cause.
-    /// Naming the new key in the error costs one extra `Value` parse of a file
-    /// that is at most a few KB and is read once per install/reload.
-    ///
-    /// This runs on the *raw text*, not on the deserialized struct, precisely
-    /// because the struct is where the evidence has already been discarded —
-    /// hence an associated fn with no `&self`: there is nothing in the parsed
-    /// value for it to consult, and a `&self` receiver would invite exactly the
-    /// misreading this paragraph exists to prevent.
-    ///
-    /// Deliberately **not** conditioned on `manifest_version`: the retired key
-    /// is refused at every declared version, so "v1 said `workflows`" is never
-    /// a way back in.
+    /// Refuse a manifest that still spells [`Self::templates`] as `workflows`. Runs on the raw text
+    /// because `Manifest` tolerates unknown keys, so the struct has already discarded the evidence.
+    /// Not conditioned on `manifest_version`.
     fn reject_retired_workflows_key(s: &str) -> Result<(), ManifestError> {
         let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(s) else {
-            // Not an object, or not valid JSON — `serde_json::from_str::<Manifest>`
-            // above already succeeded, so this branch is unreachable in practice;
-            // there is nothing to check either way.
+            // `from_str::<Manifest>` above already succeeded, so this branch is unreachable in practice.
             return Ok(());
         };
         if raw.contains_key("workflows") {
@@ -934,8 +556,7 @@ impl Manifest {
         Ok(())
     }
 
-    /// Validate an already-deserialized manifest. Exposed publicly so callers
-    /// holding a `Manifest` (e.g. after editing in-memory) can re-check it.
+    /// Validate an already-deserialized manifest.
     pub fn validate(&self) -> Result<(), ManifestError> {
         if !(1..=3).contains(&self.manifest_version) {
             return Err(ManifestError::invalid(
@@ -947,23 +568,9 @@ impl Manifest {
             ));
         }
 
-        // #1268 — a manifest that actually declares a binding MUST say 2.
-        //
-        // This is the whole point of the bump, and it is deliberately scoped to
-        // files that have something to lose. The hazard is rollback: a
-        // `templates[]` file read by a pre-#1268 kernel parses clean (unknown
-        // top-level keys are ignored), declares no binding, and silently drops
-        // `issue-development`'s `input_schema`. Declaring 2 turns that into the
-        // old kernel's own `manifest_version != 1` refusal.
-        //
-        // A manifest with no bindings has no such exposure — it reads
-        // identically on both kernels — so it is left alone rather than broken
-        // for symmetry. That matters in practice: the plugin install root on a
-        // real deployment holds connector manifests (`kind: "mcp-http"`,
-        // `cli-query`) that never declared a binding, and the boot loader
-        // treats a parse failure as `warn!` + skip (`registry.rs`), i.e. losing
-        // them would be quiet — the exact failure shape this rule exists to
-        // remove.
+        // A manifest that actually declares a binding MUST say 2: a `templates[]` file read by an older
+        // kernel parses clean and silently binds nothing. Binding-less manifests are left alone — the boot
+        // loader turns a parse failure into `warn!` + skip, so breaking them would be the same silent loss.
         if !self.templates.is_empty() && self.manifest_version < 2 {
             return Err(ManifestError::invalid(
                 "manifest_version",
@@ -983,14 +590,8 @@ impl Manifest {
             ));
         }
 
-        // #1297: `kernel` is a reserved writer identity, not merely a naming
-        // convention. `card_fsm` stamps it on the overlay rows the scheduler
-        // and planner-harness admission read back as fact, and the callback path
-        // writes `ctx.plugin_id` verbatim — so a plugin that simply *named
-        // itself* `kernel` would forge that authorship without touching any
-        // of the guards on the REST side. The regex above admits it, so the
-        // refusal has to be explicit and it has to be here, at the only place
-        // a plugin id enters the system.
+        // `kernel` is a reserved writer identity: the callback path writes `ctx.plugin_id` verbatim, so a
+        // plugin named `kernel` would forge kernel-authored overlay rows. The regex admits it, so refuse it here.
         if self.id == KERNEL_OVERLAY_PLUGIN_ID {
             return Err(ManifestError::invalid(
                 "id",
@@ -1019,16 +620,12 @@ impl Manifest {
             return Err(ManifestError::invalid("display_name", "must be non-empty"));
         }
 
-        // #1164 §2.1 — kind ↔ block consistency. Exactly one connector block
-        // may be present, and it must be the one the `kind` names.
+        // Exactly one connector block may be present, and it must be the one `kind` names.
         self.validate_connector_blocks()?;
-        // #1164 §3 — and the app-only surfaces are refused at PARSE time for
-        // connectors, which is what §4's interception table rests on.
+        // App-only surfaces are refused at PARSE time for connectors.
         self.reject_app_only_surfaces()?;
 
-        // `entrypoint` is required only for `app`. Non-app kinds have no
-        // kernel-supervised child, so demanding a binary path there would be
-        // pure ceremony (and would force fake values into the manifest).
+        // `entrypoint` is required only for `app`.
         match self.entrypoint.as_ref() {
             Some(entrypoint) => {
                 if entrypoint.command.trim().is_empty() {
@@ -1037,8 +634,7 @@ impl Manifest {
                         "must be non-empty",
                     ));
                 }
-                // Reject absolute paths and `..` escapes early — Slice B will
-                // also re-check, but flagging here gives users a clearer error.
+                // Reject absolute paths and `..` escapes early; spawn re-checks.
                 if entrypoint.command.starts_with('/') || entrypoint.command.contains("..") {
                     return Err(ManifestError::invalid(
                         "entrypoint.command",
@@ -1060,28 +656,18 @@ impl Manifest {
             view.validate(i)?;
         }
 
-        // #1110 S2 — track `template_input` lives on the Manifest, not a
-        // template descriptor. Error paths are `input_schema…` (no
-        // `templates[i].` prefix).
+        // Track `template_input` lives on the Manifest; error paths are `input_schema…`.
         if let Some(schema) = self.input_schema.as_ref() {
             crate::plugin_host::template_input::validate_input_schema(schema)
                 .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
         }
 
-        // #1284 §2.1 — same subset, different Manifest field, and therefore a
-        // different error root: a `config_schema` violation must say
-        // `config_schema…`, never `input_schema…`. That is the whole reason
-        // `validate_object_schema` takes a root path.
+        // Same subset, different field, different error root: a `config_schema` violation must say `config_schema…`.
         if let Some(schema) = self.config_schema.as_ref() {
             crate::plugin_host::template_input::validate_object_schema(CONFIG_SCHEMA_KEY, schema)
                 .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
 
-            // …and the conditional version bump. Scoped to schemas that carry
-            // a non-empty `required` for the reason spelled out on
-            // `manifest_version`: only those lose something real when a
-            // pre-#1284 kernel ignores the key. `required` is already known to
-            // be a non-empty array of declared property names at this point —
-            // the subset validator above ran first.
+            // The conditional version bump: only a schema with a non-empty `required` loses something real when an older kernel ignores the key.
             let has_required = schema
                 .get("required")
                 .and_then(Value::as_array)
@@ -1110,15 +696,9 @@ impl Manifest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// #1164 — connector-block validation
-// ---------------------------------------------------------------------------
-
 impl Manifest {
-    /// Enforce the §2.1 contract: the two connector blocks are mutually
-    /// exclusive, and the present block must match `kind`. We deliberately do
-    /// NOT use `#[serde(flatten)]` + an internally-tagged enum — the duplicate
-    /// `kind` key that shape produces is a round-trip hazard.
+    /// The two connector blocks are mutually exclusive, and the present block must match `kind`.
+    /// Deliberately not `#[serde(flatten)]` + an internally-tagged enum: the duplicate `kind` key is a round-trip hazard.
     fn validate_connector_blocks(&self) -> Result<(), ManifestError> {
         if self.mcp_http.is_some() && self.cli_query.is_some() {
             return Err(ManifestError::invalid(
@@ -1145,41 +725,22 @@ impl Manifest {
                 let block = self.mcp_http.as_ref().ok_or_else(|| {
                     ManifestError::invalid("mcp_http", "required when `kind` is \"mcp-http\"")
                 })?;
-                // #1284 §2.3(c) — same reason the `cli-query` arm passes it:
-                // the url's `{{config.*}}` slots are only checkable against
-                // the manifest's own `config_schema`, which the block cannot
-                // see.
+                // The url's `{{config.*}}` slots are only checkable against the manifest's own `config_schema`.
                 block.validate(self.config_schema.as_ref())?;
             }
             ConnectorKind::CliQuery => {
                 let block = self.cli_query.as_ref().ok_or_else(|| {
                     ManifestError::invalid("cli_query", "required when `kind` is \"cli-query\"")
                 })?;
-                // #1284 S3a — the block's configuration-facing rules (`{{config.*}}`
-                // slots, `config_env`) are cross-field: they are only checkable
-                // against the manifest's own `config_schema`, which the block
-                // cannot see. Passing it in keeps the check at parse time, where
-                // a typo is an authoring error rather than a bring-up mystery.
+                // The block's configuration-facing rules are cross-field: only checkable against the manifest's own `config_schema`.
                 block.validate(self.config_schema.as_ref())?;
             }
         }
         Ok(())
     }
 
-    /// #1164 §3 — **parse-time** refusal of every `app`-only surface on a
-    /// connector manifest.
-    ///
-    /// §3 lists "渲染 `ui://` 或绑 `templates[]`（parse 期拒绝）" as a channel
-    /// that *does not exist* for connectors, and §4's interception table is
-    /// only sound if the manifest can never declare one. Enforcing it here —
-    /// rather than by hoping no downstream reader ever looks — is what makes
-    /// the negative durable: `Manifest::parse` is the single door every
-    /// manifest enters through (`registry::load_from_dir`, the install route,
-    /// `/reload`), so a connector manifest that reaches any reader is already
-    /// known to carry none of these.
-    ///
-    /// Each field gets its own error naming the field, because "your connector
-    /// manifest is invalid" is useless to whoever authored it.
+    /// Parse-time refusal of every `app`-only surface on a connector manifest. `Manifest::parse` is
+    /// the single door every manifest enters through, so downstream readers never see one.
     fn reject_app_only_surfaces(&self) -> Result<(), ManifestError> {
         if self.kind.is_app() {
             return Ok(());
@@ -1222,14 +783,7 @@ impl Manifest {
                 ),
             ));
         }
-        // D6 — a forge action is dispatched with the forge credential
-        // passthrough, which is an `app`-plugin-only channel. It is not
-        // exploitable in P1 (every reader gates on `running_plugin_ids`, and a
-        // successful `mcp-http` spawn REPLACES `exposes_tools` wholesale with
-        // `materialize_http_tools`, which hard-codes `kind: None`) — but "not
-        // reachable today" is exactly the invariant P3's `cli-query` executor
-        // would silently make live. Refusing at parse time makes it durable
-        // rather than incidental.
+        // A forge action is dispatched with the forge credential passthrough, an `app`-only channel; refusing at parse time makes that durable.
         if let Some(tool) = self
             .exposes_tools
             .iter()
@@ -1251,42 +805,9 @@ impl Manifest {
 impl McpHttpBlock {
     fn validate(&self, config_schema: Option<&Value>) -> Result<(), ManifestError> {
         let raw = self.url.trim();
-        // #1284 §2.3(c) — the url may carry `{{config.<key>}}` slots, and a
-        // templated url has no final form at parse time. What IS checkable
-        // here is what S3a checks for argv slots: that every slot is
-        // well-formed and names a key this manifest's `config_schema`
-        // declares, so a typo is an authoring error rather than a bring-up
-        // mystery.
-        //
-        // **How much of the url IS checkable at parse time depends on the
-        // §2.3(c) tier**, and the tier is a field of this very block:
-        //
-        // * **No slots** — the url is its own final form; the full validator
-        //   runs, exactly as before.
-        // * **Slots + `api_key_secret` (keyed)** — the origin is locked to the
-        //   manifest literal, so *every* rendering of this template has the
-        //   literal's scheme, host and port. Substituting each slot with
-        //   [`ORIGIN_PROBE`] and running **the same
-        //   [`validate_mcp_http_url`]** on the result is therefore not a
-        //   second, weaker copy of the render-time check: it is that function,
-        //   on a string whose origin is the one that will actually be
-        //   contacted. It refuses a template that embeds userinfo, a backslash
-        //   or a control character, a non-`http(s)` or non-canonical spelling,
-        //   a fragment, or a slot in the port (a port is digits, so the probe
-        //   makes the parse fail) — none of which any configured value could
-        //   ever repair. See [`probe_literal_url`].
-        // * **Slots and no key (unkeyed)** — the whole url, host included, is
-        //   replaceable, so the template carries no origin to validate:
-        //   `{{config.endpoint}}` probes to a bare label that is not a URL at
-        //   all. Nothing is checked here beyond slot well-formedness, and
-        //   [`resolve_mcp_http_url`] is the gate.
-        //
-        // What is NOT decided here for the keyed tier is *where* the slots sit
-        // (a host slot probes to a perfectly valid url); that stays with
-        // [`lock_origin`] at render time, together with the componentwise
-        // origin comparison. [`crate::plugin_host::http_mcp::HttpMcpClient`]
-        // cannot be constructed without [`ResolvedMcpUrl`], so there is no path
-        // from a manifest to a request that skips it.
+        // No slots: the full validator runs. Slots + a key: the origin is locked to the literal, so each slot
+        // is replaced by [`ORIGIN_PROBE`] and the same validator runs on the result. Slots and no key: the
+        // whole url is replaceable, so only slot well-formedness is checked and [`resolve_mcp_http_url`] is the gate.
         let slots = url_config_slots(raw)
             .map_err(|reason| ManifestError::invalid("mcp_http.url", reason))?;
         if slots.is_empty() {
@@ -1309,10 +830,7 @@ impl McpHttpBlock {
                 probe_literal_url(raw)?;
             }
         }
-        // The ceiling is enforced where the manifest is PARSED, not where the
-        // spawn reads it: a connector whose bring-up budget would stall boot
-        // must fail to load, so an operator learns at install time rather than
-        // by watching the server take minutes to answer its first request.
+        // Enforced at PARSE time so an operator learns at install rather than by watching boot stall.
         if let Some(ms) = self.bringup_timeout_ms
             && ms > MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS
         {
@@ -1325,32 +843,9 @@ impl McpHttpBlock {
                 ),
             ));
         }
-        // The retired placement is refused BEFORE the `(secret, in)` match,
-        // and that placement is deliberate. Inside the match it would sit under
-        // an `api_key_secret.is_some()` arm, and the `(None, _)` arm would let
-        // `{"url": …, "api_key_in": "query:api_key"}` — no secret named —
-        // through, which is what review executed and found parsing.
-        //
-        // **What this buys, and not one word more.** It makes the refusal of
-        // the RETIRED SPELLING unconditional. It does NOT make the set closed
-        // for keyless manifests: the `(None, _)` arm below still accepts
-        // `cookie:k`, `body:token`, `api_key`, `header:`, `header:bad name` and
-        // `""`, all executed and all parsing. An earlier revision of this
-        // comment claimed otherwise ("it is the SET that is closed"), which is
-        // the same over-wide shape the module header was corrected for one
-        // round earlier — recorded because it was written while fixing that
-        // exact class.
-        //
-        // Leaving `(None, _)` open is a decision, not an omission: the auth
-        // branch in `HttpMcpClient::new` is entirely inside `if let Some(key)`,
-        // so a keyless connector sends no credential whatever its `api_key_in`
-        // says, and there is no hole to close — only a contract to break.
-        //
-        // Fail-closed on purpose: a plugin whose manifest still puts the
-        // credential in the URL must not load. Silently downgrading it to "send
-        // nothing" would turn a leak into a mystery 401, and silently promoting
-        // it to `bearer` would send the credential somewhere the operator never
-        // wrote.
+        // Refused BEFORE the `(secret, in)` match so the retired spelling is refused unconditionally, even
+        // with no secret named. The `(None, _)` arm below stays open on purpose: a keyless connector sends
+        // no credential whatever its `api_key_in` says, so there is no hole to close.
         if let Some(api_key_in) = self.api_key_in.as_deref()
             && ApiKeyIn::is_retired_query(api_key_in)
         {
@@ -1379,10 +874,7 @@ impl McpHttpBlock {
                         "must be `bearer` or `header:<name>`",
                     ));
                 }
-                // A header name that is not an RFC 9110 field-name would be
-                // rejected by the HTTP client at REQUEST time — i.e. once per
-                // call, as a transport error, long after the operator could
-                // connect it to the manifest they wrote.
+                // An illegal header name would otherwise be rejected by the HTTP client at REQUEST time, once per call.
                 Some(ApiKeyIn::Header(name)) if !is_http_field_name(&name) => {
                     return Err(ManifestError::invalid(
                         "mcp_http.api_key_in",
@@ -1450,29 +942,9 @@ impl CliQueryBlock {
                 "must declare at least one tool",
             ));
         }
-        // #1164 P3 F1 — `env_allow` is a passthrough from the SERVICE
-        // environment, so a manifest that names a forge credential key would
-        // hand a manifest-authored, agent-callable connector the operator's git
-        // identity. Refused at parse time, which is the earliest and loudest
-        // place: install and reload both go through here, so such a manifest
-        // never becomes an enabled connector at all. `build_child_env` keeps a
-        // fail-closed filter for anything that reaches the runtime by another
-        // route.
-        //
-        // The denylist is the CREDENTIAL subset only (r2 G4). The wider forge
-        // passthrough set also carries `GH_HOST`/`NO_PROXY`/`no_proxy`, which
-        // grant nothing: refusing them made `"env_allow": ["no_proxy"]` — an
-        // ordinary need for a query CLI behind a proxy — a hard install failure
-        // whose reason falsely called it a credential, while `HTTP_PROXY` sailed
-        // through. Since `registry::load_from_dir` re-parses on boot, every key
-        // in this set can also retroactively invalidate an installed manifest,
-        // which is a cost only a real credential is worth paying.
-        //
-        // `secret_env` is deliberately NOT subject to this list either: those
-        // values come from the connector's own `secrets.json`, which the
-        // operator authored for this connector. Naming `GH_TOKEN` there sets it
-        // to whatever the operator put in that file — there is no escalation
-        // from the service identity, which is the thing this denylist protects.
+        // `env_allow` forwards values out of the SERVICE environment, so a forge credential key here would
+        // hand an agent-callable connector the operator's git identity. The denylist is the CREDENTIAL subset
+        // only; `secret_env` values come from the connector's own `secrets.json` and escalate nothing.
         for (i, key) in self.env_allow.iter().enumerate() {
             if crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS
                 .contains(&key.as_str())
@@ -1488,9 +960,7 @@ impl CliQueryBlock {
                 ));
             }
         }
-        // #1284 §2.3(b) rule (i): a `config_env` entry names BOTH a child env
-        // key and the `config_schema` property it draws its value from, so it
-        // has to be legal as both.
+        // A `config_env` entry names BOTH a child env key and the `config_schema` property it draws from, so it has to be legal as both.
         for (i, key) in self.config_env.iter().enumerate() {
             let path = format!("cli_query.config_env[{i}]");
             if !is_valid_env_key(key) {
@@ -1516,35 +986,8 @@ impl CliQueryBlock {
             }
         }
 
-        // #1284 §2.3(b) rule (ii): three sources write into ONE child
-        // environment. Leaving a collision to an undocumented insertion order
-        // would make "which value does `GH_TOKEN` end up with" a question
-        // answered by reading `build_child_env` bottom-up; refusing it at parse
-        // time means the question cannot be asked.
-        //
-        // **This rule is RETROACTIVE, and the `env_allow` ∩ `secret_env` pair
-        // is the retroactive part** (S3a review P3). `config_env` is a new
-        // field, so no manifest can already use it — but this loop also refuses
-        // a manifest that names one key in BOTH `env_allow` and `secret_env`,
-        // and until now there was no rule about that pair at all. By F14 a
-        // parse failure is not a loud one: `registry::load_from_dir` `warn!`s
-        // and SKIPS, so a manifest that hits this stops loading and the plugin
-        // disappears from the UI at the next boot.
-        //
-        // Scope, per R5 — by carrier, not by assertion. Scanned: every
-        // `cli_query` block in this repo (no shipped `plugins/*/manifest.json`
-        // is `kind: cli-query`; the rest are test-constructed). The scan found
-        // **one hit**, and the earlier revision of this comment claiming "zero"
-        // was wrong: `cli_query::tests::path_cannot_be_overridden_by_*` named
-        // `PATH` in both `env_allow` and `secret_env`. It did not go red under
-        // this rule because that fixture is a bare `serde_json::from_value` and
-        // never calls `validate` — which is the general caveat on this count:
-        // a test-constructed block is not admitted through the parse path, so
-        // scanning them says nothing about what this rule refuses at load time.
-        // That fixture has since been split into one block per source (S3a
-        // review P1), so both halves are now shapes this rule admits. Outside
-        // the repo (an operator's own installed plugins) is **unknown**:
-        // nothing here can see them.
+        // Three sources write into ONE child environment; a duplicate target would make the winning value
+        // depend on injection order. This is retroactive for the `env_allow` ∩ `secret_env` pair.
         let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
         for (source, keys) in [
             ("cli_query.env_allow", &self.env_allow),
@@ -1573,10 +1016,7 @@ impl CliQueryBlock {
     }
 }
 
-/// Is `key` a top-level property of this manifest's `config_schema`?
-///
-/// Absent schema ⇒ nothing is declared, so every configuration reference is a
-/// refusal rather than a silently empty value.
+/// Is `key` a top-level property of this manifest's `config_schema`? Absent schema ⇒ nothing is declared.
 fn config_schema_declares(config_schema: Option<&Value>, key: &str) -> bool {
     config_schema
         .and_then(|s| s.get("properties"))
@@ -1590,40 +1030,13 @@ impl CliQueryTool {
         validate_connector_tool_name(&self.name, &path("name"))?;
 
         // Slot names must be declared top-level keys of `input_schema`.
-        // `input_schema` is the same JSON-Schema subset the rest of the
-        // manifest uses; here we only need its top-level property names.
         let properties = self
             .input_schema
             .get("properties")
             .and_then(|p| p.as_object());
 
-        // #1284 §2.3(b) — the namespace has to be reserved on BOTH sides, or it
-        // is not a namespace. `{{config.x}}` now resolves against the operator's
-        // configuration; if a tool were also allowed to declare an input
-        // property literally named `config.x`, one `tools/call` supplying that
-        // argument would be indistinguishable from an operator setting — which
-        // is exactly the collision the classification above exists to remove,
-        // reintroduced one layer down.
-        //
-        // **This rule is RETROACTIVE** (S3a review P3), and it is the one of
-        // the slice's two new fail-closes that is easiest to mis-file as "a new
-        // field, so nothing existing can hit it". It is not about a new field:
-        // it refuses an `input_schema` property that any already-installed
-        // cli-query tool could legally have declared yesterday. By F14 the cost
-        // is not a visible error — `registry::load_from_dir` `warn!`s and
-        // SKIPS — so the plugin simply disappears at the next boot.
-        //
-        // Scope, per R5 — by carrier, not by assertion. Scanned: every
-        // `cli_query` block in this repo — shipped manifests (`plugins/*/
-        // manifest.json`: none is `kind: cli-query`) and every block the test
-        // suites construct — **zero hits**, the sole `config.`-prefixed input
-        // property in the tree being the fixture that asserts this very
-        // refusal. Outside the repo is
-        // **unknown**. Accepted anyway, because the alternative is the F18
-        // collision itself: a `config.`-prefixed input property is precisely
-        // the shape that lets one `tools/call` occupy an operator's slot, so
-        // there is no "keep loading it, just handle it differently" option here
-        // the way `max_output_bytes` had one (clamp).
+        // The namespace has to be reserved on BOTH sides: an input property literally named `config.x`
+        // would let one `tools/call` supply the operator's configuration value. Retroactive by design.
         if let Some(props) = properties {
             for key in props.keys() {
                 if key.starts_with(CONFIG_SLOT_PREFIX) {
@@ -1642,9 +1055,7 @@ impl CliQueryTool {
 
         for (i, arg) in self.args.iter().enumerate() {
             let Some(slot) = argv_slot(arg) else {
-                // A literal argv element. Reject stray braces so a typo like
-                // `--sym={{symbol}}` fails at authoring time instead of being
-                // silently passed through as a literal.
+                // A literal argv element. Reject stray braces so a typo like `--sym={{symbol}}` fails at authoring time.
                 if arg.contains("{{") || arg.contains("}}") {
                     return Err(ManifestError::invalid(
                         path(&format!("args[{i}]")),
@@ -1691,28 +1102,11 @@ impl CliQueryTool {
     }
 }
 
-/// #1164 §2.2 — real parse of `mcp_http.url`.
-///
-/// The previous check was `starts_with("http://") || starts_with("https://")`,
-/// which accepted a bare `https://`, a malformed authority, and a **fragment**.
-///
-/// The fragment's original sharp edge is gone with #1194: `HttpMcpClient::new`
-/// used to append `?api_key=…` after whatever the manifest said, so
-/// `https://h/mcp#x` became `https://h/mcp#x?api_key=…` and the credential
-/// landed inside the fragment, never transmitted, with the connector failing
-/// authentication and no hint why. Nothing is appended any more.
-///
-/// It is still refused, on the reason that always also applied: a fragment is
-/// never sent to a server by anyone, so an endpoint written with one does not
-/// address what its author wrote — the path/query the server sees silently
-/// stops at the `#`. Rejecting at manifest-parse time means that failure names
-/// the field instead of surfacing as a puzzling 404.
+/// Real parse of `mcp_http.url`. A fragment is refused because it is never sent to a server, so an
+/// endpoint written with one does not address what its author wrote.
 fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
     let field = "mcp_http.url";
-    // WHATWG normalization is too forgiving for a *manifest*: it turns
-    // `https:///mcp` into host `mcp`, silently retargeting the request at a
-    // host the author never wrote. Require a non-empty authority in the RAW
-    // text before handing it to the parser.
+    // WHATWG normalization turns `https:///mcp` into host `mcp`; require a non-empty authority in the RAW text first.
     match raw.split_once("://") {
         Some((_, rest)) if !rest.split(['/', '?', '#']).next().unwrap_or("").is_empty() => {}
         _ => {
@@ -1722,13 +1116,8 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
             ));
         }
     }
-    // The authority pre-check above only knows `/`, `?` and `#` as delimiters,
-    // but WHATWG treats a BACKSLASH as a path separator and STRIPS ASCII tabs
-    // and newlines before parsing. So `https://\evil.example/mcp` and
-    // `https://good.example\t.evil.example/mcp` both sail past it and are then
-    // normalized into a different textual target — while `HttpMcpClient`'s
-    // `log_target` splits the UNNORMALIZED raw string and would report the host
-    // the author wrote rather than the one we would actually contact.
+    // WHATWG treats a BACKSLASH as a path separator and STRIPS tabs and newlines, so `https://\evil.example/mcp`
+    // would be retargeted while `log_target` (which splits the raw string) reports the host the author wrote.
     if let Some(bad) = raw
         .chars()
         .find(|c| *c == '\\' || c.is_ascii_control() || *c == '\u{7f}')
@@ -1744,10 +1133,7 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
     }
     let parsed = url::Url::parse(raw)
         .map_err(|e| ManifestError::invalid(field, format!("not a valid absolute URL: {e}")))?;
-    // Scheme FIRST. WHATWG lower-cases the scheme, so `FILE://x/mcp` is
-    // non-canonical *and* unsupported — and reporting "must be written in
-    // canonical form" would send the author off to fix the capitalisation of a
-    // scheme this connector will never accept.
+    // Scheme FIRST: `FILE://x/mcp` is non-canonical AND unsupported, and the scheme is the useful error.
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(ManifestError::invalid(
             field,
@@ -1757,12 +1143,7 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
             ),
         ));
     }
-    // The robust form of the same rule: whatever else the parser did to this
-    // string, the manifest must have been written in canonical form. Anything
-    // that re-serializes differently is a URL whose textual target is not the
-    // one the author wrote — and this crate has TWO consumers of the string
-    // (ureq, which re-parses it, and `log_target`, which does not), so a
-    // manifest where those disagree is exactly what must not exist.
+    // The manifest must be written in canonical form: ureq re-parses the string and `log_target` does not, and the two must agree.
     if parsed.as_str() != raw {
         return Err(ManifestError::invalid(
             field,
@@ -1794,41 +1175,12 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// #1284 §2.3(c) — `mcp_http.url` configuration slots
-// ---------------------------------------------------------------------------
-
-/// The stand-in this module substitutes for a slot when it needs the url's
-/// **manifest-literal** origin — the origin the author wrote, with the
-/// operator's values not yet in it.
-///
-/// It is a legal host label AND a legal path/query byte, so substituting it
-/// yields a string the real parser can parse wherever the slot sits. That is
-/// what makes "the slot is inside the origin" a *positive* observation
-/// (`host_str()` contains it) rather than a hand-rolled re-parse of the
-/// authority: the decision is made by `url::Url`, the same parser
-/// [`validate_mcp_http_url`] uses.
-///
-/// A manifest whose literal host genuinely contains this string would be
-/// refused as if it had a slot there. That is a false positive we accept: the
-/// name is not one a real host carries, and the failure direction is closed.
+/// The stand-in substituted for a slot when the url's manifest-literal origin is needed. A legal host
+/// label AND a legal path/query byte, so the real parser decides where the slot sits.
 const ORIGIN_PROBE: &str = "neige-config-slot";
 
-/// The **manifest-literal url** of a (possibly templated) `mcp_http.url`: every
-/// slot replaced by [`ORIGIN_PROBE`], then held to [`validate_mcp_http_url`] —
-/// the same function, not a restatement of its rules — and parsed.
-///
-/// Only meaningful for the **keyed** tier, and that is what makes it sound:
-/// there the origin is locked to the manifest literal, so the probe render has
-/// the scheme, host and port every configured render will have. Whatever the
-/// validator refuses about this string, it would refuse about every rendering,
-/// which is why the keyed tier can run it at manifest-parse time
-/// ([`McpHttpBlock::validate`]) as well as at render time ([`lock_origin`]).
-///
-/// Both call sites are deliberate rather than redundant: the parse-time one
-/// gives the author an install-time error instead of a bring-up mystery, and
-/// the render-time one holds for an [`McpHttpBlock`] that never went through
-/// [`Manifest::parse`] — which is the invariant [`ResolvedMcpUrl`] carries.
+/// The manifest-literal url of a templated `mcp_http.url`: every slot replaced by [`ORIGIN_PROBE`],
+/// held to [`validate_mcp_http_url`], and parsed. Only sound for the keyed tier, where the origin is locked.
 fn probe_literal_url(raw: &str) -> Result<url::Url, ManifestError> {
     let field = "mcp_http.url";
     let bad = |reason: String| ManifestError::invalid(field, reason);
@@ -1847,18 +1199,8 @@ fn probe_literal_url(raw: &str) -> Result<url::Url, ManifestError> {
     url::Url::parse(&probe).map_err(|e| bad(format!("not a valid absolute URL: {e}")))
 }
 
-/// A `mcp_http.url` that has been rendered against a plugin's effective
-/// configuration, re-validated by [`validate_mcp_http_url`], and — when the
-/// connector holds an API key — checked to still point at the manifest's own
-/// origin.
-///
-/// **This type is the invariant**, in the same sense
-/// [`crate::plugin_host::http_mcp::HttpCredential`] is: `HttpMcpClient::new`
-/// takes one, and [`resolve_mcp_http_url`] is the only way to obtain one, so no
-/// call site — here, in a test, or in a module that does not exist yet — can
-/// aim the client at a url that has not been through §2.3(c). Reading
-/// `block.url` and calling the constructor is not a thing the type system
-/// allows any more.
+/// A `mcp_http.url` rendered against a plugin's effective configuration, re-validated, and — when the
+/// connector holds an API key — checked to still point at the manifest's own origin. [`resolve_mcp_http_url`] is the only constructor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedMcpUrl(String);
 
@@ -1868,15 +1210,8 @@ impl ResolvedMcpUrl {
     }
 }
 
-/// Every `{{…}}` occurrence in a `mcp_http.url`, as `(byte range, key)`.
-///
-/// The namespace is S3a's: a slot is `{{config.<key>}}` and nothing else. A
-/// url has no agent-supplied arguments — there is no `tools/call` in scope
-/// when a connector is brought up — so the bare `{{name}}` form
-/// ([`ArgvSlot::Argument`]) is refused by name rather than silently treated as
-/// configuration. Stray braces are refused for the same reason
-/// `CliQueryTool::validate` refuses them: a typo must fail loudly instead of
-/// being passed through as a literal that lands on the wire.
+/// Every `{{…}}` occurrence in a `mcp_http.url`, as `(byte range, key)`. Only `{{config.<key>}}` is
+/// a slot: a url has no agent-supplied arguments, so the bare `{{name}}` form is refused by name.
 fn url_config_slots(raw: &str) -> Result<Vec<(std::ops::Range<usize>, &str)>, String> {
     let stray = |what: &str| {
         format!(
@@ -1934,23 +1269,8 @@ fn render_url_slots(
     Ok(out)
 }
 
-/// One effective-configuration value as it goes into a url.
-///
-/// **Not percent-encoded, on purpose.** Encoding would silently change what the
-/// operator wrote — `a/b` is a path separator or a literal slash depending on
-/// who decides — and this kernel has no standing to decide. Instead the
-/// rendered string goes through [`validate_mcp_http_url`], whose canonical-form
-/// rule refuses anything the parser would have had to re-spell. So a value
-/// needing encoding is a refusal naming the field, never a request to a target
-/// the operator did not write.
-///
-/// **One exception, so this is not read as "every odd value is refused".** A
-/// truncated percent sequence — a bare `%`, or `a%zz` — is left alone by the
-/// URL parser (verified against `url` 2.5.8): it re-serializes byte for byte,
-/// so the canonical-form rule has nothing to object to and the value ships as
-/// written. It changes what the *path or query* says, never the origin, so the
-/// first-hop guarantee is untouched; the upstream server decides what a stray
-/// `%` means to it.
+/// One effective-configuration value as it goes into a url. Not percent-encoded on purpose: the
+/// canonical-form rule in [`validate_mcp_http_url`] refuses anything the parser would have to re-spell.
 fn config_url_value(
     key: &str,
     effective: &serde_json::Map<String, Value>,
@@ -1983,71 +1303,9 @@ fn json_value_type_name(v: &Value) -> &'static str {
     }
 }
 
-/// #1284 §2.3(c) — render `mcp_http.url`'s configuration slots and decide
-/// whether the result may be contacted.
-///
-/// Two tiers, and the discriminant is `api_key_secret` — a manifest field of
-/// type `Option<String>`, so which tier applies is decided by the manifest, not
-/// by anyone's judgement:
-///
-/// * **`api_key_secret` present ⇒ the origin is locked.** The rendered
-///   `(scheme, host, port)` must equal the manifest literal's, item by item;
-///   a slot sitting *in* the origin is refused outright. The operator can still
-///   configure path and query — they cannot change where the credential goes.
-/// * **`api_key_secret` absent ⇒ the whole url may be replaced**, host
-///   included. There is no credential to divert, so the argument below does not
-///   apply, and a self-hosted or multi-environment connector stays configurable.
-///
-/// **Two things the tiering deliberately does not treat as holes.**
-///
-/// * *An operator may well put a credential in an unkeyed connector's url* —
-///   §2.6 gives `config_schema` no `secret: true`, so a token in a query slot
-///   is stored and displayed like any other value. That is not a tiering bug:
-///   under the unkeyed tier the host and that value are written by the **same**
-///   owner/dev, so nothing crosses a trust boundary. What the keyed tier
-///   protects is the opposite arrangement — a secret placed in `secrets.json`
-///   over SSH being redirected by someone who only holds a UI session.
-/// * *A keyed connector's query slot can write anything into the query.* This
-///   used to be sharper than it now is: the value `a&api_key=zz` rendered into
-///   the query, [`crate::plugin_host::http_mcp::HttpMcpClient::new`] appended
-///   the real key after it, and most servers read the first occurrence — so an
-///   operator could degrade this connector's own authentication. #1194 retired
-///   the query placement, so there is no appended `api_key=` left to shadow.
-///   What remains is the general case: an operator with a url slot can send
-///   query parameters of their choosing to the locked origin. The credential
-///   still goes only to that origin — nothing is exfiltrated — so this stays a
-///   self-inflicted problem for the one role that could disable the plugin
-///   outright, and it is left as such rather than met with a query grammar of
-///   our own.
-///
-/// **Why the asymmetry** (§2.3(c), v5). Re-running [`validate_mcp_http_url`]
-/// only proves the result is a well-formed URL: it refuses an empty authority,
-/// backslashes and control characters, a parse failure, a non-`http(s)` scheme,
-/// a non-canonical spelling, a missing host, a fragment and userinfo — and it
-/// refuses **none** of plaintext HTTP, an arbitrary host or port, localhost, or
-/// a private address. So for a connector that holds a key, an unrestricted url
-/// slot is a UI-writable "send this credential anywhere" primitive: writing
-/// `secrets.json` needs SSH, while writing this field needs one owner/dev
-/// session, and those are trust thresholds an order of magnitude apart. For a
-/// connector with no key that argument does not exist at all, so no restriction
-/// is imposed.
-///
-/// **The origin lock is a FIRST-HOP guarantee, and it is the first half of a
-/// pair.** This function pins only where *this kernel* sends the request — it
-/// says nothing about what the endpoint answers with. The complementary half
-/// is #1286, already landed: [`crate::plugin_host::http_mcp::HttpMcpClient::new`]
-/// builds its agent with `.redirects(0)`, so a `3xx` from the locked origin is
-/// an error rather than a second request, and a manifest-chosen header (which
-/// `ureq` does not strip across hosts the way it special-cases `Authorization`)
-/// can never be replayed to an attacker-selected host. Read the two together:
-/// the lock decides the one origin a keyed connector may be pointed at, and the
-/// zero-redirect agent keeps the credential from leaving it. Neither is a
-/// restatement of the other, so removing either reopens a distinct hole —
-/// this one a UI-writable url slot, that one an upstream `Location:` header.
-///
-/// Failures are `Err(String)`: bring-up renders them as `Unavailable` +
-/// `last_error`, which §2.4 calls a connector's normal terminal state, not a
-/// kernel error.
+/// Render `mcp_http.url`'s configuration slots and decide whether the result may be contacted. With
+/// `api_key_secret` the origin is locked to the manifest literal — a UI session must not be able to
+/// redirect the credential; the zero-redirect agent in `HttpMcpClient::new` is the other half.
 pub fn resolve_mcp_http_url(
     block: &McpHttpBlock,
     effective: &serde_json::Map<String, Value>,
@@ -2055,10 +1313,7 @@ pub fn resolve_mcp_http_url(
     let raw = block.url.trim();
     let rendered = render_url_slots(raw, |key| config_url_value(key, effective))?;
 
-    // THE validator, called — not restated. Everything it refuses about a
-    // literal manifest url it refuses about a rendered one, including the
-    // WHATWG retargeting cases (`\`, control characters, non-canonical
-    // spellings) that a configuration value is the newest way to introduce.
+    // THE validator, called — not restated.
     validate_mcp_http_url(&rendered).map_err(|e| e.to_string())?;
 
     if block.api_key_secret.is_some() || !block.header_secrets.is_empty() {
@@ -2078,32 +1333,16 @@ fn lock_origin(raw: &str, rendered: &str) -> Result<(), String> {
         )
     };
 
-    // The literal origin, obtained by holding the template — every slot
-    // replaced by a probe — to the manifest's own url validator. A slot in the
-    // port makes that fail (a port is digits); a slot in the scheme or host
-    // makes the probe show up in one of them, which is the check below.
+    // The literal origin: every slot replaced by a probe, held to the manifest's own url validator.
     let literal = probe_literal_url(raw).map_err(|e| {
         refusal(format!(
             "the manifest url does not survive its own validator once its slots are \
              accounted for ({e})"
         ))
     })?;
-    // The probe may appear in the **path or the query and nowhere else**.
-    //
-    // Userinfo is the position this check used to miss, and it was not
-    // theoretical: `https://user{{config.x}}@h.example/mcp` probes to a url
-    // that parses, whose host is `h.example` and whose probe sits only in the
-    // *username* — and then the configured value `.evil.example/` renders
-    // `https://user.evil.example/@h.example/mcp`, whose authority ends at the
-    // first `/`, i.e. host `user.evil.example`, no userinfo, canonical, no
-    // fragment. Every later check passes and the credential goes to the
-    // operator's host.
-    //
-    // `validate_mcp_http_url` above already refuses userinfo outright, so the
-    // `username`/`password` arms below cannot fire today — they are dominated
-    // by the line above, not merely untested. They are written anyway because
-    // this is the place that states the whole rule, and a future relaxation of
-    // the validator must not silently re-open the hole.
+    // The probe may appear in the path or the query and nowhere else. Userinfo is a real position:
+    // `https://user{{config.x}}@h.example/mcp` probes clean, then a value of `.evil.example/` moves the host.
+    // The validator already refuses userinfo, so those arms cannot fire today; kept so a relaxation cannot reopen it.
     if literal.scheme().contains(ORIGIN_PROBE)
         || literal.host_str().is_some_and(|h| h.contains(ORIGIN_PROBE))
         || literal.username().contains(ORIGIN_PROBE)
@@ -2114,26 +1353,8 @@ fn lock_origin(raw: &str, rendered: &str) -> Result<(), String> {
         ));
     }
 
-    // §2.3(c)'s named check: the rendered `(scheme, host, port)` compared with
-    // the manifest literal's, item by item.
-    //
-    // **Honest note on reachability.** No test in this repo makes THIS
-    // comparison be the thing that refuses: every value the author could find
-    // is already refused upstream — by the probe-position check above, by
-    // `validate_mcp_http_url` on the probe render (userinfo, backslashes,
-    // control characters, a slot in the port), or by the same validator on the
-    // rendered url (canonical form). "Covered upstream" is what the mutation
-    // table now records, and it is a weaker claim than the one that used to
-    // stand here: an earlier revision asserted no such value *could* exist,
-    // and a reviewer then built one — a slot in the userinfo — that walked
-    // straight past the probe check of the day and was stopped by this
-    // comparison and nothing else. The lesson is written down rather than
-    // smoothed over: a zero-red row is "not tested", never "unreachable".
-    // It is kept rather than dropped because the two halves are one mechanism:
-    // without the slot-in-origin refusal, "the manifest literal's origin" for a
-    // host slot would be *the operator's own value*, and this comparison would
-    // be vacuously true. Deleting either half alone leaves the other stating
-    // something weaker than §2.3(c).
+    // The rendered `(scheme, host, port)` compared with the manifest literal's, item by item. Kept with
+    // the slot-in-origin refusal above: without it a host slot's "literal origin" would be the operator's own value.
     let got = url::Url::parse(rendered)
         .map_err(|e| refusal(format!("the rendered url does not parse ({e})")))?;
     let origin_of = |u: &url::Url| {
@@ -2159,8 +1380,7 @@ fn lock_origin(raw: &str, rendered: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// RFC 9110 `field-name` = `token`. Used to reject an `api_key_in:
-/// header:<name>` the HTTP client would refuse at request time.
+/// RFC 9110 `field-name` = `token`.
 fn is_http_field_name(name: &str) -> bool {
     !name.is_empty()
         && name.bytes().all(|b| {
@@ -2185,14 +1405,7 @@ fn is_http_field_name(name: &str) -> bool {
         })
 }
 
-/// Shared name check for connector-supplied tools. There is no
-/// `ExposedTool::validate` in the tree (§2.7), so materialization and manifest
-/// parsing both route through this one predicate.
-///
-/// `_` is rejected because `plugin.<id>_<tool>` uses the FIRST `_` as the
-/// id↔tool boundary only by virtue of plugin ids excluding `_`; a tool name
-/// containing `_` is fine, but an EMPTY or whitespace name would synthesize an
-/// unroutable descriptor. `.` is fine in tool names.
+/// Shared name check for connector-supplied tools; materialization and manifest parsing both route through it.
 pub fn validate_connector_tool_name(name: &str, field: &str) -> Result<(), ManifestError> {
     if name.trim().is_empty() {
         return Err(ManifestError::invalid(field, "tool name must be non-empty"));
@@ -2225,9 +1438,7 @@ impl View {
         if self.title.trim().is_empty() {
             return Err(ManifestError::invalid(path("title"), "must be non-empty"));
         }
-        // §10 #1 + #5: M3 scope enum is exactly `["card"]`. Be explicit about
-        // rejecting "track" and "area" so the error message points at the
-        // design doc, not just "unknown enum value".
+        // Scope enum is exactly `["card"]`; "track" and "area" get explicit errors.
         match self.scope.as_str() {
             "card" => {}
             "track" => {
@@ -2269,7 +1480,6 @@ impl TemplateDescriptor {
 
 impl Permissions {
     fn validate(&self) -> Result<(), ManifestError> {
-        // overlays_write: each entry must be either "track" or "card".
         // No other entity kinds exist in the kernel today.
         for (i, kind) in self.overlays_write.iter().enumerate() {
             if kind != "track" && kind != "card" {
@@ -2282,8 +1492,7 @@ impl Permissions {
                 ));
             }
         }
-        // events_subscribe: globs are validated by the event bus, not here.
-        // We only reject empty strings (almost certainly a typo).
+        // Globs are validated by the event bus, not here; only empty strings are rejected.
         for (i, topic) in self.events_subscribe.iter().enumerate() {
             if topic.trim().is_empty() {
                 return Err(ManifestError::invalid(
@@ -2295,10 +1504,6 @@ impl Permissions {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Validators — hand-rolled instead of pulling `regex` for two tiny patterns.
-// ---------------------------------------------------------------------------
 
 /// `^[a-z0-9][a-z0-9.-]{1,63}$` — total 2..=64 chars; head is alphanumeric.
 fn is_valid_plugin_id(s: &str) -> bool {
@@ -2330,17 +1535,10 @@ fn is_lower_alnum(b: u8) -> bool {
     b.is_ascii_lowercase() || b.is_ascii_digit()
 }
 
-// ---------------------------------------------------------------------------
-// Public-API conveniences
-// ---------------------------------------------------------------------------
-
 impl Manifest {
-    /// Render the validated manifest back to a JSON `Value`. Useful when
-    /// persisting into the `plugins.manifest` column without re-reading the
-    /// file from disk.
+    /// Render the validated manifest back to a JSON `Value`.
     pub fn to_json(&self) -> Value {
-        // `unwrap` here is fine: every field type is serde-derived from data
-        // that already round-tripped through `serde_json::from_str`.
+        // Every field type is serde-derived from data that already round-tripped through `from_str`.
         serde_json::to_value(self).expect("Manifest serializable")
     }
 }
@@ -2350,10 +1548,6 @@ impl fmt::Display for Manifest {
         write!(f, "{} v{} ({})", self.id, self.version, self.display_name)
     }
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -2490,7 +1684,6 @@ mod tests {
         let m = Manifest::parse(json).expect("minimal");
         assert!(m.views.is_empty());
         assert!(m.exposes_tools.is_empty());
-        // Missing permissions block → default Permissions (no grants).
         assert!(!m.permissions.cards_create);
         assert!(m.permissions.overlays_write.is_empty());
     }
@@ -2521,20 +1714,6 @@ mod tests {
         assert_eq!(m.templates[0].id, "issue-development");
     }
 
-    /// #1268 — the rename's one silent failure mode, made loud.
-    ///
-    /// `Manifest` tolerates unknown top-level keys (see
-    /// `extra_template_descriptor_fields_are_ignored` for the *descriptor*
-    /// half of the same forwards-compat rule), so a manifest still spelling
-    /// the array `workflows` would otherwise parse into
-    /// `templates: []` — the plugin would declare no binding at all, and the
-    /// only symptom would be `issue-development` losing its `input_schema`
-    /// and every `template_input` create 400-ing far from the cause.
-    ///
-    /// Both halves are asserted: the old key is refused **and** the error
-    /// names the new one, because "invalid manifest" alone would not tell the
-    /// author what to type. Deleting `reject_retired_workflows_key` turns the
-    /// first assertion red; weakening its message turns the second red.
     #[test]
     fn a_manifest_still_spelling_the_array_workflows_is_refused_by_name() {
         let mut v = template_manifest_value();
@@ -2555,19 +1734,6 @@ mod tests {
         );
     }
 
-    /// #1268 — the **rollback** direction, which the retired-key guard cannot
-    /// reach.
-    ///
-    /// The guard runs in *this* kernel, so it protects an operator moving
-    /// forward. Moving backward, a `templates[]` manifest is handed to a
-    /// pre-#1268 parser that ignores unknown top-level keys: it parses clean,
-    /// binds nothing, and `issue-development` loses its `input_schema` with no
-    /// error and no log. The only thing an old kernel *will* refuse on its own
-    /// is a `manifest_version` it does not know — so a manifest that declares a
-    /// binding is required to say `2`, and that requirement is what this pins.
-    ///
-    /// The error names the field rather than the array, because the fix is to
-    /// the version line.
     #[test]
     fn declaring_templates_at_version_1_is_refused_naming_the_version() {
         let mut v = template_manifest_value();
@@ -2584,15 +1750,6 @@ mod tests {
         );
     }
 
-    /// The scope of that rule, stated as a test rather than a comment: a
-    /// manifest with **no** bindings is untouched by #1268 and keeps loading at
-    /// version 1.
-    ///
-    /// This is not symmetry for its own sake. The plugin install root on a real
-    /// deployment holds connector manifests that never declared a binding, and
-    /// the boot loader turns a parse failure into `warn!` + skip — so
-    /// tightening the rule to "every manifest must say 2" would silently drop
-    /// working plugins, which is the same failure shape #1268 exists to remove.
     #[test]
     fn a_binding_less_manifest_still_loads_at_version_1() {
         let mut v = template_manifest_value();
@@ -2604,15 +1761,13 @@ mod tests {
         assert_eq!(m.manifest_version, 1);
         assert!(m.templates.is_empty());
 
-        // An explicitly empty array is the same case: nothing to lose on
-        // rollback, so it must not be treated as "declares a binding".
+        // An explicitly empty array has nothing to lose on rollback.
         let mut empty = template_manifest_value();
         empty["manifest_version"] = json!(1);
         empty["templates"] = json!([]);
         parse_manifest_value(empty).expect("an empty `templates` array declares no binding");
     }
 
-    /// Version 2 is the current epoch and parses with its bindings intact.
     #[test]
     fn version_2_with_templates_parses() {
         let m = parse_manifest_value(template_manifest_value()).expect("v2 manifest");
@@ -2620,9 +1775,6 @@ mod tests {
         assert_eq!(m.templates[0].id, "issue-development");
     }
 
-    /// The shipped plugin is on the current epoch — otherwise the rule above
-    /// would be pinned only by hand-built fixtures while the one manifest that
-    /// actually ships stayed on the retired one.
     #[test]
     fn the_shipped_git_forge_manifest_declares_version_2() {
         let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
@@ -2631,8 +1783,6 @@ mod tests {
         assert!(!m.templates.is_empty());
     }
 
-    /// The other direction: nothing about the check makes an ordinary unknown
-    /// top-level key fatal. Only the one retired spelling is.
     #[test]
     fn an_unrelated_unknown_top_level_key_still_parses() {
         let mut v = template_manifest_value();
@@ -2665,10 +1815,6 @@ mod tests {
         assert_eq!(m.templates.len(), 1);
         assert_eq!(template.id, "issue-development");
 
-        // #1110 S2 — the shipped plugin's input contract lives on the
-        // Manifest, not the template descriptor. Parsing via
-        // `Manifest::parse` already ran `validate()`, so reaching here
-        // proves the schema passes the subset validator.
         let schema = m
             .input_schema
             .as_ref()
@@ -2681,7 +1827,7 @@ mod tests {
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
         assert_eq!(schema["properties"]["issue_url"]["type"], "string");
         assert_eq!(schema["properties"]["repo"]["type"], "string");
-        // F8: integer-encoded only — the type must be the strict "integer".
+        // The type must be the strict "integer".
         assert_eq!(schema["properties"]["issue_number"]["type"], "integer");
         assert_eq!(schema["properties"]["merge_policy"]["type"], "string");
         assert_eq!(
@@ -2739,11 +1885,7 @@ mod tests {
             .find(|template| template.id == "issue-development")
             .expect("issue-development template");
 
-        // The fixed fixture id is the explicit normalization rule for the
-        // per-track substitution performed by the production renderer.
-        // This independent, fully populated fixture is a legal final state for
-        // the shipped schema and keeps every required and optional field in the
-        // full-prompt contract.
+        // A legal final state for the shipped schema, with every required and optional field populated.
         let template_input = json!({
             "issue_url": "https://github.com/neige-calm/neige-calm/issues/985",
             "repo": "neige-calm/neige-calm",
@@ -2784,11 +1926,7 @@ mod tests {
         assert_full_golden_eq(expected, &rendered);
     }
 
-    /// The last three rows are #1635 S5's: `TemplateDescriptor::validate`'s
-    /// alphabet (`key_is_valid`, `^[a-z0-9][a-z0-9._-]{0,63}$`) has no `/`,
-    /// so a plugin cannot claim an operator template's `site/<stem>` key, nor
-    /// the reserved `plugin/…` one — `templates::SITE_PREFIX` is composed by
-    /// the kernel's loader only.
+    /// The last three rows: the descriptor alphabet has no `/`, so a plugin cannot claim `site/<stem>` or the reserved `plugin/…` key.
     #[test]
     fn template_descriptor_rejects_invalid_shapes() {
         let cases: Vec<(&str, Value, &str)> = vec![
@@ -2836,10 +1974,6 @@ mod tests {
         assert!(manifest.input_schema.is_some());
     }
 
-    /// #891 / #1110 S2 — the subset validator runs at manifest parse;
-    /// exhaustive keyword/coherence coverage lives in
-    /// `plugin_host::template_input` (this pins the top-level
-    /// `input_schema…` field-path wiring).
     #[test]
     fn manifest_rejects_out_of_subset_input_schema() {
         let cases: [(&str, Value, &str); 5] = [
@@ -2897,12 +2031,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // #1284 S1 — `config_schema`
-    // -----------------------------------------------------------------------
-
-    /// All-optional config schema: nothing is lost on a pre-#1284 kernel, so
-    /// it stays legal at `manifest_version: 2`.
+    /// All-optional config schema: legal at `manifest_version: 2`.
     fn optional_config_schema() -> Value {
         json!({
             "type": "object",
@@ -2933,12 +2062,6 @@ mod tests {
         );
     }
 
-    /// The reason `validate_object_schema` had to take a root path (#1284 §2.1
-    /// / F8): every one of these violations used to be reportable only as
-    /// `input_schema…`, i.e. against a field this manifest does not have.
-    ///
-    /// Paired with `manifest_rejects_out_of_subset_input_schema` above, which
-    /// keeps proving the *other* root still says `input_schema`.
     #[test]
     fn manifest_rejects_out_of_subset_config_schema_under_its_own_root() {
         let cases: [(&str, Value, &str); 6] = [
@@ -3008,21 +2131,12 @@ mod tests {
         }
     }
 
-    /// #1284 §2.1 — the conditional bump, in all three cells that decide it.
-    ///
-    /// A pre-#1284 kernel ignores `config_schema` outright. For an all-optional
-    /// schema that is a faithful degradation (every key falls back to what its
-    /// default already meant), so `2` keeps working. For a schema with
-    /// `required` it is not: the plugin would run with none of its mandatory
-    /// configuration and say nothing, so `3` is demanded — and on the old
-    /// kernel the file is refused by version and the plugin disappears loudly.
     #[test]
     fn config_schema_with_required_demands_manifest_version_3() {
         let mut required_schema = optional_config_schema();
         required_schema["required"] = json!(["theme"]);
 
-        // (a) required + version 2 ⇒ rejected, and it is the VERSION that is
-        // named, not the schema.
+        // (a) required + version 2 ⇒ rejected, naming the VERSION.
         let mut v = template_manifest_value();
         v["manifest_version"] = json!(2);
         v["config_schema"] = required_schema.clone();
@@ -3042,8 +2156,7 @@ mod tests {
         let m = parse_manifest_value(v).expect("required config at v3 is accepted");
         assert_eq!(m.manifest_version, 3);
 
-        // (c) all-optional + version 2 ⇒ accepted, i.e. the rule really is
-        // conditional and not "config_schema ⇒ 3".
+        // (c) all-optional + version 2 ⇒ accepted.
         let mut v = template_manifest_value();
         v["manifest_version"] = json!(2);
         v["config_schema"] = optional_config_schema();
@@ -3051,9 +2164,7 @@ mod tests {
         assert_eq!(m.manifest_version, 2);
     }
 
-    /// An empty `required: []` is not a required key. Pinned separately
-    /// because "declares `required`" and "has required keys" are the kind of
-    /// pair that quietly becomes the same predicate.
+    /// An empty `required: []` is not a required key.
     #[test]
     fn an_empty_required_array_does_not_demand_version_3() {
         let mut schema = optional_config_schema();
@@ -3064,13 +2175,6 @@ mod tests {
         parse_manifest_value(v).expect("`required: []` has nothing to lose on an old kernel");
     }
 
-    /// [`CONFIG_SCHEMA_KEY`] is the root every `config_schema` diagnostic is
-    /// reported under, so it has to name a key that really exists on the wire:
-    /// renaming the serde field without renaming the constant would leave
-    /// operators reading error paths for a field their manifest does not have.
-    /// Pinned to what a real `Manifest` actually serializes to — in both
-    /// directions, because `skip_serializing_if` means absence is also
-    /// observable (that is the shape `PluginDetail.manifest` publishes).
     #[test]
     fn config_schema_key_matches_the_serialized_manifest() {
         let mut v = template_manifest_value();
@@ -3083,8 +2187,7 @@ mod tests {
             blob.as_object().map(|o| o.keys().collect::<Vec<_>>())
         );
 
-        // …and absence really is absence (skip_serializing_if), which is what
-        // `has_config: false` reads.
+        // Absence really is absence (skip_serializing_if).
         let blob = parse_manifest_value(template_manifest_value())
             .expect("valid")
             .to_json();
@@ -3093,8 +2196,7 @@ mod tests {
 
     #[test]
     fn missing_required_field_fails() {
-        // `display_name` missing entirely — still an unconditionally required
-        // field, so serde rejects it before any validator runs.
+        // `display_name` missing: serde rejects it before any validator runs.
         let json = r#"{
             "manifest_version": 1,
             "id": "a.b",
@@ -3106,9 +2208,6 @@ mod tests {
         assert!(matches!(err, ManifestError::Json(_)), "got {err:?}");
     }
 
-    /// #1164 §2.1 moved `entrypoint` from "unconditionally required" (a serde
-    /// error) to "required for `kind: app`" (a validator error). It is still
-    /// rejected for an app manifest — only the error variant changed.
     #[test]
     fn missing_entrypoint_is_a_validation_error_for_app_manifests() {
         let json = r#"{
@@ -3133,12 +2232,7 @@ mod tests {
 
     #[test]
     fn bad_manifest_version_fails() {
-        // #1268 widened the accepted set to {1, 2} and #1284 to {1, 2, 3}, so
-        // the "unknown epoch" case has to be probed on both sides of it — a
-        // single sample above the range would stay green if the check were
-        // rewritten as `>= 1`. (`3` moved from this list to
-        // `config_schema_with_required_demands_manifest_version_3` when #1284
-        // made it a real version.)
+        // Probed on both sides of the accepted range: a single sample above it would stay green under `>= 1`.
         for version in ["0", "4", "99"] {
             let json = format!(
                 r#"{{
@@ -3185,10 +2279,6 @@ mod tests {
         assert!(matches!(err, ManifestError::Invalid { field, .. } if field == "id"));
     }
 
-    /// #1297: `kernel` satisfies the id regex, so without an explicit refusal
-    /// a plugin could register under it and — since the callback path writes
-    /// `ctx.plugin_id` verbatim — mint rows indistinguishable from the ones
-    /// `card_fsm` authors. The REST gate cannot see this route at all.
     #[test]
     fn reserved_kernel_id_rejected() {
         let json = hello_world().replace("dev.neige.hello-world", KERNEL_OVERLAY_PLUGIN_ID);
@@ -3389,12 +2479,9 @@ mod tests {
         assert_eq!(legacy.exposes_tools[0].kind, None);
     }
 
-    // ----- M3: view-level CSP / permissions -------------------------------
-
     #[test]
     fn view_without_csp_or_permissions_round_trips_as_none() {
-        // hello_world() declares no CSP / permissions; ensure they parse as
-        // None and the serialized form omits both keys.
+        // hello_world() declares no CSP / permissions.
         let m = Manifest::parse(hello_world()).unwrap();
         assert!(m.views[0].csp.is_none());
         assert!(m.views[0].permissions.is_none());
@@ -3517,10 +2604,6 @@ mod tests {
     }
 }
 
-// ===========================================================================
-// #1164 §2.1 — connector kind + mutually-exclusive blocks
-// ===========================================================================
-
 #[cfg(test)]
 mod connector_kind_tests {
     use super::*;
@@ -3551,9 +2634,7 @@ mod connector_kind_tests {
         })
     }
 
-    /// `expect_err` with the case identity in the panic message — with a dozen
-    /// table rows, "called `Result::unwrap_err()` on an `Ok` value" alone does
-    /// not say WHICH row silently passed.
+    /// `expect_err` with the case identity in the panic message, so a table row that silently passed is named.
     fn expect_reject(res: Result<Manifest, ManifestError>, ctx: &str) -> ManifestError {
         match res {
             Ok(_) => panic!("`{ctx}` must be rejected, but it parsed"),
@@ -3578,12 +2659,7 @@ mod connector_kind_tests {
         })
     }
 
-    /// #1284 — `config_schema` is deliberately **not** on the app-only list:
-    /// S2/S3a/S3b give all three kinds a consumer, and the connector kinds are
-    /// where operator-supplied configuration is most obviously needed
-    /// (endpoints, argv values, env). Paired with the `input_schema` half,
-    /// which stays app-only — without that half this test would still pass if
-    /// `reject_app_only_surfaces` were deleted outright.
+    /// `config_schema` is deliberately NOT on the app-only list; paired with the `input_schema` half, which is.
     #[test]
     fn connectors_may_declare_config_schema_but_still_not_input_schema() {
         let schema = json!({
@@ -3620,10 +2696,6 @@ mod connector_kind_tests {
         );
     }
 
-    // ---- kind defaulting -------------------------------------------------
-
-    /// The tree's only checked-in manifest carries no `kind` key. Absent must
-    /// mean `app`, with zero change to app semantics.
     #[test]
     fn absent_kind_defaults_to_app() {
         let m = Manifest::parse(&base(json!({ "entrypoint": { "command": "bin/run" } }))).unwrap();
@@ -3640,9 +2712,6 @@ mod connector_kind_tests {
         assert!(m.entrypoint.is_some());
     }
 
-    /// Risk R7: an unknown `kind` must be a loud parse error, never a silent
-    /// downgrade to `app` (which would spawn a process for a manifest that
-    /// describes something else entirely).
     #[test]
     fn unknown_kind_is_a_parse_error_not_a_silent_app() {
         let err = Manifest::parse(&base(json!({
@@ -3671,8 +2740,7 @@ mod connector_kind_tests {
             re.mcp_http.as_ref().unwrap().url,
             "https://mcp.example.com/mcp"
         );
-        // Exactly one `kind` key on the wire — the reason we did not use
-        // `#[serde(flatten)]` with an internally-tagged enum (D4).
+        // Exactly one `kind` key on the wire.
         assert_eq!(
             m.to_json()
                 .as_object()
@@ -3683,8 +2751,6 @@ mod connector_kind_tests {
             1
         );
     }
-
-    // ---- entrypoint conditionality ---------------------------------------
 
     #[test]
     fn app_without_entrypoint_is_rejected() {
@@ -3703,8 +2769,6 @@ mod connector_kind_tests {
         ))
         .expect("cli-query needs no entrypoint");
     }
-
-    // ---- kind ↔ block consistency ----------------------------------------
 
     #[test]
     fn kind_and_block_must_agree() {
@@ -3744,15 +2808,7 @@ mod connector_kind_tests {
         }
     }
 
-    // ---- §3: app-only surfaces are refused at PARSE time ------------------
-
-    /// Every field in this table is a channel §3 says does not exist for a
-    /// connector. The interception table in §4 is only sound if a connector
-    /// manifest can never declare one, and `Manifest::parse` is the single
-    /// door every manifest enters through.
-    ///
-    /// One case per field, and the error must NAME the field — "your manifest
-    /// is invalid" is useless to whoever authored it.
+    /// One case per field, and the error must NAME the field.
     #[test]
     fn connector_app_only_surface_errors_name_the_field() {
         let cases: Vec<(&str, Value)> = vec![
@@ -3800,8 +2856,7 @@ mod connector_kind_tests {
         }
     }
 
-    /// The same manifest MINUS the offending field must parse — otherwise the
-    /// test above would pass for the wrong reason.
+    /// Otherwise the test above would pass for the wrong reason.
     #[test]
     fn a_connector_without_app_only_surfaces_parses() {
         for (kind, block_key, block) in [
@@ -3811,8 +2866,7 @@ mod connector_kind_tests {
             Manifest::parse(&base(json!({ "kind": kind, block_key: block })))
                 .unwrap_or_else(|e| panic!("{kind} must parse: {e}"));
         }
-        // An explicitly-present but all-default `permissions` block is not a
-        // request for anything, so it must NOT be refused.
+        // An explicitly-present but all-default `permissions` block requests nothing.
         Manifest::parse(&base(json!({
             "kind": "mcp-http",
             "mcp_http": mcp_http_block(),
@@ -3821,7 +2875,6 @@ mod connector_kind_tests {
         .expect("an all-default permissions block grants nothing");
     }
 
-    /// `app` manifests are untouched by §3 — the anti-regression half.
     #[test]
     fn app_manifests_keep_every_surface() {
         Manifest::parse(&base(json!({
@@ -3833,8 +2886,6 @@ mod connector_kind_tests {
         })))
         .expect("an app manifest may declare all of these");
     }
-
-    // ---- mcp_http block --------------------------------------------------
 
     #[test]
     fn all_tools_is_explicit_and_legacy_empty_allowlists_stay_empty() {
@@ -3888,12 +2939,6 @@ mod connector_kind_tests {
         assert!(err.to_string().contains("mcp_http.url"), "{err}");
     }
 
-    /// Prefix matching on `http://` accepted all of these. The FRAGMENT case
-    /// used to be the actively harmful one — `HttpMcpClient::new` appended
-    /// `?api_key=…` after whatever the manifest said, so the credential landed
-    /// inside the fragment and was never transmitted. #1194 removed the append;
-    /// the fragment is still refused because it is never sent to the server at
-    /// all, so the endpoint contacted is not the one the author wrote.
     #[test]
     fn mcp_http_url_is_really_parsed() {
         for bad in [
@@ -3925,21 +2970,14 @@ mod connector_kind_tests {
         }
     }
 
-    /// Round-2 finding: the raw-authority pre-check only knows `/`, `?` and
-    /// `#` as delimiters, so WHATWG's OTHER authority terminators walked past
-    /// it. Each of these parses to a host the manifest author did not write,
-    /// while `HttpMcpClient::log_target` — which splits the UNNORMALIZED raw
-    /// string — would report the host they did.
+    /// WHATWG's other authority terminators parse to a host the author did not write, while `log_target` reports the host they did.
     #[test]
     fn mcp_http_url_rejects_whatwg_retargeting() {
-        // Each entry is `(raw, host the parser actually resolves it to)`, so
-        // the fixture proves the retargeting is real rather than asserting a
-        // refusal that might be firing for an unrelated reason.
+        // Each entry is `(raw, host the parser actually resolves it to)`.
         for (raw, retargeted_host) in [
             (r"https://\evil.example/mcp", "evil.example"),
             (r"https:/\evil.example/mcp", "evil.example"),
-            // Tab/CR/LF are STRIPPED, not treated as delimiters: the two
-            // labels fuse into one host that appears nowhere in the manifest.
+            // Tab/CR/LF are STRIPPED, not treated as delimiters: the two labels fuse into one host.
             (
                 "https://good.example\t.evil.example/mcp",
                 "good.example.evil.example",
@@ -3953,8 +2991,7 @@ mod connector_kind_tests {
                 "good.example.evil.example",
             ),
         ] {
-            // The premise: `url` really does resolve this somewhere other than
-            // the literal authority a naive reader (and `log_target`) sees.
+            // The premise: `url` really does resolve this somewhere other than the literal authority.
             if let Ok(parsed) = url::Url::parse(raw) {
                 assert_eq!(
                     parsed.host_str(),
@@ -3971,8 +3008,6 @@ mod connector_kind_tests {
             assert!(err.to_string().contains("mcp_http.url"), "{raw:?}: {err}");
         }
     }
-
-    // ---- #1284 §2.3(c): `mcp_http.url` configuration slots ----------------
 
     /// A `config_schema` declaring the keys the url fixtures below fill.
     fn url_schema() -> Value {
@@ -4011,14 +3046,8 @@ mod connector_kind_tests {
         resolve_mcp_http_url(m.mcp_http.as_ref().unwrap(), &effective)
     }
 
-    /// Like [`resolve`], but a manifest that does not parse is a REFUSAL rather
-    /// than a broken fixture.
-    ///
-    /// §2.3(c) refuses a keyed template at whichever of its two placements sees
-    /// it first — `McpHttpBlock::validate` for anything decidable from the
-    /// template alone, `lock_origin` for anything that needs the rendered
-    /// value — and a test that asserts *where* the refusal happened would
-    /// pin the placement instead of the rule.
+    /// Like [`resolve`], but a manifest that does not parse is a REFUSAL rather than a broken fixture:
+    /// which placement refuses is not the property.
     fn refuse_or_resolve(url: &str, keyed: bool, config: Value) -> Result<ResolvedMcpUrl, String> {
         match http_with_url(url, keyed) {
             Err(e) => Err(e.to_string()),
@@ -4035,8 +3064,6 @@ mod connector_kind_tests {
         crate::plugin_host::config::effective_config(m, user)
     }
 
-    /// The positive half of the pair §4.6 asks for: a slot in the path and a
-    /// slot in the query render, and the result is contacted verbatim.
     #[test]
     fn a_url_slot_fills_the_path_and_the_query() {
         let resolved = resolve(
@@ -4068,10 +3095,7 @@ mod connector_kind_tests {
         assert!(err.contains("count"), "{err}");
     }
 
-    /// The other half of the pair: with an API key in play, a slot that could
-    /// move the origin is refused — scheme, host and port alike. This is the
-    /// class `validate_mcp_http_url` does NOT catch (F19), so it is the class
-    /// the origin lock has to carry.
+    /// With an API key in play, a slot that could move the origin is refused — the class `validate_mcp_http_url` does NOT catch.
     #[test]
     fn a_keyed_connector_refuses_a_slot_anywhere_in_the_origin() {
         let moves_origin = json!({ "endpoint": "evil.example", "port": "8443" });
@@ -4086,19 +3110,12 @@ mod connector_kind_tests {
                 "https://mcp.example.com:{{config.port}}/mcp",
                 moves_origin.clone(),
             ),
-            // No path at all: the slot abuts the authority, so it IS the
-            // authority's tail.
+            // No path at all: the slot abuts the authority.
             (
                 "https://mcp.example.com{{config.endpoint}}",
                 moves_origin.clone(),
             ),
-            // **Userinfo — the position the probe check used to miss.** The
-            // probe render `https://userneige-config-slot@h.example/mcp`
-            // parses, and its host is `h.example`: the probe lands in the
-            // USERNAME, which the old check did not look at. These two values
-            // then end the authority early, so the rendered host is
-            // `user.evil.example` / `user` — a different origin reached with a
-            // manifest whose literal origin never moved.
+            // Userinfo: the probe lands in the USERNAME, and these values then end the authority early, moving the host.
             (
                 "https://user{{config.endpoint}}@h.example/mcp",
                 json!({ "endpoint": ".evil.example/" }),
@@ -4114,9 +3131,7 @@ mod connector_kind_tests {
             ),
         ] {
             match refuse_or_resolve(url, true, config) {
-                // Any of §2.3(c)'s refusals may be the one that fires: the
-                // template-level validator (parse time or render time) names
-                // the field, the origin lock names the rule.
+                // Any of the refusals may be the one that fires: the template-level validator names the field, the origin lock names the rule.
                 Err(err) => assert!(
                     err.contains("origin is locked") || err.contains("mcp_http.url"),
                     "{url}: {err}"
@@ -4129,20 +3144,11 @@ mod connector_kind_tests {
         }
     }
 
-    /// The **parse-time** placement of the keyed template check, on its own.
-    ///
-    /// A keyed connector's origin is locked to the manifest literal, so a
-    /// template that is not a legal url once its slots are stood in can never
-    /// be made legal by a configured value — and an author should learn that
-    /// when they install the plugin, not when an operator watches bring-up
-    /// fail. The unkeyed half of each pair is what shows this is the tier
-    /// talking and not a new global rule: there the whole url is replaceable,
-    /// so the template says nothing about what will be contacted.
+    /// The parse-time placement of the keyed template check. The unkeyed half of each pair shows this is the tier talking, not a new global rule.
     #[test]
     fn a_keyed_url_template_is_refused_at_install_time() {
         for url in [
-            // Userinfo: refused for a literal url since #1164, and until now
-            // NOT refused for a templated one — the asymmetry this closes.
+            // Userinfo.
             "https://user{{config.endpoint}}@h.example/mcp",
             // A port is digits; the probe render does not parse at all.
             "https://mcp.example.com:{{config.port}}/mcp",
@@ -4157,22 +3163,14 @@ mod connector_kind_tests {
             let err = err.to_string();
             assert!(err.contains("mcp_http.url"), "{url}: {err}");
 
-            // Unkeyed: the same template installs. The whole url is
-            // configurable there, so the manifest literal is not a promise
-            // about anything and `resolve_mcp_http_url` is the only gate.
+            // Unkeyed: the same template installs; `resolve_mcp_http_url` is the only gate.
             http_with_url(url, false).unwrap_or_else(|e| {
                 panic!("unkeyed connectors keep their url wide open: {url}: {e}")
             });
         }
     }
 
-    /// The **render-time** placement of the same check, reached the only way it
-    /// can be: an [`McpHttpBlock`] that never went through [`Manifest::parse`].
-    ///
-    /// This is the invariant [`ResolvedMcpUrl`] exists to carry — no call site,
-    /// present or future, gets a url past §2.3(c) by building the block itself
-    /// — so the parse-time placement above is a convenience for authors and
-    /// this one is the fence.
+    /// The render-time placement, reached the only way it can be: an [`McpHttpBlock`] that never went through [`Manifest::parse`].
     #[test]
     fn a_hand_built_block_is_still_refused_at_render_time() {
         let block = McpHttpBlock {
@@ -4195,10 +3193,7 @@ mod connector_kind_tests {
         );
     }
 
-    /// Same fixture, key removed: the tier flips and the whole url — host
-    /// included — becomes configurable. The discriminant is
-    /// `mcp_http.api_key_secret`, a manifest field, so this pair is what makes
-    /// the tiering visible rather than a sentence in a doc comment.
+    /// Same fixture, key removed: the tier flips and the whole url — host included — becomes configurable.
     #[test]
     fn an_unkeyed_connector_may_have_its_entire_url_configured() {
         let resolved = resolve(
@@ -4209,11 +3204,7 @@ mod connector_kind_tests {
         .expect("with no credential to divert there is nothing to lock");
         assert_eq!(resolved.as_str(), "http://192.168.1.9:8931/mcp");
 
-        // …and the identical manifest WITH a key refuses it, so the difference
-        // is the tier and not the fixture. Which of §2.3(c)'s two placements
-        // refuses is not the property: a whole-url template probes to a bare
-        // label, so the keyed tier now rejects it at manifest-parse time and
-        // the origin lock never gets a turn.
+        // The identical manifest WITH a key refuses it, so the difference is the tier and not the fixture.
         let err = refuse_or_resolve(
             "{{config.endpoint}}",
             true,
@@ -4226,10 +3217,7 @@ mod connector_kind_tests {
         );
     }
 
-    /// §4.6 — the WHATWG retargeting cases `validate_mcp_http_url` already
-    /// refuses in a manifest must be refused just as hard when they arrive as a
-    /// configuration value. This is the witness that the resolver calls THAT
-    /// function rather than restating its rules.
+    /// The WHATWG retargeting cases must be refused just as hard when they arrive as a configuration value.
     #[test]
     fn a_configured_value_is_refused_by_the_real_url_validator() {
         for value in [
@@ -4267,8 +3255,7 @@ mod connector_kind_tests {
         assert!(err.contains("canonical"), "{err}");
     }
 
-    /// §2.4's terminal state needs a reason an operator can act on: the slot
-    /// with nothing in force names the key.
+    /// The slot with nothing in force names the key.
     #[test]
     fn a_url_slot_with_no_value_in_force_is_refused_by_name() {
         let err = resolve("https://mcp.example.com/{{config.path}}", true, json!({}))
@@ -4279,9 +3266,7 @@ mod connector_kind_tests {
         );
     }
 
-    /// Parse-time half: a slot must name a declared `config_schema` property,
-    /// and the bare `{{name}}` form (S3a's agent-argument namespace) has no
-    /// meaning in a url at all.
+    /// A slot must name a declared `config_schema` property, and the bare `{{name}}` form has no meaning in a url.
     #[test]
     fn a_url_slot_must_be_a_declared_config_key() {
         let err = expect_reject(
@@ -4312,8 +3297,7 @@ mod connector_kind_tests {
         assert!(err.to_string().contains("stray"), "{err}");
     }
 
-    /// A url with no slots must behave exactly as it did before this slice:
-    /// validated at parse time, and resolvable with no configuration at all.
+    /// A url with no slots: validated at parse time, resolvable with no configuration at all.
     #[test]
     fn an_unslotted_url_is_still_validated_at_parse_time() {
         let err = expect_reject(
@@ -4327,9 +3311,7 @@ mod connector_kind_tests {
         assert_eq!(resolved.as_str(), "https://mcp.example.com/mcp");
     }
 
-    /// Canonical-form equality is the robust half of the same rule: whatever
-    /// the parser normalizes, the manifest must have been written that way, so
-    /// the string we contact and the string we log are provably the same.
+    /// Whatever the parser normalizes, the manifest must have been written that way.
     #[test]
     fn mcp_http_url_must_be_written_in_canonical_form() {
         for noncanonical in [
@@ -4349,8 +3331,7 @@ mod connector_kind_tests {
                 "{noncanonical}: {err}"
             );
         }
-        // …and the canonical spellings of the same URLs are accepted, so the
-        // rule is "write it canonically", not "we reject these hosts".
+        // The canonical spellings are accepted: the rule is "write it canonically", not "we reject these hosts".
         for good in [
             "https://mcp.example.com/",
             "https://mcp.example.com/mcp",
@@ -4363,11 +3344,7 @@ mod connector_kind_tests {
         }
     }
 
-    /// Round-3 finding: the canonical-form check used to run BEFORE the scheme
-    /// check, so an unsupported scheme spelled in upper case was reported as a
-    /// formatting problem. `FILE://x/mcp` normalizes to `file://x/mcp`, which
-    /// is non-canonical *and* unsupported — the author must be told the scheme
-    /// is wrong, not that they capitalised it wrong.
+    /// `FILE://x/mcp` is non-canonical AND unsupported; the author must be told the scheme is wrong.
     #[test]
     fn an_unsupported_scheme_is_named_even_when_it_is_also_non_canonical() {
         for bad in ["FILE://x/mcp", "FTP://mcp.example.com/mcp"] {
@@ -4385,9 +3362,6 @@ mod connector_kind_tests {
         }
     }
 
-    /// D6 — a forge action rides the forge credential passthrough, an
-    /// `app`-only channel. Refused at parse time so P3's `cli-query` executor
-    /// cannot quietly make it live.
     #[test]
     fn a_connector_may_not_declare_a_forge_action_tool() {
         for (kind, block_key, block) in [
@@ -4406,8 +3380,7 @@ mod connector_kind_tests {
             assert!(err.to_string().contains("exposes_tools"), "{kind}: {err}");
             assert!(err.to_string().contains("forge_it"), "{kind}: {err}");
         }
-        // The same manifest without the forge-action tool parses — otherwise
-        // the assertion above could be passing for an unrelated reason.
+        // The same manifest without the forge-action tool parses.
         Manifest::parse(&base(json!({
             "kind": "mcp-http",
             "mcp_http": mcp_http_block(),
@@ -4422,8 +3395,6 @@ mod connector_kind_tests {
         .expect("app plugins may still declare forge actions");
     }
 
-    /// An illegal header name would otherwise fail at REQUEST time, once per
-    /// call, as an opaque transport error.
     #[test]
     fn header_api_key_name_must_be_a_legal_field_name() {
         for bad in ["x api key", "x:key", "x\nkey", "x=key", "(key)"] {
@@ -4443,18 +3414,7 @@ mod connector_kind_tests {
         }
     }
 
-    /// #1194 — `query:<name>` is retired, and the refusal must TELL the
-    /// operator what to write instead. Every spelling of the scheme lands on
-    /// the migration message, not the generic closed-set one: an operator whose
-    /// manifest says `query:api_key` reads "switch to `bearer`", not "must be
-    /// `bearer` or `header:<name>`" with no clue that this used to work.
-    ///
-    /// **Mutation witness** — delete the `is_retired_query` arm from
-    /// `McpHttpBlock::validate`. `query:api_key` and `query:a=b` then reach
-    /// `ApiKeyIn::parse`, which returns `None`, and the generic message ships:
-    /// this test goes red on the `retired` assertion for every row. Delete
-    /// `is_retired_query` AND make `parse` accept `query:` again and the first
-    /// assertion (`must be rejected, but it parsed`) fires.
+    /// Every spelling of the `query` scheme lands on the migration message, not the generic closed-set one.
     #[test]
     fn a_retired_query_placement_is_rejected_with_a_migration_message() {
         for retired in [
@@ -4484,28 +3444,7 @@ mod connector_kind_tests {
         }
     }
 
-    /// E2 — the **retired spelling** is refused unconditionally, not only for
-    /// manifests that also name a credential.
-    ///
-    /// The first cut of this slice put the retirement inside the
-    /// `(api_key_secret, api_key_in)` match, under an arm that required
-    /// `Some(secret)`. Review executed the counter-example below and it PARSED:
-    /// `{"url": …, "api_key_in": "query:api_key"}` with no `api_key_secret`
-    /// went through the `(None, _)` arm untouched.
-    ///
-    /// **The scope of what this test proves is exactly its table**: every row
-    /// is a `query*` spelling, so it establishes the unconditional refusal of
-    /// the retired value and nothing about the rest of the set. A keyless
-    /// `cookie:k` still parses, deliberately — see the scope note on
-    /// [`ApiKeyIn`] for why that is left alone. Do not read this test as
-    /// "the closed set is enforced for keyless manifests"; it is not, and an
-    /// earlier revision of this doc comment said so wrongly.
-    ///
-    /// **Mutation witness** — move the `is_retired_query` check back inside the
-    /// match as `(Some(_), Some(x)) if is_retired_query(x)`. This test goes red
-    /// on `a keyless manifest must be refused, but it parsed`; the
-    /// keyed-manifest test above stays GREEN, which is exactly why that test
-    /// alone could not catch it.
+    /// Proves the unconditional refusal of the retired value only; a keyless `cookie:k` still parses, deliberately.
     #[test]
     fn a_retired_query_placement_is_rejected_even_without_a_credential() {
         for retired in ["query:api_key", "query:", "query"] {
@@ -4521,9 +3460,7 @@ mod connector_kind_tests {
             assert!(err.contains("retired"), "`{retired}`: {err}");
         }
 
-        // Positive control: a keyless manifest that says nothing about
-        // `api_key_in` still parses, so the rule above is about the retired
-        // value and not about keyless manifests in general.
+        // Positive control: a keyless manifest that says nothing about `api_key_in` still parses.
         let mut ok = mcp_http_block();
         let obj = ok.as_object_mut().unwrap();
         obj.remove("api_key_secret");
@@ -4531,9 +3468,7 @@ mod connector_kind_tests {
         Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": ok })))
             .expect("a keyless connector with no api_key_in must still parse");
 
-        // …and a keyless manifest naming a SURVIVING form parses too. (It sends
-        // nothing, having no secret to send — `HttpMcpClient::new` only reaches
-        // the auth branch inside `if let Some(key)`.)
+        // A keyless manifest naming a SURVIVING form parses too; it sends nothing.
         let mut ok2 = mcp_http_block();
         ok2.as_object_mut().unwrap().remove("api_key_secret");
         ok2["api_key_in"] = json!("bearer");
@@ -4565,15 +3500,13 @@ mod connector_kind_tests {
             ApiKeyIn::parse("header:x-api-key"),
             Some(ApiKeyIn::Header("x-api-key".into()))
         );
-        // `bearer` takes no argument: it is a value SHAPE, not a location, so
-        // there is nothing for a `:<name>` to name.
+        // `bearer` takes no argument: it is a value SHAPE, not a location.
         assert_eq!(ApiKeyIn::parse("bearer:x"), None);
         assert_eq!(ApiKeyIn::parse("Bearer"), None);
         assert_eq!(ApiKeyIn::parse("header:"), None);
         assert_eq!(ApiKeyIn::parse("cookie:k"), None);
         assert_eq!(ApiKeyIn::parse("api_key"), None);
-        // Retired, and `parse` is the wrong layer to say so — the validator
-        // owns the migration message.
+        // Retired; the validator owns the migration message, not `parse`.
         assert_eq!(ApiKeyIn::parse("query:api_key"), None);
         assert!(ApiKeyIn::is_retired_query("query:api_key"));
         assert!(ApiKeyIn::is_retired_query("query"));
@@ -4599,9 +3532,7 @@ mod connector_kind_tests {
         assert_eq!(m.mcp_http.unwrap().timeout_ms(), 10_000);
     }
 
-    /// The A-fix: the two budgets are separate, and the bring-up one is bounded
-    /// **by construction** — including when it is derived from the unbounded
-    /// call timeout.
+    /// The bring-up budget is bounded by construction, including when derived from the unbounded call timeout.
     #[test]
     fn bringup_timeout_is_capped_however_the_call_timeout_is_configured() {
         // Derived default tracks a modest call timeout verbatim…
@@ -4614,9 +3545,7 @@ mod connector_kind_tests {
         assert_eq!(block.timeout_ms(), 2_000);
         assert_eq!(block.bringup_timeout_ms(), 2_000);
 
-        // …and is clamped as soon as that timeout stops being a sane boot
-        // budget. This is the case that used to stall `AppState::new` for
-        // 20.5 minutes.
+        // …and is clamped as soon as that timeout stops being a sane boot budget.
         let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
             "url": "https://x.example/mcp",
             "request_timeout_ms": 600_000,
@@ -4646,8 +3575,7 @@ mod connector_kind_tests {
         assert_eq!(block.timeout_ms(), 600_000);
     }
 
-    /// …and one over the ceiling is refused at PARSE time, so the operator
-    /// learns at install rather than by watching boot crawl.
+    /// …and one over the ceiling is refused at PARSE time.
     #[test]
     fn a_bringup_timeout_over_the_ceiling_is_a_manifest_error() {
         let err = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
@@ -4664,8 +3592,6 @@ mod connector_kind_tests {
         }})))
         .expect("exactly the ceiling must load");
     }
-
-    // ---- cli_query block -------------------------------------------------
 
     #[test]
     fn cli_query_argv_slot_must_be_a_whole_element() {
@@ -4685,14 +3611,7 @@ mod connector_kind_tests {
         assert!(err.to_string().contains("ticker"), "{err}");
     }
 
-    // ---- #1284 S3a: the configuration namespace, at parse time -----------
-
-    /// The `config_schema` these tests configure against, plus a helper that
-    /// assembles a whole `cli-query` manifest around a mutated block. Driving
-    /// `Manifest::parse` rather than `CliQueryBlock::validate` is deliberate:
-    /// the rules below are CROSS-FIELD (block ↔ `config_schema`), so a test
-    /// that could only see the block would be testing a function that does not
-    /// have the information the rule is about.
+    /// The `config_schema` these tests configure against. Driving `Manifest::parse` is deliberate: the rules are CROSS-FIELD (block ↔ `config_schema`).
     fn cli_config_schema() -> Value {
         json!({
             "type": "object",
@@ -4712,9 +3631,7 @@ mod connector_kind_tests {
         })))
     }
 
-    /// The positive half: a manifest that uses both new surfaces LOADS, and the
-    /// parsed block carries them. Without this, every assertion below is
-    /// satisfiable by a validator that refuses everything.
+    /// The positive half: without it every assertion below is satisfiable by a validator that refuses everything.
     #[test]
     fn a_config_slot_and_config_env_are_accepted_when_declared() {
         let mut block = cli_query_block();
@@ -4729,10 +3646,7 @@ mod connector_kind_tests {
         );
     }
 
-    /// §4.4's parse-time half. The runtime half (an agent argument cannot
-    /// displace a configuration slot) lives in `connector_host.rs`; this is the
-    /// rule that makes the collision unrepresentable in the first place — a
-    /// tool may not declare an input property inside the reserved namespace.
+    /// The parse-time half: a tool may not declare an input property inside the reserved namespace.
     #[test]
     fn an_input_schema_property_may_not_claim_the_config_namespace() {
         let mut block = cli_query_block();
@@ -4769,10 +3683,7 @@ mod connector_kind_tests {
         );
     }
 
-    /// §2.3(b) rule (i). Note what is NOT here: no credential denylist. A
-    /// `config_env` value is typed in by the operator for this connector, like
-    /// a `secrets.json` entry, so it escalates nothing from the service
-    /// identity — which is the only thing `env_allow`'s denylist protects.
+    /// Rule (i). No credential denylist here: a `config_env` value is typed in by the operator, so it escalates nothing.
     #[test]
     fn a_config_env_key_must_be_a_legal_env_name_and_a_declared_property() {
         let mut block = cli_query_block();
@@ -4788,8 +3699,6 @@ mod connector_kind_tests {
         assert!(err.to_string().contains("NOT_DECLARED"), "{err}");
 
         // A forge CREDENTIAL name is accepted here, unlike in `env_allow`.
-        // That asymmetry is the §2.3(b) adjudication, so it gets an assertion
-        // rather than a comment.
         let mut block = cli_query_block();
         block["config_env"] = json!(["GH_TOKEN"]);
         let mut schema = cli_config_schema();
@@ -4802,10 +3711,7 @@ mod connector_kind_tests {
         .expect("config_env is not subject to the env_allow credential denylist");
     }
 
-    /// §2.3(b) rule (ii), at all three pairings. One child environment, three
-    /// writers: a duplicate target would make the winning value a property of
-    /// injection order, which is not something a manifest author can read off
-    /// their own file.
+    /// Rule (ii), at all three pairings.
     #[test]
     fn the_three_env_sources_may_not_name_the_same_target_key() {
         let mut schema = cli_config_schema();
@@ -4819,8 +3725,7 @@ mod connector_kind_tests {
             })))
         };
 
-        // config_env ∩ secret_env — §2.6's hard rule: the configuration line
-        // and the secret line must not meet on one key.
+        // config_env ∩ secret_env
         let mut block = cli_query_block();
         block["secret_env"] = json!(["LB_TOKEN"]);
         block["config_env"] = json!(["LB_TOKEN"]);
@@ -4836,8 +3741,7 @@ mod connector_kind_tests {
         let err = parse(block).expect_err("config_env ∩ env_allow must be refused");
         assert!(err.to_string().contains("NO_PROXY"), "{err}");
 
-        // env_allow ∩ secret_env — the pre-existing pair, which had no rule at
-        // all before this slice.
+        // env_allow ∩ secret_env
         let mut block = cli_query_block();
         block["env_allow"] = json!(["LB_TOKEN"]);
         block["secret_env"] = json!(["LB_TOKEN"]);
@@ -4894,12 +3798,7 @@ mod connector_kind_tests {
         assert_eq!(argv_slot("quote"), None);
     }
 
-    /// #1284 §2.3(b) — the classification itself, at the level where it is one
-    /// function rather than a manifest round trip. `config.` is a namespace, so
-    /// an argument slot whose name merely CONTAINS the word must stay an
-    /// argument: `{{myconfig.x}}` and `{{config}}` are not configuration slots,
-    /// and a rule written with `contains` instead of `strip_prefix` would
-    /// quietly take both away from the agent.
+    /// `config.` is a namespace: `{{myconfig.x}}` and `{{config}}` must stay argument slots.
     #[test]
     fn argv_slot_classifies_the_config_namespace() {
         assert_eq!(
@@ -4913,8 +3812,7 @@ mod connector_kind_tests {
             argv_slot("{{myconfig.x}}"),
             Some(ArgvSlot::Argument("myconfig.x"))
         );
-        // The degenerate namespace form is a slot with an empty name, so the
-        // validator can refuse it by name rather than as stray braces.
+        // The degenerate namespace form is a slot with an empty name, so the validator can refuse it by name.
         assert_eq!(argv_slot("{{config.}}"), Some(ArgvSlot::Config("")));
         assert_eq!(argv_slot("{{config.endpoint}}").unwrap().name(), "endpoint");
     }

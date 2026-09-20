@@ -1,18 +1,6 @@
-//! SQLite-backed track VCS snapshots.
-//!
-//! Two-phase spawn invariant (#310): dispatcher spawn first creates rows in an
-//! event-less transaction, then later emits `CardAdded` through
-//! `RepoEventWrite::log_pure_event`. Track VCS commits anchor on persisted
-//! events, not on raw rows, so the in-between row is invisible here just as it
-//! is invisible to subscribers. Replay re-emits events through the same trait
-//! methods, so commits regenerate as a side effect; there is no separate replay
-//! path for track-vcs.
-//!
-//! Commit hashes include the commit `created_at` timestamp. The tree hash is
-//! the deterministic content anchor; replaying the same logical track state can
-//! reproduce the same tree hash without necessarily reproducing the same commit
-//! hash. Fixture paths that seed events with `EventScope::System` also do not
-//! generate track-vcs commits because they are outside any track scope.
+//! SQLite-backed track VCS snapshots. Commits anchor on persisted events, not
+//! raw rows; the tree hash is the deterministic content anchor, while commit
+//! hashes include `created_at` and need not reproduce on replay.
 
 pub const MANIFEST_SCHEMA_VERSION: i64 = 1;
 pub const DEFAULT_PATCH_MAX_LINES: usize = 200;

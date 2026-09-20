@@ -1,19 +1,6 @@
 // @vitest-environment jsdom
-//
-// The claim this file exists for: **the Settings panel is one element for the
-// whole visit**, not one per section.
-//
-// The first cut returned a `<Dialog>` from each settings route component, which
-// is a different element at a different place in the tree per route. Moving
-// from General to Plugins therefore unmounted one panel and mounted another,
-// the `dialog-enter` animation replayed, and the reader saw the dialog flash on
-// every click of its own navigation. Nothing failed: every assertion about
-// *content* still passed, because the content was correct — it was the element
-// identity that was wrong.
-//
-// So this asserts identity directly, by marking the panel node and requiring
-// the same node back after the navigation. A component test cannot do it; only
-// the real router can produce the navigation that used to destroy it.
+// The Settings panel is one element for the whole visit, not one per section; only
+// the real router can produce the navigation that would destroy it.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -81,14 +68,10 @@ describe('settingsSectionForPath', () => {
     expect(settingsSectionForPath('/settings/appearance')).toBe('appearance');
     expect(settingsSectionForPath('/settings/plugins')).toBe('plugins');
     expect(settingsSectionForPath('/settings/about')).toBe('about');
-    // #1300 S1 — the two template routes are gone with the editor. This is the
-    // negative half of that removal: a stale bookmark to either one must leave
-    // the dialog shut, not open it on some fallback pane. Deleting a route
-    // without asserting it is gone is how a removal quietly comes back.
+    // A stale bookmark to a removed route must leave the dialog shut, not open it on a fallback pane.
     expect(settingsSectionForPath('/settings/templates')).toBeNull();
     expect(settingsSectionForPath('/settings/templates/issue-development')).toBeNull();
-    // The dialog stays shut everywhere else — including on a path that merely
-    // starts with the same letters.
+    // Shut everywhere else, including a path that merely starts with the same letters.
     expect(settingsSectionForPath('/')).toBeNull();
     expect(settingsSectionForPath('/track/w1')).toBeNull();
     expect(settingsSectionForPath('/settingsish')).toBeNull();
@@ -103,8 +86,7 @@ describe('Settings overlay', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Plugins' }));
     await screen.findByRole('heading', { name: 'Plugins' });
-    // Same node, not merely a node: a remounted panel replays the entrance
-    // animation, which is the flash this move removed.
+    // Same node, not merely a node: a remounted panel replays the entrance animation.
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBe(dialog);
 
     await userEvent.click(screen.getByRole('button', { name: 'Appearance' }));

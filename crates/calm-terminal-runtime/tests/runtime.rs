@@ -140,8 +140,7 @@ async fn isolated_runtime_shutdown_stops_hup_ignoring_descendants() -> anyhow::R
         Ok(Ok(0))
     );
     if !stopped {
-        // Mutation cleanup: release the known descendant through its own
-        // socket, never by signaling a potentially recycled numeric PID.
+        // Release the known descendant through its own socket, never by signaling a potentially recycled numeric PID.
         peer.write_all(b"x").await?;
         assert_eq!(
             tokio::time::timeout(BUDGET, peer.read(&mut byte)).await??,
@@ -201,8 +200,6 @@ async fn isolated_runtime_launcher_death_stops_hup_ignoring_descendants() -> any
 
 impl Drop for Host {
     fn drop(&mut self) {
-        // Failure cleanup for this test-owned host only; no global daemon is
-        // discovered or stopped. Normal tests use the SDK shutdown above.
         if !matches!(self.child.try_wait(), Ok(Some(_))) {
             let _ = self.child.kill();
             let _ = self.child.wait();
@@ -276,8 +273,6 @@ async fn runtime_does_not_load_user_configuration() -> anyhow::Result<()> {
         "run-shell 'printf configured > configuration-ran'\n",
     )?;
     let (mut host, client) = Host::start(root).await?;
-    // A real create/read round trip gives startup configuration a chance to
-    // finish. Configuration is disabled at the production host constructor.
     let pane = client
         .create(terminal_launch(
             host.root.path(),
@@ -373,9 +368,7 @@ fn runtime_refuses_existing_endpoint_without_unlinking_it() -> anyhow::Result<()
 async fn runtime_create_preserves_literal_cwd_argv_and_explicit_environment() -> anyhow::Result<()>
 {
     let (mut host, client) = Host::start(private_root()?).await?;
-    // #1636: a full path soft-wraps on the 80-column grid once $TMPDIR is long, so
-    // the cwd is made longer than one row everywhere and the probe prints only its
-    // basename, which carries the unexpanded tmux format on one short line.
+    // A full path soft-wraps on the 80-column grid once $TMPDIR is long, so the probe prints only its basename.
     let cwd = host
         .root
         .path()

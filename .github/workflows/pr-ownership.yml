@@ -12,7 +12,7 @@ permissions:
 
 env:
   # The implicit advisory request is not part of this gate and can consume its
-  # entire five-minute timeout when the audit endpoint stalls (#1394).
+  # entire five-minute timeout when the audit endpoint stalls.
   NPM_CONFIG_AUDIT: "false"
 
 jobs:

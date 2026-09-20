@@ -1,15 +1,8 @@
 #!/usr/bin/env node
 /**
- * Manual drawer-head contrast audit; intentionally not run in CI.
- *
- * Requires a running preview, Playwright's Chromium, and a URL whose drawer is
- * already open with a representative real transcript long enough to scroll:
+ * Manual drawer-head contrast audit; not run in CI. Needs a running preview and a URL whose drawer
+ * is open on a transcript long enough to scroll:
  *   node tools/styles/drawer-head-contrast-audit.mjs http://localhost:4173/tracks/…
- *
- * For light and dark themes this samples 20 evenly spaced scroll positions.
- * At each position it hides the sticky head's title and buttons (leaving only
- * the composited frosted background), screenshots that background, and reports
- * the lowest pixel contrast against the title's computed text colour.
  */
 import { chromium } from 'playwright';
 import { createRequire } from 'node:module';

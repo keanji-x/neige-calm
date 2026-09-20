@@ -16,10 +16,7 @@ const RAIL_FIXTURE_EXCHANGES = 5;
 
 const NOW = 1_760_000_000_000;
 
-/* The thread's working marks: `ui/activity-indicator`, decorative by contract
-   (#1722 §6, the S2 a11y contract) — the accessible "in motion" fact is said
-   once, by the pending-reply placeholder's hidden text, and asserted by name
-   where it matters. Counted by the marker, not by a label. */
+/* The thread's working marks are decorative by contract; counted by the marker, not by a label. */
 const workingMarks = () => document.querySelectorAll('[data-nc-activity="working"]');
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -61,11 +58,7 @@ function turnOutcome(
 const PANE_SCROLL_HEIGHT = 1_000;
 const PANE_CLIENT_HEIGHT = 400;
 
-/** A drawer pane that actually holds a scroll offset and reports the moves
- *  made to it, so "where the reader last put it" is a thing this tier can
- *  express. `scrollTo` is the reader's own scroll: it moves the offset and
- *  fires the event the component listens to, which is exactly what a wheel
- *  does and what a `scrollTop` write does in a browser. */
+/** A drawer pane that holds a scroll offset and reports the writes made to it; `scrollTo` is the reader's own scroll and fires the event the component listens to. */
 function followPane() {
   const pane = document.createElement('div');
   pane.setAttribute('data-nc-drawer-scroll', '');
@@ -124,7 +117,6 @@ describe('ChatThread', () => {
     expect(container.querySelector('[data-nc-turn="agent"]')).toBeNull();
   });
 
-  /* #1625 P1 — a turn that did not end well says so, in the transcript. */
   it('states a failed turn with its message and a plain-language reason', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false}
@@ -145,7 +137,6 @@ describe('ChatThread', () => {
       .toBe('The conversation exceeded the model\'s context window.');
     expect(outcome.querySelector('[data-nc-turn-outcome-hint]')?.textContent)
       .toBe('The conversation no longer fits in the model’s context window.');
-    // Not a speaker, and not an exchange of its own.
     expect(container.querySelector('[data-nc-turn="agent"]')).toBeNull();
     expect(container.querySelectorAll('[data-nc-exchange]')).toHaveLength(1);
   });
@@ -186,7 +177,6 @@ describe('ChatThread', () => {
         turns={[turn(), turnOutcome({ status: 'failed', message: 'boom' })]}
       />,
     );
-    // The outcome is not an agent reply, so the placeholder carries the one mark.
     expect(workingMarks()).toHaveLength(1);
   });
 
@@ -206,9 +196,7 @@ describe('ChatThread', () => {
       .toEqual(['First', 'Second']);
   });
 
-  /* A conversation with no live session reads exactly like an idle one, because
-     that is all `null` says: no live session was found. It is not a claim that
-     the session exited — a card minted two seconds ago arrives the same way. */
+  /* `null` says only that no live session was found — not that it exited. */
   it('renders a stateless conversation exactly like an idle one', () => {
     const { container: idle } = render(
       <ChatThread cards={{}} stalled={false} conversation={conversation({ state: 'idle' })} turns={[turn()]} />,
@@ -250,27 +238,12 @@ describe('ChatThread', () => {
     outer.remove();
   });
 
-  /*
-   * ── Following the newest turn is for a reader who is already there ────────
-   *
-   * The write used to be unconditional on every change of `turns.length`, and a
-   * live turn appends an activity line per action — dozens over a four-minute
-   * turn. So anyone who had scrolled back was returned to the bottom within one
-   * poll, which is not a nuisance but the removal of the only reason to scroll
-   * back at all.
-   *
-   * The pane here is stateful rather than a spy, because the rule is a fact
-   * about *where the reader last put the pane*: the component learns that from
-   * the pane's own scroll events, so a mock that cannot be scrolled cannot
-   * distinguish the two behaviours.
-   */
   it('does not follow a new turn when the reader has scrolled away', () => {
     const { pane, writes, scrollTo } = followPane();
     const { rerender } = render(
       <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
       { container: pane },
     );
-    /* It opens at the newest turn: that much is unchanged. */
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
 
     scrollTo(100);
@@ -281,8 +254,6 @@ describe('ChatThread', () => {
     pane.remove();
   });
 
-  /* And the other half, or the rule would be "never follow": a reader sitting
-     at the end still rides the transcript down as it grows. */
   it('follows a new turn for a reader still at the end', () => {
     const { pane, writes, scrollTo } = followPane();
     const { rerender } = render(
@@ -296,21 +267,6 @@ describe('ChatThread', () => {
     pane.remove();
   });
 
-  /*
-   * ── *Load earlier* is a longer transcript, not a newer turn ───────────────
-   *
-   * Prepending history grows `turns.length` while the newest turn stays exactly
-   * what it was, and the write used to fire on the count alone. The reader who
-   * presses *Load earlier* is by definition looking for something that just
-   * arrived at the *top*, and this is the one case where being at the bottom is
-   * not evidence of anything: a transcript that fits in its pane is zero
-   * distance from the bottom whatever the reader does, so the flag is
-   * unconditionally true and every such reader was thrown to the end of a
-   * history they had just asked to see.
-   *
-   * The reader here is at the bottom on purpose, so this cannot pass by the
-   * flag being false for some other reason.
-   */
   it('does not follow when older turns are loaded in front', () => {
     const { pane, writes, scrollTo } = followPane();
     const { rerender } = render(
@@ -326,8 +282,6 @@ describe('ChatThread', () => {
     );
 
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
-    /* And the door is not simply nailed shut: the very next real turn still
-       takes a reader who is at the end down with it. */
     rerender(
       <ChatThread cards={{}} stalled={false}
         conversation={conversation()}
@@ -338,18 +292,7 @@ describe('ChatThread', () => {
     pane.remove();
   });
 
-  /*
-   * ── The count is not the arrival; the last turn's id is ───────────────────
-   *
-   * `buildTranscript` collapses a trailing `Thought` into the reply that
-   * answers it, so `[reasoning, reasoning]` and `[reasoning, reasoning, agent]`
-   * both arrive here one entry long with different last ids — the domain's own
-   * test spells that out (`core/domain/conversation.test.ts`), and
-   * `mergeTranscript` does the same to an optimistic echo. Keyed on the count
-   * alone this effect did not run at all for that arrival, so the commonest
-   * shape of "the agent answered while its last row was a finished thought"
-   * left a reader parked at the bottom looking at the thought.
-   */
+  /* `buildTranscript` collapses a trailing `Thought` into the reply that answers it, so the count can stay the same while the last id changes. */
   it('follows a turn that replaced the last one without changing the count', () => {
     const { pane, writes, scrollTo } = followPane();
     const thinking = [
@@ -386,13 +329,6 @@ describe('ChatThread', () => {
     expect(turns.map((element) => element.textContent)).toEqual(['Do the thing.', 'test']);
   });
 
-  /*
-   * The transcript carries no per-turn label and no per-turn timestamp. In a
-   * strict alternation those are two lines of chrome per turn restating what
-   * the alternation already says; who spoke is carried by register instead.
-   * This asserts the *absence*, because a label is the kind of thing that gets
-   * added back by reflex.
-   */
   it('prints no author label and no time on an unbroken conversation', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false}
@@ -408,7 +344,6 @@ describe('ChatThread', () => {
     expect(text).toBe('Do the thing.testAnd this.');
   });
 
-  // A time is a seam, printed where the conversation stopped and started again.
   it('stamps a time where the conversation restarts after a gap', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false}
@@ -432,17 +367,6 @@ describe('ChatThread', () => {
     expect(workingMarks()).toHaveLength(0);
   });
 
-  /*
-   * ── The reply is markdown; what you typed is not ──────────────────────────
-   *
-   * Both halves are asserted because both are decisions, and the second one is
-   * the one that gets undone by reflex ("why is only one side rendered?").
-   *
-   * The reply case asserts *elements*, not text: before this, the same string
-   * produced one paragraph with `##` and `-` still in it, and every
-   * text-content assertion in this file passed on that. Only the element names
-   * separate "rendered as markdown" from "printed the source".
-   */
   it('renders the reply as markdown — headings, lists and fenced code', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false}
@@ -455,28 +379,17 @@ describe('ChatThread', () => {
       />,
     );
     const reply = container.querySelector('[data-nc-turn="agent"]')!;
-    /* `##` is one level below `#`, and `#` starts at `h3` — see the case below. */
+    /* `#` starts at `h3`, so `##` is `h4`. */
     expect(reply.querySelector('h4')?.textContent).toBe('Findings');
     expect([...reply.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['first', 'second']);
-    /* The fence is a *block* and it still holds its source. `pre, code` alone
-       passed on an implementation that dropped the code and emitted an empty
-       inline `<code>`, which is the shape a weak assertion here would let
-       through — the point of a fence is the code inside it. */
     const fence = reply.querySelector('pre');
     expect(fence).toBeTruthy();
     expect(fence?.textContent).toContain('const a = 1;');
-    /* The source characters are gone, not merely re-styled. */
     expect(reply.textContent).not.toContain('##');
     expect(reply.textContent).not.toContain('```');
   });
 
-  /*
-   * `headingLevelStart={3}`: the page owns `<h1>` and its sections own `<h2>`,
-   * so a reply's own `#` may not mint either. Asserted separately from the
-   * rendering case above because it is a different claim — that markdown is
-   * rendered *at a level*, not merely rendered — and a change to the prop
-   * leaves that case green.
-   */
+  /* `headingLevelStart={3}`: the page owns `<h1>` and its sections own `<h2>`. */
   it('starts the reply’s headings below the page’s own', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false}
@@ -510,15 +423,6 @@ describe('ChatThread', () => {
     expect(container.querySelector('[data-nc-activity]')).toBeNull();
   });
 
-  /*
-   * ── The failed line says what failed ────────────────────────────────────
-   *
-   * `Failed` alone was the whole rendering of a failed shell run, and the
-   * reason had been on the wire the entire time. The word stays — the case
-   * above asserts it and the stylesheet gives failure the *text* role — and the
-   * reason joins it on its own row inside the same `<p>`, so `data-nc-state`
-   * does not move.
-   */
   it('prints the reason inside the element that carries the state', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false}
@@ -527,11 +431,6 @@ describe('ChatThread', () => {
       />,
     );
     expect(screen.getByText('Failed')).toBeTruthy();
-    /* Containment, not co-existence. "the text is somewhere on the page" and
-       "a failed element is somewhere on the page" are both satisfied by the
-       shape this design rejects — the reason rendered as a sibling *outside*
-       the element holding `data-nc-state`, which is what would force the state
-       onto a new host. Reading the text off that element is the assertion. */
     const line = container.querySelector('[data-nc-state="failed"]')!;
     expect(line.textContent).toContain('error: no test specified');
   });
@@ -543,33 +442,12 @@ describe('ChatThread', () => {
     expect(container.textContent).toBe('Rannpm test');
   });
 
-  /**
-   * The duration element's **whole** text, which is the only form of this
-   * assertion that holds.
-   *
-   * These cases used to read `container.textContent` with `toContain`, and a
-   * substring of the page cannot pin a number: `14.3s` contains `4.3s`,
-   * `11.0s` contains `1.0s`, `13m 02s` contains `3m 02s`. The `59_999` case was
-   * the clearest — `11m 00s` satisfies "contains `1m 00s`" *and* "does not
-   * contain `60.0s`" at the same time, so the pair that was supposed to bracket
-   * the boundary bracketed nothing. Every one of those is what a
-   * `formatActivityDuration` that mangles its own leading digit prints.
-   *
-   * The number is the last thing on the line's first row: a duration only
-   * renders on a line that is not running, and the live dot only renders on one
-   * that is. Reached positionally because the spans carry hashed CSS-module
-   * class names, which `architecture/no-class-dom-query` forbids querying.
-   */
+  /** The duration element's whole text: a substring of the page cannot pin a number (`14.3s` contains `4.3s`). Reached positionally because the spans carry hashed CSS-module class names. */
   function durationText(container: HTMLElement): string | null {
     const row = container.querySelector('[data-nc-state]')!.children[0];
     return row.children[row.children.length - 1].textContent;
   }
 
-  /*
-   * A duration is printed only when it is one the reader felt. Both halves are
-   * asserted: the absence is the load-bearing one, because every completed row
-   * carries a `durationMs` and most of them are a 12ms report read.
-   */
   it('times a long action and stays quiet about a fast one', () => {
     const { container, rerender } = render(
       <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 4_320 })]} />,
@@ -582,10 +460,6 @@ describe('ChatThread', () => {
     expect(container.textContent).toBe('Rannpm test');
   });
 
-  /* The floor itself, at the two values that straddle it. Asserted against a
-     pair one millisecond apart because any other pair pins an interval rather
-     than a number: `4_320` against `120` passes for every floor in between,
-     including a floor of four seconds. */
   it('draws the line at one second, to the millisecond', () => {
     const { container, rerender } = render(
       <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 999 })]} />,
@@ -607,14 +481,6 @@ describe('ChatThread', () => {
     expect(durationText(container)).toBe('3m 02s');
   });
 
-  /* One millisecond under a minute, which the seconds form would round to a
-     `60.0s` that means the same thing as the `1m 00s` printed one millisecond
-     later. The two formats exist to be read at a glance; a sixty in the one
-     that counts seconds defeats that. The `not.toContain('60.0s')` that used to
-     stand beside this is gone rather than kept: an equality against the whole
-     string already excludes `60.0s` along with everything else, and as a
-     substring check it was the half of the pair that could be satisfied at the
-     same time as the other one. */
   it('never says sixty seconds', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 59_999 })]} />,
@@ -622,8 +488,6 @@ describe('ChatThread', () => {
     expect(durationText(container)).toBe('1m 00s');
   });
 
-  /* The view's own `!running` gate, which the domain's gate would otherwise be
-     the only thing standing between a live line and a finished number. */
   it('says nothing about elapsed time while the action is still running', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false}
@@ -666,13 +530,7 @@ describe('ChatThread', () => {
     expect(workingMarks()).toHaveLength(0);
   });
 
-  /*
-   * #1722 §5.3 / INV-APP-118 — the live mark reads the kernel's verdict for
-   * this card and the sender's own pending send, never `conversation.state`:
-   * the harness leaves that at `turn_pending` long after a turn ended, which
-   * is the spinner that never stopped. And the drawer says "Working" exactly
-   * once, on the placeholder, for a reader who is not on the list row.
-   */
+  /* The live mark reads the kernel's verdict for this card and the sender's own pending send, never `conversation.state`, which the harness leaves at `turn_pending` long after a turn ended. */
   it('thread live mark follows activity.cards', () => {
     const turns = [turn()];
     const { rerender } = render(
@@ -683,26 +541,17 @@ describe('ChatThread', () => {
 
     rerender(<ChatThread cards={{ c1: 'working' }} stalled={false} conversation={conversation({ state: 'idle' })} turns={turns} />);
     expect(workingMarks()).toHaveLength(1);
-    // The one spoken fact, beside the placeholder's mark (the tail is your turn, so the placeholder owns it).
     expect(screen.getByText('Working')).toBeTruthy();
     expect(screen.getAllByText('Working')).toHaveLength(1);
 
-    // Another card's verdict is not this conversation's.
     rerender(<ChatThread cards={{ other: 'working' }} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} />);
     expect(workingMarks()).toHaveLength(0);
 
-    // A card in `input` or `failed` is not in motion.
     rerender(<ChatThread cards={{ c1: 'failed' }} stalled={false} conversation={conversation()} turns={turns} />);
     expect(workingMarks()).toHaveLength(0);
   });
 
-  /*
-   * #1722 S2b r1 (Codex P2-1) — the drawer's local wedge outranks the kernel's
-   * cached verdict. A wedged planner's harness row still reads `turn_pending`
-   * and the registry still lists it, so `cards[id]` stays `working` until the
-   * next tick; the list row already shows `failed` from the same local fact,
-   * and the thread must not spin beside "This conversation is stuck".
-   */
+  /* A wedged planner's `cards[id]` stays `working` until the next tick, so the drawer's local wedge outranks the kernel's cached verdict. */
   it('the local wedge suppresses the kernel’s stale working verdict', () => {
     const turns = [turn()];
     const { rerender } = render(
@@ -710,22 +559,14 @@ describe('ChatThread', () => {
     );
     expect(workingMarks()).toHaveLength(0);
     expect(screen.queryByText('Working')).toBeNull();
-    // The sender's own pending send is suppressed the same way: nothing is in motion on a stuck thread.
     rerender(<ChatThread cards={{ c1: 'working' }} stalled pending conversation={conversation()} turns={turns} />);
     expect(workingMarks()).toHaveLength(0);
     expect(screen.queryByText('Working')).toBeNull();
-    // The same inputs without the wedge: the verdict is read again.
     rerender(<ChatThread cards={{ c1: 'working' }} stalled={false} conversation={conversation()} turns={turns} />);
     expect(workingMarks()).toHaveLength(1);
     expect(screen.getByText('Working')).toBeTruthy();
   });
 
-  /*
-   * #1722 S2b r1 (Codex P2-2) — the spoken `Working` does not depend on which
-   * element owns the visual mark. With a trailing agent reply or a running
-   * action the placeholder is hidden and the tail's mark is decorative, so
-   * without this the drawer would have no accessible "in motion" fact at all.
-   */
   it('a trailing agent reply keeps the drawer’s spoken Working', () => {
     const { rerender } = render(
       <ChatThread cards={{ c1: 'working' }} stalled={false}
@@ -733,12 +574,10 @@ describe('ChatThread', () => {
         turns={[turn(), turn({ id: 'a1', author: 'agent', text: 'Still working.' })]}
       />,
     );
-    // Exactly one mark — the tail's — and exactly one spoken word.
     expect(workingMarks()).toHaveLength(1);
     expect(workingMarks()[0]?.closest('[data-nc-turn="agent"]')).not.toBeNull();
     expect(screen.getAllByText('Working')).toHaveLength(1);
 
-    // The same with a running action on its own line as the tail.
     rerender(
       <ChatThread cards={{ c1: 'working' }} stalled={false}
         conversation={conversation()}
@@ -749,7 +588,6 @@ describe('ChatThread', () => {
     expect(workingMarks()[0]?.closest('[data-nc-turn="agent"]')).toBeNull();
     expect(screen.getAllByText('Working')).toHaveLength(1);
 
-    // And gone with the live fact: no mark, no word.
     rerender(
       <ChatThread cards={{}} stalled={false}
         conversation={conversation()}
@@ -761,27 +599,6 @@ describe('ChatThread', () => {
   });
 });
 
-/*
- * ── The rail of dots ──────────────────────────────────────────────────────
- *
- * What this tier can say: how many dots there are, that they are named, and
- * **which element a press scrolls**. That last one is the whole reason the rail
- * is testable at all here — the failure it guards against (`scrollIntoView`,
- * which walks every ancestor scrollport and pans the page) is visible in jsdom
- * as a write landing on the wrong object, and that is exactly what these mocks
- * read.
- *
- * It can also say **where an exchange starts**, which is a fact about the
- * transcript rather than about the layout — see the consecutive-`you` test
- * below, which is the only input that tells the domain's rule apart from the
- * one a second implementation would reach for.
- *
- * What it cannot say: which dot is lit. That is decided from painted boxes
- * against a real scrollport, and jsdom has neither. The component knows it — it
- * stops at a pane reporting zero height — so here the mark only ever moves on a
- * press.
- */
-
 /** `count` exchanges: your line, then a reply, `count` times over. */
 function exchangeTurns(count: number): ConversationTurn[] {
   return Array.from({ length: count }).flatMap((_unused, index) => [
@@ -792,28 +609,7 @@ function exchangeTurns(count: number): ConversationTurn[] {
   ]);
 }
 
-/**
- * The drawer, as the component finds it — **three boxes now, and the third one
- * is why the rail renders at all.**
- *
- * The pane is `[data-nc-drawer-scroll]`, inside another scrollable box; both
- * report every `scrollTop` write, and the outer one is the ancestor a
- * `scrollIntoView` would have moved. That pair is unchanged.
- *
- * What is added is the card and the **seam**. The rail is no longer a child of
- * the transcript: it is portalled into the strip of page beside the drawer's
- * card (`ui/drawer`, `.seam`), which the component locates with
- * `drawerSeamAround` — `closest('[data-nc-drawer]')`, then that card's parent's
- * `[data-nc-drawer-seam]`. So a fixture that offers a pane and no card has no
- * seam, and a transcript with no seam has no rail *by design*: that is the same
- * answer a transcript rendered outside a drawer gets in the app.
- *
- * jsdom computes no layout, so none of the seam's geometry is reachable here —
- * this box exists to satisfy the *lookup*, and every claim about where the rail
- * lands is in `thread.browser.test.tsx` against a real engine. What this tier
- * still binds is everything the rail does that is not geometry: the naming, the
- * roving stop, the press, and the no-op on a missing marker.
- */
+/** The drawer as the component finds it: the pane `[data-nc-drawer-scroll]` inside an outer scrollable box (the ancestor `scrollIntoView` would have moved), plus the card and the seam the rail is portalled into. */
 function drawerPane() {
   const outer = document.createElement('div');
   const setOuterScroll = vi.fn();
@@ -865,9 +661,6 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /* No drawer, no seam, no rail — and the transcript is untouched. A transcript
-     rendered in place is a transcript without a jump list, which is the honest
-     answer: the rail's whole geometry is the drawer's seam. */
   it('renders no rail outside a drawer, and the transcript regardless', () => {
     const { container } = render(
       <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES + 3)} />,
@@ -876,12 +669,6 @@ describe('ChatThread’s exchange rail', () => {
     expect(container.querySelectorAll('[data-nc-exchange]')).toHaveLength(RAIL_FIXTURE_EXCHANGES + 3);
   });
 
-  /*
-   * One dot per exchange, counted against the *markers the layout groups by*
-   * rather than against the number this test asked for. A rail that invented
-   * its own idea of where an exchange starts would pass a count against a
-   * literal and fail this.
-   */
   it('renders exactly one dot per exchange from the threshold up', () => {
     const { outer, pane } = drawerPane();
     const { container } = render(
@@ -894,23 +681,7 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /*
-   * ── Where an exchange starts is the domain's answer, not a second one ─────
-   *
-   * `opensExchange` is "authored by you, **and the turn before it was not**",
-   * and the second half is the whole of what a reimplementation drops. Every
-   * other fixture in both tiers is a strict you/agent alternation, on which the
-   * correct rule and `author === 'you'` are indistinguishable — measured: with
-   * both production call sites replaced by `turn.author === 'you'`, the entire
-   * web-dom tier stayed green.
-   *
-   * Two of your turns in a row is not a contrived input. The router appends an
-   * optimistic echo of what you just typed while the previous one is still the
-   * tail, and `buildTranscript` drops a trailing `Thought`, so two `you` rows
-   * end up adjacent either way. The correct answer is one exchange, opened by
-   * the first of them; the reimplementation's answer is two, with a
-   * `data-nc-exchange` on a row the stylesheet gives no `.exchange` to.
-   */
+  /* `opensExchange` is "authored by you, and the turn before it was not"; only consecutive `you` rows tell it apart from `author === 'you'`. */
   it('opens one exchange, not two, when you speak twice in a row', () => {
     const turns = exchangeTurns(RAIL_FIXTURE_EXCHANGES);
     turns.splice(1, 0, turn({
@@ -921,33 +692,15 @@ describe('ChatThread’s exchange rail', () => {
       <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />, { container: pane },
     );
 
-    /* The marker is on the first of the pair and nowhere else — so the dots and
-       the `.exchange` grouping are still the same one element. */
     expect([...container.querySelectorAll('[data-nc-exchange]')]
       .map((marker) => marker.getAttribute('data-nc-exchange')))
       .toEqual(Array.from({ length: RAIL_FIXTURE_EXCHANGES }, (_unused, i) => `you-${i}`));
     expect(railDots()).toHaveLength(RAIL_FIXTURE_EXCHANGES);
-    /* And the second line is still in the transcript — this is a claim about
-       segmentation, not about dropping a turn. */
     expect(container.querySelectorAll('[data-nc-turn]'))
       .toHaveLength(RAIL_FIXTURE_EXCHANGES * 2 + 1);
     outer.remove();
   });
 
-  /*
-   * The prompt is in the name; it is never painted *in the column*, because the
-   * 10px the rail costs is a gutter, not a label.
-   *
-   * The ordinal is in the name too, and it is not decoration: a session with an
-   * agent is mostly turns that say "Continue", and five buttons named
-   * "Jump to Continue" are five buttons a screen reader cannot tell apart.
-   *
-   * **And `title` is gone**, asserted rather than merely deleted. It used to
-   * carry the prompt on hover, and the floating preview now does — two hovers
-   * on one control, on two delays neither of which can wait for the other, is a
-   * flicker rather than two aids. The preview needs a rendering engine and
-   * lives in the browser tier; what this tier can still say is that the UA
-   * tooltip is not also there. */
   it('names each dot with its ordinal and its prompt, and paints no text', () => {
     const { outer, pane } = drawerPane();
     render(
@@ -964,7 +717,6 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /* Same prompt, different button: the names still differ. */
   it('tells identically worded prompts apart', () => {
     const turns = exchangeTurns(RAIL_FIXTURE_EXCHANGES).map((entry) =>
       entry.author === 'you' ? { ...entry, text: 'Continue' } : entry);
@@ -975,13 +727,6 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /*
-   * ── One tab stop, and the arrows inside it ────────────────────────────────
-   *
-   * Thirty exchanges once meant thirty tab stops between the drawer's edge and
-   * the composer. Exactly one dot is in the tab ring at a time now, and it is
-   * the one the reader is in.
-   */
   it('holds one tab stop and moves it with the arrows', async () => {
     const { outer, pane } = drawerPane();
     render(
@@ -998,7 +743,6 @@ describe('ChatThread’s exchange rail', () => {
 
     await userEvent.keyboard('{End}');
     expect(document.activeElement).toBe(railDots()[RAIL_FIXTURE_EXCHANGES - 1]);
-    /* And the ends hold rather than wrap: Down at the last dot stays there. */
     await userEvent.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(railDots()[RAIL_FIXTURE_EXCHANGES - 1]);
 
@@ -1007,23 +751,14 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /*
-   * ── The assertion this component exists to keep honest ───────────────────
-   *
-   * A press must move **the drawer's own pane** and nothing else. Both the
-   * failure modes are visible here: `scrollIntoView` writes no `scrollTop` at
-   * all, and any implementation that walks to the wrong scrollport writes to
-   * `outer`. The value is checked too, so "wrote something to the right box"
-   * is not enough — the marker's top must land on the pane's top.
-   */
+  /* `scrollIntoView` writes no `scrollTop` at all, and a walk to the wrong scrollport writes to `outer`. */
   it('scrolls the drawer pane to the pressed exchange, and nothing above it', async () => {
     const { outer, pane, setOuterScroll, setPaneScroll } = drawerPane();
     render(
       <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
-    /* The follow-the-newest-turn effect has already written once; the press is
-       what this test is about. */
+    /* The follow effect has already written once. */
     setPaneScroll.mockClear();
     setOuterScroll.mockClear();
 
@@ -1038,7 +773,6 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /* Pressed dots say so, for the reader who cannot see 6px versus 8px. */
   it('marks the pressed dot as the current one', async () => {
     const { outer, pane } = drawerPane();
     render(
@@ -1051,18 +785,6 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /*
-   * No marker, no scroll, **and no mark** — the same contract the follow effect
-   * keeps. The rail is a faster way through something scrolling already
-   * reaches, so a target that is not there has nothing to report and nothing to
-   * fall back to.
-   *
-   * The mark is asserted here and not only the scroll, because the handler used
-   * to set it first and look for the marker afterwards: the pane stayed put and
-   * the dot lit anyway, which is the one thing a silent no-op must not do —
-   * claim, in the one channel a screen reader reads, that the reader was taken
-   * somewhere they were not.
-   */
   it('does nothing at all when the marker is gone', async () => {
     const { outer, pane, setOuterScroll, setPaneScroll } = drawerPane();
     render(
@@ -1083,36 +805,7 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /*
-   * ── How long a pointer must rest before the prompt floats out ─────────────
-   *
-   * The tier that computes no layout owning the *duration* looks backwards and
-   * is exactly right: whether the panel is in the document is not a layout
-   * fact. Where it lands is, and that half stays in `thread.browser.test.tsx`.
-   * The placement effect runs here too and reads all-zero boxes, which costs
-   * nothing — it writes `inset-block-start: 0px`, and nothing in this file
-   * reads it.
-   *
-   * **It is here because the browser tier measured the number against a wall
-   * clock, and a shared runner does not hold one still.** That case polled the
-   * wait and asserted the elapsed time into `(380, 650)` — a band the shipped
-   * 450 sits in the middle of, with 200ms of room for the driver's hover
-   * round-trip, the poll's own 20ms of resolution and the runner's scheduling.
-   * Run 33380223777 spent 671.6ms of it, 221.6ms of overhead on a 450ms delay,
-   * under a mutation of the app's providers that has nothing to do with the
-   * rail. A wider band does not repair that, it disarms the band: the floor
-   * was the half that rejected 300 and the ceiling the half that rejected 700,
-   * and the overhead only ever runs one way — the same 221.6ms that pushed 450
-   * past the ceiling lifts a 300ms delay to 520ms, past the floor. Load takes
-   * both halves at once, and moving the ceiling gives up the other one.
-   *
-   * **449 and 450 are written out rather than imported from `public.tsx`.**
-   * Importing `RAIL_PREVIEW_DELAY_MS` would make this green for every value of
-   * it, which is the exact hole the wall-clock band was widened into. Measured
-   * against these literals: at `RAIL_PREVIEW_DELAY_MS = 300` the panel is
-   * already up at the 449 step, and at 700 it is still absent one millisecond
-   * past 450.
-   */
+  /* 449 and 450 are written out rather than imported: importing `RAIL_PREVIEW_DELAY_MS` would make this green for every value of it. */
   it('holds the prompt back for the whole delay, then floats it out', () => {
     vi.useFakeTimers();
     try {
@@ -1128,7 +821,6 @@ describe('ChatThread’s exchange rail', () => {
       act(() => { vi.advanceTimersByTime(449); });
       expect(preview()).toBeNull();
       act(() => { vi.advanceTimersByTime(1); });
-      /* The prompt itself, so a panel that mounted empty is not a pass. */
       expect(preview()?.textContent).toBe('Ask 2');
       outer.remove();
     } finally {
@@ -1151,8 +843,7 @@ describe('ChatComposer', () => {
     const onStop = vi.fn();
     const { rerender } = render(<ChatComposer onSend={onSend} onStop={onStop} />);
     await userEvent.type(messageField(), 'Keep these words');
-    // Stop itself allows queueing (#1506); only the explicit submission fence
-    // may prevent Enter from clearing an unsent draft (#1500 F6).
+    // Stop itself allows queueing; only the explicit submission fence may prevent Enter from clearing an unsent draft.
     rerender(<ChatComposer onSend={onSend} onStop={onStop} disabled />);
     fireEvent.keyDown(messageField(), { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
@@ -1168,15 +859,7 @@ describe('ChatComposer', () => {
     expect(onNewConversation).toHaveBeenCalledOnce();
   });
 
-  /*
-   * #1505 S6 — an image with no words.
-   *
-   * Two separate refusals stand in the way and both had to be lifted: this
-   * component's own `if (text === '' ...) return`, and Astryx's, which is
-   * inside the vendor's `onSubmit` handler and cannot be reached from a prop.
-   * The wrapper's `keyDownCapture` is what answers the second one, so Enter is
-   * the gesture under test rather than the button.
-   */
+  /* Astryx's own empty-text refusal is inside the vendor's `onSubmit` handler, so Enter (via the wrapper's `keyDownCapture`) is the gesture under test rather than the button. */
   it('sends a wordless message when the caller says it carries something else', () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} allowEmptyText />);
@@ -1191,12 +874,7 @@ describe('ChatComposer', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  /*
-   * The vendor send button takes its availability from the composer context's
-   * `canSend`, which is false on an empty draft — so with only that control on
-   * screen there is nothing to press. This is the control that fills the gap,
-   * and it appears only while the vendor's own is unavailable.
-   */
+  /* The vendor send button takes its availability from the composer context's `canSend`, false on an empty draft. */
   it('offers a send control while the draft is empty and an image is picked', async () => {
     const onSend = vi.fn();
     const { rerender } = render(<ChatComposer onSend={onSend} />);
@@ -1236,33 +914,11 @@ describe('ChatComposer', () => {
     render(<ChatComposer onSend={onSend} />);
     await userEvent.type(messageField(), 'one{Shift>}{Enter}{/Shift}two');
     expect(onSend).not.toHaveBeenCalled();
-    /*
-     * The exact string, because everything looser passed on a Shift+Enter that
-     * inserted *nothing*: `.replace(/\n/g, '\n')` is the identity function,
-     * `toContain('one')` is true of any field that took the letters, and the
-     * `\s*` in `/one\s*two/` matches the empty string — so `"onetwo"`, the
-     * precise failure this test names, satisfied all three.
-     *
-     * The break is normalised first: a contenteditable may serialise one line
-     * break as `\n`, as `\r\n`, or (with a trailing `<br>` filler) with a
-     * second `\n` after it, and none of those differences are this test's
-     * subject. What is its subject — that there is exactly one break, with
-     * `one` before it and `two` after it — survives the normalisation.
-     */
+    /* A contenteditable may serialise one line break as `\n`, `\r\n`, or with a trailing filler `\n`; the exact string is asserted after normalising. */
     const written = fieldText(messageField()).replace(/\r\n/g, '\n').replace(/\n+$/, '');
     expect(written).toBe('one\ntwo');
   });
 
-  /*
-   * Enter belongs to the input method while it is composing.
-   *
-   * Reproduced in a real browser before the fix, with `Input.imeSetComposition`:
-   * typing `ceshi` and pressing Enter to accept 测试 sent the literal pinyin as
-   * a turn. In the live app the composition then commits into the box that was
-   * just cleared, which is what "sending doesn't clear the box" looks like from
-   * the outside. Everyone typing Chinese, Japanese or Korean hits this on their
-   * first message.
-   */
   it('leaves Enter to the input method while it is composing', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} />);
@@ -1284,17 +940,6 @@ describe('ChatComposer', () => {
     expect(onSend).toHaveBeenCalledWith('Ship it');
   });
 
-  /*
-   * The unavailability is the assertion, not a precondition for one.
-   *
-   * This stood as a `does not send %s` with an early return: "if Send is
-   * unavailable, expect `onSend` not called and stop". Once `canSend` was
-   * restored *both* rows took that branch, so neither ever pressed anything and
-   * the body was `expect(a fresh mock).not.toHaveBeenCalled()` — true of any
-   * implementation, including one that sends whitespace happily the moment the
-   * button is enabled again. What the composer actually promises is that a
-   * draft with no words in it leaves Send unavailable, so that is what is read.
-   */
   it.each([['blank', ''], ['only whitespace', '   ']])(
     'marks Send unavailable on a %s draft and sends nothing when it is pressed',
     async (_label, text) => {
@@ -1309,55 +954,22 @@ describe('ChatComposer', () => {
     },
   );
 
-  /*
-   * ── §5.1, restored with the constraint it was supposed to carry ──────────
-   *
-   * What stood here was `expect(getByRole('button', { name: 'Send' }))
-   * .toBeTruthy()` — a tautology, since `getByRole` throws when it finds
-   * nothing, so the assertion could not fail on any tree the line above it
-   * survived. It replaced §5.1's `marks Send unusable without taking it out of
-   * the focus order`, and it kept none of that test's force: it passed
-   * unchanged against the bug it was standing in for, a Send that reported
-   * `{ disabled: false, ariaDisabled: null }` over an empty field and did
-   * nothing when pressed.
-   *
-   * Two claims, split apart because they fail for different reasons.
-   */
   it('marks Send unavailable over an empty field instead of looking pressable', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} />);
     const send = screen.getByRole('button', { name: 'Send' });
-    /* Either vocabulary is honest; *neither* is the bug. Astryx picks native
-       `disabled` here because `ChatSendButton` takes no tooltip — see the
-       `sendButton` note in `public.tsx` for why that is the available choice
-       and what it costs. */
+    /* Either vocabulary is honest: Astryx picks native `disabled` here because `ChatSendButton` takes no tooltip. */
     expect(send.hasAttribute('disabled') || send.getAttribute('aria-disabled') === 'true').toBe(true);
     await userEvent.click(send);
     expect(onSend).not.toHaveBeenCalled();
 
-    /* And it comes back the moment there is something to send, so "unavailable"
-       is a state and not a permanent condition. */
     await userEvent.type(messageField(), 'Ship it');
     const live = screen.getByRole('button', { name: 'Send' });
     expect(live.hasAttribute('disabled')).toBe(false);
     expect(live.getAttribute('aria-disabled')).not.toBe('true');
   });
 
-  /*
-   * The other half of §5.1, and the reason a natively disabled Send is
-   * survivable here: sending from the button empties the draft, which makes the
-   * button that was just clicked unavailable *under the user's own focus*. A
-   * natively disabled element cannot hold focus, so without somewhere to put it
-   * the document hands it to `<body>` and the next Tab restarts from the top.
-   *
-   * **What this tier can and cannot say.** It renders a composer with no
-   * `disabled` prop, and the app never builds one: both router call sites pass
-   * `disabled={store.sending}`, and `send()` flips that flag synchronously, so
-   * in production the field is `contenteditable="false"` by the time the restore
-   * runs. jsdom would not notice either — it does not drop focus off a
-   * `contenteditable` going false. So this pins the plain case only; the case
-   * the app actually runs is in `thread.browser.test.tsx`.
-   */
+  /* A natively disabled element cannot hold focus; jsdom does not drop focus off a `contenteditable` going false, so this pins the plain case only. */
   it('leaves focus in the field, never on <body>, when Send goes away under it', async () => {
     render(<ChatComposer onSend={vi.fn()} />);
     const field = messageField();
@@ -1372,14 +984,6 @@ describe('ChatComposer', () => {
     expect(document.activeElement).toBe(messageField());
   });
 
-  /*
-   * ── #1449 — what the composer may put back, and when ──────────────────────
-   *
-   * The field is cleared on submit so the optimistic echo can stand in for the
-   * sentence. Putting it back is only sound when the outcome says the server
-   * stored nothing, and only into a field the reader has not moved on in. Each
-   * case below is a distinct answer that used to be the same `false`.
-   */
   it.each([
     ['refused', 'Rebuild it'],
     ['unresolved', ''],
@@ -1396,12 +1000,6 @@ describe('ChatComposer', () => {
     expect(fieldText(messageField()).trim()).toBe(expected);
   });
 
-  /*
-   * The restore must not take the field from the keystroke that is in it.
-   *
-   * The reader can type again the moment the field is cleared, and the answer
-   * to their first sentence arrives whenever the server gets round to it.
-   */
   it('leaves a refused sentence out when the reader has already typed the next one', async () => {
     let answer: (result: 'refused') => void = () => {};
     render(<ChatComposer onSend={() => new Promise((resolve) => { answer = resolve; })} />);
@@ -1412,17 +1010,7 @@ describe('ChatComposer', () => {
     expect(fieldText(messageField()).trim()).toBe('new words after');
   });
 
-  /*
-   * Two submissions, one field, and the older one wins it.
-   *
-   * A second Enter while the first send is still out is refused by the store's
-   * own in-flight guard, which never reaches the server. When both refusals
-   * were the same value, whichever settled first took the field: the second
-   * message's text landed there, and the first message's refusal then found a
-   * non-empty field and dropped the sentence the server had actually told the
-   * reader to send again. `not-sent` is excluded from the restore for that
-   * reason; the second message's text is the residual, recorded in #1449.
-   */
+  /* `not-sent` (the store's own in-flight refusal) is excluded from the restore, or the second message's text would take the field from the one the server refused. */
   it('gives the field back to the send the server refused, not to the one it never saw', async () => {
     const answers: ((result: SendOutcome) => void)[] = [];
     render(<ChatComposer onSend={() => new Promise<SendOutcome>((resolve) => { answers.push(resolve); })} />);
@@ -1444,39 +1032,6 @@ describe('ChatComposer', () => {
     expect(onStop).toHaveBeenCalledOnce();
   });
 
-  /*
-   * A second press reaches the callback, and that is the honest arrangement.
-   *
-   * The composer briefly withheld `onStop` after the first press, to say "a stop
-   * already asked for cannot be asked for again". Astryx's Stop is enabled
-   * whenever it is shown (`isDisabled={!isStopShown && isDisabled}`), so
-   * withholding the callback changed nothing about how the button looks or
-   * announces itself — it only emptied its `onClick`, which is the "looks
-   * pressable, does nothing" shape the file's own note forbids. The refusal
-   * belongs where the state that decides it lives, at the top of the router's
-   * `interrupt()`; here Stop stays a button that reports what it did.
-   */
-  /*
-   * ── #1505: a turn in flight is not a reason to swallow a sentence ────────
-   *
-   * `onSubmit` used to open with `if (text === '' || disabled || stopShown)
-   * return;`, and `stopShown` is true for the whole of a turn — so every press
-   * and every Enter left through that line, before `onSend` and before the
-   * `setDraft('')` under it. The message was not sent, not queued, not
-   * reported, and not even left in the box.
-   *
-   * Nothing about the kernel wanted that: `send_planner_input` never reads the
-   * phase, folds the text into the harness pending queue, and the run loop
-   * issues it as the next turn. These two say the refusal is gone in both
-   * directions a person can send.
-   */
-  /*
-   * There used to be a `Queue message` button beside Stop and a test here that
-   * pressed it. The button is gone (owner's call, #1505 review): while a turn
-   * runs the one send door is Enter, and it is the door that was always doing
-   * the work — the button called the same `submit`. What a mouse-only reader
-   * lost is the affordance; what nobody lost is this.
-   */
   it('offers no second send button beside Stop', () => {
     render(<ChatComposer onSend={vi.fn()} onStop={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
@@ -1485,16 +1040,7 @@ describe('ChatComposer', () => {
     expect(buttons).toEqual(['Stop']);
   });
 
-  /*
-   * Enter belongs to the control it was pressed on.
-   *
-   * The composer's key handler is on its root and captures, which was harmless
-   * while the field was the only focusable thing under it. The `drawer` slot
-   * changed that — the queued-message bubbles live inside this root now, each
-   * with its own buttons — and the `allowEmptyText` branch then sent the
-   * picked image and called `preventDefault()`, so the button the person was
-   * actually on never fired.
-   */
+  /* The composer's key handler is on its root and captures; the `drawer` slot puts other buttons under it. */
   it('does not send when Enter is pressed on something else in the composer', () => {
     const onSend = vi.fn();
     const pressed = vi.fn();
@@ -1521,14 +1067,6 @@ describe('ChatComposer', () => {
     expect(onSend).toHaveBeenCalledWith('typed mid-turn');
   });
 
-  /*
-   * Emptiness still governs, and it governs the surviving door.
-   *
-   * The rule this used to state about the queue button — nothing to send is
-   * nothing to queue — was never the button's; it is Astryx's `handleSubmit`,
-   * which refuses an empty draft before it calls `onSubmit`. Removing the
-   * button removed a restatement of the rule, not the rule.
-   */
   it('sends nothing over an empty draft, turn running or not', async () => {
     const onSend = vi.fn();
     const { rerender } = render(<ChatComposer onSend={onSend} />);
@@ -1544,20 +1082,13 @@ describe('ChatComposer', () => {
     expect(onSend).toHaveBeenCalledWith('now there is something');
   });
 
-  /*
-   * `disabled` is the router's `sendBlocked` — "the last POST has not settled"
-   * — and it is a different fact from "a turn is running". Letting the turn
-   * through must not let that one through with it, in either direction a
-   * person can send.
-   */
+  /* `disabled` is the router's `sendBlocked` — the last POST has not settled — a different fact from "a turn is running". */
   it('still refuses a send while the previous one is unsettled, turn running or not', async () => {
     const onSend = vi.fn();
     const { rerender } = render(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
     const field = messageField();
     await userEvent.type(field, 'second message');
-    /* The words are already in the box when the block arrives — which is the
-       real sequence: `sendBlocked` goes true inside the send that precedes
-       this one, not before the reader started typing. */
+    /* `sendBlocked` goes true inside the send that precedes this one, after the words are already in the box. */
     rerender(<ChatComposer onSend={onSend} onStop={vi.fn()} disabled />);
     fireEvent.keyDown(messageField(), { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
@@ -1568,7 +1099,6 @@ describe('ChatComposer', () => {
     render(<ChatComposer onSend={vi.fn()} onStop={onStop} />);
     const stop = screen.getByRole('button', { name: 'Stop' });
     await userEvent.click(stop);
-    /* Still shown, still pressable — nothing about the first press changed it. */
     expect(screen.getByRole('button', { name: 'Stop' })).toBe(stop);
     expect(stop.hasAttribute('disabled')).toBe(false);
     expect(stop.getAttribute('aria-disabled')).not.toBe('true');

@@ -1,9 +1,4 @@
-//! One-deadline orchestration for the two asynchronous phases after spawn.
-//!
-//! Keeping the drain and reap timeouts here makes their shared-budget contract
-//! directly testable with Tokio's virtual clock. Process-level tests only need
-//! to prove that callers wire both phases into this primitive; they do not need
-//! load-sensitive wall-clock thresholds to detect a reset budget.
+//! One-deadline orchestration for the two asynchronous phases after spawn (drain, then reap).
 
 use std::future::Future;
 
@@ -16,9 +11,7 @@ pub(crate) enum ChildFinishError<E> {
 
 #[cfg(test)]
 tokio::task_local! {
-    /// Test-only phase boundaries. The deadline payload lets process-level
-    /// tests freeze Tokio time only after the real child has been spawned and
-    /// the relevant phase has been reached.
+    /// Test-only phase boundaries; the deadline payload lets tests freeze Tokio time only after the relevant phase has been reached.
     pub(crate) static TEST_DRAIN_STARTED: TestPhaseObserver;
     pub(crate) static TEST_REAP_STARTED: TestPhaseObserver;
 }
@@ -49,20 +42,14 @@ fn observe_phase(
             return;
         }
         if observer.freeze_clock {
-            // Freeze synchronously with the observation. Even a heavily loaded
-            // machine cannot spend the remaining budget between the event and
-            // the test task receiving it.
+            // Freeze synchronously with the observation, so no load can spend the remaining budget between the event and the test task receiving it.
             tokio::time::pause();
         }
         let _ = observer.tx.send(deadline);
     });
 }
 
-/// Drain both output streams, then reap the leader, under one absolute bound.
-///
-/// The reap future is not polled until phase one has completed successfully.
-/// The same absolute `deadline` is passed to both `timeout_at` calls: time
-/// spent draining is time the reap no longer owns.
+/// Drain both output streams, then reap the leader, under one absolute bound: time spent draining is time the reap no longer owns.
 pub(crate) async fn finish_within<D, E, R, T>(
     deadline: tokio::time::Instant,
     drain: D,
@@ -96,12 +83,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    /// The contract is logical, not a host-performance target: drain and reap
-    /// are ordered, and together consume exactly one budget. Virtual time makes
-    /// the witness invariant under scheduler load.
-    ///
-    /// Mutation witness: give the reap a fresh relative timeout instead of the
-    /// supplied absolute deadline; virtual time ends after `deadline`.
+    /// Virtual time makes the witness invariant under scheduler load.
     #[tokio::test(start_paused = true)]
     async fn drain_and_reap_are_ordered_and_share_one_deadline() {
         let started = tokio::time::Instant::now();

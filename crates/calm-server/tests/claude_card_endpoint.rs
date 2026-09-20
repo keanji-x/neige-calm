@@ -701,21 +701,7 @@ async fn post_claude_restart_recreates_missing_terminal_row_and_resumes_session(
     assert_eq!(second_session, session_id);
 }
 
-/// #1147 S6 — the restart path recreates a `terminals` row, which now freezes
-/// the track's workspace inside the same transaction. That makes this the one
-/// production flow where a transaction holds SQLite's write lock on `tracks` and
-/// then goes on to resolve an event scope.
-///
-/// Measured: with the freeze in `terminal_create_tx` and the scope still
-/// resolved through `card_scope` (which reads `tracks` off the **pool**, i.e. a
-/// second connection), this flow hangs forever — the probes logged `UPDATE ok`
-/// and then `about to card_scope`, and nothing after it; the task waits on a
-/// lock only it can release, in `sqlx_sqlite::statement::unlock_notify::wait`.
-/// The in-memory database is shared-cache, so those locks are per table.
-///
-/// The sibling test above covers the same route, but a deadlock makes it *hang*
-/// rather than fail — a wedged CI job, not a red test. This one puts a wall
-/// clock on it so the failure is legible.
+/// The restart path freezes the track's workspace inside the terminal-create transaction, so resolving the event scope off the pool (a second connection) deadlocks on the `tracks` write lock; a wall clock makes that hang a red test.
 #[tokio::test]
 async fn post_claude_restart_does_not_deadlock_on_the_workspace_freeze() {
     let _guard = ENV_LOCK.lock().await;
@@ -747,31 +733,10 @@ async fn post_claude_restart_does_not_deadlock_on_the_workspace_freeze() {
          pool and deadlocks against this transaction's own write lock.",
     );
     assert_eq!(restart_status, StatusCode::OK, "body={restarted:?}");
-    // No `frozen_at` assertion here on purpose: this fixture's track is
-    // `attached`, so it is frozen from creation and the assertion would hold
-    // with the freeze deleted. What this test is for is the deadlock — the
-    // freeze DOES run on this path (it is why the hang exists at all), and
-    // whether it lands is asserted where it can fail, in
-    // `track_workspace_repoint::a_terminal_card_lands_in_the_workspace_and_freezes_it`.
+    // No `frozen_at` assertion: this fixture's track is `attached`, so it is frozen from creation regardless.
 }
 
-/// #1147 S6 — a claude card whose payload carries no `cwd` must fall back to
-/// the **track's workspace**, never to `$HOME`.
-///
-/// This is the last path in the tree that could persist the server's own
-/// environment into a `terminals.cwd`, and since S6 that row freezes the track's
-/// workspace in the same transaction — so a wrong directory here is permanent,
-/// not just wrong once.
-///
-/// The state is built directly rather than through the route on purpose: HTTP
-/// cannot produce it, because `ClaudeAdapter` fills `cwd` on every card it
-/// mints. That is the reachability argument, and it is exactly why the fallback
-/// is worth closing instead of trusting: it is a property of today's callers,
-/// not of this function.
-///
-/// The assertion is not vacuous: the fixture's card payload has had `cwd`
-/// REMOVED, so `/workspace` can only come from `tracks.workspace_path`. With the
-/// old `default_cwd()` fallback the row would name `$HOME`.
+/// Built directly rather than through the route: `ClaudeAdapter` fills `cwd` on every card it mints, so HTTP cannot produce a payload without one.
 #[tokio::test]
 async fn post_claude_restart_without_a_payload_cwd_falls_back_to_the_track_workspace() {
     let _guard = ENV_LOCK.lock().await;

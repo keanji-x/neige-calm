@@ -36,9 +36,6 @@ describe('groupTranscriptActivities', () => {
     expect(groups[1]).toEqual({ index: 1, entry: turns[1], activities: [turns[1], turns[2], turns[3]] });
   });
 
-  /* Every author that is not an activity ends the run — asserted per author
-     rather than for "a message", since the three render differently and any
-     one of them could be special-cased by mistake. */
   it.each([
     ['you', you],
     ['agent', agent],
@@ -52,9 +49,6 @@ describe('groupTranscriptActivities', () => {
     expect(groups[2]?.activities?.map((entry) => entry.id)).toEqual(['c', 'd']);
   });
 
-  /* The group's identity is its first entry: an append only lengthens the
-     activities, and a state flip on the last call (started → completed lands
-     in the started row's position) changes no index and no first id. */
   it('keeps the first entry and index stable as calls arrive and finish', () => {
     const before = [you, activity('a'), activity('b', { state: 'running', verb: 'Running' })];
     const after = [you, activity('a'), activity('b'), activity('c', { state: 'running', verb: 'Running' })];
@@ -75,14 +69,7 @@ describe('groupTranscriptActivities', () => {
   });
 });
 
-/*
- * ── Carrying a run's key across transcripts ───────────────────────────────
- *
- * The invariant under test is one sentence: a run keeps its key for as long
- * as any call it had is still in it, or comes back. Every case below is one
- * way the run's edges can move, one way the run can leave and return — and
- * the two ways a key must *not* survive.
- */
+/* A run keeps its key for as long as any call it had is still in it, or comes back. */
 describe('keyTranscriptGroups', () => {
   /** Keys through a sequence of transcripts, each fed the memory of the last. */
   function keysThrough(transcripts: readonly (readonly TranscriptEntry[])[]) {
@@ -100,8 +87,6 @@ describe('keyTranscriptGroups', () => {
     expect(keys[1]).toBe('you');
     expect(keys[3]).toBe('agent');
     expect(new Set(keys).size).toBe(keys.length);
-    /* A lone activity is a run too: the memory has to cover it for the run
-       it may become (or that may be cut down to it) to be recognised. */
     expect(keys[2]).toMatch(/^group:/);
   });
 
@@ -160,11 +145,6 @@ describe('keyTranscriptGroups', () => {
     expect(after.keys[2]).not.toBe(after.keys[0]);
   });
 
-  /*
-   * A refetch of the newest page can shift the window past every call of a
-   * run; *Load earlier* then brings the same calls back. The transcript in
-   * between has none of them, and that must not be what the memory becomes.
-   */
   it('keeps the key of a run that left the window whole when its calls come back', () => {
     const [before, gone, back] = keysThrough([
       [activity('a'), activity('b')],
@@ -186,8 +166,6 @@ describe('keyTranscriptGroups', () => {
     expect(back.keys[0]).toBe(before.keys[0]);
   });
 
-  /* Remembering the run that left does not hand anything to whatever arrives
-     in its place; and when both are on screen, each is its own. */
   it('keeps a returning run and a stranger that appeared meanwhile apart', () => {
     const [before, stranger, both] = keysThrough([
       [activity('a'), activity('b')],
@@ -199,9 +177,6 @@ describe('keyTranscriptGroups', () => {
     expect(both.keys[2]).toBe(stranger.keys[1]);
   });
 
-  /* A call is remembered by the run it was *last* in: after a split, the
-     second piece's calls belong to the second piece, also when they are next
-     seen alone. */
   it('remembers each call of a split run by the piece it ended up in', () => {
     const [, split, secondAlone, firstAlone] = keysThrough([
       [activity('a'), activity('b'), activity('c'), activity('d')],

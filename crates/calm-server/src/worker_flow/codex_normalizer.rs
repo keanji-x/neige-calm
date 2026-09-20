@@ -704,8 +704,7 @@ fn parsed_actions_from_parsed_cmd(
         }
     }
 
-    // TODO(#704): map Codex ParsedCommand variants directly once that schema is
-    // imported; the raw command parser is the durable fallback for now.
+    // TODO: map Codex ParsedCommand variants directly once that schema is imported; the raw command parser is the fallback.
     parse_command_actions(fallback_command)
 }
 

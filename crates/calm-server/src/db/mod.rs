@@ -37,10 +37,10 @@ pub trait ServerRepoReadExt {
     async fn area_folder_get(&self, id: i64) -> Result<Option<AreaFolder>>;
     async fn tracks_by_area(&self, area_id: &str) -> Result<Vec<Track>>;
     async fn track_get(&self, id: &str) -> Result<Option<Track>>;
-    /// #1253 PR1 — the Today launchpad track, or `None` before it exists.
+    /// The Today launchpad track, or `None` before it exists.
     async fn track_get_launchpad(&self) -> Result<Option<Track>>;
     async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>>;
-    /// #1704 S2 — the tree ROOT's Claude Code permission policy for `id`.
+    /// The tree ROOT's Claude Code permission policy for `id`.
     async fn track_claude_permissions_ceiling(
         &self,
         id: &str,
@@ -481,9 +481,7 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
         since_id: i64,
         limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
-    /// Bounded RAW-row window probe (count + max id) for the WS replay cap
-    /// decision — see
-    /// [`calm_truth::db::RepoEventWrite::events_raw_window_since`].
+    /// Bounded RAW-row window probe (count + max id) for the WS replay cap decision.
     async fn events_raw_window_since(
         &self,
         since_id: i64,
@@ -762,8 +760,6 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         turn_id: &str,
         params: &str,
     ) -> Result<i64>;
-    /// #1625 P2 — see `calm_truth::db::RepoOutOfDomain` for the projection
-    /// key these three share.
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
     -> Result<Option<i64>>;
     async fn transcript_projection_upgrade(
@@ -804,8 +800,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
     async fn settings_delete(&self, key: &str) -> Result<()>;
     async fn area_folder_create(&self, area_id: &str, path: &str) -> Result<AreaFolder>;
-    /// Issue #275 — atomic scan+insert. See
-    /// [`calm_truth::db::RepoOutOfDomain::area_folder_create_checked`].
+    /// Atomic scan+insert.
     async fn area_folder_create_checked(
         &self,
         area_id: &str,

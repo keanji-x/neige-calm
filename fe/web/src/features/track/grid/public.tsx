@@ -19,10 +19,8 @@ export function CardGridOverlay({
   /** Reveals the × on every deletable card head; the caller owns the confirm. */
   onRemoveCard?: (cardId: string) => void;
 }) {
-  // Keep-alive after the first open (INV-CARD-106: setVisible(false) must
-  // not unmount). Do not mount at all until then — a closed overlay still
-  // has geometry, and XtermView would otherwise attach every PTY on the
-  // track page visit.
+  // Keep-alive after the first open (setVisible(false) must not unmount). Do not mount at all until then —
+  // a closed overlay still has geometry, and XtermView would otherwise attach every PTY on the track page visit.
   const [everOpened, setEverOpened] = useState(open);
   if (open && !everOpened) setEverOpened(true);
   const layerRef = useRef<HTMLDivElement | null>(null);

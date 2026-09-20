@@ -1,36 +1,5 @@
-//! Issue #247 PR3 — REST-side track-report edit endpoint integration
-//! tests (`POST /api/tracks/:id/report`).
-//!
-//! Companion to `mcp_track_report.rs` (MCP-side coverage). Each test
-//! drives the real axum router via `tower::ServiceExt::oneshot` with
-//! the same router assembly the production binary uses
-//! (protected REST behind `auth::require_session` + the actor
-//! middleware), so the auth gate, session-extraction, actor pinning,
-//! and the shared persist boundary all run end-to-end.
-//!
-//! Coverage:
-//!
-//!   * **Happy path** — authenticated user POST → 200; response is the
-//!     projected `TrackReportPayload`; both `CardUpdated` and
-//!     `TrackReportEdited` envelopes are emitted; the latter carries
-//!     `author == EditAuthor::User`.
-//!   * **Author cannot be forged** — request body with an extra
-//!     `author` field is rejected (`deny_unknown_fields` returns 4xx)
-//!     so a client can never persuade the server to attribute a User
-//!     edit as Planner.
-//!   * **No session** — request without cookie → 401, no events
-//!     emitted.
-//!   * **Cross-track isolation** — user posts to a track that doesn't
-//!     exist → 404, no events emitted. (Today's single-user owner
-//!     model has no per-track ACL; the track-existence 404 is the
-//!     effective cross-track gate. Multi-user would extend this with a
-//!     403 on a track the principal doesn't own.)
-//!   * **Worker / non-user actor** — authenticated session but
-//!     `X-Calm-Actor: ai:codex` → 403, no events emitted. Only
-//!     `ActorId::User` may persist via REST.
-//!   * **MCP path still tags Planner** — re-asserts via the existing
-//!     `mcp_track_report` regression suite (already pinned in PR2 and
-//!     re-confirmed by the build).
+//! REST-side track-report edit endpoint (`POST /api/tracks/:id/report`), driven
+//! through the same router assembly the production binary uses.
 
 #![cfg(unix)]
 
@@ -54,17 +23,10 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-// ---------------------------------------------------------------------------
-// Fixture boot — fresh `AppState` + a seeded area/track/report card. The
-// router assembly mirrors `main.rs` so the auth + actor middleware fire
-// in the same order production sees them.
-// ---------------------------------------------------------------------------
-
 struct Boot {
     state: AppState,
     auth_state: AuthState,
     track_id: TrackId,
-    /// Repo used to seed fixtures + read back post-write state.
     repo: Arc<SqlxRepo>,
 }
 
@@ -136,13 +98,8 @@ async fn boot() -> Boot {
     }
 }
 
-/// Assemble the same router tree `main.rs` does — protected REST
-/// behind `actor_middleware` (innermost) + `require_session`
-/// (outermost), public REST + auth router unconditionally. Order
-/// matters: an unauthenticated request must be rejected by the
-/// session check before the actor extractor runs (otherwise we'd
-/// 400 on a missing/invalid actor header instead of 401-ing for
-/// the missing session).
+/// Same router tree as `main.rs`. Order matters: an unauthenticated request must be rejected by
+/// the session check before the actor extractor runs (else 400 on a missing actor header instead of 401).
 fn app(state: AppState, auth_state: AuthState) -> axum::Router {
     let protected_rest = routes::protected_router()
         .layer(axum::middleware::from_fn(
@@ -161,8 +118,6 @@ fn app(state: AppState, auth_state: AuthState) -> axum::Router {
         .merge(auth_router)
 }
 
-/// Login and return the bare `name=value` cookie string suitable for
-/// the `Cookie` header.
 async fn login(app: &axum::Router) -> String {
     let body = serde_json::to_vec(&json!({
         "username": "alice",
@@ -526,8 +481,7 @@ async fn backlinks_returns_source_track_and_unknown_track_is_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-/// Collect up to `n` envelopes from the bus, with a short timeout so a
-/// missing event surfaces as a length mismatch instead of a hang.
+/// Collect up to `n` envelopes from the bus; a missing event surfaces as a length mismatch instead of a hang.
 async fn collect_n(events: &EventBus, n: usize) -> Vec<calm_server::event::BroadcastEnvelope> {
     let mut sub = events.subscribe();
     let mut out = Vec::with_capacity(n);
@@ -541,22 +495,15 @@ async fn collect_n(events: &EventBus, n: usize) -> Vec<calm_server::event::Broad
     out
 }
 
-/// Assert no envelope arrives within a short window — used to confirm
-/// that auth/forbidden failures emit nothing. Bounded by `dur` so the
-/// test doesn't sit on a happy-no-event path forever.
+/// Assert no envelope arrives within `dur`.
 async fn expect_no_events(events: &EventBus, dur: Duration) {
     let mut sub = events.subscribe();
     match tokio::time::timeout(dur, sub.recv()).await {
-        // Timeout = no event arrived. Good.
         Err(_) => {}
         Ok(Ok(env)) => panic!("unexpected event arrived: {env:?}"),
         Ok(Err(_lag)) => {}
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
@@ -566,13 +513,10 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
     let app = app(boot.state, boot.auth_state);
     let cookie = login(&app).await;
 
-    // Subscribe BEFORE issuing the write so we can collect the two
-    // envelopes the persist boundary emits (CardUpdated +
-    // TrackReportEdited).
+    // Subscribe BEFORE issuing the write.
     let bus_clone = events.clone();
     let collector = tokio::spawn(async move { collect_n(&bus_clone, 2).await });
-    // Small yield so the collector subscribes before the persist
-    // emit completes.
+    // Small yield so the collector subscribes before the persist emit completes.
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let body = serde_json::to_vec(&json!({
@@ -595,7 +539,6 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "user edit succeeds");
 
-    // Response body — projected payload reflects what was written.
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["summary"], "user wrote this");
@@ -606,9 +549,6 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
     );
     assert_eq!(v["docRev"], 1);
 
-    // Bus — exactly two envelopes: CardUpdated first (preserves the
-    // pre-PR2 broadcast order), TrackReportEdited second with
-    // `author == User`.
     let envs = collector.await.expect("collector ok");
     assert_eq!(
         envs.len(),
@@ -636,8 +576,6 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
                 EditAuthor::User,
                 "REST endpoint MUST tag User — Planner attribution would be the PR3 spoof bug",
             );
-            // Pre-write was the seeded initial payload; post-write is
-            // exactly what the request body carried.
             assert_eq!(summary_before, "");
             assert_eq!(
                 body_before,
@@ -650,8 +588,6 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
         other => panic!("expected TrackReportEdited as the second envelope, got {other:?}"),
     }
 
-    // DB also has the new shape — read back via the track-report card
-    // row.
     let cards = boot.repo.cards_by_track(track_id.as_str()).await.unwrap();
     let report_card = cards
         .into_iter()
@@ -664,24 +600,16 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
 
 #[tokio::test]
 async fn extra_author_field_in_body_is_rejected() {
-    // The load-bearing PR3 security invariant: the wire body MUST NOT
-    // accept an `author` field. `deny_unknown_fields` on the request
-    // body bounces any payload that tries to carry one, so a malicious
-    // (or accidentally over-eager) client cannot persuade the server
-    // to attribute a User edit as Planner.
     let boot = boot().await;
     let events = boot.state.events.clone();
     let track_id = boot.track_id.clone();
     let app = app(boot.state, boot.auth_state);
     let cookie = login(&app).await;
 
-    // No subscription before — we expect zero events on the rejection
-    // path; `expect_no_events` after confirms.
     let body = serde_json::to_vec(&json!({
         "summary": "spoof attempt",
         "body": "# Goal\n\npretending to be planner\n",
         "ifDocRev": 0,
-        // The hostile field — must be rejected.
         "author": "planner",
     }))
     .unwrap();
@@ -697,28 +625,14 @@ async fn extra_author_field_in_body_is_rejected() {
         )
         .await
         .unwrap();
-    // Assert the EXACT status, not merely `is_client_error()`. A blanket
-    // 4xx check is satisfied by a mistyped route (404), a broken cookie
-    // layer (401) or the non-user actor gate (403) — i.e. by every way
-    // this request can fail *without* `deny_unknown_fields` doing any
-    // work at all, which would leave the "hostile `author` field is
-    // bounced" invariant untested while the case still reports green.
-    //
-    // axum 0.8 routes a `serde_json::error::Category::Data` failure on
-    // `Json<T>` (which is what `deny_unknown_fields` produces) to
-    // `JsonDataError`, whose `IntoResponse` is 422 Unprocessable Entity.
-    // A *syntax* error would be 400 and a missing content-type 415, so
-    // 422 pins the rejection to the deserialize step specifically.
+    // Assert the EXACT status: a blanket 4xx check is satisfied by every way this request can fail without
+    // `deny_unknown_fields` doing any work. axum 0.8 answers a `Json<T>` data error with 422; a syntax error would be 400.
     assert_eq!(
         resp.status(),
         StatusCode::UNPROCESSABLE_ENTITY,
         "request with `author` field must be rejected by the body \
          deserializer (422), not by some other 4xx path",
     );
-    // ... and pin the *reason*: the rejection names the offending field,
-    // so a future body type that silently drops unknown fields (or a
-    // rename that turns this into a "missing field" failure) cannot keep
-    // this case green.
     let rejection_body = resp.into_body().collect().await.unwrap().to_bytes();
     let rejection_text = String::from_utf8_lossy(&rejection_body).into_owned();
     assert!(
@@ -727,7 +641,6 @@ async fn extra_author_field_in_body_is_rejected() {
     );
     expect_no_events(&events, Duration::from_millis(150)).await;
 
-    // DB is unchanged — the seed body is still in place.
     let cards = boot.repo.cards_by_track(track_id.as_str()).await.unwrap();
     let report_card = cards
         .into_iter()
@@ -760,7 +673,6 @@ async fn missing_session_returns_401_and_emits_nothing() {
                 .method("POST")
                 .uri(format!("/api/tracks/{}/report", track_id.as_str()))
                 .header("content-type", "application/json")
-                // No Cookie header — session middleware must 401 us.
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -771,8 +683,6 @@ async fn missing_session_returns_401_and_emits_nothing() {
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["code"], "unauthorized");
 
-    // The session middleware short-circuits before reaching the
-    // handler, so no DB write and no event emit. Pin that.
     expect_no_events(&events, Duration::from_millis(150)).await;
 }
 
@@ -793,7 +703,6 @@ async fn nonexistent_track_returns_404_and_emits_nothing() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                // Random-looking id; nothing matches.
                 .uri("/api/tracks/does-not-exist/report")
                 .header("content-type", "application/json")
                 .header(header::COOKIE, cookie)
@@ -808,30 +717,8 @@ async fn nonexistent_track_returns_404_and_emits_nothing() {
 
 #[tokio::test]
 async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing() {
-    // The X-Calm-Actor middleware accepts `ai:<id>` as a declared
-    // identity. The REST endpoint refuses *any* non-User actor with
-    // 403 so a hypothetical future worker / planner-card session-bearing
-    // surface cannot bypass the User-only contract by relabeling the
-    // header. The session itself is valid in every iteration here —
-    // the rejection is strictly on the actor pinning.
-    //
-    // Followup-nits coverage (security hygiene): the handler used to
-    // gate on `matches!(actor.to_actor_id(), ActorId::User)`. That
-    // type mapping has a defensive `_ => ActorId::User` fallback
-    // (intended to keep an attacker from synthesizing a Kernel /
-    // Plugin identity for the *event log*) which would also let any
-    // unknown `ai:<id>` header value pass the gate — only `ai:codex`
-    // is explicitly mapped to `ActorId::AiCodex`. The fix tightened
-    // the gate to a raw-string check (`actor.as_str() != "user"`); we
-    // pin the new behavior here by iterating every validated non-user
-    // shape the middleware will let through. The list deliberately
-    // includes `ai:codex` (the only one the *old* typed gate would
-    // also have caught) plus several `ai:<id>` values that would
-    // have slipped past it (`ai:claude`, `ai:gpt5`, `ai:claude-3-5`).
-    //
-    // `kernel` and `plugin:*` get rejected by the middleware itself
-    // (400 before the handler even runs) — those are pinned in
-    // `actor.rs` unit tests, not here.
+    // The gate is a raw-string check (`actor.as_str() != "user"`): `Actor::to_actor_id` has a defensive
+    // `_ => ActorId::User` fallback that would let any unknown `ai:<id>` header pass a typed gate.
     let non_user_actors = [
         "ai:codex",
         "ai:claude",
@@ -860,11 +747,6 @@ async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing()
                     .uri(format!("/api/tracks/{}/report", track_id.as_str()))
                     .header("content-type", "application/json")
                     .header(header::COOKIE, cookie)
-                    // Declared non-user actor — the handler must
-                    // reject, regardless of whether
-                    // `Actor::to_actor_id` would have classified
-                    // this as `AiCodex` or fallen through to the
-                    // defensive `User` default.
                     .header(calm_server::actor::Actor::HEADER, declared_actor)
                     .body(Body::from(body))
                     .unwrap(),
@@ -878,7 +760,6 @@ async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing()
         );
         expect_no_events(&events, Duration::from_millis(150)).await;
 
-        // Belt-and-suspenders: DB unchanged for every iteration.
         let cards = boot.repo.cards_by_track(track_id.as_str()).await.unwrap();
         let report_card = cards
             .into_iter()
@@ -895,9 +776,7 @@ async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing()
 
 #[tokio::test]
 async fn explicit_user_actor_header_succeeds() {
-    // Defensive: an explicit `X-Calm-Actor: user` is the same as no
-    // header (both map to `ActorId::User`). Pin that we don't
-    // accidentally reject the explicit form.
+    // An explicit `X-Calm-Actor: user` is the same as no header (both map to `ActorId::User`).
     let boot = boot().await;
     let track_id = boot.track_id.clone();
     let app = app(boot.state, boot.auth_state);
@@ -1125,24 +1004,8 @@ async fn generic_patch_allows_track_report_title_and_sort_without_payload() {
     assert_eq!(card["sort"], 12.5);
 }
 
-// ---------------------------------------------------------------------------
-// Root-cause lock for the codex-e2e report-card fixture gap.
-//
-// `real_planner_gives_up_at_review_cap_from_descriptor` and
-// `real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descriptor`
-// failed at `calm.report.write` with `-32603 "track <id> has no track-report
-// card (invariant violation)"`. Root cause: the codex-e2e fixture bypassed
-// `routes::tracks::create_track` (the only production track-create entrypoint,
-// which mints the track-report card atomically with the track) by calling
-// `repo.track_create` directly and skipping the mint. Production never
-// produces a track without a report card.
-//
-// These pure-Rust tests reproduce the exact invariant at the shared kernel
-// resolver `resolve_report_for_track` (used by REST and mirrored by the MCP
-// `load_report_for_track` twin) WITHOUT spawning codex: the card-less shape
-// the buggy fixture produced errs; the production/fixed shape (card minted)
-// resolves.
-// ---------------------------------------------------------------------------
+// Production never produces a track without a report card: `routes::tracks::create_track` mints it
+// atomically with the track. These tests reproduce the invariant at `resolve_report_for_track` without spawning codex.
 
 async fn seed_planner_track_without_report_card(repo: &SqlxRepo) -> TrackId {
     let area = repo
@@ -1167,8 +1030,7 @@ async fn seed_planner_track_without_report_card(repo: &SqlxRepo) -> TrackId {
         })
         .await
         .unwrap();
-    // Planner card only (kind "codex"), exactly the shape the codex-e2e fixture
-    // minted with report-card minting disabled. No track-report card.
+    // Planner card only (kind "codex"); no track-report card.
     repo.card_create(NewCard {
         track_id: track.id.clone(),
         title: None,
@@ -1205,8 +1067,7 @@ async fn resolve_report_for_track_errs_when_report_card_missing() {
 async fn resolve_report_for_track_ok_when_report_card_present() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let track_id = seed_planner_track_without_report_card(&repo).await;
-    // Mint the track-report card exactly as `routes::tracks::create_track` (and
-    // the fixed fixture) does: kind "track-report", sort -1.0, initial payload.
+    // Mint the track-report card exactly as `routes::tracks::create_track` does.
     repo.card_create(NewCard {
         track_id: track_id.clone(),
         kind: "track-report".into(),

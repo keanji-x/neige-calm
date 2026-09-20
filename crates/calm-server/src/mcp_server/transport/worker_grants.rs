@@ -55,12 +55,8 @@ fn eligible_plugin_tools_from(
     Ok(names)
 }
 
-/// Codex's sanitizing of a tool name: every char outside `[A-Za-z0-9_]`
-/// becomes `_` (codex-mcp `sanitize_responses_api_tool_name`). What the
-/// model's tool list shows is `mcp__<server>__` + this form (#1686), and
-/// callers pass either; [`model_tool_key`] reduces both. KNOWN GAP: a name
-/// over codex-rs's 128-char cap is truncated and hash-suffixed there and
-/// cannot be reduced; this registry's ~70-char names do not reach it.
+/// Codex's sanitizing of a tool name: every char outside `[A-Za-z0-9_]` becomes `_` (codex-mcp `sanitize_responses_api_tool_name`).
+/// KNOWN GAP: a name over codex-rs's 128-char cap is truncated and hash-suffixed there and cannot be reduced.
 pub(crate) fn codex_sanitized(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -73,17 +69,11 @@ pub(crate) fn codex_sanitized(name: &str) -> String {
         .collect()
 }
 
-/// codex-mcp `LEGACY_MCP_TOOL_NAME_PREFIX` and `MCP_TOOL_NAME_DELIMITER`:
-/// the model reads `mcp__<server>__<sanitized tool>` in its tool list.
+/// codex-mcp `LEGACY_MCP_TOOL_NAME_PREFIX` and `MCP_TOOL_NAME_DELIMITER`: the model reads `mcp__<server>__<sanitized tool>`.
 const CODEX_MCP_PREFIX: &str = "mcp__";
 const CODEX_MCP_DELIMITER: &str = "__";
 
-/// #1686 — the one key every spelling of a registry tool reduces to:
-/// `mcp__<server>__` is stripped when `<server>` is non-empty and
-/// delimited, then the rest is [`codex_sanitized`]. A registry name starts
-/// with `plugin.`, never `mcp__`, so stripping cannot mis-read one; a
-/// `mcp__` with no second `__`, or an empty server segment, is not a
-/// qualifier and is sanitized as written.
+/// The one key every spelling of a registry tool reduces to. A registry name starts with `plugin.`, never `mcp__`, so stripping cannot mis-read one.
 pub(crate) fn model_tool_key(name: &str) -> String {
     codex_sanitized(strip_codex_qualifier(name))
 }
@@ -98,33 +88,8 @@ fn strip_codex_qualifier(name: &str) -> &str {
     }
 }
 
-/// #1668 — resolve the Planner's requested `plugin_tools` to registry names
-/// before the dispatch transaction, and precompute why each unresolvable or
-/// ineligible name is refused. Returns the names to freeze (sorted, deduped)
-/// and the admission snapshot the report writer checks against.
-///
-/// `frozen` is what an earlier dispatch under the same Track-local `name`
-/// froze (empty when there is no receipt): a sanitized replay must resolve
-/// against that first, or a revoked plugin's still-delegable collider would
-/// win and the contract compare would conflict instead of replaying.
-///
-/// Rules per requested name:
-/// * a frozen name or a Track-visible registry name stays as written;
-/// * otherwise [`model_tool_key`] equality (the `mcp__<server>__` qualifier
-///   stripped, then Codex-sanitized), first against `frozen`, then against
-///   the delegable set — one hit resolves, several are ambiguous (`-32602`);
-/// * with no such hit, one sanitized hit among visible-but-ineligible tools
-///   resolves too, so the refusal names the real tool and its reason;
-/// * anything else stays as written (a leading `plugin_` rewritten to
-///   `plugin.` so validation lets the named refusal through) and is refused
-///   as `unknown tool`.
-///
-/// The universe for sanitized matching and for refusal reasons is the
-/// Track-VISIBLE set — every tool of every plugin `scope` allows, whatever
-/// its running state or kind — never the whole registry. Out-of-scope and
-/// nonexistent names get the byte-identical `unknown tool` wording, the
-/// #891 non-disclosure contract `dispatch_plugin_tools_call` keeps for
-/// `tools/call`: a bound Track cannot probe other plugins through dispatch.
+/// Resolve the Planner's requested `plugin_tools` to registry names before the dispatch transaction. A sanitized replay resolves against
+/// `frozen` first, or a revoked plugin's still-delegable collider would win. Out-of-scope and nonexistent names get byte-identical `unknown tool` wording.
 pub(crate) async fn resolve_dispatch_plugin_tools(
     ctx: &Arc<AppContext>,
     track_id: Option<&str>,
@@ -166,8 +131,7 @@ fn in_scope_plugin_ids(
         .collect()
 }
 
-/// The Track-VISIBLE universe: every tool of every plugin `scope` allows,
-/// whatever its running state or kind — never the whole registry (#891).
+/// Every tool of every plugin `scope` allows, whatever its running state or kind — never the whole registry.
 fn visible_plugin_tools_from(
     registry: &crate::plugin_host::PluginRegistry,
     in_scope: &BTreeSet<String>,
@@ -179,12 +143,7 @@ fn visible_plugin_tools_from(
         .collect()
 }
 
-/// #1686 — does `requested`, in any of its spellings, name a tool this
-/// Track can see? `calm.source.capture` asks this when no recorded tool
-/// matches, to tell a known tool with no live record (re-call it) from a
-/// name nothing exposes (respell it). Same universe as dispatch: a tool
-/// outside the Track's scope is unknown here too, and no plugin host
-/// means no plugin tools.
+/// Same universe as dispatch: a tool outside the Track's scope is unknown here too, and no plugin host means no plugin tools.
 pub(crate) async fn names_track_visible_plugin_tool(
     ctx: &Arc<AppContext>,
     track_id: Option<&str>,
@@ -236,9 +195,7 @@ fn resolve_dispatch_plugin_tools_from(
     };
     let eligible_list: Vec<String> = eligible.iter().cloned().collect();
     let visible_list: Vec<String> = visible.iter().cloned().collect();
-    // A verbatim Codex spelling has no `plugin.` prefix; give an unresolved
-    // one (qualifier stripped) the registry shape so `validate_plugin_tools`
-    // lets the named refusal below reach the Planner, not a shape error.
+    // Give an unresolved verbatim Codex spelling the registry shape so `validate_plugin_tools` lets the named refusal reach the Planner, not a shape error.
     let kept = |name: &str| -> String {
         match strip_codex_qualifier(name).strip_prefix("plugin_") {
             Some(rest) => format!("plugin.{rest}"),
@@ -340,10 +297,7 @@ pub(super) async fn require(
     Ok(())
 }
 
-/// #1668 — the pure resolver against a registry in the fixture shape of
-/// `tests/cases/mcp_plugin_tools.rs`: `dev.echo_do.thing` and
-/// `dev_echo.do.thing` collide once Codex sanitizes them, and the trusted
-/// plugin carries `-`/`.` in its id plus an execution-backed tool.
+/// Fixture shape of `tests/cases/mcp_plugin_tools.rs`: `dev.echo_do.thing` and `dev_echo.do.thing` collide once Codex sanitizes them.
 #[cfg(test)]
 mod dispatch_resolution_tests {
     use super::*;
@@ -443,10 +397,6 @@ mod dispatch_resolution_tests {
         assert!(admission.refusal(&resolved).is_none());
     }
 
-    /// #1686 — the model's tool list shows `mcp__<server>__` + the
-    /// sanitized name; that spelling resolves like the bare one. A `mcp__`
-    /// prefix without a delimited, non-empty server segment is no
-    /// qualifier: it stays as written and is refused as unknown.
     #[test]
     fn codex_qualified_spellings_resolve_to_the_unique_eligible_registry_name() {
         let (resolved, admission) = resolve(
@@ -474,8 +424,7 @@ mod dispatch_resolution_tests {
 
     #[test]
     fn exact_registry_name_is_never_substituted_by_a_sanitized_neighbour() {
-        // `dev` is stopped; its tool's sanitized form equals the running
-        // `dev.echo` tool's. Written exactly, it must stay itself and be refused.
+        // `dev` is stopped; its tool's sanitized form equals the running `dev.echo` tool's.
         let (resolved, admission) = resolve(
             &["dev.echo", TRUSTED_ID],
             TrackPluginScope::All,
@@ -501,7 +450,6 @@ mod dispatch_resolution_tests {
             assert!(error.message.contains(DOTTED), "{error}");
             assert!(error.message.contains(COLLIDING), "{error}");
         }
-        // Once only one of the pair is delegable the spelling is unique again.
         let (resolved, admission) = resolve(
             &["dev", TRUSTED_ID],
             TrackPluginScope::All,
@@ -535,7 +483,6 @@ mod dispatch_resolution_tests {
 
     #[test]
     fn refusal_names_every_ineligible_tool_with_its_reason() {
-        // Execution-backed is reported for a visible tool.
         let (resolved, admission) =
             resolve(ALL, TrackPluginScope::All, &[], &[FORGE_ACTION]).unwrap();
         let refusal = admission.refusal(&resolved).expect("refused");
@@ -543,7 +490,6 @@ mod dispatch_resolution_tests {
             refusal,
             format!("plugin_tools not delegable: {FORGE_ACTION} (execution-backed)")
         );
-        // Both stopped: the collision cannot resolve, and the refusal says why for each.
         let (resolved, admission) = resolve(
             &[TRUSTED_ID],
             TrackPluginScope::All,
@@ -559,7 +505,6 @@ mod dispatch_resolution_tests {
             )),
             "{refusal}"
         );
-        // Names outside the registry are unknown, whatever their shape.
         let (resolved, admission) = resolve(
             ALL,
             TrackPluginScope::All,
@@ -577,10 +522,7 @@ mod dispatch_resolution_tests {
         );
     }
 
-    /// #891 non-disclosure through dispatch: on a Track bound to `dev`, a
-    /// probe for another plugin's tool — exact, `plugin.`-spelled or
-    /// verbatim — reads exactly like a probe for a tool that does not exist,
-    /// and an out-of-scope collider never turns an in-scope match ambiguous.
+    /// An out-of-scope collider never turns an in-scope match ambiguous.
     #[test]
     fn bound_track_cannot_distinguish_out_of_scope_from_unknown() {
         let scope = TrackPluginScope::Only("dev".into());
@@ -608,15 +550,12 @@ mod dispatch_resolution_tests {
                 "{probe}"
             );
         }
-        // The out-of-scope `DOTTED` is just another unknown string here: like
-        // the verbatim spelling it sanitizes to the in-scope tool and resolves
-        // there — refusing it instead would itself be an existence oracle.
+        // Refusing the out-of-scope `DOTTED` instead of resolving it like the verbatim spelling would itself be an existence oracle.
         for probe in ["plugin_dev_echo_do_thing", DOTTED] {
             let (resolved, admission) = resolve(ALL, scope.clone(), &[], &[probe]).unwrap();
             assert_eq!(resolved, vec![COLLIDING.to_string()], "{probe}");
             assert!(admission.refusal(&resolved).is_none(), "{probe}");
         }
-        // `TrackPluginScope::None` sees nothing at all.
         let (resolved, admission) =
             resolve(ALL, TrackPluginScope::None, &[], &[COLLIDING, TRUSTED]).unwrap();
         assert_eq!(
@@ -627,9 +566,6 @@ mod dispatch_resolution_tests {
         );
     }
 
-    /// A receipt's frozen names win over live candidates: after `dev.echo`
-    /// stops, the sanitized replay of a dispatch that froze its tool must
-    /// still resolve to that tool, not to the delegable collider.
     #[test]
     fn frozen_names_win_over_live_candidates_for_sanitized_replay() {
         let (resolved, admission) = resolve(
@@ -647,7 +583,6 @@ mod dispatch_resolution_tests {
                  (resolves to {DOTTED}: plugin dev.echo is not running)"
             )
         );
-        // Without the receipt the same spelling resolves live.
         let (resolved, _) = resolve(
             &["dev", TRUSTED_ID],
             TrackPluginScope::All,
@@ -656,7 +591,6 @@ mod dispatch_resolution_tests {
         )
         .unwrap();
         assert_eq!(resolved, vec![COLLIDING.to_string()]);
-        // A frozen name that left the registry stays as written.
         let (resolved, admission) = resolve(
             ALL,
             TrackPluginScope::All,
@@ -671,8 +605,6 @@ mod dispatch_resolution_tests {
         );
     }
 
-    /// An unresolved verbatim spelling gets the `plugin.` shape so the
-    /// contract validator lets the named refusal through.
     #[test]
     fn verbatim_unresolved_spelling_gets_registry_shape() {
         let (resolved, admission) = resolve(

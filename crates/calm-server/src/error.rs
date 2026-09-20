@@ -1,6 +1,4 @@
-//! Unified error type. Anything a handler bubbles up converts here, and
-//! `IntoResponse` turns it into a JSON `{error, code}` body with a sane
-//! HTTP status.
+//! Unified error type; `IntoResponse` turns it into a JSON `{error, code}` body with an HTTP status.
 
 use axum::{
     Json,
@@ -13,49 +11,19 @@ use thiserror::Error;
 use utoipa::ToSchema;
 
 /// JSON shape returned for every error response — `{error, code}`.
-/// Mirrors the body produced by `CalmError::into_response`. Hand-written
-/// duplicate of the in-line `json!` body so OpenAPI consumers see a
-/// concrete schema.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
     /// Human-readable error message.
     pub error: String,
-    /// Stable machine-readable code.
-    ///
-    /// Every variant of `CalmError` maps to one, in `CalmError::code`:
-    /// `not_found`, `conflict`, `idempotency_collision`,
-    /// `idempotency_key_exhausted`, `today_summary_no_activity`,
-    /// `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
-    /// `plugin_permission`, `plugin_conflict`, `plugin_busy`,
-    /// `plugin_manifest_unloaded`, `plugin_config_corrupt`,
-    /// `plugin_config_too_large`, `plugin_kernel_too_old`,
-    /// `planner_reset_unsupported_in_shared_mode`, `planner_harness_dormant`,
-    /// `planner_harness_runtime_superseded`, `db_error`, `io_error`,
-    /// `serde_error`, `codex_app_server`, `service_unavailable`, `internal`.
-    ///
-    /// Three more are written by routes that build the body directly rather
-    /// than through a `CalmError`: `forbidden_tool` (`routes/plugins.rs`),
-    /// `not_a_card_tool` and `tool_call_failed` (`routes/cards.rs`). A client
-    /// reading this list as closed has to include those.
+    /// Stable machine-readable code (see `CalmError::code`). Three more are written by routes
+    /// directly: `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
     pub code: String,
 }
 
 #[derive(Debug, Error)]
 pub enum CalmError {
-    /// Codex ANSWERED, and its answer was a JSON-RPC error.
-    ///
-    /// Distinct from [`CalmError::CodexAppServer`], which also covers every way
-    /// the question failed to arrive — no connection, a closed socket, a
-    /// timeout, an undecodable reply. The two demand opposite responses: the
-    /// transport cases clear themselves and are worth waiting out, while a
-    /// refusal means the input was seen and rejected, so retrying it unchanged
-    /// reproduces the refusal forever.
-    ///
-    /// Split at the source rather than recovered downstream by matching on the
-    /// formatted message, because a string that happens to contain "failed" is
-    /// a marker heuristic and this decision is load bearing: #1505 S4 tells a
-    /// person "your message will be sent when codex answers" on one arm and
-    /// "codex refused it" on the other.
+    /// Codex answered and its answer was a JSON-RPC error; unlike `CodexAppServer` (transport),
+    /// retrying it unchanged reproduces the refusal.
     #[error("codex refused: {0}")]
     CodexRefused(String),
 
@@ -65,40 +33,16 @@ pub enum CalmError {
     #[error("conflict: {0}")]
     Conflict(String),
 
-    /// 409 — dispatcher-internal sentinel emitted by the
-    /// SELECT-inside-tx idempotency check when a worker card with the
-    /// same `idempotency_key` already exists. Distinct from the generic
-    /// [`CalmError::Conflict`] so the spawn-side caller can match
-    /// precisely on "duplicate request, treat as success" vs. real
-    /// uniqueness violations bubbling up from the DB layer (terminal
-    /// already exists for card, card-id PK collision, etc.). Same HTTP
-    /// status as `Conflict` because no current route surfaces this
-    /// variant to clients — it never escapes the dispatcher closure.
+    /// 409 — SELECT-inside-tx idempotency sentinel: a worker card with the same `idempotency_key`
+    /// already exists. Never escapes the dispatcher closure.
     #[error("dispatch idempotency collision: {0}")]
     IdempotencyCollision(String),
 
-    /// 409 — an `Idempotency-Key` has used up its bounded number of retry
-    /// slots (`POST /api/tracks/{track_id}/conversations`).
-    ///
-    /// Distinct from the generic [`CalmError::Conflict`] because the client
-    /// action differs and cannot be derived from the status: the other 409s on
-    /// that route mean "already exists / your body disagrees with the key" and
-    /// are either ignorable or fixed by correcting the request, while this one
-    /// means "this key is dead, mint a new one and resend". Same rationale as
-    /// [`CalmError::PluginConflict`] and [`CalmError::PlannerHarnessDormant`].
+    /// 409 — an `Idempotency-Key` has used up its bounded retry slots; the client must mint a new one.
     #[error("idempotency key exhausted: {0}")]
     IdempotencyKeyExhausted(String),
 
-    /// 409 — `POST /api/today/summary` found no activity in today's window, so
-    /// it created no conversation and sent no message (#1253 INV-TODAYDOC-007).
-    ///
-    /// Its own code rather than the generic [`CalmError::Conflict`], for the
-    /// same reason as [`CalmError::IdempotencyKeyExhausted`]: nothing is wrong
-    /// and nothing is retryable, and the caller's correct response is to say
-    /// "there is nothing to summarise yet" rather than to show an error. A
-    /// status alone cannot carry that, and the other 409s on this path
-    /// ("already exists", "the harness is dormant") mean something a client
-    /// must handle differently.
+    /// 409 — `POST /api/today/summary` found no activity in today's window; nothing was created.
     #[error("no activity today: {0}")]
     TodaySummaryNoActivity(String),
 
@@ -109,135 +53,54 @@ pub enum CalmError {
     Unauthorized,
 
     /// 403 — non-plugin permission gate (filesystem read denied, etc.).
-    /// Distinct from `PluginPermission` so error codes stay meaningful.
     #[error("forbidden: {0}")]
     Forbidden(String),
 
-    // ---- M3 plugin-specific variants ----
-    //
-    // Distinct from the generic shapes above so route bodies can carry the
-    // plugin-system error codes the design doc §7 enumerates. The HTTP status
-    // mapping mirrors §7's table.
-    /// 400 — manifest invalid, install path missing, unsupported source kind.
-    /// The carried string lands in the response body's `error` field.
     #[error("plugin install: {0}")]
     PluginInstall(String),
 
-    /// 403 — a permission gate denied the request (manifest perms, etc.).
-    /// Also used by the M5 tool-call route when an iframe attempts a
-    /// non-`neige.*` tool call (§7.6 row 5).
+    /// 403 — a permission gate denied the request (manifest perms, non-`neige.*` iframe tool call).
     #[error("plugin permission denied: {0}")]
     PluginPermission(String),
 
-    /// 409 — install attempted on an id that's already installed. Distinct
-    /// from the generic Conflict variant so the API client can branch on the
-    /// code without string-matching the message.
+    /// 409 — install attempted on an id that's already installed.
     #[error("plugin conflict: {0}")]
     PluginConflict(String),
 
-    /// 409 — #1196 §2.5: another lifecycle operation (install / enable /
-    /// disable / uninstall / reload / spawn / stop / restart / token rotation)
-    /// currently holds this plugin id's lifecycle lock, so the request was
-    /// refused **without doing anything at all**.
-    ///
-    /// Deliberately distinct from [`CalmError::PluginConflict`], which is also
-    /// a 409: `plugin_conflict` means "this will never work as asked" (the id
-    /// is already installed, the template id is taken) and the client must
-    /// change the request, whereas `plugin_busy` means "try again in a moment"
-    /// and the identical request will succeed. A client that cannot tell the
-    /// two apart either retries forever or gives up on a transient refusal, so
-    /// the distinction lives in the error *code*, not in the message text.
+    /// 409 — another lifecycle operation holds this plugin id's lifecycle lock; unlike
+    /// `PluginConflict`, the identical request will succeed shortly.
     #[error("plugin busy: {0}")]
     PluginBusy(String),
 
-    /// 409 — #1284 §2.7: the plugin's DB row exists, but the kernel registry
-    /// does not hold its `Manifest`, so there is no `config_schema` to
-    /// validate a write against.
-    ///
-    /// Its own code rather than the generic [`CalmError::Conflict`] for the
-    /// reason spelled out on [`CalmError::PluginBusy`]: the distinction lives
-    /// in the error *code*, not in the message text. A client has to tell this
-    /// apart from the 400 that means "this plugin declares no configurable
-    /// keys, and never will" — the actions differ (reload / fix
-    /// `manifest.json` vs. stop asking) — and the only alternative on offer
-    /// was `text.contains("not loaded")`, which is precisely the shape that
-    /// rationale forbids.
+    /// 409 — the plugin's DB row exists but the kernel registry holds no `Manifest`, so there is
+    /// no `config_schema` to validate a write against.
     #[error("plugin manifest not loaded: {0}")]
     PluginManifestUnloaded(String),
 
-    /// 409 — #1284 S1 review P0-C: the plugin's stored `user_config` is not a
-    /// JSON object, so the kernel cannot merge a patch into it without
-    /// discarding whatever it holds.
-    ///
-    /// **Not a 500.** Nothing went wrong server-side (see the note on
-    /// [`CalmError::ServiceUnavailable`] for the same distinction), and the
-    /// status matters operationally: `PATCH /config` is the only write path
-    /// for this field on a row that already exists (`plugin_install` writes it
-    /// once, at row creation; round 3 P2-3 took `user_config` out of that
-    /// statement's `ON CONFLICT DO UPDATE` set so the claim is carried by the
-    /// SQL rather than by `install`'s duplicate-id refusal), so a 500 here made
-    /// every subsequent request fail with
-    /// no API that could restore the row — an operator's only outs were
-    /// uninstall/reinstall or a hand-edited database. 409 plus a named
-    /// recovery action (`?reset=true`, which replaces the corrupt value with
-    /// `{}` on explicit request) leaves the state reachable from the API.
+    /// 409 — the stored `user_config` is not a JSON object; `?reset=true` replaces it with `{}`.
+    /// Not a 500: nothing went wrong server-side and the state stays reachable from the API.
     #[error("plugin config corrupt: {0}")]
     PluginConfigCorrupt(String),
 
-    /// 400 — #1284 S4 review P2-A: the *whole stored document* would go over
-    /// `USER_CONFIG_MAX_BYTES`, and the excess is residue left by keys earlier
-    /// manifests declared. The refusal's own message names `?reset=true` as the
-    /// way out, because it is the only one: no ordinary patch can shrink keys
-    /// the current schema does not declare and no client renders.
-    ///
-    /// Its own code rather than the generic [`CalmError::BadRequest`], for the
-    /// same reason as [`CalmError::IdempotencyKeyExhausted`] and
-    /// [`CalmError::PluginConfigCorrupt`]: the client action differs and cannot
-    /// be derived from the status. Every other 400 on `PATCH /config` is a
-    /// schema violation the operator fixes by changing a value, and a client
-    /// that wants to offer the destructive exit by name has to tell the two
-    /// apart. The alternative — reading `?reset=true` back out of the English
-    /// sentence — makes the message a wire format, and the sentence is written
-    /// for a human.
-    ///
-    /// §2.2.1's claim that the total cap "is not a lockout" rests entirely on
-    /// this exit being reachable, so the code exists to make it reachable from
-    /// a UI rather than only from `curl`.
+    /// 400 — the whole stored document would exceed `USER_CONFIG_MAX_BYTES` with residue from
+    /// keys earlier manifests declared; `?reset=true` is the only way out.
     #[error("plugin config too large: {0}")]
     PluginConfigTooLarge(String),
 
-    /// 422 — manifest is structurally valid but its `min_kernel_version`
-    /// demands a kernel newer than the one we are. Distinct from
-    /// `PluginInstall` (which is a 400 "your input is malformed") because
-    /// the input is fine; it's our deployment that's incompatible. Issue #45.
+    /// 422 — manifest is structurally valid but its `min_kernel_version` demands a newer kernel.
     #[error("plugin kernel too old: {0}")]
     PluginKernelTooOld(String),
 
     #[error("planner reset unsupported in shared mode: {0}")]
     PlannerResetUnsupportedInSharedMode(String),
 
-    /// 409 — `/planner/input` hit a planner card whose harness session is dormant
-    /// and not lazily recoverable: no active runtime row exists (the
-    /// `planner-harness-start` operation failed at track creation), or the active
-    /// row is unusable (NULL/empty `thread_id` from a half-failed start, or a
-    /// corrupt/unknown snapshot shape). Distinct from the generic
-    /// [`CalmError::Conflict`] 409 ("runtime shutting down") so the web client
-    /// can branch on the error code and steer the user to `/planner/reset`
-    /// instead of retrying. Issue #649 (i2).
+    /// 409 — `/planner/input` hit a planner card whose harness session is dormant and not lazily
+    /// recoverable; the client should steer to `/planner/reset` instead of retrying.
     #[error("planner harness dormant: {0}")]
     PlannerHarnessDormant(String),
 
-    /// 409 — #1449: the send reached a runtime that is no longer this card's,
-    /// so it could not be written down, and it is refused rather than
-    /// acknowledged.
-    ///
-    /// Its own code rather than the generic [`CalmError::Conflict`] because the
-    /// correct client behaviour is the opposite of the two conflicts it would
-    /// otherwise be indistinguishable from. "Runtime shutting down" and
-    /// "harness dormant" tell a client to stop or to reset; this one says the
-    /// text is intact and re-sending it will reach the successor. A client that
-    /// cannot tell them apart either discards a sentence the user typed or
-    /// retries into a wall.
+    /// 409 — the send reached a runtime that is no longer this card's; the text is intact and
+    /// re-sending it will reach the successor.
     #[error("planner harness runtime superseded: {0}")]
     PlannerHarnessRuntimeSuperseded(String),
 
@@ -250,34 +113,17 @@ pub enum CalmError {
     #[error("serde: {0}")]
     Serde(#[from] serde_json::Error),
 
-    /// 500 — a codex `app-server` interaction failed: WebSocket transport
-    /// error, a JSON-RPC error frame returned by the server, or the
-    /// connection's reader task dying mid-request. Issue #293 PR2 — the
-    /// [`crate::codex_appserver`] client maps every failure mode onto this
-    /// one variant; the carried string is the human-readable cause (it is
-    /// never surfaced to an HTTP client today, the client is a daemon-side
-    /// control channel, so a single coarse variant keeps `CalmError` from
-    /// sprouting transport-specific shapes).
+    /// 500 — a codex `app-server` interaction failed (transport, JSON-RPC error frame, reader task died).
     #[error("codex app-server: {0}")]
     CodexAppServer(String),
 
-    /// 503 — transient backpressure. The server understood the request but
-    /// is temporarily unable to enqueue/process it (e.g., the planner harness
-    /// observation queue is saturated). Clients should retry; the body
-    /// message indicates what was full and may suggest a back-off. Distinct
-    /// from `Internal` because nothing went wrong server-side — this is the
-    /// flow-control signal RFC 7231 §6.6.4 specifies.
+    /// 503 — transient backpressure (e.g. the planner harness observation queue is saturated);
+    /// clients should retry.
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
 
-    /// 413 — a request body exceeded a route's single size gate.
-    ///
-    /// Its own variant because the alternative is a `BadRequest`, and a client
-    /// cannot tell "your file is too big, send a smaller one" from "your
-    /// request was malformed" out of a 400. The planner attachment upload is
-    /// the only producer today; it streams the body through
-    /// `http_body_util::Limited`, which reports the overrun as it happens
-    /// rather than trusting a `Content-Length`.
+    /// 413 — a request body exceeded a route's size gate; `http_body_util::Limited` reports the
+    /// overrun as it happens rather than trusting `Content-Length`.
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),
 
@@ -362,14 +208,7 @@ impl IntoResponse for CalmError {
     }
 }
 
-/// #679 PR1 — bridge from the IO-free core error (calm-types/calm-exec
-/// layers) into the HTTP-mapped `CalmError`. This is the "two-stage enum"
-/// half of the issue's CalmError split: `CalmError` itself stays a local
-/// type (the orphan rule pins `Db(#[from] sqlx::Error)` and `IntoResponse`
-/// here), while signatures below the IO line speak
-/// [`calm_types::error::CoreError`] and convert losslessly at the boundary.
-/// Variant mapping is 1:1 — `code()` and `status()` are preserved for every
-/// shared arm (pinned by the test below).
+/// Bridge from the IO-free `CoreError` into the HTTP-mapped `CalmError`; variant mapping is 1:1.
 impl From<calm_types::error::CoreError> for CalmError {
     fn from(err: calm_types::error::CoreError) -> Self {
         use calm_types::error::CoreError as Core;
@@ -438,11 +277,7 @@ impl From<CalmError> for calm_truth::TruthError {
             CalmError::Db(e) => calm_truth::TruthError::Db(e),
             CalmError::Io(e) => calm_truth::TruthError::Io(e),
             CalmError::Serde(e) => calm_truth::TruthError::Serde(e),
-            // Route-only variants with no `CoreError`/`TruthError` twin
-            // collapse to Internal, exactly as `PluginConflict` and
-            // `PlannerHarnessDormant` already do. `IdempotencyKeyExhausted` is
-            // raised in a route handler and never crosses back down into the
-            // truth layer, so this arm exists to keep the match exhaustive.
+            // Route-only variants with no `CoreError`/`TruthError` twin collapse to Internal.
             CalmError::IdempotencyKeyExhausted(m)
             | CalmError::PluginInstall(m)
             | CalmError::PluginPermission(m)
@@ -473,9 +308,6 @@ mod core_error_bridge_tests {
 
     #[test]
     fn conversion_preserves_code_and_status() {
-        // The external error shape (`{error, code}` + HTTP status) must be
-        // unchanged by the #679 PR1 split: converting a CoreError into
-        // CalmError keeps the same machine-readable code for every arm.
         let cases: Vec<CoreError> = vec![
             CoreError::NotFound("x".into()),
             CoreError::Conflict("x".into()),

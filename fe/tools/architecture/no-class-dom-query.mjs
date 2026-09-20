@@ -1,11 +1,8 @@
 import selectorParser from 'postcss-selector-parser';
 
 /**
- * Runtime locators must use semantic data hooks, not presentation classes.
- * Static selectors are parsed as CSS; dynamic selectors fail closed because a
- * lint rule cannot prove that their runtime value contains no class selector.
- * Third-party DOM exceptions are exact file+selector pairs and require an
- * application container prefix to limit their blast radius.
+ * Runtime locators must use semantic data hooks, not presentation classes. Dynamic selectors fail
+ * closed; allowlist exceptions are exact file+selector pairs and require a container prefix.
  */
 
 const selectorMethods = new Set(['querySelector', 'querySelectorAll', 'closest', 'matches']);

@@ -1,26 +1,19 @@
-//! The per-outage deadline and backoff (#1699 D3, D6): a pure type the
-//! pump drives with `Instant`s, unit-tested without time passing. No
-//! environment knob sets any of the constants.
+//! Per-outage reconnect deadline and backoff: a pure type the pump drives with `Instant`s.
 
 use std::time::{Duration, Instant};
 
 /// First delay between reconnect attempts; doubles each time.
 pub(crate) const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_millis(100);
-/// Ceiling for the doubling, so a kernel that is back is noticed
-/// within 5 s.
+/// Ceiling for the doubling.
 pub(crate) const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 /// Total time one outage may take before the shim gives up (exit 5).
-/// Well below codex's default 120 s `tools/call` timeout, so the shim
-/// fails a call before codex abandons it and a kernel that comes back
-/// later does not run it.
+/// Well below codex's default 120 s `tools/call` timeout.
 pub(crate) const RECONNECT_BUDGET: Duration = Duration::from_secs(30);
-/// Total time the first connection may take (exit 3). Below codex's
-/// default 30 s MCP startup timeout, so codex sees our exit rather than
-/// its own timeout.
+/// Total time the first connection may take (exit 3). Below codex's default 30 s MCP
+/// startup timeout.
 pub(crate) const INITIAL_CONNECT_BUDGET: Duration = Duration::from_secs(15);
 
-/// Deadline + backoff for one outage. Pure: the methods that depend on
-/// time take `now`.
+/// Deadline + backoff for one outage. Pure: the methods that depend on time take `now`.
 #[derive(Debug)]
 pub(crate) struct ReconnectBudget {
     total: Duration,
@@ -39,20 +32,16 @@ impl ReconnectBudget {
         }
     }
 
-    /// Start a fresh outage under `total`: deadline, backoff and attempt
-    /// count all reset.
     pub(crate) fn reset(&mut self, now: Instant, total: Duration) {
         *self = Self::new(now, total);
     }
 
-    /// The instant the outage gives up; `next_delay` never sleeps past
-    /// it and the replay-handshake wait ends at it.
+    /// The instant the outage gives up; `next_delay` never sleeps past it.
     pub(crate) fn deadline(&self) -> Instant {
         self.start + self.total
     }
 
-    /// The delay to sleep before the next attempt, or `None` once the
-    /// deadline has passed. Never sleeps past the deadline.
+    /// The delay to sleep before the next attempt, or `None` once the deadline has passed.
     pub(crate) fn next_delay(&mut self, now: Instant) -> Option<Duration> {
         let elapsed = now.saturating_duration_since(self.start);
         if elapsed >= self.total {
@@ -78,8 +67,6 @@ impl ReconnectBudget {
 
 #[cfg(test)]
 mod budget_tests {
-    //! #1699 D3 — the pure budget/backoff type.
-
     use std::time::{Duration, Instant};
 
     use super::{INITIAL_CONNECT_BUDGET, RECONNECT_BACKOFF_CAP, RECONNECT_BUDGET, ReconnectBudget};
@@ -126,7 +113,6 @@ mod budget_tests {
         assert_eq!(budget.attempts(), 0);
         assert_eq!(budget.elapsed(t1), Duration::ZERO);
         assert_eq!(budget.next_delay(t1), Some(Duration::from_millis(100)));
-        // The deadline moved with the reset: 29 s after t1 is still inside.
         assert!(budget.next_delay(t1 + Duration::from_secs(29)).is_some());
         assert_eq!(budget.next_delay(t1 + RECONNECT_BUDGET), None);
     }
@@ -136,13 +122,9 @@ mod budget_tests {
         let t0 = Instant::now();
         let mut budget = ReconnectBudget::new(t0, RECONNECT_BUDGET);
         assert_eq!(budget.deadline(), t0 + RECONNECT_BUDGET);
-        // A reset under the shorter total moves the deadline to the new
-        // start plus that total.
         let t1 = t0 + Duration::from_secs(3);
         budget.reset(t1, INITIAL_CONNECT_BUDGET);
         assert_eq!(budget.deadline(), t1 + INITIAL_CONNECT_BUDGET);
-        // `next_delay` gives up at exactly the deadline, one ms before it
-        // still sleeps (clipped to what is left).
         assert_eq!(
             budget.next_delay(budget.deadline() - Duration::from_millis(1)),
             Some(Duration::from_millis(1))

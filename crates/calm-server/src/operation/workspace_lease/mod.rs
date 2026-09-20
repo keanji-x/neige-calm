@@ -48,12 +48,7 @@ const RECOVERABLE_OPERATION_PHASES: &[PhaseTag] = &[
 ];
 
 /// Defensive track/area teardown fence for in-flight forge actions.
-///
-/// This is a non-transactional read used before the teardown transaction, so it
-/// has a TOCTOU window: a forge-action could enter a recoverable phase after
-/// this check and before the worktree sweep. It shrinks the route-level race;
-/// the durable forge-op parked-recovery contract remains the real backstop.
-/// The airtight in-tx/lease-hold guard is intentionally left to slice ⑤.
+/// Non-transactional read before the teardown transaction, so it has a TOCTOU window; the forge-op parked-recovery contract remains the real backstop.
 pub(crate) async fn track_has_active_forge_action(
     pool: &SqlitePool,
     track_id: &str,
@@ -61,7 +56,6 @@ pub(crate) async fn track_has_active_forge_action(
     any_track_has_active_forge_action(pool, &[track_id]).await
 }
 
-/// Area-friendly variant of [`track_has_active_forge_action`].
 pub(crate) async fn any_track_has_active_forge_action(
     pool: &SqlitePool,
     track_ids: &[&str],
@@ -114,28 +108,14 @@ pub(crate) async fn prepare_workspace_lease_target_tx(
 ) -> Result<WorkspaceLeaseTarget> {
     validate_path_segment("track_id", track_id)?;
     validate_path_segment("card_id", card_id)?;
-    // #1147 S1 — `tracks.cwd` dropped by migration 0077.
     let (kind, cwd): (String, String) =
         sqlx::query_as("SELECT workspace_kind, workspace_path FROM tracks WHERE id = ?1")
             .bind(track_id)
             .fetch_optional(&mut **tx)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
-    // #1147 S2 (red-team B5) — last-chance materialize before a worker commits
-    // to this directory.
-    //
-    // Track create materializes too, but that call happens after its
-    // transaction commits, so a failure there leaves a committed track row
-    // pointing at a directory that does not exist, and NO other path would
-    // ever retry it. Every codex task on such a track would then die in
-    // `git rev-parse --show-toplevel` with nothing but `spawn-failed`
-    // visible — which is precisely the bug #1147 was opened on, re-created by
-    // the slice meant to fix it.
-    //
-    // Idempotent and ~one `rev-parse` in the steady state (see
-    // `materialize_managed_workspace`), and a no-op for attached workspaces —
-    // those are the user's directories and must never be created or
-    // `git init`-ed here.
+    // Last-chance materialize: track create materializes after its transaction commits, so a failure there leaves a committed row pointing at a missing directory that nothing else retries.
+    // No-op for attached workspaces, which must never be created or `git init`-ed here.
     if TrackWorkspaceKind::try_from(kind).map_err(CalmError::Internal)?
         == TrackWorkspaceKind::Managed
     {
@@ -227,20 +207,7 @@ async fn acquire_workspace_lease_at_path_tx(
     .execute(&mut **tx)
     .await?;
 
-    // #1147 S3 — freeze point 1 of 4 (design §更换与冻结): "the first workspace
-    // lease". A lease row stores an absolute path derived from the track's
-    // workspace, and the worktree it is about to create is anchored to that
-    // repository by two absolute pointers (`<wt>/.git` and
-    // `<repo>/.git/worktrees/<n>/gitdir`) that a rename would leave dangling
-    // in both directions. Nothing re-anchors either, so the workspace has to
-    // stop moving before this row exists.
-    //
-    // Here rather than in the two `acquire_*` wrappers: this is the single
-    // statement both of them bottom out in, so a third lease flavour added
-    // later inherits the freeze instead of having to remember it. The system
-    // area is excluded inside the freeze itself — the launchpad takes leases
-    // on every codex task and is the one track whose path the kernel keeps
-    // re-deriving.
+    // Freeze the workspace before the first lease row exists: the lease path and the worktree's two absolute git pointers would dangle after a rename and nothing re-anchors them. The system area is excluded inside the freeze itself.
     crate::db::sqlite::track_workspace_freeze_tx(tx, track_id, now).await?;
 
     create_workspace_lease_directory(path, directory_mode)?;
@@ -402,12 +369,7 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
     let mut reclaimed = 0;
     for lease in leases {
         if lease.state == "held" {
-            // Codex workers are daemon-resident threads, so operation
-            // spawn_artifacts are not a liveness oracle. Boot reclaim only
-            // takes leases from older machine boots; same-boot dead workers
-            // are released by the reaper calling the lease helper directly.
-            // The decision sink covers self-reported completion/failure, and
-            // recoverable operations keep their cwd for recovery.
+            // Codex workers are daemon-resident threads, so operation spawn_artifacts are not a liveness oracle; boot reclaim only takes leases from older machine boots.
             if !workspace_lease_should_reclaim_on_boot(pool, &lease, current_boot_id.as_deref())
                 .await?
             {
@@ -585,7 +547,6 @@ async fn workspace_track_sweep_for_track_tx(
         );
         return None;
     }
-    // #1147 S1 — `tracks.cwd` dropped by migration 0077.
     let row = match sqlx::query("SELECT workspace_path, area_id FROM tracks WHERE id = ?1")
         .bind(track_id)
         .fetch_optional(&mut **tx)
@@ -602,9 +563,6 @@ async fn workspace_track_sweep_for_track_tx(
             return None;
         }
     };
-    // #1147 S1 — by NAME, so it had to move with the SELECT above. `try_get`
-    // resolves at runtime; a stale name here degrades the sweep to a silent
-    // `None` + warn, which is why it took a test to catch rather than rustc.
     let cwd: String = match row.try_get("workspace_path") {
         Ok(cwd) => cwd,
         Err(error) => {
@@ -1219,7 +1177,7 @@ fn workspace_dir_is_non_empty(path: &Path) -> Result<bool> {
 
 fn remove_workspace_worktree_for_lease(lease: &WorkspaceLease) -> Result<bool> {
     let Some(target) = workspace_lease_target_from_lease(lease)? else {
-        // Pre-3c relative leases were never registered as git worktrees.
+        // Relative leases were never registered as git worktrees.
         return remove_workspace_dir_if_exists(&lease.path);
     };
     remove_workspace_worktree(&target)
@@ -1281,26 +1239,14 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
     Ok(registered || path_existed || branch_existed || dir_removed)
 }
 
-/// The worktree root `provision_workspace_worktree` and
-/// `materialize_managed_workspace` keep out of git.
 const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
 
-/// Keep `.claude/worktrees/` out of the repository's git status.
 pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
     ensure_git_exclude_entry(repo_root, WORKTREE_EXCLUDE)
 }
 
 /// Append `entry` to `<git-dir>/info/exclude` unless a line already equals it.
-///
-/// `.git/info/exclude` rather than `.gitignore`: a `.gitignore` is a tracked
-/// file in a repository the user may inspect and a worker may commit, so
-/// server-owned directories are hidden the way git provides for hiding them
-/// locally.
-///
-/// The match is `line.trim() == entry`, which is exact on purpose. Git accepts
-/// both `.neige` and `.neige/` as ignore patterns, so a near-miss would still
-/// hide the directory while making this function append a second line on every
-/// call — the idempotence is what the exactness buys, not the hiding.
+/// The match is exact on purpose: a near-miss (`.neige` vs `.neige/`) would still hide the directory but append a second line on every call.
 pub(crate) fn ensure_git_exclude_entry(repo_root: &Path, entry: &str) -> Result<()> {
     let exclude_path = git_exclude_path(repo_root)?;
     let existing = match std::fs::read_to_string(&exclude_path) {
@@ -1353,9 +1299,7 @@ pub(crate) fn ensure_git_exclude_entry(repo_root: &Path, entry: &str) -> Result<
 }
 
 fn git_exclude_path(repo_root: &Path) -> Result<PathBuf> {
-    // #1147 S2 (red-team B6) — env-isolated: this runs as part of
-    // materialization, and an inherited `GIT_DIR` would send the exclude file
-    // into a completely different repository.
+    // Env-isolated: an inherited `GIT_DIR` would send the exclude file into a different repository.
     let output = crate::workspace_materialize::neige_git_command()
         .arg("-C")
         .arg(repo_root)

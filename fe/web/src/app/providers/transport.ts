@@ -30,17 +30,8 @@ export function createFetchTransport(): ApiTransportPort {
           method: request.method,
           credentials: request.credentials,
           ...(request.headers === undefined ? {} : { headers: { ...request.headers } }),
-          /*
-           * #1505 S6 — a `Uint8Array` body is the bytes themselves.
-           *
-           * `POST /planner/attachments` takes a raw image, and
-           * `JSON.stringify` of a typed array is `{"0":137,"1":80,...}` —
-           * a body that is neither the file nor an error, which the server
-           * would reject as not-an-image and no type would have caught. The
-           * `content-type` still comes from the operation's own headers, which
-           * `core/api/client` merges over the `application/json` it adds for
-           * any body.
-           */
+          /* A `Uint8Array` body is the bytes themselves: `JSON.stringify` of a typed array is `{"0":137,…}`,
+           * which no type would catch. `content-type` comes from the operation's own headers. */
           ...(request.body === undefined ? {} : {
             body: request.body instanceof Uint8Array
               ? (request.body as unknown as BodyInit)

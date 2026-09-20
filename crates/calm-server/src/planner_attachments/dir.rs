@@ -1,84 +1,5 @@
-//! Where this module's own filesystem calls live, and the reason it exists is
-//! that three review rounds of fixing call sites did not work.
-//!
-//! "Its own" is the exact claim, and the exception is named rather than left
-//! for the next auditor to find: [`super::store::store_upload`] calls
-//! `operation::workspace_lease::ensure_git_exclude_entry`, which resolves
-//! `<repo_root>/.git/info/exclude` with `read_to_string`, `create_dir_all` and
-//! `OpenOptions::open` under no `RESOLVE_*` flags at all. It is shared with
-//! the worktree provisioner, it predates this module, and it writes outside
-//! the attachment subtree — so it is not changed here — but "`dir` is the only
-//! file that touches a filesystem" would be false, and false in the direction
-//! that stops somebody looking.
-//!
-//! # What kept going wrong
-//!
-//! The threat model has been constant since #1515: an agent with write access
-//! to the workspace, and therefore to `<workspace>/.neige/attachments/`. Under
-//! that model a *path* is not a name for a file, it is a name the kernel
-//! resolves again on every syscall, and anything on it can have been replaced
-//! since the last time it was looked at.
-//!
-//! Every round closed the path the previous round reported and shipped the
-//! next one:
-//!
-//! | round | closed | shipped |
-//! |---|---|---|
-//! | #1515 r2/r3 | `lstat`-then-`open` on the read | `O_NOFOLLOW` only covering the final component |
-//! | #1515 r4 | the read, via `openat2` | — |
-//! | #1505 S6 | — | the bind's destination: `create_dir_all` + `rename` on a joined path |
-//! | S6 review 1 | the bind's destination | the sweep's `read_dir`/`remove_file`, and the whole upload write path |
-//!
-//! Each fix was correct and each was an enumeration: *these* call sites now
-//! resolve safely. The defect was never a call site. It was that
-//! `std::fs::read_dir`, `File::create`, `fs::rename`, `create_dir_all` and
-//! `remove_file` **on a joined path** were all expressible here, so the next
-//! reader — or the next slice — could reach for one without doing anything
-//! unusual, and the next review would find it.
-//!
-//! # What this module does instead
-//!
-//! It makes the unguarded operation unexpressable rather than merely absent.
-//!
-//! * A caller gets [`CardDirs`], which holds two open directory descriptors.
-//!   Nothing it exposes yields a `Path` or a `PathBuf`, so a caller cannot
-//!   join anything onto them. The one accessor that yields a descriptor at all
-//!   — [`DirFd::borrow`] — is `pub(crate)`, so the reach of a `BorrowedFd`
-//!   (and of the `as_raw_fd` one call past it) stops at this crate.
-//! * Every operation takes a descriptor plus a [`Name`] — a validated single
-//!   component with no `/`, no `.`, no `..` and no interior NUL. The syscalls
-//!   underneath (`openat` with `O_EXCL | O_NOFOLLOW`, `renameat`, `unlinkat`,
-//!   `mkdirat`, `fstatat` with `AT_SYMLINK_NOFOLLOW`, `fsync`) resolve exactly
-//!   that one component relative to that one descriptor. There is no
-//!   intermediate component for anything to swap, and a descriptor cannot be
-//!   re-pointed.
-//! * Deletion takes a [`StagingFd`] and nothing else. [`BoundFd`] has no
-//!   conversion into one; `tests/ui/bound_fd_cannot_be_deleted.rs` fails to
-//!   compile the moment somebody adds one.
-//!
-//! [`open_card_dirs`] is the single function here that names a path at all,
-//! and it performs no filesystem call of its own: it hands the path to
-//! [`crate::routes::fs::open_workspace_directory`], which is the `openat2`
-//! primitive this repository already audited, and gets descriptors back.
-//!
-//! # The audit is a grep, and it is a test
-//!
-//! `planner_attachments_guarded_surface` in `crates/calm-server/tests/` fails
-//! if any file under `planner_attachments/` except this one names a
-//! path-resolving filesystem function. That is a lexical prohibition, checked
-//! over the whole module, and it stays true as the module grows — unlike "we
-//! checked every call site", which has now been wrong three times.
-//!
-//! **What the grep cannot see**, said plainly rather than left to be
-//! discovered: it matches names, in THIS module's files. Code that reached the
-//! same syscalls through an alias, a re-export under another name, or raw
-//! `libc` would not be matched — and neither is a call to a helper in another
-//! module that resolves a path itself, which is exactly what
-//! `ensure_git_exclude_entry` above is. The banned list therefore includes the module prefixes
-//! (`std::fs`, `tokio::fs`, `libc::`) and the `use` forms that would bring
-//! them in unqualified, which is what closes the ordinary ways of writing it;
-//! a deliberate rename is out of its reach and is not something it claims to
-//! stop.
+//! The only file under `planner_attachments/` that makes filesystem calls: every operation takes an open directory descriptor plus a validated single-component [`Name`], so no path can be joined and re-resolved.
+//! The `planner_attachments_guarded_surface` test fails if any other file in the module names a path-resolving filesystem function.
 
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
@@ -92,48 +13,21 @@ use crate::routes::fs::{
     WorkspaceSymlinks, open_workspace_directory, open_workspace_root_directory,
 };
 
-/// One path component, validated.
-///
-/// The point of the type is that it cannot describe a traversal: a value of it
-/// is always a single name that `openat`-family syscalls resolve relative to a
-/// descriptor. `AttachmentId` is already a stricter grammar than this, so
-/// [`Name::of`] cannot fail; [`Name::parse`] exists for names read back off a
-/// directory, which nothing in this module minted and which are therefore
-/// checked.
+/// One path component, validated: it cannot describe a traversal.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Name(String);
 
 impl Name {
-    /// An attachment's own name.
     pub fn of(id: &AttachmentId) -> Self {
         Name(id.as_str().to_string())
     }
 
-    /// A BIND's temporary, unique to one attempt.
-    ///
-    /// Unique per attempt rather than per attachment, and that is
-    /// load-bearing HERE and not in the upload, because the two differ in
-    /// whether the id is fresh.
-    ///
-    /// A bind is handed an id it did not mint, and two binds on the same id
-    /// are ordinary — the browser retries a failed send, and the retry carries
-    /// the same attachment ids. With a fixed `<id>.part` those two attempts
-    /// collided, and the loser resolved the collision by unlinking the
-    /// winner's temporary and renaming its own over the top: a partially
-    /// written file published under a name in the one directory nothing may
-    /// delete from. A fresh name per attempt means two attempts never name the
-    /// same file, so there is no collision to resolve.
+    /// A bind's temporary, unique to one attempt: two binds on the same id are ordinary (a retried send carries the same ids), and a fixed `<id>.part` let the loser rename a partial file over the winner's.
     pub fn temporary() -> Self {
         Name(format!("{}.part", uuid::Uuid::new_v4()))
     }
 
-    /// An UPLOAD's temporary, derived from the id it will become.
-    ///
-    /// Derived rather than random, and safe to derive, because an upload mints
-    /// its own id: the id is already unique to this request, so the temporary
-    /// is too. Keeping it derivable is what lets a test that has seen the
-    /// temporary know the name the publish will use, which is how the
-    /// publish-failure path is exercised at all.
+    /// An upload's temporary, derived from the id it will become; the id is already unique to the request, and a derivable name lets tests exercise the publish-failure path.
     pub fn part_of(id: &AttachmentId) -> Self {
         Name(format!("{}.part", id.as_str()))
     }
@@ -150,7 +44,6 @@ impl Name {
         &self.0
     }
 
-    /// Whether this is one of [`Name::temporary`]'s.
     pub fn is_temporary(&self) -> bool {
         self.0.ends_with(".part")
     }
@@ -184,7 +77,6 @@ pub struct StagingFd(OwnedFd);
 #[derive(Debug)]
 pub struct BoundFd(OwnedFd);
 
-/// One card's two directories.
 #[derive(Debug)]
 pub struct CardDirs {
     staging: StagingFd,
@@ -207,18 +99,8 @@ mod sealed {
     impl Sealed for super::BoundFd {}
 }
 
-/// Read-only operations are the same for either directory; the write and
-/// delete ones are not, and name the concrete type instead.
-///
-/// **Sealed, and `pub(crate)`.** Two separate restrictions, closing two
-/// separate holes. The private supertrait stops a later slice adding a third
-/// directory type the read side would accept. The crate-private visibility is
-/// what stops [`borrow`](DirFd::borrow) being an accessor that hands a
-/// descriptor to anybody: it returns a `BorrowedFd`, and `as_raw_fd` on that
-/// is one call from a `RawFd` that `std::fs` will take. `#[doc(hidden)]` was
-/// what stood here, and hiding a method from rustdoc is not privacy — an
-/// external crate compiled `bound.borrow().as_raw_fd()`, which is the same
-/// escape hatch `BoundDir::path()` was, one call further away.
+/// Read-only operations are the same for either directory; write and delete ones name the concrete type.
+/// Sealed so no third directory type can be added; `pub(crate)` because `borrow().as_raw_fd()` is one call from a `RawFd` that `std::fs` will take.
 pub(crate) trait DirFd: sealed::Sealed {
     fn borrow(&self) -> BorrowedFd<'_>;
 }
@@ -235,7 +117,6 @@ impl DirFd for BoundFd {
     }
 }
 
-/// One entry of a directory listing: a regular file, its size and its mtime.
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub name: Name,
@@ -244,17 +125,7 @@ pub struct Entry {
 }
 
 /// Resolve a card's two directories, creating `bound/` if it is not there yet.
-///
-/// The one function here that names a path, and it makes no filesystem call
-/// itself — [`open_workspace_directory`] does, with `openat2` under
-/// `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`. `staging/` is created by the
-/// upload before this is ever reached, so only `bound/` is created here.
-///
-/// `mkdirat` against the card's own descriptor rather than `create_dir_all` on
-/// a joined path: the latter walks and follows every component, so a replaced
-/// `<card>` would have it create — and later write into — a directory
-/// somewhere else. `EEXIST` is not an error, because two requests on one card
-/// can race to create it.
+/// `mkdirat` against the card's own descriptor rather than `create_dir_all` on a joined path, which follows every component; `EEXIST` is not an error because two requests on one card can race.
 pub async fn open_card_dirs(root: &Path, card_id: &CardId) -> Result<CardDirs> {
     let card = open_workspace_directory(root, card_id.as_str(), WorkspaceSymlinks::Refused)
         .await
@@ -284,38 +155,23 @@ pub async fn open_card_dirs(root: &Path, card_id: &CardId) -> Result<CardDirs> {
 const BOUND: &str = "bound";
 
 /// Create the whole chain up to `staging/`, then resolve both directories.
-///
-/// The upload's entry point, and the one caller that can arrive before any of
-/// it exists: `<workspace>/.neige`, `.neige/attachments`, `attachments/<card>`
-/// and `<card>/staging` are all created here if missing.
-///
-/// Every level is `mkdirat` against the descriptor of the level above, walking
-/// down from `<workspace>` — which is the trust base, taken from the track's
-/// stored path — and reopening each level through the guarded opener. Never
-/// `create_dir_all` on a joined path: that follows every component, so a
-/// replaced `.neige` or `<card>` would have it create, and every later write
-/// land, somewhere else entirely. `EEXIST` is not an error at any level,
-/// because two uploads on one card race to create them.
+/// Every level is `mkdirat` against the descriptor of the level above, never `create_dir_all` on a joined path; `EEXIST` is not an error at any level.
 pub async fn create_card_dirs(workspace: &Path, root: &Path, card_id: &CardId) -> Result<CardDirs> {
-    // `<workspace>` -> `.neige`
     let workspace_fd = open_workspace_root_directory(workspace)
         .await
         .map_err(opaque("the track workspace"))?;
     mkdir_in(workspace_fd, super::NEIGE_DIR).await?;
 
-    // `.neige` -> `attachments`
     let neige = open_workspace_directory(workspace, super::NEIGE_DIR, WorkspaceSymlinks::Refused)
         .await
         .map_err(opaque("the server-owned subtree"))?;
     mkdir_in(neige, ATTACHMENTS).await?;
 
-    // `attachments` -> `<card>`
     let root_fd = open_workspace_root_directory(root)
         .await
         .map_err(opaque("the attachment root"))?;
     mkdir_in(root_fd, card_id.as_str()).await?;
 
-    // `<card>` -> `staging`
     let card = open_workspace_directory(root, card_id.as_str(), WorkspaceSymlinks::Refused)
         .await
         .map_err(opaque("this card's directory"))?;
@@ -328,12 +184,7 @@ const ATTACHMENTS: &str = "attachments";
 const STAGING: &str = "staging";
 
 /// `mkdirat` one name relative to an owned descriptor, tolerating `EEXIST`.
-///
-/// The descriptor is MOVED in and dropped inside the closure. A `RawFd` copied
-/// into a `spawn_blocking` while its owner stayed in the async frame was a
-/// real defect here: a client disconnecting drops the future, `close(fd)`
-/// runs, another thread is handed the same number, and the detached closure
-/// then operates on whatever now holds it.
+/// The descriptor is MOVED in and dropped inside the closure: a `RawFd` copied into `spawn_blocking` while its owner stayed in the async frame gets closed on client disconnect and reused by another thread.
 async fn mkdir_in(parent: std::os::fd::OwnedFd, name: &str) -> Result<()> {
     use nix::sys::stat::{Mode, mkdirat};
     let name = name.to_string();
@@ -362,8 +213,7 @@ async fn mkdir_in(parent: std::os::fd::OwnedFd, name: &str) -> Result<()> {
     })
 }
 
-/// The opener's errors name host paths. They go to the log; the client is told
-/// which directory, and nothing about where it is.
+/// The opener's errors name host paths: they go to the log, the client is told only which directory.
 fn opaque(what: &'static str) -> impl Fn(CalmError) -> CalmError {
     move |error: CalmError| {
         tracing::error!(
@@ -384,10 +234,7 @@ fn join_failed(error: tokio::task::JoinError) -> CalmError {
     ))
 }
 
-/// `O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW`, relative to `staging/`.
-///
-/// `O_EXCL` with `O_CREAT` refuses an existing name and refuses to follow a
-/// symlink sitting on it, and there is no other component to follow.
+/// `O_EXCL` with `O_CREAT` refuses an existing name and refuses to follow a symlink sitting on it; there is no other component to follow.
 pub fn create_new(staging: &StagingFd, name: &Name) -> std::io::Result<std::fs::File> {
     use nix::fcntl::{OFlag, openat};
     use nix::sys::stat::Mode;
@@ -405,12 +252,10 @@ pub fn create_new(staging: &StagingFd, name: &Name) -> std::io::Result<std::fs::
     Ok(unsafe { std::fs::File::from_raw_fd(raw) })
 }
 
-/// `renameat` within `staging/` — the upload's publish under its final name.
 pub fn rename_within_staging(staging: &StagingFd, from: &Name, to: &Name) -> std::io::Result<()> {
     rename(staging.borrow(), from, staging.borrow(), to)
 }
 
-/// `renameat` from `staging/` into `bound/` — the bind's publish.
 pub fn rename_into_bound(
     staging: &StagingFd,
     from: &Name,
@@ -435,11 +280,7 @@ fn rename(
     .map_err(std::io::Error::from)
 }
 
-/// `unlinkat` in `staging/`. The one deletion door, and it takes a
-/// [`StagingFd`].
-///
-/// A missing name is success: every caller has already committed something
-/// that makes this file redundant.
+/// The one deletion door, and it takes a [`StagingFd`]. A missing name is success: every caller has already committed something that makes this file redundant.
 pub fn unlink_staged(staging: &StagingFd, name: &Name) -> std::io::Result<()> {
     use nix::unistd::{UnlinkatFlags, unlinkat};
     match unlinkat(
@@ -452,8 +293,7 @@ pub fn unlink_staged(staging: &StagingFd, name: &Name) -> std::io::Result<()> {
     }
 }
 
-/// `fsync` on a directory, which is what makes a `renameat` durable. The file
-/// contents' own `sync_all` says nothing about the entry.
+/// `fsync` on a directory is what makes a `renameat` durable; the file's own `sync_all` says nothing about the entry.
 pub fn sync_staging(staging: &StagingFd) -> std::io::Result<()> {
     nix::unistd::fsync(staging.0.as_raw_fd()).map_err(std::io::Error::from)
 }
@@ -462,20 +302,8 @@ pub fn sync_bound(bound: &BoundFd) -> std::io::Result<()> {
     nix::unistd::fsync(bound.0.as_raw_fd()).map_err(std::io::Error::from)
 }
 
-/// Every REGULAR FILE directly in the directory, with its size and mtime.
-///
-/// Anything that is not a regular file — a symlink, a socket, a subdirectory —
-/// is stepped over rather than refused. Something with write access to this
-/// workspace can plant one, and making a single planted entry abort the
-/// enumeration would turn both readers of this function into a latch: the
-/// budget would refuse every later upload on that card forever, and the sweep
-/// would stop reclaiming. The stat is `fstatat` with `AT_SYMLINK_NOFOLLOW`, so
-/// a link is described rather than followed.
-///
-/// A read failure that is NOT "this entry vanished" aborts with `Err` and the
-/// caller gets nothing: a filesystem that will not answer means the sizes and
-/// ages here are unknown, and both callers must treat an unknown as a reason
-/// to keep bytes rather than to spend or delete them.
+/// Every regular file directly in the directory, with its size and mtime.
+/// Non-regular entries are stepped over rather than refused, so a planted entry cannot latch the budget or the sweep; a read failure other than ENOENT aborts, and callers must treat an unknown as a reason to keep bytes.
 pub(crate) fn regular_entries<D: DirFd>(dir: &D) -> std::io::Result<Vec<Entry>> {
     use nix::fcntl::AtFlags;
     use nix::sys::stat::fstatat;
@@ -487,8 +315,7 @@ pub(crate) fn regular_entries<D: DirFd>(dir: &D) -> std::io::Result<Vec<Entry>> 
     for entry in listing.iter() {
         let entry = entry.map_err(std::io::Error::from)?;
         let raw = entry.file_name().to_str().map_err(|_| {
-            // A non-UTF-8 name cannot have been minted here. It is not an
-            // error, but it is also not one of ours; treated below.
+            // A non-UTF-8 name cannot have been minted here; skipped.
             std::io::Error::new(std::io::ErrorKind::InvalidData, "non-utf8 name")
         });
         let Ok(raw) = raw else { continue };

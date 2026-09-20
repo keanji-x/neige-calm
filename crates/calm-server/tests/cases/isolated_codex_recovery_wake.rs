@@ -140,7 +140,7 @@ async fn planner_observes_failure_then_settled_isolated_recovery() {
     assert_eq!(operation(&fx, &first).await.1, "parked");
     let refused = planner_recovery(&fx).await;
     assert_eq!(refused["allowed"], false);
-    // #1727 S3 — an isolated predecessor that has not settled: wait, do not re-key.
+    // An isolated predecessor that has not settled: wait, do not re-key.
     assert_eq!(refused["code"], "predecessor_not_quiescent", "{refused}");
     assert_eq!(
         refused["guidance"]["supported_continuation"], "wait_for_settlement",
@@ -153,7 +153,7 @@ async fn planner_observes_failure_then_settled_isolated_recovery() {
     finish(&fx, &first, &workspace, false).await;
     let allowed = planner_recovery(&fx).await;
     assert_eq!(allowed["allowed"], true);
-    // #1727 S3 — guidance exists only for a refused recovery.
+    // Guidance exists only for a refused recovery.
     assert!(allowed.get("guidance").is_none(), "{allowed}");
     // Make the red assertion only after the owned fake process has been stopped.
     let settled = wait_observation(&handle, &first.id, true).await;

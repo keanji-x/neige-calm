@@ -1,8 +1,5 @@
-//! Shared Codex home support for #410 PR1.
-//!
-//! PR1 seeds and maintains the shared home only, using toml_edit round-trip
-//! config edits. Existing card spawn paths keep using the legacy per-card homes
-//! until later PRs switch callers.
+//! Shared Codex home: seeds and maintains the shared CODEX_HOME with toml_edit
+//! round-trip config edits.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -15,16 +12,11 @@ use crate::mcp_server::McpShimConfig;
 use crate::mcp_server::wiring::daemon_shim_env;
 use toml_edit::DocumentMut;
 
-/// #863 — the only `[mcp_servers.*]` keys that may legitimately exist in the
-/// shared CODEX_HOME's config.toml. Co-located with `ensure_daemon_mcp_config`,
-/// the single writer of the `calm` entry. Because `seed_from` strips host
-/// `mcp_servers`, `{calm}` is the only legitimate set in every environment —
-/// production, tests, CI — so this is a const, not config.
+/// The only `[mcp_servers.*]` keys that may legitimately exist in the shared CODEX_HOME's
+/// config.toml; `seed_from` strips host `mcp_servers`, so this is a const, not config.
 pub const EXPECTED_MCP_SERVERS: &[&str] = &["calm"];
 
-/// Layout: <data_dir>/codex-home/  <- shared, no per-card subdir
-/// 共享 daemon 的单一 CODEX_HOME，PR4 之后所有 card 会指向这里。
-/// PR1 只 seed + writer，不切换 callers。
+/// Layout: <data_dir>/codex-home/ — the shared daemon's single CODEX_HOME, no per-card subdir.
 pub struct SharedCodexHome {
     home: PathBuf,
     #[allow(dead_code)]
@@ -43,25 +35,15 @@ impl SharedCodexHome {
         &self.home
     }
 
-    /// Boot-time seed。如果 home 不存在：mkdir + 从 host `~/.codex/` 导入
-    /// operator 身份与模型配置（如果存在）。不覆盖已有文件。
+    /// Boot-time seed: if the home does not exist, mkdir and import operator identity and
+    /// model config from the host `~/.codex/`. Never overwrites existing files.
     pub fn seed(&self) -> io::Result<()> {
         let host = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex"));
         self.seed_from(host.as_deref())
     }
 
-    /// #863 — explicit two-file sanitized import (never a recursive copy):
-    /// 1. `auth.json` — copy if source exists and dest missing.
-    /// 2. `config.toml` — copy-if-dest-missing, round-tripped through
-    ///    `toml_edit` with the `mcp_servers` and `hooks` tables stripped
-    ///    (executable vectors; the daemon-level `calm` entry is written later
-    ///    by `ensure_daemon_mcp_config`). Everything else (model, providers,
-    ///    approval_policy, …) imports as before.
-    ///
-    /// Nothing else is copied — no plugins, no skills, no sessions, no
-    /// `.env`, no host sqlite state: codex recreates derived state lazily and
-    /// plugin discovery is CODEX_HOME-rooted, so an unseeded home is
-    /// plugin-empty by construction.
+    /// Explicit two-file sanitized import (never a recursive copy): `auth.json`, and
+    /// `config.toml` with the `mcp_servers` and `hooks` tables (executable vectors) stripped.
     pub fn seed_from(&self, host_codex_dir: Option<&Path>) -> io::Result<()> {
         fs::create_dir_all(&self.home)?;
 
@@ -115,24 +97,9 @@ impl SharedCodexHome {
         Ok(())
     }
 
-    /// The `model` / `model_reasoning_effort` defaults written in the shared
-    /// CODEX_HOME `config.toml`.
-    ///
-    /// This is the **dormant-only** default source for `GET /api/models`. It
-    /// answers "what does our own layer say", which is strictly weaker than
-    /// `config/read`'s layer-merged answer — a managed-config layer merges
-    /// *above* the user layer, so this file can disagree with what codex
-    /// would actually run. Whenever a daemon connection exists, `config/read`
-    /// is the source and this function must not be consulted.
-    ///
-    /// Key names are codex's own top-level spellings (`core/src/config/edit.rs`
-    /// writes `model` and `model_reasoning_effort`).
-    ///
-    /// A missing home or missing file is `Ok(default)` — "nothing configured"
-    /// is a successful read of an empty setting, and the caller reports it as
-    /// `config_toml` with null values. Unparseable TOML is an `Err`, so the
-    /// caller can fall back to `unknown` rather than claim a source it could
-    /// not read.
+    /// The `model` / `model_reasoning_effort` defaults in the shared CODEX_HOME `config.toml`.
+    /// Dormant-only source for `GET /api/models`: whenever a daemon connection exists,
+    /// `config/read` is the source. Missing file is `Ok(default)`; unparseable TOML is an `Err`.
     pub fn read_default_model_settings(&self) -> io::Result<ConfigTomlModelDefaults> {
         let cfg_path = self.home.join("config.toml");
         let text = match fs::read_to_string(&cfg_path) {
@@ -157,31 +124,18 @@ impl SharedCodexHome {
         })
     }
 
-    /// #863 boot guard — parses `<home>/config.toml` (missing home/file = ok)
-    /// and errors if the top-level `mcp_servers` table has any key outside
-    /// `expected` OR any `hooks` table exists (same executable-vector class),
-    /// naming the offenders + path. Policy is subset, not exact-set: a
-    /// *missing* `calm` entry is a liveness concern owned elsewhere, not an
-    /// integrity breach. Takes `ConfigLock` (races `ensure_config` writers)
-    /// and enumerates via `as_table_like()` so inline tables / dotted keys
-    /// cannot evade it. Additionally deletes a leaked `<home>/.env` (with a
-    /// `warn!`) instead of refusing — it is derived state, so deletion
-    /// converges without an outage; this runs at every guard point, i.e. at
-    /// boot/takeover AND before every (re)spawn.
+    /// Boot guard: errors if `mcp_servers` has any key outside `expected` OR any `hooks` table
+    /// exists. Subset policy, not exact-set. Enumerates via `as_table_like()` so inline tables /
+    /// dotted keys cannot evade it; also deletes a leaked `<home>/.env` instead of refusing.
     pub fn verify_expected_mcp_servers(&self, expected: &[&str]) -> io::Result<()> {
         if !self.home.exists() {
             return Ok(());
         }
         let lock_path = self.home.join(".config.lock");
         let _lock = ConfigLock::acquire(&lock_path)?;
-        // #863 review F2 — a `<home>/.env` created while the daemon runs
-        // would be injected into the daemon's own process env by codex arg0
-        // `load_dotenv` at the next spawn, bypassing the spawn allow-list
-        // entirely. It is derived state (same argument as
-        // `sanitize_unexpected_mcp_servers`), so the guard DELETES it instead
-        // of refusing: deletion converges without an outage, matching the
-        // sanitize semantics. Runs under the same ConfigLock as the config
-        // verification below.
+        // A `<home>/.env` created while the daemon runs would be injected into the daemon's own
+        // process env by codex arg0 `load_dotenv` at the next spawn, bypassing the spawn allow-list.
+        // It is derived state, so the guard DELETES it instead of refusing.
         if self.remove_leaked_env_file()? {
             tracing::warn!(
                 home = %self.home.display(),
@@ -235,16 +189,8 @@ impl SharedCodexHome {
         }
     }
 
-    /// #863 one-time boot repair for historically-seeded (polluted) homes.
-    /// The shared home is derived state under `data_dir`, owned by
-    /// calm-server — sanitizing it is repair, not clobbering operator config.
-    /// Under `ConfigLock`, toml_edit round-trip via `as_table_like()`:
-    /// removes unexpected `[mcp_servers.*]` keys and the `hooks` table (same
-    /// strip-list as the `seed_from` import), and deletes a leaked
-    /// `CODEX_HOME/.env` (codex arg0 `load_dotenv` injects it into the
-    /// daemon's own process env at startup, bypassing the spawn allow-list).
-    /// Returns what it removed so the caller can `warn!` loudly. The `.env`
-    /// deletion happens even when config.toml is missing or unparseable.
+    /// One-time boot repair for polluted homes: removes unexpected `[mcp_servers.*]` keys and
+    /// the `hooks` table, and deletes a leaked `CODEX_HOME/.env`. Returns what it removed.
     pub fn sanitize_unexpected_mcp_servers(&self, expected: &[&str]) -> io::Result<Vec<String>> {
         let mut removed: Vec<String> = Vec::new();
 
@@ -304,9 +250,8 @@ impl SharedCodexHome {
         Ok(removed)
     }
 
-    /// Delete a leaked `<home>/.env` if present (codex arg0 `load_dotenv`
-    /// would inject it into the daemon's own process env at startup,
-    /// bypassing the spawn allow-list). Returns whether a file was removed.
+    /// Delete a leaked `<home>/.env` if present (codex arg0 `load_dotenv` would inject it into
+    /// the daemon's process env, bypassing the spawn allow-list). Returns whether a file was removed.
     fn remove_leaked_env_file(&self) -> io::Result<bool> {
         match fs::remove_file(self.home.join(".env")) {
             Ok(()) => Ok(true),
@@ -393,10 +338,8 @@ impl SharedCodexHome {
         if new_text != text {
             write_config_0600(&cfg_path, new_text.as_bytes())?;
         } else if cfg_path.exists() {
-            // Unchanged content: the atomic writer didn't run, but a
-            // pre-existing config (e.g. hand-written) may carry loose perms;
-            // tighten in place. After a write this is redundant — the atomic
-            // helper already guarantees 0600.
+            // Unchanged content: the atomic writer didn't run, but a pre-existing config may carry
+            // loose perms; tighten in place.
             fs::set_permissions(&cfg_path, fs::Permissions::from_mode(0o600))?;
         }
 
@@ -423,13 +366,9 @@ impl SharedCodexHome {
     }
 }
 
-/// Write `<home>/config.toml` content atomically with 0600 perms (it can
-/// carry the daemon MCP token): write a 0600 sibling temp file, fsync it,
-/// then `rename(2)` over the target — a crash mid-write can never leave a
-/// truncated config (#863 review F5). All callers hold `ConfigLock`, so the
-/// fixed temp name cannot collide with a concurrent writer. Best-effort
-/// directory fsync afterwards, matching `neige-app`'s `write_json_atomic`
-/// convention.
+/// Write `<home>/config.toml` atomically with 0600 perms (it can carry the daemon MCP token):
+/// 0600 sibling temp, fsync, `rename(2)`. All callers hold `ConfigLock`, so the fixed temp
+/// name cannot collide.
 fn write_config_0600(cfg_path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp_path = cfg_path.with_extension("toml.tmp");
     let write_and_rename = || -> io::Result<()> {
@@ -447,9 +386,7 @@ fn write_config_0600(cfg_path: &Path, bytes: &[u8]) -> io::Result<()> {
         drop(file);
         fs::rename(&tmp_path, cfg_path)
     };
-    // #863 review R2-2: on ANY pre-rename failure (perms/write/fsync/rename)
-    // best-effort remove the temp file — it is 0600 but can carry the daemon
-    // MCP token, so it must not linger after a failed write.
+    // On ANY pre-rename failure remove the temp file: it can carry the daemon MCP token.
     if let Err(e) = write_and_rename() {
         let _ = fs::remove_file(&tmp_path);
         return Err(e);
@@ -496,9 +433,8 @@ fn flock(fd: i32, operation: i32) -> io::Result<()> {
     }
 }
 
-/// Model defaults read out of the shared CODEX_HOME `config.toml`. Both are
-/// optional because "not configured" is a state the wire represents as
-/// `null`, not a missing required field.
+/// Model defaults read out of the shared CODEX_HOME `config.toml`; both optional because
+/// "not configured" is `null` on the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConfigTomlModelDefaults {
     pub model: Option<String>,

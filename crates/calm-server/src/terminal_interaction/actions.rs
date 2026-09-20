@@ -1,6 +1,5 @@
-//! Input action validation and encoding against the live input surface.
-//! Every action is one ordered write request: one barrier, one
-//! acknowledgement, one receipt (no claim about OS-level write atomicity).
+//! Input action validation and encoding against the live input surface. Every action is one
+//! ordered write request: one barrier, one acknowledgement, one receipt.
 use super::replace_plan::REPLACE_FROM_BYTES_MAX;
 use anyhow::{Result, ensure};
 use calm_terminal_view::{InputSurface, click_bytes, key_bytes};
@@ -8,12 +7,11 @@ use serde_json::Value;
 
 /// Bound on the bytes one action may write (text and sequences alike).
 pub const ACTION_BYTES_MAX: usize = 16384;
-/// A sequence (#1666) carries 2..=8 steps.
+/// A sequence carries 2..=8 steps.
 pub const SEQUENCE_STEPS_MIN: usize = 2;
 pub const SEQUENCE_STEPS_MAX: usize = 8;
-/// Keys a sequence step may send: cursor movement and draft editing only, so
-/// a sequence can never carry a CR or an LF. What Up/Down/Home/End/Ctrl+U
-/// do is application-defined (history recall, line edit, or something else).
+/// Keys a sequence step may send: cursor movement and draft editing only, so a sequence can
+/// never carry a CR or an LF.
 pub const SEQUENCE_KEYS: [&str; 9] = [
     "Left",
     "Right",
@@ -26,10 +24,8 @@ pub const SEQUENCE_KEYS: [&str; 9] = [
     "Ctrl+U",
 ];
 
-/// What one action writes: its bytes, a `submit` (#1725: the text plus one
-/// CR, which the writer hands to the PTY as two physical writes), or (#1677)
-/// a `replace` whose bytes are derived from the live cursor row at the
-/// pre-write fences.
+/// What one action writes: its bytes, a `submit` (text plus one CR, handed to the PTY as two
+/// physical writes), or a `replace` whose bytes are derived from the live cursor row later.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Encoded {
     Bytes(Vec<u8>),
@@ -46,11 +42,8 @@ impl Encoded {
         }
     }
 }
-/// A `replace` action (#1677): `from` nonempty printable text of at most
-/// [`REPLACE_FROM_BYTES_MAX`] bytes, `to` printable text (may be empty),
-/// neither with control characters (so no CR or LF), no other fields. The
-/// plan is derived from the live frame later; this is the shape check that
-/// runs before any claim.
+/// A `replace` action: the shape check that runs before any claim; the plan is derived from
+/// the live frame later.
 fn replace_arguments(action: &Value, object: &serde_json::Map<String, Value>) -> Result<Encoded> {
     ensure!(
         object.len() == 3 && object.contains_key("from") && object.contains_key("to"),
@@ -141,8 +134,7 @@ fn encode_key(
     // Never turn Enter, Escape or control keys into repeated submissions.
     Ok(key_bytes(key, surface.modes)?.repeat(repeat as usize))
 }
-/// One step of a sequence (#1666): a `text` or a `key` action with the
-/// sequence key vocabulary; nothing else (no submit, click or nesting).
+/// One step of a sequence: a `text` or a `key` action with the sequence key vocabulary.
 fn encode_step(step: &Value, surface: &InputSurface) -> Result<Vec<u8>> {
     let object = step
         .as_object()
@@ -159,15 +151,9 @@ pub fn sequence_steps(action: &Value) -> Option<usize> {
         .then(|| action["steps"].as_array().map(Vec::len))
         .flatten()
 }
-/// The actions `allow_output_below_cursor` may admit (#1666 r1): draft
-/// edits only — `text`, `sequence`, `replace` (#1677) and a `key` from
-/// [`SEQUENCE_KEYS`].
-/// Claude Code's slash-command menu renders below the input row and
-/// re-sorts while it loads, so an Enter admitted by the tolerance could pick
-/// a different item than the one observed; a submission in a field whose
-/// status text moves keeps using `allow_output_since_observation` after
-/// inspecting the fresh state. Never submit, click, Enter, Tab, Escape,
-/// other control keys or PageUp/PageDown.
+/// The actions `allow_output_below_cursor` may admit: draft edits only. Claude Code's
+/// slash-command menu renders below the input row and re-sorts while it loads, so an Enter
+/// admitted by the tolerance could pick a different item than the one observed.
 pub fn edits_the_draft(action: &Value) -> bool {
     match action["type"].as_str() {
         Some("text" | "sequence" | "replace") => true,
@@ -187,10 +173,8 @@ pub fn encode(action: &Value, surface: &InputSurface) -> Result<Encoded> {
         Some("replace") => return replace_arguments(action, object),
         Some("text") => Ok(printable_text(action, object, "text")?.as_bytes().to_vec()),
         Some("submit") => {
-            // #1620/#1725 — one request, one receipt, one barrier; the
-            // writer hands the CR to the PTY as a second write after the
-            // text. Explicit opt-in; `text` alone never submits and
-            // `submit` never repeats.
+            // The writer hands the CR to the PTY as a second write after the text. Explicit opt-in;
+            // `text` alone never submits and `submit` never repeats.
             let mut bytes = printable_text(action, object, "submit")?
                 .as_bytes()
                 .to_vec();
@@ -209,12 +193,8 @@ pub fn encode(action: &Value, surface: &InputSurface) -> Result<Encoded> {
             click_bytes(coordinate("column")?, coordinate("row")?, surface)
         }
         Some("sequence") => {
-            // #1666 — a bounded edit in one ordered write request: the step
-            // encodings concatenated, one barrier, one acknowledgement, one
-            // receipt, one fingerprint (no claim about OS-level write or
-            // read atomicity). The tool guarantees no CR and no LF (the key
-            // vocabulary has neither); it does not guarantee what the
-            // application does with Up/Down/Home/End/Ctrl+U.
+            // The step encodings concatenated in one ordered write request; no CR and no LF possible
+            // (the key vocabulary has neither).
             ensure!(
                 object.len() == 2 && object.contains_key("steps"),
                 "sequence action accepts only type/steps"
@@ -254,9 +234,6 @@ mod tests {
             .input_surface()
     }
 
-    /// #1620 `submit`: the text bytes plus exactly one CR in one request
-    /// (#1725: two PTY writes, see `only_submit_is_encoded_as_a_submit`);
-    /// the same text rules as `text`; no repeat, no extra fields.
     #[test]
     fn submit_encodes_text_and_one_cr_and_rejects_repeat() {
         let surface = surface();
@@ -284,10 +261,6 @@ mod tests {
         }
     }
 
-    /// #1725 — only `submit` is marked for the split write: the encoder
-    /// returns `Encoded::Submit` for it and plain `Encoded::Bytes` for an
-    /// Enter key (exactly one CR), text, a sequence and every other key;
-    /// a replace stays `Encoded::Replace`.
     #[test]
     fn only_submit_is_encoded_as_a_submit() {
         let surface = surface();
@@ -319,9 +292,6 @@ mod tests {
         ));
     }
 
-    /// #1666 `sequence`: the concatenation of its steps in order, the same
-    /// text and repeat rules per step, only the editing key vocabulary, and
-    /// no submit, click, nesting, or size past the action bound.
     #[test]
     fn sequence_encodes_steps_in_order_and_rejects_submission_keys() {
         let surface = surface();
@@ -448,9 +418,6 @@ mod tests {
         assert_eq!(encode(&full, &surface).unwrap().bytes().len(), 16384);
     }
 
-    /// #1677 `replace`: the shape check runs where every action's shape is
-    /// checked (before any claim) and yields the arguments, not bytes; the
-    /// plan comes from the live frame later.
     #[test]
     fn replace_validates_its_shape_and_carries_no_bytes() {
         let surface = surface();
@@ -508,8 +475,6 @@ mod tests {
         );
     }
 
-    /// #1666 r1: the below-cursor tolerance admits draft edits only
-    /// (#1677: `replace` included).
     #[test]
     fn edits_the_draft_admits_text_sequence_and_editing_keys_only() {
         for action in [

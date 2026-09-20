@@ -1,21 +1,5 @@
-// Filesystem reads the browser may make: the seven read endpoints below, of
-// which `rawFileUrl` and `trackWorkspaceRawFileUrl` return raw bytes.
-//
-// The kernel's wire shape and the shape `ui/directory-browser` consumes are
-// deliberately different — the wire says `is_dir` and names an entry without
-// placing it, the browser wants `isDirectory` and an absolute `path` per entry
-// so a click can navigate without re-deriving where it came from. The
-// translation lives here rather than at the call site so every end (browser,
-// native, a test) decodes it once and the same way.
-//
-// **Why `joinPath` is a parameter.** Assembling `<parent>/<name>` is owned by
-// `ui/directory-browser` (`joinDirectoryPath`), which also owns the trailing
-// slash and root-path rules the picker's own input relies on; a second copy
-// here would be a duplicate definition of the same rule that could drift.
-// `core/` may not import `web/src/ui/**` (`core-no-web-layers`), so the owner's
-// function is injected by the app-layer adapter instead — see
-// `web/src/app/providers/directory.ts`, the only production caller, which
-// passes `joinDirectoryPath` itself.
+// Filesystem reads the browser may make. `joinPath` is a parameter because `core/` may not
+// import `web/src/ui/**`, where the path-joining rule lives; the app-layer adapter injects it.
 
 import { z } from 'zod';
 
@@ -35,12 +19,7 @@ export const directoryListingWireSchema = z.object({
 });
 export type DirectoryListingWire = z.infer<typeof directoryListingWireSchema>;
 
-/**
- * `path` omitted starts the walk at the server's `$HOME`; that default is the
- * kernel's, not ours, so the query key is left off entirely rather than sent
- * empty (`?path=` is the same branch server-side, but an absent key is what
- * "we have no opinion" actually means).
- */
+/** `path` omitted starts the walk at the server's `$HOME`; the query key is left off rather than sent empty. */
 export function listDirectoryOperation(path?: string): ApiOperation<DirectoryListingWire> {
   return {
     method: 'GET',
@@ -51,12 +30,7 @@ export function listDirectoryOperation(path?: string): ApiOperation<DirectoryLis
   };
 }
 
-/**
- * `GET /api/fs/readfile`. Text only: the kernel answers 400 for a binary or
- * non-UTF-8 file rather than returning bytes, and `truncated` says the read hit
- * the size cap — a viewer that did not print that would be silently showing a
- * prefix as though it were the file.
- */
+/** `GET /api/fs/readfile`. Text only: the kernel answers 400 for a binary or non-UTF-8 file. */
 export const readFileWireSchema = z.object({
   path: z.string(),
   size: z.number(),
@@ -73,11 +47,7 @@ export function readFileOperation(path: string): ApiOperation<ReadFileWire> {
   };
 }
 
-/**
- * The URL an `<img>` reads an image file from. Not an `ApiOperation`: the
- * browser fetches it itself, with the session cookie, and there is no JSON to
- * decode — the whole value of the endpoint is that it is addressable.
- */
+/** The URL an `<img>` reads an image file from; the browser fetches it itself, with the session cookie. */
 export function rawFileUrl(path: string): string {
   return `/api/fs/readfile-raw?path=${encodeURIComponent(path)}`;
 }
@@ -128,12 +98,8 @@ export function gitStatusOperation(path: string): ApiOperation<GitStatusWire> {
 }
 
 /**
- * Both sides of one changed file, as text. The kernel sends the two versions
- * rather than a unified diff because the viewer renders them side by side and
- * would otherwise have to parse a patch back into them.
- *
- * `head_text` is null for a file that is not in HEAD (added / untracked) and
- * `working_text` is null for a deleted one; neither is an error.
+ * Both sides of one changed file, as text. `head_text` is null for a file not in HEAD and
+ * `working_text` null for a deleted one.
  */
 export const gitDiffWireSchema = z.object({
   path: z.string(),
@@ -156,13 +122,8 @@ export function gitDiffOperation(path: string, oldPath?: string): ApiOperation<G
 }
 
 /**
- * The filesystem reads a card may make, as a port.
- *
- * A card is rendered deep inside `systems/**`, which holds no transport and may
- * not acquire one — so the reads arrive as injected functions, built once at
- * the composition layer (`app/composition.ts`) from the same transport and the
- * same 401 channel every other read in the app uses. Declared here, in `core`,
- * because that is the one place both ends may import from.
+ * The filesystem reads a card may make, as a port: `systems/**` holds no transport, so the reads
+ * arrive as injected functions.
  */
 export type CardFilesPort = Readonly<{
   listDirectory: (path: string) => Promise<DirectoryListingWire>;

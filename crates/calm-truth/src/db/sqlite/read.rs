@@ -16,13 +16,7 @@ use crate::track_area_cache::TrackAreaCache;
 use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
-/// Row shape of the single-statement `track_detail` read (#1016).
-///
-/// The track columns decode through the usual [`crate::db::rows::TrackRow`]
-/// mirror; the child-reference capability and the `cards` / `overlays` JSON
-/// arrays ride on the same SELECT so all four facts come from ONE implicit
-/// transaction without the row multiplication a join would cause (a
-/// track-scoped overlay would pair with every card).
+/// Row shape of the single-statement `track_detail` read.
 #[derive(sqlx::FromRow)]
 struct TrackDetailRow {
     #[sqlx(flatten)]
@@ -32,21 +26,12 @@ struct TrackDetailRow {
     overlays_json: String,
 }
 
-/// SQL fragment restricting a `harness_items` page to the methods a
-/// transcript can render: the two `item/*` methods (#1255) and the per-turn
-/// outcome row `turn/completed` (#1625 P1). An explicit allowlist — a new
-/// method is inert until it is named here.
-///
-/// Spliced, not bound: it is a fixed literal in this file with no caller input
-/// in it, and `IN (?, ?, ?)` cannot be expressed as a single bindable parameter.
-/// See [`RepoRead::harness_item_list_transcript_by_card`] for why the filter
-/// has to sit here, inside the `LIMIT`, rather than in the caller.
+/// Explicit allowlist of `harness_items` methods a transcript can render.
+/// Spliced, not bound: a fixed literal with no caller input.
 const TRANSCRIPT_METHOD_PREDICATE: &str =
     " AND method IN ('item/started', 'item/completed', 'turn/completed')";
 
 impl SqlxRepo {
-    /// One paging query over `harness_items`, with an optional extra
-    /// `WHERE` fragment (`""` for none).
     async fn harness_item_page(
         &self,
         card_id: &str,
@@ -88,7 +73,6 @@ impl SqlxRepo {
 
 #[async_trait]
 impl RepoRead for SqlxRepo {
-    // ---------------------------------------------------------------- areas
     async fn areas_list(&self) -> Result<Vec<Area>> {
         let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
             r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,
@@ -101,11 +85,6 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn areas_list_user_visible(&self) -> Result<Vec<Area>> {
-        // Issue #175 — default surface for `GET /api/areas`. Filters out
-        // the singleton system area that hosts the default Today
-        // terminal's track + card. Pre-#175 callers that want every row
-        // (debug surfaces, integration tests asserting on the system
-        // area's existence) use `areas_list` directly.
         let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
             r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,
                       created_at, updated_at
@@ -129,11 +108,7 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn area_get_system(&self) -> Result<Option<Area>> {
-        // Issue #175 — return the singleton system area if it exists,
-        // `None` before the first call to the `POST /api/areas/system`
-        // upsert endpoint. Backed by the partial unique index on
-        // `areas(kind) WHERE kind = 'system'` from migration 0009 —
-        // there is at most one such row.
+        // At most one system row: partial unique index on `areas(kind) WHERE kind = 'system'`.
         let row = sqlx::query_as::<_, crate::db::rows::AreaRow>(
             r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,
                       created_at, updated_at
@@ -144,7 +119,6 @@ impl RepoRead for SqlxRepo {
         Ok(row.map(Area::from))
     }
 
-    // -------------------------------------------------------- area_folders
     async fn area_folders_by_area(&self, area_id: &str) -> Result<Vec<AreaFolder>> {
         let rows = sqlx::query_as::<_, crate::db::rows::AreaFolderRow>(
             r#"SELECT id, area_id, path, created_at
@@ -177,7 +151,6 @@ impl RepoRead for SqlxRepo {
         Ok(row.map(AreaFolder::from))
     }
 
-    // ---------------------------------------------------------------- tracks
     async fn tracks_by_area(&self, area_id: &str) -> Result<Vec<Track>> {
         let rows = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
             "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE area_id = ?1 ORDER BY sort ASC"
@@ -189,13 +162,8 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn track_get_launchpad(&self) -> Result<Option<Track>> {
-        // Same predicate as `today_launchpad_ensure_tx`'s first SELECT, and
-        // single-valued by migration 0064's partial unique index — which is
-        // what makes the answer well-defined, not the `LIMIT 1`. A bare
-        // `LIMIT 1` has no `ORDER BY`, so on a hand-broken database holding two
-        // launchpad rows sqlite may return either one; `ORDER BY id` is here so
-        // that even then the answer is at least stable across calls rather than
-        // flapping between two tracks.
+        // Single-valued by the partial unique index; `ORDER BY id` keeps the answer
+        // stable even on a hand-broken database holding two launchpad rows.
         let row = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
             "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE purpose = 'launchpad' ORDER BY id LIMIT 1"
         ))
@@ -218,9 +186,7 @@ impl RepoRead for SqlxRepo {
         &self,
         id: &str,
     ) -> Result<Option<ClaudePermissionsScope>> {
-        // One pooled connection, no transaction: two autocommit reads of a
-        // column only a user PATCH writes (the in-tx re-check in the terminal
-        // adapter is what makes the open's verdict exact).
+        // No transaction: the terminal adapter's in-tx re-check makes the open's verdict exact.
         let mut conn = self.pool.acquire().await?;
         super::track_claude_permissions_ceiling_read(&mut conn, id).await
     }
@@ -231,13 +197,7 @@ impl RepoRead for SqlxRepo {
         since: Option<i64>,
         until: Option<i64>,
     ) -> Result<Vec<Track>> {
-        // Build the WHERE clause dynamically because sqlx doesn't have
-        // good "optional bind" ergonomics — every binding has to be
-        // either materialized or excluded from the query string. The
-        // three predicates compose in any combination:
-        //   * `area_id`     : `area_id = ?`
-        //   * `until`       : `created_at <= ?`
-        //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
+        // WHERE built dynamically: sqlx has no optional-bind ergonomics.
         let mut sql = format!("SELECT {TRACK_SELECT_COLUMNS} FROM tracks");
         let mut where_clauses: Vec<&str> = Vec::new();
         if area_id.is_some() {
@@ -273,117 +233,11 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>> {
-        // ONE statement, no explicit transaction (#1016).
-        //
-        // Why not a deferred (`pool.begin()`) tx, which is what this used to
-        // be: it held R(tracks)+R(cards) while parking on `overlays` and
-        // cycled with the IMMEDIATE writer of `DELETE /api/tracks/:id`
-        // (overlays -> tasks -> tracks), aborting the writer with the
-        // non-retryable `SQLITE_LOCKED` (6) — see
-        // `deferred_read_tx_deadlock_repro`. That gap is real only on a
-        // SHARED-CACHE database with table-granularity locks, i.e. the
-        // in-memory sqlite CI and `make dev-fresh` run on. The production
-        // file database (PRIVATECACHE + WAL) gives readers an MVCC snapshot
-        // that never blocks, so no cycle exists there either way.
-        //
-        // Why not three separate autocommit statements (the first #1016
-        // attempt): autocommit does break the cycle — a blocked autocommit
-        // statement unwinds its implicit transaction, releasing every table
-        // lock it took, before sqlx parks in `unlock_notify` — but splitting
-        // the read into three statements throws away cross-statement
-        // consistency (a card could appear whose overlays were read from an
-        // older version, or vice versa) on EVERY deployment, including the
-        // production one that never had the problem. That is a pure loss.
-        //
-        // A single statement is both: it is autocommit (so it can never be
-        // the lock-HOLDING waiter that closes a cycle) AND it is one
-        // implicit transaction (so track, cards and overlays all come from
-        // one version of the database). The lock order is unchanged —
-        // tracks, then cards, then overlays — so the repro above still parks
-        // on `overlays`, it just holds nothing while parked.
-        //
-        // The rejected third option was `begin_immediate_tx`: also
-        // cycle-free (it parks at BEGIN holding nothing) and snapshot-
-        // consistent, but it takes the writer slot, which would serialize
-        // every track-detail read against every writer on the production
-        // database too. Paying a real production cost to close a gap that
-        // does not exist in production is the trade this comment exists to
-        // refuse.
-        //
-        // COST, measured rather than asserted (#1016 review). Aggregating
-        // every card and overlay into one JSON string and parsing it whole is
-        // NOT free on big tracks. Release build, in-memory sqlite, 30 calls
-        // per point, one-statement vs. the old three-SELECT deferred tx:
-        //
-        //     8 cards × 2 KB payload   0.62 ms vs 0.79 ms
-        //    60 cards × 20 KB payload 28.3  ms vs 11.2  ms
-        //   200 cards × 8 KB payload  41.1  ms vs 17.0  ms
-        //
-        // Small tracks — the overwhelmingly common shape — get FASTER: one
-        // round trip beats three. Tracks carrying large payloads (report /
-        // planner cards) get 2–3.5× slower, because the row is materialized as
-        // text and then parsed into the same values a second time. That is a
-        // real regression on the tail, and the reason it is accepted here is
-        // that the alternative shapes are worse in kind, not in degree: three
-        // autocommit statements drop cross-statement consistency on every
-        // deployment, and the deferred tx is the deadlock this issue exists
-        // to remove. If the tail ever matters, the fix is to stop shipping
-        // `payload` through the aggregate (fetch card bodies separately)
-        // rather than to reopen the transaction question.
-        //
-        // What was tried and REVERTED, so it does not get re-tried: building
-        // each element with one `printf` and splicing the stored `payload`
-        // TEXT in verbatim takes ~40% off the tail (16.8 / 24.1 ms on the two
-        // big fixtures). It is not worth it. A raw splice makes the array's
-        // STRUCTURE depend on bytes nobody re-validates: `{}},{"id":…` in a
-        // payload closes the card object and opens another one, i.e. it
-        // fabricates a card, silently and with no error anywhere. Write-side
-        // `json_valid` triggers (migration 0070, reverted with it) do not
-        // close that — they cannot see disk corruption, a hand-edited row, or
-        // a restored bad backup, and `planner_harness_track_vcs`'s
-        // `transcript_refresh_failure_from_corrupt_card_payload…` shows the
-        // codebase deliberately EXERCISES a corrupt payload and expects the
-        // read to fail loudly rather than degrade into structure. `json()`
-        // below is constructively safe instead: sqlite parses the payload and
-        // re-renders it, so corrupt text can only ever raise "malformed JSON"
-        // — it can never become another card.
-        //
-        // `cards` / `overlays` come back as JSON arrays shaped exactly like
-        // the public `Card` / `Overlay` serde representation, so they decode
-        // without a second row-mirror to keep in sync. Adding a column to
-        // `cards` / `overlays` means adding it here, the same audit the
-        // previous explicit SELECT lists already required. Two columns need
-        // an explicit fixup on the way into JSON (both pinned by
-        // `track_detail_json_shape_tests`, on the bundled sqlite 3.46.0):
-        //
-        //   * `deletable` — INTEGER in sqlite, `bool` in the model.
-        //
-        //   * `sort` — REAL in sqlite, `f64` in the model. `json_object`
-        //     renders a FLOAT argument with `%!0.15g` (`jsonAppendSqlValue`
-        //     in the bundled sqlite 3.46.0) and, unlike `sqlite3QuoteValue`,
-        //     has NO "reparse and fall back to `%!0.20e` if it does not
-        //     round-trip" branch. 15 significant digits is not enough for
-        //     f64: `json_object('s', 1.0000000000000002)` yields `1.0`.
-        //     Rendering through `printf('%!.17g', …)` instead — 17
-        //     significant digits, the round-trip width for binary64 — and
-        //     splicing the result in as a JSON number via `json()` keeps the
-        //     value bit-exact. Pinned by
-        //     `track_detail_sort_precision_tests`.
-        //
-        //     This matters beyond a cosmetic digit: two adjacent cards would
-        //     collapse onto one `sort`, the total order below would then fall
-        //     through to the `id` tiebreak (i.e. the wrong order half the
-        //     time), and the web client writes the value it read back to the
-        //     DB when reordering cards (`TrackList.tsx`) — a silent, unlogged
-        //     rewrite of persisted data.
-        //
-        //     (`payload` needs no such care: `json(c.payload)` re-renders the
-        //     stored TEXT without reparsing its numbers into f64.)
-        //
-        // TEXT columns and NULL `title` need no fixup at all — `json_object`
-        // escapes its TEXT arguments and renders a NULL argument as JSON
-        // `null`. An empty group yields `[]`, not `null`, because
-        // `json_group_array` over zero rows is an empty array.
+        // ONE autocommit statement: a deferred read tx deadlocks with the IMMEDIATE
+        // track-delete writer on shared-cache DBs, and separate statements lose snapshot
+        // consistency. `sort` goes through `printf('%!.17g')` because `json_object`
+        // renders REAL with only 15 significant digits; `json(c.payload)` re-renders
+        // so corrupt text raises instead of becoming card structure.
         let row = sqlx::query_as::<_, TrackDetailRow>(&format!(
             r#"SELECT {TRACK_SELECT_COLUMNS_W},
                       EXISTS(SELECT 1 FROM tasks parent_task
@@ -414,49 +268,8 @@ impl RepoRead for SqlxRepo {
             return Ok(None);
         };
 
-        // ORDER (#1016 review). `json_group_array` above takes its input in
-        // an ARBITRARY order — sqlite documents it as unspecified and free to
-        // change between releases, and an `ORDER BY` in the subquery does not
-        // constrain it (`https://www.sqlite.org/lang_aggfunc.html`). So the
-        // order of both arrays as they arrive is a fact about the current
-        // query plan, not about the data, and it has to be imposed here.
-        //
-        // The bug this replaces: `cards` was sorted by `sort` ALONE and
-        // `overlays` was not sorted at all. A sort by a NON-unique key only
-        // permutes within tie groups, so every card sharing a `sort` kept
-        // whatever order the scan produced — and `sort` is client-assigned, so
-        // ties are normal, not exotic. Today `idx_cards_track (track_id, sort)`
-        // happens to make that scan order look reasonable; a different plan
-        // unmakes it silently, with no error anywhere.
-        //
-        // The fix is that each comparator below is a TOTAL order — no two
-        // distinct rows compare `Equal` — which is exactly the property that
-        // makes the sorted result independent of the input permutation. That
-        // is what turns "sqlite may reorder its aggregate input" from a
-        // correctness risk into a non-event; it does NOT depend on the sort
-        // being stable.
-        //
-        //   * cards    — `(sort, id)`. `id` is the PK, so the pair is unique.
-        //     `total_cmp` orders every f64 bit pattern (NaN cannot reach here
-        //     anyway: sqlite stores NaN as NULL and `cards.sort` is NOT NULL).
-        //   * overlays — `(entity_kind, entity_id, plugin_id, kind)`, exactly
-        //     the table's UNIQUE key, so uniqueness is DB-enforced. This is a
-        //     NEW guarantee — the pre-#1016 three-SELECT shape had no ORDER BY
-        //     on overlays either. Grouping an entity's overlays together beats
-        //     ordering by a random uuid `id`.
-        //
-        // Why not an in-aggregate `ORDER BY` (sqlite >= 3.44, and the bundled
-        // 3.46.0 does support it — this was measured, not assumed): it costs
-        // ~28% on payload-heavy tracks and cannot be indexed away.
-        // `EXPLAIN QUERY PLAN` reports `USE TEMP B-TREE FOR
-        // <aggregate>(ORDER BY)` even when the ORDER BY is exactly the index
-        // order (`c.sort` alone against `idx_cards_track`), i.e. 3.46 never
-        // elides the sorter, so every ~20 KB element string is copied through
-        // a temp b-tree. Sorting a `Vec` that is already nearly ordered is
-        // far cheaper than buffering the payloads twice, and the guarantee is
-        // identical because the key is total. Both orders pinned by
-        // `track_detail_order_tests`, which is RED if either key is weakened
-        // to a non-unique one.
+        // `json_group_array` input order is unspecified, so both arrays are sorted
+        // here by a TOTAL key: cards `(sort, id)`, overlays the table's UNIQUE key.
         let mut cards: Vec<Card> = serde_json::from_str(&row.cards_json)?;
         cards.sort_by(|a, b| {
             a.sort
@@ -487,7 +300,6 @@ impl RepoRead for SqlxRepo {
         }))
     }
 
-    // ---------------------------------------------------------------- tasks
     async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>> {
         let sql = format!(
             "SELECT {TASK_COLUMNS} FROM current_tasks WHERE track_id = ?1 \
@@ -664,10 +476,8 @@ impl RepoRead for SqlxRepo {
         Ok(row.flatten())
     }
 
-    // ---------------------------------------------------------------- cards
     async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>> {
-        // Keep this ORDER BY aligned with track_vcs::cards_for_track_tx; tests pin
-        // the sort ASC, id ASC tie-break for duplicate worker run keys.
+        // ORDER BY must stay aligned with track_vcs::cards_for_track_tx.
         let rows = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at
                FROM cards WHERE track_id = ?1 ORDER BY sort ASC, id ASC"#,
@@ -729,16 +539,8 @@ impl RepoRead for SqlxRepo {
         blocks: &[calm_types::track_report::ReportBlock],
         task_budget_default: i64,
     ) -> Result<Vec<super::BlockVerdict>> {
-        // No explicit transaction (#1016, #1027). `evaluate_schedulability`
-        // normalizes the declarations' data-dependent references into one JSON
-        // parameter, then one autocommit statement materializes policy,
-        // capacity, in-flight and frozen task rows, read state, source area and
-        // every reference target. Rust still owns the one verdict predicate the
-        // write path runs inside its IMMEDIATE transaction; SQL only supplies a
-        // point-in-time fact set. This closes the local/reference tear from
-        // #1027 without restoring the shared-cache deferred-reader deadlock or
-        // taking the production writer slot. The preceding tree-budget term is
-        // still the separately documented multi-statement boundary.
+        // One autocommit statement supplies a point-in-time fact set; Rust owns the
+        // verdict predicate the write path runs inside its IMMEDIATE transaction.
         let mut conn = self.pool.acquire().await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
@@ -754,8 +556,6 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>> {
-        // #679 PR1 — `CardRole` lost its `sqlx::Type` derive when it moved
-        // to calm-types; decode TEXT and parse via `TryFrom<String>`.
         let row: Option<(String,)> = sqlx::query_as("SELECT role FROM cards WHERE id = ?1")
             .bind(id)
             .fetch_optional(&self.pool)
@@ -802,8 +602,7 @@ impl RepoRead for SqlxRepo {
         limit: i64,
         descending: bool,
     ) -> Result<Vec<crate::db::rows::WorkerFlowItemRow>> {
-        // Clamp the page size to a defensible ceiling so a caller passing a
-        // huge (or non-positive) limit cannot scan the whole table.
+        // Clamp so a huge (or non-positive) limit cannot scan the whole table.
         let limit = limit.clamp(1, 500);
         let (sql, cursor) = if descending {
             (
@@ -898,7 +697,6 @@ impl RepoRead for SqlxRepo {
         })
     }
 
-    // -------------------------------------------------------------- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>> {
         let rows = sqlx::query_as::<_, crate::db::rows::OverlayRow>(
             r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
@@ -922,7 +720,6 @@ impl RepoRead for SqlxRepo {
         Ok(rows.into_iter().map(Overlay::from).collect())
     }
 
-    // ------------------------------------------------------------- terminals
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
             r#"SELECT id, card_id, program, cwd, env, pid,
@@ -950,19 +747,9 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
-        // Orphan: this terminal's card has no active worker_session, AND the row
-        // was created more than `grace_seconds` ago.
-        //
-        // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
-        //
-        // #1701 — a Terminal card's terminal (`cards.kind = 'terminal'`) whose
-        // row records a normal exit (`exit_code` or `signal_killed`) is not
-        // residue: the attach reader wrote the exit and completed the
-        // ephemeral session, and the card still owns the row. It follows its
-        // card (eager teardown on card/track/area delete) so its final
-        // screen, scrollback and exit code stay observable. A terminal
-        // without a recorded exit, and any other card kind, keeps the rule
-        // above.
+        // Orphan: no active worker_session AND older than `grace_seconds` (created_at
+        // is unix ms). A Terminal card's terminal with a recorded exit is not residue:
+        // it follows its card so its final screen and exit code stay observable.
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
         let rows = sqlx::query_as::<_, Terminal>(
             r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
@@ -1013,16 +800,8 @@ impl RepoRead for SqlxRepo {
     ) -> Result<Vec<(String, String, String, i64)>> {
         let (provider, _mode, contract) =
             derive_session_identity(&WorkerSessionKind::SharedPlanner);
-        // Join `terminals` and require a LIVE row so a card whose TUI was
-        // already reaped (reconcile_supervisor_on_boot marked it exited,
-        // or a SIGKILL set signal_killed=1) is NOT re-registered into the
-        // pending FIFO. A dead TUI can never emit thread/started, so
-        // re-registering would leave the entry stranded until TTL expiry
-        // — and worse, the entry would absorb a later thread/started
-        // attribution intended for a different empty card (until
-        // on_thread_started's stale-front-drop catches it). This was the
-        // R7 P2 #1 followup; CI reproduced it because the terminal gets
-        // reaped before the next boot's takeover query runs.
+        // Require a LIVE terminal row: a reaped TUI can never emit thread/started, so
+        // re-registering it would strand the FIFO entry and absorb a later attribution.
         let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
             r#"SELECT c.id,
                       c.track_id,
@@ -1062,7 +841,6 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-    // --------------------------------------------------------------- plugins
     async fn plugins_list(&self) -> Result<Vec<Plugin>> {
         self.plugins_list_all().await
     }
@@ -1143,7 +921,6 @@ impl RepoRead for SqlxRepo {
         Ok(out)
     }
 
-    // -------------------------------------------------------------- settings
     async fn settings_get_all(&self) -> Result<Vec<(String, String)>> {
         let rows: Vec<(String, String)> =
             sqlx::query_as(r#"SELECT key, value FROM settings ORDER BY key ASC"#)
@@ -1152,28 +929,20 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-    // ------------------------------------------------------------ role cache
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()> {
         cache.seed_from_db(&self.pool).await
     }
 
-    // ------------------------------------------------------- track-area cache
     async fn seed_track_area_cache(&self, cache: &TrackAreaCache) -> Result<()> {
         cache.seed_from_db(&self.pool).await
     }
 
-    // ----------------------------------------------------------- mcp tokens
     async fn card_mcp_token_lookup_by_hash(
         &self,
         hashed_token: &str,
     ) -> Result<Option<(String, String)>> {
-        // PR7a.1 (#136 followup) — return `(card_id, hashed_token)` so
-        // the handshake can run a constant-time compare on the stored
-        // hash. The `WHERE` clause already filtered on the hash, so the
-        // returned column is the same value the caller passed in; we
-        // still echo it back rather than hand off the input — that way
-        // a future migration that changes column storage (e.g. hex →
-        // bytes) doesn't break the contract silently.
+        // Echo the stored `hashed_token` so the handshake constant-time compares
+        // against the stored representation, not the caller's input.
         let row: Option<(String, String)> = sqlx::query_as(
             r#"SELECT card_id, hashed_token FROM card_mcp_tokens WHERE hashed_token = ?1"#,
         )

@@ -1,7 +1,4 @@
 // Shared fixtures for the TrackPage behaviour and contract suites.
-//
-// `Track` carries the plugin activity fields, so the factory spreads
-// `NEUTRAL_ACTIVITY` — "no plugin has posted anything" is a value, not a hole.
 
 import { render, type RenderResult } from '@testing-library/react';
 import { vi } from 'vitest';
@@ -30,14 +27,7 @@ export function card(overrides: Partial<CardWire> = {}): CardWire {
   };
 }
 
-/**
- * The fixture's answer to "which cards can the board draw": every card the
- * case names — the listed cards and every task's worker card. In production
- * `app/router` asks the registry (`track-cards-panel.test.tsx` drives that
- * through the real route); these suites are about the page, so unless a case
- * says otherwise nothing it names is unopenable. A case about an unopenable
- * worker passes its own `openableCards` (#1722 S2b r5).
- */
+/** Every card the case names — the listed cards and every task's worker card. A case about an unopenable worker passes its own `openableCards`. */
 export function openableCardsOf(cards: readonly CardWire[], tasks: readonly ReportTaskRow[]): ReadonlySet<string> {
   return new Set([
     ...cards.map((entry) => entry.id),
@@ -48,14 +38,7 @@ export function openableCardsOf(cards: readonly CardWire[], tasks: readonly Repo
   ]);
 }
 
-/*
- * `TrackPage` is a pure renderer: since #1191 §2.4 the secondary panel is a prop
- * fed from `?panel=`, so these suites need something to hold it. This holder is
- * *only* a holder — the production owner is `app/router`'s
- * `useTrackPanelNavigation`, and `app/router/mobile-report-navigation.test.tsx`
- * drives that one through a real router. A test that passes `panel` explicitly
- * opts out and gets the fixed value it asked for.
- */
+/* Only a holder for the `panel` prop; a test that passes `panel` explicitly opts out and gets the fixed value it asked for. */
 function PanelHost({ props }: { props: TrackPageProps }) {
   const [panel, setPanel] = useState<Panel | null>(props.panel ?? null);
   return (
@@ -70,8 +53,6 @@ function PanelHost({ props }: { props: TrackPageProps }) {
 
 export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResult {
   const cards = overrides.cards ?? [];
-  /* A track with no report has no tasks, which is the honest default — the
-     TASKS cases below pass their own. */
   const tasks = overrides.tasks ?? [];
   const props: TrackPageProps = {
     mobilePanelObscured: false,

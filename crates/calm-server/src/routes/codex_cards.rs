@@ -1,27 +1,5 @@
-//! `POST /api/tracks/:track_id/codex-cards` — atomic codex-card creation.
-//!
-//! Structural twin of `routes/terminal_cards.rs` for the codex flow (#117).
-//! Collapses what used to be a 2-step recipe — `POST .../cards` (kind=codex,
-//! empty payload) followed by `POST /api/cards/:id/codex` (spawn PTY +
-//! stamp `terminal_id`) — into a single endpoint:
-//!
-//! 1. Inside one DB transaction, `card_with_codex_create_tx` writes the
-//!    `codex`-kind card, linked `terminal` row, and initial `Starting`
-//!    worker-session row. The transaction also persists the `card.added`
-//!    event with the final payload, so a single
-//!    broadcast carries the fully-formed card to peers — no `card.updated`
-//!    follow-up, no intermediate
-//!    `payload=null` flash for the renderer's "Codex is starting…"
-//!    placeholder to react to.
-//! 2. After commit, the handler starts the terminal renderer via the same
-//!    `spawn_terminal_for` helper the terminal-card endpoint uses. All codex
-//!    cards route through the shared app-server: prompt cards start a shared
-//!    thread and attach `codex resume`; empty cards register pending FIFO
-//!    attribution and spawn `codex --remote`.
-//!    A renderer-start failure returns 500 to the client but does NOT roll
-//!    back the persisted rows: the orphan-terminal sweeper reaps them within
-//!    ~60s.
-//!
+//! `POST /api/tracks/:track_id/codex-cards` — atomic codex-card creation: one transaction writes the card, terminal row and `Starting` worker-session row and persists `card.added` with the final payload; after commit the renderer is started.
+//! A renderer-start failure returns 500 but does NOT roll back the rows; the orphan-terminal sweeper reaps them.
 
 use crate::actor::Actor;
 use crate::codex_appserver::Notification;
@@ -53,35 +31,8 @@ pub fn router() -> Router<AppState> {
     )
 }
 
-/// Body for `POST /api/tracks/:track_id/codex-cards`.
-///
-/// Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
-/// persists schema/UI fields). Empty `cwd` falls back to `$HOME` then the
-/// server's cwd.
-///
-/// `prompt` is the hands-free entry point: when non-empty, the kernel starts
-/// a shared thread, binds it to the runtime row, sends the prompt via
-/// `turn/start`, waits for `turn/started` or `turn/completed`, and starts
-/// the TUI as `codex resume <thread_id> --remote unix://...`.
-///
-/// Empty / absent `prompt` reverts to the user-initiated flow: codex
-/// boots through the shared remote, the composer is empty, the user types
-/// and hits Enter.
-///
-/// Note: the old `initial_prompt` field (which had been a documented
-/// no-op since the codex-TUI port) was removed; serde rejects unknown
-/// fields with the default config, so a stale caller that still sends
-/// it will get a 422 — that's the intended fail-loud signal to update
-/// the caller. The interactive `prompt` channel is the one place
-/// callers should be putting text now.
-///
-/// `theme` is required end-to-end (#177): callers MUST send the host
-/// browser's current foreground/background RGB. The renderer uses it so
-/// codex's OSC 10/11 startup probe gets matching colors. Forcing it at
-/// the type layer means a
-/// caller that forgets — the exact bug that motivated this refactor —
-/// fails at compile time (TS) or at the deserialize step (Rust/JSON,
-/// 422). No `Option`, no `#[serde(default)]`, no implicit fallback.
+/// Body for `POST /api/tracks/:track_id/codex-cards`. Omits `kind` and `payload` (kernel-owned). A non-empty `prompt` starts a shared thread, sends it via `turn/start`, and starts the TUI as `codex resume`; empty means the user types.
+/// `theme` is required with no default: a caller that forgets fails at compile time (TS) or with a 422.
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewCodexCardBody {
@@ -94,10 +45,7 @@ pub struct NewCodexCardBody {
     /// (then `cwd` of server).
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Hands-free seed prompt. When set and non-empty, codex boots with
-    /// its composer pre-filled and the kernel auto-submits the composer
-    /// once codex's session is constructed. See the struct doc for the
-    /// full mechanism.
+    /// Hands-free seed prompt: when non-empty the kernel auto-submits it once codex's session is constructed.
     #[serde(default)]
     pub prompt: Option<String>,
     /// Optional card-head logo background CSS color. Empty string is ignored.
@@ -106,9 +54,7 @@ pub struct NewCodexCardBody {
     /// Optional card-head logo foreground CSS color. Empty string is ignored.
     #[serde(default)]
     pub icon_fg: Option<String>,
-    /// Host browser's current theme RGB (#177). Required so the terminal
-    /// model answers codex's OSC 10/11 startup probe with colors matching
-    /// the host theme. A caller that omits this field gets 422.
+    /// Host browser's current theme RGB, so the terminal model answers codex's OSC 10/11 startup probe with matching colors. Omitting it is a 422.
     pub theme: crate::routes::theme::RequestTheme,
 }
 
@@ -191,12 +137,6 @@ pub(crate) async fn create_codex_card(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers — moved here from `routes/codex.rs` along with the endpoint they
-// support. The remaining `routes/codex.rs` file keeps only the hook-ingest
-// loopback route + its query-param struct.
-// ---------------------------------------------------------------------------
-
 /// Resolve the codex cwd default. `$HOME` if set, else the server's cwd.
 pub(crate) fn default_cwd() -> String {
     std::env::var("HOME")
@@ -252,16 +192,7 @@ pub(crate) async fn await_shared_initial_turn_lifecycle(
     }
 }
 
-/// Wrap a string in POSIX-shell single quotes, escaping any embedded
-/// single quotes by closing the quote, emitting a backslash-quoted
-/// literal `'\''`, then reopening. Used to pass an arbitrary user
-/// prompt to codex as a positional arg without `sh -c` re-interpreting
-/// metacharacters. The output is a single shell word.
-///
-/// Examples:
-///   - `hello` → `'hello'`
-///   - `she said 'hi'` → `'she said '\''hi'\'''`
-///   - `$(rm -rf /)` → `'$(rm -rf /)'` (literal, not expanded by sh)
+/// Wrap a string in POSIX-shell single quotes, escaping embedded single quotes as `'\''`, so an arbitrary prompt passes through `sh -c` as one literal word.
 pub(crate) fn shell_single_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
@@ -317,7 +248,6 @@ mod tests {
 
     #[test]
     fn shell_single_quote_embedded_single_quote() {
-        // `she said 'hi'` → close, escape, reopen — single shell word.
         assert_eq!(
             shell_single_quote("she said 'hi'"),
             "'she said '\\''hi'\\'''"
@@ -326,16 +256,12 @@ mod tests {
 
     #[test]
     fn shell_single_quote_metacharacters_are_literal() {
-        // Defends against `sh -c "codex $promptArg"` re-interpreting
-        // `$(...)`, backticks, `;`, `&&`, `|`, etc. The whole arg is
-        // inside single quotes so sh ships it as one literal word.
+        // Defends against `sh -c "codex $promptArg"` re-interpreting metacharacters.
         let prompt = "$(rm -rf /) `whoami` ; echo pwned && true | cat";
         let quoted = shell_single_quote(prompt);
         assert!(quoted.starts_with('\''));
         assert!(quoted.ends_with('\''));
-        // Single quotes never appear unescaped inside the body —
-        // if they did, sh would close our quoting and the leftover
-        // bytes would be re-parsed.
+        // An unescaped single quote inside the body would close our quoting and let sh re-parse the rest.
         let body = &quoted[1..quoted.len() - 1];
         for window in body.as_bytes().windows(1) {
             if window == b"'" {

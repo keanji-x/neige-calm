@@ -1,24 +1,11 @@
-//! #1704 S2 — the `claude_permissions_policy` field of `PATCH /api/tracks/:id`.
-//!
-//! The policy is a scope under S1's own rules (`validate_scope_named`), so a
-//! Track can never grant a Claude what a Planner declaration could not; the
-//! user-only guard, the "travels alone with `workspace`" rule and the
-//! short-circuit exemption live in `update_track` beside the other policy
-//! fields, and the tree-root-only rule (a child PATCH is 409) is
-//! `track_update_tx`'s, the writer every entry shares.
+//! The `claude_permissions_policy` field of `PATCH /api/tracks/:id`.
 
 use crate::error::{CalmError, Result};
 use crate::model::TrackPatch;
 use crate::terminal_permissions::validate_scope_named;
 
-/// Validate a present policy in place: `Some(Some(scope))` must declare at
-/// least one list (400 `declares nothing; send null to clear`) and pass S1's
-/// scope rules under the field's name (400 with the S1 reason, e.g.
-/// `claude_permissions_policy.bash[0] 'git push': floor command, ...`); the
-/// trimmed scope replaces the patch value. `Some(None)` (clear) and `None`
-/// (leave alone) pass untouched. Shape errors (an array, a `null` list, an
-/// unknown key) never reach here: the `TrackPatch` deserializer refuses them
-/// as 422 naming `claude_permissions_policy`.
+/// Validate a present policy in place; `Some(None)` (clear) and `None` (leave alone)
+/// pass untouched. Shape errors never reach here: the `TrackPatch` deserializer 422s them.
 pub(super) fn validate_policy_patch(patch: &mut TrackPatch) -> Result<()> {
     let Some(Some(scope)) = patch.claude_permissions_policy.as_mut() else {
         return Ok(());

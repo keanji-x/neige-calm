@@ -1,26 +1,4 @@
-//! #1316 S4b — migration 0094 retires the `runtime_id` spelling.
-//!
-//! Every test here is written to FAIL against a specific defective version of
-//! the migration, not merely to observe the happy path:
-//!
-//!   * `rewrites_runtime_started_kind_version_and_payload_key` fails if the
-//!     kind, the `event_version` stamp, or the payload key is left behind —
-//!     and its negative-control row (a payload whose *value* contains the
-//!     literal text `runtime_id`) fails if the rewrite is done with a string
-//!     `replace()` instead of JSON1.
-//!   * `guard_does_not_fabricate_key_on_rows_without_it` fails if any
-//!     statement drops its existence guard: an unguarded `json_set` writes
-//!     `worker_session_id: null` onto rows that never carried the key.
-//!   * `invalid_json_payload_does_not_abort_the_migration` fails if the
-//!     `json_valid` guard is written as an `AND` conjunct (or omitted):
-//!     `json_extract` on a non-JSON body aborts the whole file.
-//!   * `operations_rows_are_untouched` fails if anyone adds an
-//!     `UPDATE operations` — see 0094 §4: the three JSON columns have
-//!     different path shapes, and the wire key is pinned in Rust with
-//!     `#[serde(rename)]` instead.
-//!   * `no_harness_items_index_named_after_runtime_survives` fails if the
-//!     retired index name comes back (`RENAME COLUMN` would have rewritten
-//!     its definition and kept the name).
+//! Migration 0094 retires the `runtime_id` spelling.
 
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use std::str::FromStr;
@@ -57,9 +35,7 @@ async fn apply_sql(pool: &SqlitePool, name: &str, sql: &str) {
     }
 }
 
-/// The three tables 0094 reads, at their pre-0094 shape. `events.payload` has
-/// NO `json_valid` CHECK (that is the whole point of the CASE guard);
-/// `operations`' three JSON columns do, exactly as `0029`/`0042` declare them.
+/// The three tables 0094 reads, at their pre-0094 shape. `events.payload` has no `json_valid` CHECK; `operations`' three JSON columns do.
 async fn stage_pre_0094_schema(pool: &SqlitePool) {
     apply_sql(
         pool,
@@ -162,9 +138,7 @@ async fn rewrites_runtime_started_kind_version_and_payload_key() {
     )
     .await;
 
-    // NEGATIVE CONTROL. A different kind entirely, whose payload merely
-    // *mentions* the word inside a string VALUE. A `replace(payload,
-    // 'runtime_id', ...)` rewrite would corrupt this; JSON1 cannot.
+    // Negative control: a payload that merely *mentions* the word inside a string value; a string `replace()` rewrite would corrupt it, JSON1 cannot.
     let unrelated = insert_event(
         &pool,
         "track.report_edited",
@@ -235,8 +209,6 @@ async fn guard_does_not_fabricate_key_on_rows_without_it() {
     let pool = fresh_pool().await;
     stage_pre_0094_schema(&pool).await;
 
-    // A card event with no `runtime` object at all — the common case, since
-    // `Card.runtime` is Optional and skipped when absent.
     let card_no_runtime = insert_event(
         &pool,
         "card.updated",
@@ -244,7 +216,6 @@ async fn guard_does_not_fabricate_key_on_rows_without_it() {
         15,
     )
     .await;
-    // A harness event that somehow lacks the key.
     let harness_no_key = insert_event(
         &pool,
         "harness.phase.changed",
@@ -252,8 +223,7 @@ async fn guard_does_not_fabricate_key_on_rows_without_it() {
         15,
     )
     .await;
-    // A superseded row holding only ONE of its two ids: the other must not be
-    // conjured as null by the sibling statement.
+    // Holds only one of its two ids: the other must not be conjured as null by the sibling statement.
     let half_superseded = insert_event(
         &pool,
         "runtime.superseded",
@@ -294,8 +264,7 @@ async fn invalid_json_payload_does_not_abort_the_migration() {
     let pool = fresh_pool().await;
     stage_pre_0094_schema(&pool).await;
 
-    // `events.payload` has no json_valid CHECK, so this row is insertable —
-    // and `json_extract` on it aborts an unguarded statement.
+    // `events.payload` has no json_valid CHECK, so this row is insertable, and `json_extract` on it aborts an unguarded statement.
     let junk = insert_event(&pool, "harness.item.added", "not json at all", 15).await;
     let good = insert_event(
         &pool,
@@ -305,7 +274,6 @@ async fn invalid_json_payload_does_not_abort_the_migration() {
     )
     .await;
 
-    // The assertion is that this does not panic.
     apply_sql(&pool, "0094", MIGRATION_0094_SQL).await;
 
     let (_, payload, version) = event_row(&pool, junk).await;
@@ -372,7 +340,6 @@ async fn no_harness_items_index_named_after_runtime_survives() {
     stage_pre_0094_schema(&pool).await;
     apply_sql(&pool, "0094", MIGRATION_0094_SQL).await;
 
-    // The column really did move.
     let columns: Vec<String> = sqlx::query("SELECT name FROM pragma_table_info('harness_items')")
         .fetch_all(&pool)
         .await

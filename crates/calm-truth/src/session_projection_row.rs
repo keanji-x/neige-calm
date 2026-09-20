@@ -8,28 +8,11 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::HashMap;
 
-/// #1722 S1b — the one spelling of "when did this card's last turn end".
-///
-/// A correlated subquery over the transcript table: the newest
-/// `turn/completed` row for the card whose outcome is not `interrupted`
-/// (`params` is the turn object; `status` sits at its root, so a `failed`
-/// turn counts as an ending and an interrupt does not). `c` is the `cards`
-/// alias of the enclosing statement — every embedding SELECT below binds it,
-/// and so does the conversation list in `calm-server`, which embeds this
-/// constant so the two surfaces can never disagree about the instant.
-///
-/// It is the transcript row, not `worker_sessions.last_turn_completed_ms`:
-/// the feeder stamps that column for stale turns too, while the transcript
-/// row is written only for the turn that really ended (§4.7 of the design).
-/// The `(card_id, method, created_at_ms)` index of migration 0110 serves it.
-///
-/// Spelled once as a macro so that `concat!` can inline it into the three
-/// `const` SELECTs; the `pub const` is the same literal for `format!` users.
-/// Exported (`#[macro_export]`, so it lives at the crate root as
-/// `calm_truth::last_turn_completed_ms_subquery!`) for the one `const`
-/// embedding outside this crate: the activity projector's E1 statement in
-/// `calm-server` (`track_activity::sql`), which must be a `const` so its
-/// `EXPLAIN QUERY PLAN` test runs the production text.
+/// The one spelling of "when did this card's last turn end": the newest
+/// non-`interrupted` `turn/completed` transcript row (a `failed` turn counts as
+/// an ending). `c` is the enclosing statement's `cards` alias. Not
+/// `worker_sessions.last_turn_completed_ms`: the feeder stamps that for stale
+/// turns too. A macro so `concat!` can inline it into `const` SELECTs.
 #[macro_export]
 macro_rules! last_turn_completed_ms_subquery {
     () => {
@@ -41,9 +24,8 @@ macro_rules! last_turn_completed_ms_subquery {
 
 pub const LAST_TURN_COMPLETED_MS_SUBQUERY: &str = last_turn_completed_ms_subquery!();
 
-/// The projection column list, shared by the three SELECTs below so a column
-/// added to one is added to all — `card_runtime_from_ws_join_row` reads every
-/// column by name and fails on a missing one.
+/// Shared by the three SELECTs so a column added to one is added to all;
+/// `card_runtime_from_ws_join_row` reads every column by name.
 macro_rules! ws_card_runtime_select {
     ($tail:literal) => {
         concat!(
@@ -79,21 +61,9 @@ pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = ws_card_runtime_select!(
            JOIN cards c ON c.session_id = ws.id"
 );
 
-/// The **one** definition of "which runtime is this card's ACTIVE one", as a
-/// single SQL SELECT that yields exactly that runtime's id (or no row).
-/// `?1` is the card id.
-///
-/// It owns the state filter and the newest-first tie-break, and it exists so
-/// that no second reader has to restate either. `runtime_get_active_for_card_from_pool`
-/// — the read behind `Repo::session_projection_active_for_card` — is built from
-/// it, and so is the `harness.user_message.enqueued` predicate in
-/// `calm-server/src/routes/conversations_shared.rs`, which embeds it as a
-/// subquery so that "is there evidence" and "which runtime is live" are decided
-/// by one statement over one snapshot instead of two racing reads (#1314).
-///
-/// A caller that wants the whole projection row wraps this
-/// (`... WHERE ws.id = (<this>)`); a caller that only needs to compare ids uses
-/// it directly. Either way the state list is written here and nowhere else.
+/// The **one** definition of "which runtime is this card's ACTIVE one"; `?1`
+/// is the card id. Owns the state filter and the newest-first tie-break so no
+/// second reader restates either; `calm-server` embeds it as a subquery too.
 pub const ACTIVE_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id
              FROM worker_sessions ws
              JOIN cards c ON c.session_id = ws.id
@@ -135,8 +105,7 @@ pub(crate) fn projectable_runtimes_for_cards_from_rows(
 }
 
 /// `last_turn_completed_ms` is a column of the projection row, not of
-/// `WorkerSession` (#1722 S1b): the join row carries the
-/// [`LAST_TURN_COMPLETED_MS_SUBQUERY`] result and hands it in here.
+/// `WorkerSession`; the join row hands it in here.
 pub(crate) fn card_runtime_from_session(
     ws: &WorkerSession,
     card_id: String,
@@ -279,9 +248,6 @@ mod tests {
         }
     }
 
-    /// The three SELECTs and the exported constant all spell the subquery
-    /// from one macro; this pins that no copy drifts and that every SELECT
-    /// carries the column `card_runtime_from_ws_join_row` reads.
     #[test]
     fn every_projection_select_carries_the_last_turn_completed_column() {
         for sql in [

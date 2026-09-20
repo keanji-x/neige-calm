@@ -57,8 +57,6 @@ async fn running_worker(boot: &Boot, task: &Task) -> ToolCallIdentity {
             .unwrap(),
         1
     );
-    // Produce the immutable receipt through actual preparation, without invoking
-    // controller/provider start or copying the production receipt shape into a fixture.
     let output = adapter
         .prepare_tx(&mut tx, &payload, &operation)
         .await
@@ -198,7 +196,6 @@ async fn exact_attempt_accepted_report_survives_refresh_and_rejects_cross_scope(
             (StatusCode::OK, json!({"attemptId":task.id,"report":null}))
         );
         let identity = running_worker(&boot, &task).await;
-        // A process state/exit and patchable card result are not accepted reports.
         sqlx::query("UPDATE cards SET payload=json_set(payload,'$.result','forged') WHERE id=?1")
             .bind(&identity.card_id)
             .execute(boot.repo.pool())
@@ -236,7 +233,6 @@ async fn exact_attempt_accepted_report_survives_refresh_and_rejects_cross_scope(
                 StatusCode::NOT_FOUND
             );
         }
-        // Later same-outcome retry does not replace the accepted report.
         native_report(&boot, identity, &task, success, json!("replacement")).await;
         assert_eq!(
             request(&app, &uri, &cookie, "user", None).await.1["report"],
@@ -283,8 +279,7 @@ async fn task_shaped_foreign_events_and_dispatcher_failure_are_not_worker_report
         track: boot.track_id.clone(),
         area: identity.area_id.clone().into(),
     };
-    // Deliberately corrupt fixture evidence, one factor per row. Public readers
-    // must not trust just an echoed attempt id or a task-shaped payload.
+    // Deliberately corrupt fixture evidence, one factor per row.
     for (actor, scope, event) in [
         (
             ActorId::AiPlannerSession("planner".into()),
@@ -337,7 +332,6 @@ async fn task_shaped_foreign_events_and_dispatcher_failure_are_not_worker_report
         request(&app, &uri, &cookie, "user", None).await.1["report"],
         Value::Null
     );
-    // Provider-native observations remain observations even with a task-shaped payload.
     // Use the gated writer so this prunable event receives its real insertion time.
     let roles = calm_server::card_role_cache::CardRoleCache::new();
     boot.repo.seed_card_role_cache(&roles).await.unwrap();

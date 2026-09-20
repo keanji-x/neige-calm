@@ -11,7 +11,6 @@ pub fn scrollback_request(req: calm_session::InitialScrollback) -> ScrollbackLim
     }
 }
 
-// Copied from crates/calm-session/src/bin/daemon.rs::rebuild_server_hello_snapshot as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 pub fn rebuild_server_hello_snapshot(
     msg: DaemonMsg,
     render_plane: &SharedRenderPlane,

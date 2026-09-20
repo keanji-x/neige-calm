@@ -1,41 +1,6 @@
-//! `/api/track-recipes` — user-defined starting points for a new track (#1292).
-//!
-//! # What a recipe is
-//!
-//! A saved report: a title (which doubles as the instantiated report's
-//! summary) and a body whose `neige-block` fences **are** its tasks. It is
-//! deliberately not a track. #1300 removed "template = a hidden track" because
-//! that shape cost seven "this track is special" exceptions across unrelated
-//! subsystems plus a kernel report write that impersonated the user; storing
-//! recipes as tracks again would buy back every one of those.
-//!
-//! The built-in templates are files compiled into the binary
-//! (`templates/builtin/*.md`, #1635 S4) and are **not** rows here. Both feed
-//! the same instantiation seam
-//! (`routes::tracks::prepare_initial_report_payload`), so "built-in" and
-//! "mine" differ only in where the payload came from. Built-ins are
-//! therefore read-only by construction rather than by a guard: there is no
-//! row to write.
-//!
-//! # Why the write side is a whole-document PUT, not block ops
-//!
-//! A track's report needs block-level CAS because a user, a planner agent and
-//! an agent write it concurrently and none of them knows about the others —
-//! losing an update there costs attribution and audit.
-//!
-//! A recipe's only writer is its owner, possibly from two windows. That is
-//! still concurrency, but the correct handling differs: showing the second
-//! writer a conflict is enough, and the cost of losing is redoing one edit.
-//! So the lock is a single `revision` CAS and the answer to a stale write is
-//! 409 — not a merge engine that nothing here needs.
-//!
-//! # No events
-//!
-//! Recipe writes emit no `Event`. Minting a variant would pull in frontend
-//! zod schemas, invalidation policies and golden counts, and would buy only
-//! "the other window refreshes by itself" — while the `revision` CAS already
-//! ensures the other window cannot silently clobber. Deferred deliberately;
-//! see #1292 design §3.1b.
+//! `/api/track-recipes` — user-defined starting points for a new track: a saved report
+//! whose `neige-block` fences are its tasks. Writes are a whole-document PUT under a
+//! single `revision` CAS and emit no `Event`.
 
 use crate::actor::Actor;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -65,152 +30,16 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// Bring a body into the canonical shape a recipe is allowed to hold.
-///
-/// Every parseable `neige-block` fence is re-rendered through
-/// [`render_fence`], so the stored body holds each one in exactly the form
-/// [`render_fence`] produces. That is not cosmetic. Instantiation
-/// (`routes::tracks::prepare_initial_report_payload` → `ReportDoc` →
-/// `reassign_ids`) re-renders every fence it can parse, so any fence stored
-/// in some other spelling — a compact `app` payload, say — would come out of
-/// `create` with different bytes than the picker showed. Canonicalising here
-/// makes that re-render the identity, which turns "the recipe and the track
-/// made from it are byte-for-byte the same document" from a claim into a
-/// construction.
-///
-/// Three further transforms apply to task fences only, and each is about
-/// **not carrying something out of the track this fence was authored in**
-/// and into every track made from this recipe — either an authority granted
-/// there, or a name that only means anything there. `crate::task_privilege`'s
-/// module doc states the rule that sorts the two apart and says why only the
-/// authority half can be shared as one function with fork:
-///
-/// 1. **Tombstones are dropped**, leaving a blank-line boundary behind. A
-///    tombstone blocks re-declaring its key (`report_blocks::tasks`), so a
-///    recipe carrying one would poison every instantiated track — that key
-///    could never be used again in any of them. Fork instead *keeps*
-///    tombstones, because they are that track's audit history. (That is one
-///    instance of the rule in `crate::task_privilege`'s module doc, not the
-///    only one — a tombstone claims a key, and keys are track-scoped.) A
-///    recipe has no history to preserve; it describes work not yet done.
-///
-///    The blank line is not cosmetic. Splicing the dropped fence's two prose
-///    neighbours together makes them one Markdown paragraph context, and the
-///    join can *create* syntax neither side wrote: `foo\n` followed by
-///    `---\n` is a Setext H2 titled "foo", where the original had a
-///    paragraph and a thematic break. Deleting one task must not re-parse
-///    the prose around it, so [`restore_paragraph_break`] reinstates the
-///    paragraph boundary the fence used to provide.
-/// 2. **Privilege fields are normalized** via the same
-///    [`normalize_task_privilege_fields`] the fork path calls, so
-///    `declared_by`/`ready`/`released_by_user` cannot smuggle in authorship
-///    or a human approval granted somewhere else.
-/// 3. **`refs` is dropped.** Every entry there must be a block reference —
-///    `report_blocks::kinds` rejects anything `parse_destination` cannot
-///    resolve to a `(track id, block id)` pair
-///    (`report_links::format_track_destination` is the spelling). Block ids
-///    are minted per track *at instantiation*: the recipe body reaches
-///    `ReportDoc::from_payload` inside a `TrackReportPayload::new`, whose
-///    `blocks` is `None`, so the `reassign_ids` there aligns against an empty
-///    old-block set and every block in the new track gets a freshly minted
-///    id; the new track's own id is fresh too. A recipe therefore owns no
-///    id it could reference. Whatever it ships names a block in some *other*
-///    track, and — unlike fork, nothing rewrites it here — goes on naming
-///    that same other track in every track instantiated from the recipe.
-///
-///    Exactly one of two outcomes then follows, and both are wrong. The
-///    "exactly one" is the projection's own reference loop. A stored `refs`
-///    entry is already `(track, Some(block))` — [`validate_recipe_body`]
-///    checks the fence on the way in and `prepare_initial_report_payload`
-///    checks it again at instantiation — so the loop skips its
-///    `reference_needs_block` arm, looks the entry up, and matches on the row
-///    it gets back, where the only arms are "resolves" and the two
-///    diagnostics below.
-///
-///      * the target still resolves (same area, or the system area, which
-///        `task_context::resolve_from_root_with_revs` exempts) — then
-///        `task_context::block_links` walks `refs` while building the frozen
-///        closure and freezes **another track's block** into this task's
-///        prompt. A recipe shared between tracks becomes a content channel
-///        between them;
-///      * the target is gone or lives in another area — the projection
-///        raises `reference_missing` / `reference_cross_area`, whose
-///        diagnostic path is `"refs"`, which is in
-///        `TASK_BLOCKING_DIAGNOSTIC_PATHS`. The instantiated task is not
-///        schedulable, and stays that way until somebody edits the reference
-///        out of that track's report — separately, in every track the recipe
-///        ever produces.
-///
-///    Fork faces the same fact and answers it the other way: it **rewrites**
-///    each entry onto the copied block (`prepare_fork_report` →
-///    `report_links::rewrite_track_destination`), because it has a source
-///    track to rewrite against. A recipe has no source track and no id space
-///    of its own, so there is nothing to rewrite to — only a claim to
-///    withdraw.
-///
-///    **What is not the reason: that the system consumes `refs` and leaves
-///    the rest of the task alone.** It consumes both. A markdown link with a
-///    block destination written into `goal` or `acceptance` reaches the same
-///    two consumers as an explicit `refs` entry, and this slice keeps those
-///    links:
-///
-///      * `calm_truth::db::sqlite::task_projection::declaration_references`
-///        concatenates `refs` with the block-bearing links it scans out of
-///        `goal` and `acceptance` into one list, and the reference loop reads
-///        only that list — so a broken link in the prose raises the same
-///        `reference_missing` / `reference_cross_area`, carrying the same
-///        `"refs"` path, and blocks the task exactly as hard;
-///      * `task_context::block_links` walks `refs` and then every field
-///        `report_blocks::scannable_text_fields` names for a task block
-///        (`goal`, `acceptance`) — so a link in either place freezes its
-///        target into the same closure.
-///
-///    So the hazard is not exclusive to `refs`, and dropping the field does
-///    not close it: a recipe whose `goal` links a foreign block still carries
-///    that link into every track made from it. That residual is left open
-///    deliberately, because of what this boundary can and cannot do.
-///
-///    A `refs` entry is nothing but a destination. `refs` is optional in the
-///    task schema (`report_blocks::kinds::validate_payload`), so removing the
-///    key removes the whole claim and leaves a complete, valid task fence:
-///    the withdrawal costs no content. A link inside `goal`/`acceptance` is a
-///    destination embedded in a sentence its author wrote, where the label
-///    and the words around it are content in their own right. Withdrawing it
-///    means editing that sentence — unlinking it, or cutting the clause —
-///    and this boundary does not edit the author's prose (prose slices pass
-///    through byte-identical, and a task's `goal` / `acceptance` strings are
-///    re-rendered unchanged). Fork can rewrite such a link only because it
-///    has a target to rewrite it to; a recipe would have to pick an edit to
-///    the prose, or invent a target.
-///
-///    The rule this boundary applies is therefore narrower than "a recipe
-///    carries no reference into another track": it withdraws the references
-///    it can withdraw without rewriting text its author wrote, and of these
-///    two carriers only `refs` qualifies.
-///
-///    `cwd` is deliberately **not** dropped alongside it, although it is the
-///    other field a recipe inherits from wherever it was authored. A `cwd`
-///    is something its author can mean and can be right about ("this recipe
-///    always runs in that repo"), because a path exists independently of any
-///    track. A `refs` entry is not a value she could get right at recipe
-///    scope at all: the ids it would have to name do not exist until the
-///    track that mints them does.
-///
-/// Prose slices pass through byte-identical, and so does anything
-/// [`parse_fence`] declines — the lenient read treats those as prose too, and
-/// rewriting text nobody could parse is not this function's job.
-///
-/// Runs at the write boundary rather than at instantiation so the stored row
-/// is already canonical — which is what makes "what the picker shows" and
-/// "what create produces" the same bytes, structurally. Reading the same row
-/// twice cannot disagree with itself; that was #1230's failure shape.
+/// Bring a body into the canonical shape a recipe is allowed to hold: every parseable
+/// fence is re-rendered so instantiation's re-render is the identity. Task fences
+/// additionally drop tombstones (a tombstone would poison the key in every instantiated
+/// track; a blank line is restored so the neighbours do not re-parse as one paragraph),
+/// normalize privilege fields, and drop `refs` (block ids are minted per track at
+/// instantiation, so any entry names a block in some other track).
 fn normalize_recipe_body(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
-    // Set when a tombstone was dropped; consumed by whatever is emitted
-    // next. Deferring it this way is what keeps normalization idempotent:
-    // a body with nothing after the tombstone gains no trailing blank
-    // line, and a normalized body has no tombstones left to drop, so
-    // re-normalizing it is byte-for-byte the identity.
+    // Set when a tombstone was dropped; consumed by whatever is emitted next, which keeps
+    // normalization idempotent.
     let mut pending_break = false;
     for slice in split_body(body) {
         let rendered = match parse_fence(&slice.raw) {
@@ -225,23 +54,18 @@ fn normalize_recipe_body(body: &str) -> String {
                 }
                 match fence.payload {
                     Value::Object(mut payload) => {
-                        // Not folded into `normalize_task_privilege_fields`:
-                        // fork rewrites `refs`, it does not drop them. See
-                        // point 3 above and that function's module doc.
+                        // Not folded into `normalize_task_privilege_fields`: fork rewrites `refs`, it does not drop them.
                         payload.remove("refs");
                         normalize_task_privilege_fields(&mut payload);
                         render_fence(KIND_TASK, &Value::Object(payload))
                     }
-                    // `parse_fence` only returns object payloads; keep the
-                    // slice rather than inventing a shape if that changes.
+                    // `parse_fence` only returns object payloads; keep the slice rather than inventing a shape.
                     _ => slice.raw,
                 }
             }
-            // Every other parseable fence is re-rendered and nothing else:
-            // no opinion about its payload, only about its bytes.
+            // Every other parseable fence is re-rendered and nothing else.
             Some(fence) => render_fence(&fence.kind, &fence.payload),
-            // Not a well-formed fence — the lenient read calls it prose, and
-            // prose passes through untouched.
+            // Not a well-formed fence — the lenient read calls it prose.
             None => slice.raw,
         };
         if pending_break {
@@ -253,12 +77,8 @@ fn normalize_recipe_body(body: &str) -> String {
     out
 }
 
-/// End `out` on a blank line so that whatever is appended next starts a new
-/// Markdown block, never a continuation of the last one.
-///
-/// No-op when `out` is empty (nothing to separate from) or already ends on a
-/// blank line (nothing to add) — which is what makes repeated calls, and
-/// therefore repeated normalization, non-accumulating.
+/// End `out` on a blank line so whatever is appended next starts a new Markdown block.
+/// No-op when empty or already blank-terminated, so repeated calls do not accumulate.
 fn restore_paragraph_break(out: &mut String) {
     if out.is_empty() || out.ends_with("\n\n") {
         return;
@@ -269,20 +89,9 @@ fn restore_paragraph_break(out: &mut String) {
     out.push('\n');
 }
 
-/// Validate a candidate recipe body the same way track creation validates the
-/// payload it is about to instantiate.
-///
-/// `BadRequest`, not `Internal`: unlike `prepare_template_report`, whose
-/// every byte comes from a Rust constant, this body came from the caller.
-///
-/// #1635 S2c — also the contract-header check the funnel runs on a track
-/// report (`check_document`: at most one header, on line 1, canonical, block
-/// 0's comment closed), run here at the recipe's own write boundary because
-/// a stored recipe never reaches the funnel until it is instantiated. The
-/// caller has already run [`normalize_header`], so `Internal` cannot come
-/// back; it is mapped to `BadRequest` with its message all the same. A body
-/// that starts with `+++` is refused first: that prefix is a template file's
-/// front matter (#1635 D1), not recipe content.
+/// Validate a candidate recipe body the same way track creation validates the payload it
+/// is about to instantiate. `BadRequest`, not `Internal`: this body came from the caller.
+/// A body starting with `+++` is refused first: that prefix is template front matter.
 fn validate_recipe_body(body: &str) -> Result<()> {
     if body.starts_with("+++") {
         return Err(CalmError::BadRequest(
@@ -298,10 +107,8 @@ fn validate_recipe_body(body: &str) -> Result<()> {
         .map_err(|error| CalmError::BadRequest(format!("report contract header: {error}")))
 }
 
-/// #1635 S2c — the recipe ingress: line 1 rewritten to the canonical header
-/// (or the body handed back untouched when there is none), the same rule
-/// `apply_report_op` applies to a `Replace` body. Runs after
-/// [`normalize_recipe_body`], which touches fences only, and before
+/// The recipe ingress: line 1 rewritten to the canonical header (or the body handed back
+/// untouched when there is none). Runs after [`normalize_recipe_body`] and before
 /// [`validate_recipe_body`], so the stored row is what the funnel will accept.
 fn normalize_recipe_header(body: &str) -> Result<String> {
     normalize_header(body)
@@ -309,16 +116,8 @@ fn normalize_recipe_header(body: &str) -> Result<String> {
         .map_err(|error| CalmError::BadRequest(format!("report contract header: {error}")))
 }
 
-/// The same actor decision the block endpoints make, said in this endpoint's
-/// own words.
-///
-/// The rule is identical — REST writes are the human's channel — so the
-/// *judgement* stays in [`require_rest_user_actor_for`] and is never restated
-/// here; restating it is how the two drift apart. Only the redirect sentence
-/// differs: the block endpoints point the refused caller at `calm.report.*`,
-/// which is the right redirect for a track report and the wrong one for a
-/// recipe (no MCP tool writes recipes at all — an agent that wants this
-/// starting point asks its human for it).
+/// The same actor decision the block endpoints make; only the redirect sentence differs
+/// (no MCP tool writes recipes at all).
 fn require_recipe_user_actor(actor: &Actor) -> Result<()> {
     require_rest_user_actor_for(
         actor,
@@ -348,8 +147,7 @@ pub struct CreateRecipeBody {
 pub struct UpdateRecipeBody {
     pub title: String,
     pub body: String,
-    /// The `revision` the caller read. A mismatch is 409 — never a silent
-    /// overwrite.
+    /// The `revision` the caller read. A mismatch is 409 — never a silent overwrite.
     pub if_revision: i64,
 }
 

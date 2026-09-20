@@ -1,26 +1,5 @@
-//! #1667 D3 — `calm.user.notify`, the planner's one way to speak to the
-//! user from a background turn.
-//!
-//! A `ReportEdited` wake is a quiet sync: the front end folds the whole
-//! turn — the system input, the tool calls, the agent messages — into one
-//! line the reader can expand. Anything the planner writes as an ordinary
-//! reply in such a turn therefore lands inside the fold. This tool is the
-//! explicit "say it out loud" action: the front end renders a
-//! `calm.user.notify` call as a normal agent bubble and keeps it OUT of the
-//! fold, so the planner reaches the reader exactly when it decides to.
-//!
-//! The kernel side is deliberately thin. It validates `text` (non-empty
-//! after trimming, at most [`MAX_TEXT_CHARS`] characters), answers
-//! `{"ok": true}` and writes nothing: codex persists the `mcpToolCall`
-//! item — `item/started` and `item/completed`, `arguments` included — as a
-//! harness item row through the run loop's existing path, and that row is
-//! what the front end reads (`params.item.arguments.text`; verified against
-//! the production transcript table, where every one of the 426
-//! `mcpToolCall` rows carries `arguments`).
-//!
-//! Planner-only in `tools/list` and at the handler: an assistant session
-//! talks to its user in its own transcript and has no background turns to
-//! break out of.
+//! `calm.user.notify`, the planner's one way to speak to the user from a background turn: the front end renders the call as a
+//! normal agent bubble outside the fold. The kernel only validates `text` and writes nothing; codex persists the `mcpToolCall` item.
 
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -33,8 +12,7 @@ use std::sync::Arc;
 
 pub const TOOL_USER_NOTIFY: &str = "calm.user.notify";
 
-/// Upper bound on `text`, in characters (not bytes): a notification is a
-/// sentence or a short paragraph, not a report.
+/// Upper bound on `text`, in characters (not bytes).
 pub const MAX_TEXT_CHARS: usize = 2000;
 
 pub fn register_into(registry: &mut ToolRegistry) {

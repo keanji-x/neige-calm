@@ -1,24 +1,5 @@
-//! sqlx row wrappers for the calm-types entities (#679 PR1).
-//!
-//! calm-types is sqlx-free by design (zero-IO compile firewall), and the
-//! orphan rule forbids implementing `sqlx::FromRow` for its types from
-//! here. So every moved entity gets a thin `XRow` mirror that derives
-//! `FromRow` and converts via `From<XRow> for X`:
-//!
-//! ```text
-//!   query_as::<_, TrackRow>(…).fetch_one(…).await?.into()   // → Track
-//! ```
-//!
-//! Field lists mirror the SELECT column lists 1:1; typed ids and persisted
-//! enums decode through `#[sqlx(try_from = "String")]` against the
-//! `TryFrom<String>` impls in calm-types (ids are infallible via their
-//! `From<String>`; enums reject unknown strings, same behavior as the old
-//! `sqlx::Type` derive). Binds use `.as_str()` / `.as_db_str()` at the call
-//! sites — the stored TEXT shapes are unchanged and pinned by calm-types
-//! tests.
-//!
-//! This module is the shim-window home for row mapping; #679 PR2 moves it
-//! into calm-truth together with the repos.
+//! sqlx row wrappers for the calm-types entities: calm-types is sqlx-free and the orphan rule forbids `FromRow` on
+//! its types, so each entity gets a thin `XRow` mirror converted via `From<XRow> for X`. Field lists mirror the SELECT column lists 1:1.
 
 use crate::ids::{AreaId, CardId, TrackId};
 use crate::model::{
@@ -80,23 +61,14 @@ impl From<AreaFolderRow> for AreaFolder {
     }
 }
 
-/// The `tracks` column list every `query_as::<_, TrackRow>` SELECT must use,
-/// in `TrackRow` field order.
-///
-/// Issue #1147 S1: this used to be nine hand-copied literals. `query_as`
-/// binds columns by name at **runtime**, so a column added to `TrackRow`
-/// without touching all nine SELECTs compiles fine and then blows up in
-/// production on whichever route happened to keep the stale list — the
-/// `tracks` replay of the `CardRow` incident. One const kills the class.
-/// Use [`TRACK_SELECT_COLUMNS_W`] where the query aliases the table as `w`.
+/// The `tracks` column list every `query_as::<_, TrackRow>` SELECT must use, in `TrackRow` field order. `query_as`
+/// binds columns by name at **runtime**, so a stale hand-copied list compiles fine and blows up in production.
 pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
      plugin_scope, purpose, template_input, terminal_at, recipe_id, recipe_revision, \
      workspace_kind, workspace_path, workspace_frozen_at, created_at, updated_at, \
      claude_permissions_policy";
 
-/// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias.
-/// `#[sqlx(flatten)]` / `FromRow` still resolve the *unqualified* names, so the
-/// two lists must stay in lockstep — `track_select_columns_lists_agree` pins that.
+/// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias; the two lists must stay in lockstep.
 pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
      w.template_id, w.plugin_scope, w.purpose, w.template_input, w.terminal_at, \
      w.recipe_id, w.recipe_revision, w.workspace_kind, w.workspace_path, \
@@ -118,36 +90,23 @@ pub struct TrackRow {
     pub template_id: Option<String>,
     pub plugin_scope: Option<String>,
     pub purpose: Option<String>,
-    /// Nullable JSON TEXT column (migration 0061); decodes through the same
-    /// `#[sqlx(json)]` machinery as `CardRow.payload`, `nullable` so a NULL
-    /// column lands as `None` instead of a decode error.
+    /// Nullable JSON TEXT column; `nullable` so a NULL lands as `None` instead of a decode error.
     #[sqlx(json(nullable))]
     pub template_input: Option<serde_json::Value>,
     pub terminal_at: Option<i64>,
-    /// #1292 S3 — migration 0085. The user recipe this track was instantiated
-    /// from, and the recipe revision that was current at that moment. Both
-    /// NULL for every other creation source; a DB CHECK refuses one-without-
-    /// the-other. `recipe_id` may name a recipe that has since been edited or
-    /// deleted — the track holds a copy, so the id is a record of origin, not
-    /// a live reference.
+    /// The user recipe this track was instantiated from and its revision at that moment; both NULL for every other
+    /// creation source. `recipe_id` is a record of origin, not a live reference — the recipe may since be edited or deleted.
     pub recipe_id: Option<String>,
     pub recipe_revision: Option<i64>,
-    /// #1147 S1 — migration 0077. The three columns behind [`TrackWorkspace`].
-    /// `workspace_path` is the only stored copy of the path; the old `cwd`
-    /// column was dropped by that same migration.
+    /// The three columns behind [`TrackWorkspace`]; `workspace_path` is the only stored copy of the path.
     #[sqlx(try_from = "String")]
     pub workspace_kind: TrackWorkspaceKind,
     pub workspace_path: String,
     pub workspace_frozen_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// #1704 S2 — migration 0109. The tree root's Claude Code permission
-    /// policy as stored (a child row is NULL; ceiling reads resolve the root
-    /// separately). Nullable JSON TEXT through the same `#[sqlx(json)]`
-    /// machinery as `template_input`; a value the scope derive cannot decode
-    /// fails the read (an error, never "no policy") — the derive is lenient
-    /// about unknown keys and, like any serde struct, accepts a positional
-    /// array.
+    /// The tree root's Claude Code permission policy as stored (a child row is NULL); a value the scope derive cannot
+    /// decode fails the read (an error, never "no policy").
     #[sqlx(json(nullable))]
     pub claude_permissions_policy: Option<ClaudePermissionsScope>,
 }
@@ -162,8 +121,7 @@ impl From<TrackRow> for Track {
             archived_at: r.archived_at,
             pinned_at: r.pinned_at,
             lifecycle: r.lifecycle,
-            // The one place the wire alias is computed. There is no other
-            // source for it: the column it used to mirror no longer exists.
+            // The one place the wire alias is computed.
             cwd_wire_alias: r.workspace_path.clone(),
             template_id: r.template_id,
             plugin_scope: r.plugin_scope,
@@ -188,35 +146,9 @@ impl From<TrackRow> for Track {
 mod track_select_columns_tests {
     use super::{TRACK_SELECT_COLUMNS, TRACK_SELECT_COLUMNS_W};
 
-    /// The aliased list must be the unaliased list with `w.` in front of each
-    /// name — nothing added, nothing dropped, same order. Without this the two
-    /// consts drift and the aliased `track_detail` SELECT silently loses a
-    /// column at runtime, which is the exact failure the consts exist to stop.
-    ///
-    /// # Read this before trusting a green run here
-    ///
-    /// **This test defends the consistency of the two constants with each
-    /// other. It does not defend the consistency of either constant with
-    /// [`TrackRow`] or with the `tracks` table.**
-    ///
-    /// It never looks at `TrackRow`'s fields and never looks at the schema. So
-    /// the most natural mistake — adding a field to `TrackRow` and forgetting
-    /// *both* lists — leaves this test green, and the SELECTs then fail at
-    /// runtime with `no column found for name: …`, because `query_as` binds by
-    /// name when the query runs, not when it compiles. What it does catch is any
-    /// asymmetry between the two lists — it compares names *and* order after
-    /// stripping the `w.` prefix, so a one-sided drop, a one-sided addition, a
-    /// one-sided rename and a one-sided reorder all turn it red. What escapes it
-    /// is both lists missing the same column.
-    ///
-    /// The thing that catches a symmetric omission is a test that actually
-    /// executes a SELECT and reads the new column back. #1292 S3 added two,
-    /// one per constant, in
-    /// `calm-server/tests/cases/track_recipe_instantiate.rs`:
-    /// `a_recipe_created_track_records_which_recipe_and_which_revision` covers
-    /// [`TRACK_SELECT_COLUMNS`] and `the_track_detail_route_carries_the_provenance`
-    /// covers [`TRACK_SELECT_COLUMNS_W`]. If you add a column here, add a read
-    /// assertion there too — green here is not the same as safe.
+    /// The aliased list must be the unaliased list with `w.` in front of each name, same order. This only defends the two
+    /// constants against each other — a field added to `TrackRow` and forgotten in *both* lists stays green here and fails
+    /// at runtime; only a test that executes a SELECT and reads the new column back catches that.
     #[test]
     fn track_select_columns_lists_agree() {
         let plain: Vec<String> = TRACK_SELECT_COLUMNS
@@ -232,12 +164,7 @@ mod track_select_columns_tests {
     }
 }
 
-/// Row mirror of [`Card`].
-///
-/// `Card.runtime` is `#[sqlx(skip)]` in spirit: it is a lazy projection
-/// joined after the fetch (`session_projection_projectable_for_card`), never a
-/// `cards` column — the conversion seeds it `None` exactly like the old
-/// derive did.
+/// Row mirror of [`Card`]. `Card.runtime` is a lazy projection joined after the fetch, never a `cards` column; the conversion seeds it `None`.
 #[derive(Debug, sqlx::FromRow)]
 pub struct CardRow {
     #[sqlx(try_from = "String")]
@@ -318,39 +245,9 @@ impl TryFrom<HarnessItemRow> for HarnessItem {
     }
 }
 
-/// Row of the `worker_flow_items` table (#695 PR2).
-///
-/// Sibling of the planner transcript row, but deliberately *not* a mirror of a
-/// calm-types model entity: it is the raw persistence shape for the
-/// worker message-flow capture table, returned straight to callers
-/// (no `From<…>` projection — PR3's sink/projection owns that).
-///
-/// `card_id` is `Option<String>` because the table's FK is
-/// `REFERENCES cards(id) ON DELETE SET NULL` — a row must survive the
-/// deletion of its worker card (#695), so this column goes NULL rather
-/// than cascading away.
-///
-/// `worker_session_id` and `captured_session_id` hold the same value on every
-/// insert the PR5 sink makes, and are still NOT redundant — which is why
-/// #1316 S4a renamed the second rather than deleting it. `worker_session_id`
-/// is the live FK (`ON DELETE SET NULL` per 0049, so it is nullable on
-/// purpose) and goes NULL when the session is deleted. `captured_session_id`
-/// has no FK, so nothing un-links it when the session goes — it outlives it.
-/// Where its value comes from depends on the row's age: the sink has written
-/// it since #695 PR5, and `0049` synthesized it for older rows, which the PR3
-/// sink had left NULL. "Captured" is about when the value stops changing, not
-/// about which writer put it there.
-///
-/// For rows written before #695 PR5, `captured_session_id` can also disagree
-/// with `payload.session_id` — not with the column beside it, which no writer
-/// in this repo's history can make it disagree with: `0049` backfilled the
-/// column with the resolved runtime id while the payload still holds the
-/// provider's agent session string.
-///
-/// Both stay `Option<String>` so older fixture rows can still decode in tests
-/// that exercise migration boundaries. Plain `String` ids
-/// (not the typed `CardId` / `TrackId`) keep the row decode total even for
-/// orphaned (`card_id = NULL`) rows.
+/// Row of the `worker_flow_items` table: the raw persistence shape, not a mirror of a calm-types entity.
+/// `card_id` and `worker_session_id` are `ON DELETE SET NULL` FKs, so a row survives its card/session; `captured_session_id`
+/// has no FK and outlives the session. Plain `String` ids keep the decode total for orphaned rows.
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct WorkerFlowItemRow {
     pub id: i64,

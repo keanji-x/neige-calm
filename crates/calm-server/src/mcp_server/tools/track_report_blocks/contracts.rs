@@ -22,16 +22,11 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
             "properties": {}
         }),
         annotations: Some(read_only_annotations()),
-        // #1189 — the block channel is the assistant's report write
-        // surface (discovery only; the handler's `require_role` relaxes in S2).
         visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
-/// The static kind table — the single self-description source a planner
-/// agent discovers the block vocabulary from. Payload validation for
-/// the data kinds lives in `calm_types::report_blocks::kinds` (the
-/// schemas here must stay in lock-step with it).
+/// The static kind table; the schemas here must stay in lock-step with `calm_types::report_blocks::kinds`.
 pub(super) fn kinds_table() -> Value {
     json!({
         "kinds": [
@@ -95,8 +90,7 @@ pub(super) fn kinds_table() -> Value {
                      5000 candles and 256KB of JSON per block — downsample \
                      older history if you exceed either."
             },
-            // Keep this schema in sync with
-            // `report_blocks::chart_series::validate_chart_series` (#1628 S1).
+            // Keep this schema in sync with `report_blocks::chart_series::validate_chart_series`.
             {
                 "kind": "chart.series",
                 "schema": {
@@ -264,9 +258,7 @@ pub(super) fn kinds_table() -> Value {
                      same-origin absolute path (`/…`); full URLs and \
                      backslashes are rejected."
             },
-            // Keep this schema in sync with `report_blocks::validate_payload`'s
-            // task validation. Any constraint changed here must be changed there,
-            // and vice versa.
+            // Keep this schema in sync with `report_blocks::validate_payload`'s task validation.
             {
                 "kind": "task",
                 "schema": {
@@ -394,8 +386,6 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        // #1189 — the block channel is the assistant's report write
-        // surface (discovery only; the handler's `require_role` relaxes in S2).
         visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
@@ -416,8 +406,6 @@ pub(super) fn move_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        // #1189 — the block channel is the assistant's report write
-        // surface (discovery only; the handler's `require_role` relaxes in S2).
         visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
@@ -437,8 +425,6 @@ pub(super) fn delete_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        // #1189 — the block channel is the assistant's report write
-        // surface (discovery only; the handler's `require_role` relaxes in S2).
         visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
@@ -461,15 +447,11 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        // #1189 — the block channel is the assistant's report write
-        // surface (discovery only; the handler's `require_role` relaxes in S2).
         visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
-/// The `kind` enum every block-writing schema publishes, read off
-/// [`kinds_table`] so the upsert tool and the commit op cannot drift from
-/// the self-description (or from each other).
+/// Read off [`kinds_table`] so the upsert tool and the commit op cannot drift from the self-description.
 fn block_kind_enum() -> Value {
     let table = kinds_table();
     let kinds = table["kinds"]
@@ -481,8 +463,6 @@ fn block_kind_enum() -> Value {
     Value::Array(kinds)
 }
 
-/// `message` on the block channel is optional (the single-op tools never
-/// required one); when present it follows `message_schema()`'s rules.
 fn optional_message_schema() -> Value {
     json!({
         "type": "string",
@@ -493,8 +473,7 @@ fn optional_message_schema() -> Value {
     })
 }
 
-/// `lifecycle_schema()` plus the role caveat the block channel needs: the
-/// tools are open to the assistant role, the field is not.
+/// The tools are open to the assistant role, the `lifecycle` field is not.
 fn planner_only_lifecycle_schema() -> Value {
     let mut schema = lifecycle_schema();
     if let Some(description) = schema.get_mut("description")
@@ -691,8 +670,6 @@ mod task_kind_contract_tests {
                 .iter()
                 .any(|kind| kind == "task")
         );
-        // The commit op's `kind` enum is the same vocabulary, and both are
-        // exactly the kinds the self-description table publishes.
         let commit = commit_descriptor();
         let commit_kinds =
             &commit.input_schema["properties"]["ops"]["items"]["properties"]["kind"]["enum"];
@@ -719,16 +696,7 @@ mod task_kind_contract_tests {
         assert_eq!(published, validator);
     }
 
-    /// A gate-bearing `task` payload in the `calm.report.blocks.upsert` wire
-    /// vocabulary matches the published task schema field by field.
-    ///
-    /// #1635 S4 — this used to feed `plan_template_task_block_payload`, the
-    /// converter the built-in templates were rendered through; the templates
-    /// are files now and the converter is gone, so the payload is written as
-    /// the wire literal an agent would submit. None of the builtin files
-    /// carries a `gate` (all pre-set tasks say `no_gate_reason`), which is why
-    /// this hand-written instance still earns its place: it is the one
-    /// gate-bearing task payload checked against the published schema.
+    /// The one gate-bearing task payload checked against the published schema (no builtin template file carries a `gate`).
     #[test]
     fn minimal_gate_task_payload_matches_published_task_schema_field_by_field() {
         let payload = json!({

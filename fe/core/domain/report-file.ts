@@ -1,10 +1,6 @@
 /**
- * A file destination authored inside report Markdown.
- *
- * Relative links stay relative; an absolute link is only a candidate until the
- * current Track's workspace root admits it. Reports are agent-authored input,
- * so URLs and paths outside that root must never become local-file reads merely
- * because their visible labels looked harmless.
+ * A file destination authored inside report Markdown. Reports are agent-authored input, so
+ * paths outside the Track's workspace root must never become local-file reads.
  */
 export type ReportFileLinkTarget = Readonly<{ path: string }>;
 

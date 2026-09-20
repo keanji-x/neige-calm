@@ -1,30 +1,6 @@
-//! Issue #679 PR0-B — characterization goldens for the `Event` wire format.
-//!
-//! Pins the serde **runtime** shape of every `Event` variant: rename tags,
-//! aliases (`codex.job_requested` → `CodexWorkerRequested`), `#[serde(default)]`
-//! hydration, and the `skip_serializing_if` vs always-emit-null split. The
-//! ts-rs byte gate covers the *type* surface; these goldens cover the parts
-//! the TS export cannot see. No behavior change — if one of these tests goes
-//! red, either the wire protocol broke or the golden must change with an
-//! explicit rationale.
-//!
-//! Golden file format (`tests/goldens/events/*.json`):
-//!
-//! ```json
-//! {
-//!   "description": "...",
-//!   "wire":      { "ev": "...", "data": { ... } },   // fed to Deserialize
-//!   "canonical": { "ev": "...", "data": { ... } }    // expected Serialize
-//! }                                                  // output; defaults to
-//! ```                                                // "wire" when omitted
-//!
-//! Each test:
-//!   1. deserializes `wire` → `Event`, asserts the typed struct matches the
-//!      in-code expected value (via `Debug` repr — `Event` has no `PartialEq`);
-//!   2. serializes the expected struct, asserts canonical-JSON equality with
-//!      `canonical` (field order independent, content exact);
-//!   3. asserts `canonical` is a serde fixed point (deserialize → serialize
-//!      returns it unchanged).
+//! Characterization goldens for the `Event` wire format (`tests/goldens/events/*.json`): each
+//! file's `wire` is deserialized, the expected struct is serialized against `canonical` (which
+//! defaults to `wire`), and `canonical` must be a serde fixed point.
 
 use calm_server::event::{
     ArtifactRef, EditAuthor, Event, ForgeMergeSubject, HarnessQueueChange, TrackUpdatedPayload,
@@ -46,10 +22,6 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct Golden {
@@ -112,9 +84,7 @@ macro_rules! golden_test {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Shared fixture builders (deterministic fake data; must mirror the goldens)
-// ---------------------------------------------------------------------------
+// Shared fixture builders; must mirror the goldens.
 
 fn track_min() -> Track {
     Track {
@@ -154,10 +124,6 @@ fn card_min() -> Card {
         updated_at: 2000,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Per-variant goldens
-// ---------------------------------------------------------------------------
 
 golden_test!(
     area_updated_full,
@@ -214,14 +180,10 @@ golden_test!(
                 path: "/tmp/golden-track".into(),
                 frozen_at: Some(444),
             },
-            // #1292 S3 — populated on purpose, and only here. The other three
-            // `track.updated` goldens pin these as `null`, which proves they
-            // are emitted but not that they carry a value. This is the one
-            // case that pins the populated wire shape of both.
+            // Populated only here; the other three `track.updated` goldens pin these as `null`.
             recipe_id: Some("recipe-01".into()),
             recipe_revision: Some(7),
-            // #1704 S2 — the populated policy, only here; the other three
-            // pin the always-emitted `null`.
+            // The populated policy, only here.
             claude_permissions_policy: Some(ClaudePermissionsScope {
                 edit: Some(vec!["src/**".into(), "tests/**".into()]),
                 bash: Some(vec!["git".into(), "python3 -m unittest".into()]),
@@ -239,22 +201,9 @@ golden_test!(
     Event::TrackUpdated(TrackUpdatedPayload::new(track_min(), None))
 );
 
-// #1209 PR-2 (design §3.4 / test #14, Rust leg) — the event log is the one
-// place that must keep reading the pre-rename spelling. `Track` is
-// `#[serde(flatten)]`-ed into `TrackUpdatedPayload`, so every historical
-// `track.updated` row on disk still says `workflow_id` / `workflow_input`. The
-// reader is `Event::from_kind_and_payload`, called from `events_since`, whose
-// error arm *skips the whole row* — which is why the fix is a `serde(alias)`
-// beside the retained `serde(default)`, and not the removal of `default`.
-//
-// The `wire`/`canonical` split is exactly the machine judgement this needs:
-// step 1 proves the old key still deserializes, and step 3 (canonical is a
-// serde fixed point) proves the alias is deserialize-only, i.e. the wire has
-// exactly one output spelling. Do NOT "fix" a fixed-point failure by putting
-// the old spelling into `canonical` or by deleting these cases — that would
-// delete the only fail-open defence this rename has.
-//
-// Two files, one per aliased field, so a half-reverted alias reds exactly one.
+// Historical `track.updated` rows on disk still say `workflow_id` / `workflow_input`, and the
+// replay reader skips a whole row on error, so the alias must keep deserializing. Do NOT
+// "fix" a fixed-point failure by putting the old spelling into `canonical`.
 golden_test!(
     track_updated_legacy_template_id,
     "track_updated.legacy_template_id.json",
@@ -328,7 +277,7 @@ golden_test!(
             session_id: Some("sess-01".into()),
             source: Some("spawn".into()),
             thread_status: Some("active".into()),
-            last_turn_completed_ms: None, // #1722 S1b: optional, skipped when None.
+            last_turn_completed_ms: None,
         }),
         deletable: false,
         ..card_min()
@@ -359,7 +308,7 @@ golden_test!(
             session_id: None,
             source: None,
             thread_status: None,
-            last_turn_completed_ms: None, // #1722 S1b: optional, skipped when None.
+            last_turn_completed_ms: None,
         }),
         ..card_min()
     })
@@ -485,13 +434,7 @@ golden_test!(
     }
 );
 
-// #1505 PR2. `change` is `deleted` here because that is the branch this golden
-// exercises; `edited`, `dropped` (PR2b, the kernel's load-time truncation),
-// `steered` (#1625 P3, a queued entry taken into the running turn) and
-// `restored` (the same entry back in the queue: codex refused or never
-// answered, or its turn ended before codex recorded it) are also emitted, so
-// this golden does not demonstrate every branch being produced — the five
-// spellings are pinned separately by
+// `change` is `deleted` here; the other spellings are pinned by
 // `calm_types::event::tests::harness_queue_change_wire_spellings`.
 golden_test!(
     harness_queue_changed,
@@ -1178,14 +1121,8 @@ golden_test!(
     }
 );
 
-// ---------------------------------------------------------------------------
-// Alias coverage through the events-table replay path
-// ---------------------------------------------------------------------------
-
-/// The replay path reconstructs typed events from `(kind, payload)` rows via
-/// `Event::from_kind_and_payload`. Pre-#581 rows persist the OLD kind strings
-/// (`*.job_requested`); the serde aliases are what keep those rows readable.
-/// Pin the alias through this exact entry point, not just raw envelope JSON.
+/// Old rows persist the pre-rename kind strings (`*.job_requested`); pin the alias through the
+/// replay entry point `Event::from_kind_and_payload`, not just raw envelope JSON.
 #[test]
 fn alias_kinds_survive_from_kind_and_payload() {
     let codex = Event::from_kind_and_payload(
@@ -1205,13 +1142,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
     assert!(matches!(terminal, Event::TerminalWorkerRequested { .. }));
 }
 
-// ---------------------------------------------------------------------------
-// Coverage guards
-// ---------------------------------------------------------------------------
-
-/// Every `Event` variant's kind tag, in declaration order. Adding a variant
-/// to the enum without adding a golden (and a tag here) fails the coverage
-/// test below.
+/// Every `Event` variant's kind tag, in declaration order.
 const ALL_KIND_TAGS: [&str; 53] = [
     "area.updated",
     "area.deleted",
@@ -1268,10 +1199,7 @@ const ALL_KIND_TAGS: [&str; 53] = [
     "task.gate_result",
 ];
 
-/// Every golden file must parse, every canonical `ev` tag must be a known
-/// kind tag, and every kind tag must be covered by at least one golden.
-/// Catches both a stray/typo'd golden file and a new Event variant landing
-/// without a golden.
+/// Every golden must parse, every canonical `ev` must be a known tag, and every tag must have a golden.
 #[test]
 fn goldens_cover_every_event_variant() {
     let dir = goldens_dir();
@@ -1311,15 +1239,11 @@ fn goldens_cover_every_event_variant() {
     }
 }
 
-/// Compile-level companion to `goldens_cover_every_event_variant`: a new
-/// `Event` variant makes this match non-exhaustive, forcing the author to
-/// come here — and to the goldens — deliberately. Mirrors `Event::kind_tag`
-/// so the const list above can't silently drift from the enum.
+/// A new `Event` variant makes this match non-exhaustive, so the const list cannot drift from the enum.
 #[test]
 fn kind_tag_list_matches_enum() {
     fn tag_of(ev: &Event) -> &'static str {
-        // Exhaustive on purpose — no `_` arm. New variants must extend
-        // ALL_KIND_TAGS and add goldens.
+        // Exhaustive on purpose — no `_` arm.
         match ev {
             Event::AreaUpdated(_) => "area.updated",
             Event::AreaDeleted { .. } => "area.deleted",

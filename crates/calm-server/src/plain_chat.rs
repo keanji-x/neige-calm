@@ -1,11 +1,6 @@
 use crate::model::{Card, CardRole};
 
-/// Whether a card carries the persisted plain-chat marker.
-///
-/// `require_worker_codex` is for harness-facing boundaries, where the marker
-/// is only authoritative on a Worker `codex` card. Callers that merely need
-/// to suppress planner-only machinery (for example worker-flow attachment) pass
-/// `false` so malformed/legacy marked rows still fail closed.
+/// Whether a card carries the persisted plain-chat marker; with `require_worker_codex` the marker is only authoritative on a Worker `codex` card.
 pub(crate) fn card_is_plain_chat(
     card: &Card,
     role: Option<CardRole>,
@@ -19,15 +14,7 @@ pub(crate) fn card_is_plain_chat(
     marked && (!require_worker_codex || (card.kind == "codex" && role == Some(CardRole::Worker)))
 }
 
-/// Whether a card carries the persisted track-assistant marker (#1189).
-///
-/// Same shape as [`card_is_plain_chat`] and same fail-closed reading of
-/// `require_assistant_codex`, but a *different* marker value and a different
-/// role. The two must never be conflated: a plain chat has no MCP token and no
-/// track authority at all, while an assistant holds a token that reaches the
-/// block channel. Answering one question with the other's predicate would
-/// either strand the assistant outside the harness routes or hand an area chat
-/// the assistant's surface.
+/// Whether a card carries the persisted track-assistant marker. Never conflate with the plain-chat predicate: an assistant holds a token that reaches the block channel, a plain chat has no track authority.
 pub(crate) fn card_is_track_assistant(
     card: &Card,
     role: Option<CardRole>,
@@ -42,11 +29,6 @@ pub(crate) fn card_is_track_assistant(
         && (!require_assistant_codex || (card.kind == "codex" && role == Some(CardRole::Assistant)))
 }
 
-/// Whether a card is either flavour of lazily minted conversation.
-///
-/// Used where the question is "is this a headless conversation card rather than
-/// a worker the worker-flow machinery owns?" — the answer is the same for both
-/// flavours and the distinction between them is irrelevant there.
 pub(crate) fn card_is_lazy_conversation(card: &Card) -> bool {
     card_is_plain_chat(card, None, false) || card_is_track_assistant(card, None, false)
 }
@@ -79,10 +61,6 @@ mod tests {
         }
     }
 
-    /// The two markers are disjoint in both directions. Without this, a
-    /// widened predicate ("any harness_profile marker") would let an area chat
-    /// card answer yes to the assistant question — and the assistant question
-    /// is what opens the MCP-backed harness routes.
     #[test]
     fn the_two_conversation_markers_never_answer_for_each_other() {
         assert!(card_is_track_assistant(
@@ -100,7 +78,6 @@ mod tests {
             Some(CardRole::Worker),
             false
         ));
-        // Role and kind still constrain the strict reading.
         assert!(!card_is_track_assistant(
             &assistant_card("codex"),
             Some(CardRole::Worker),
@@ -111,7 +88,6 @@ mod tests {
             Some(CardRole::Assistant),
             true
         ));
-        // The union predicate accepts both and nothing else.
         assert!(card_is_lazy_conversation(&assistant_card("codex")));
         assert!(card_is_lazy_conversation(&card("codex")));
         assert!(!card_is_lazy_conversation(&Card {

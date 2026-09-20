@@ -3,41 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { wireEventSchema, type WireEvent } from '../api/schemas.js';
 import { invalidationPlanFor } from './invalidation-plan.js';
 
-/*
- * The expected side of the conversation-list test, written out here on purpose.
- *
- * It cannot be derived from the policies without becoming the thing it checks:
- * the production fact *is* "which policies push this key", so any expectation
- * read out of them would agree with itself no matter what changed. So this is
- * an independent list, maintained by hand, and its whole value is that adding
- * an eighth policy — or dropping one of these seven — has to be typed here as
- * well, deliberately, before the suite goes green again.
- *
- * The three `worker_session.*` kinds joined the original four in #1189 §5.5: a row's
- * `state` comes from `worker_sessions.state`, and those are the events that
- * write it. `track.lifecycle_changed` is the near miss that must stay out — it
- * changes a track, not a session row, and the sessions it ends announce
- * themselves as `worker_session.superseded`, which is already in this list.
- *
- * `harness.item.added` is a KNOWN and DELIBERATE gap, not an omission. It does
- * change what these lists show: the event's producer records the item and then
- * calls `persist_snapshot` (`harness/run_loop.rs`), which bumps
- * `worker_sessions.updated_at_ms` — and the list is ordered by that column
- * (`routes/track_conversations.rs`, mirrored by `conversation.ts`'s sort on
- * `updatedAt`). So two concurrent sessions where the older one keeps producing
- * items without a phase change will have server-side order that the cache does
- * not, until the next phase or worker-session event.
- *
- * It is still out for two reasons, and adding it here would make things worse
- * rather than better. It is the highest-frequency event the kernel emits, so it
- * would refetch a wholesale list per item. And it *races the write it would be
- * reporting*: the event is emitted before `persist_snapshot` commits, so the
- * refetch it triggers can land on the pre-snapshot ordering and cache exactly
- * the stale order it was meant to fix. The real fix is a mergeable/throttled
- * activity signal emitted after the snapshot persists, or taking list recency
- * off these snapshot writes altogether — both new mechanisms, tracked in #1216,
- * out of scope for #1189 S4.
- */
+/* Hand-maintained on purpose, never derived from the policies. `harness.item.added` is deliberately
+ * out: it is the highest-frequency event and is emitted before `persist_snapshot` commits. */
 const CONVERSATION_LIST_KINDS = [
   'card.added', 'card.updated',
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
@@ -150,17 +117,8 @@ describe('invalidation plan behavior', () => {
     },
   );
 
-  /*
-   * The track list is keyed BY TRACK, and that is the assertion — not "a
-   * track-conversations key is present somewhere".
-   *
-   * `GET /api/tracks/{track_id}/conversations` is per-track (#1189 §4.1), so the
-   * query it backs is `['track-conversations', trackId]`. Dropping the id here to
-   * use the bare prefix would still invalidate the right query, by prefix
-   * match, and every "contains the key" assertion would stay green while
-   * every open track refetched its list on every runtime tick of every other
-   * track. This one's id is right there in the event.
-   */
+  /* Keyed BY TRACK: the bare prefix would still satisfy a contains-key assertion while every
+   * open track refetched its list on every runtime tick of every other track. */
   it.each([
     ['card.added', { track_id: 'track-1' }],
     ['card.updated', { track_id: 'track-1' }],
@@ -189,12 +147,7 @@ describe('invalidation plan behavior', () => {
     });
   });
 
-  /*
-   * An unresolvable card falls back to the bare prefix rather than dropping the
-   * key: "some track's list may have changed" is true and cheap (an invalidated
-   * key with no active observer only marks entries stale), whereas dropping it
-   * would leave a genuinely open list stale forever.
-   */
+  /* An unresolvable card falls back to the bare prefix rather than dropping the key, so an open list is never stale forever. */
   it('falls back to the track-conversations prefix when card ownership is unknown', () => {
     expect(invalidationPlanFor(
       event({ ev: 'worker_session.status_changed', data: { card_id: 'card-1' } }),
@@ -231,13 +184,6 @@ describe('invalidation plan behavior', () => {
       .toEqual([['track-files'], ['track-report']]);
   });
 
-  /*
-   * A hook resolves the same track the same way — it just stops at the
-   * workspace. It fires roughly twice per tool call per running worker and
-   * writes no `tasks` row, so paying a whole-document report projection for it
-   * bought a value that could not have changed. The ladder is asserted again
-   * here so "no report key" cannot be confused with "no track resolution".
-   */
   it.each(['codex.hook', 'claude.hook'] as const)('resolves a track for %s but stops at track-files', (ev) => {
     const context = { findTrackOwningCard: (cardId: string) => cardId === 'card-1' ? 'track-1' : null };
     expect(invalidationPlanFor(event({ ev, data: { track_id: 'direct' } }), context).invalidate)
@@ -260,8 +206,7 @@ describe('invalidation plan behavior', () => {
       event({ ev, data: { card_id: 'card-1', track_id: 'track-1' } }),
     ).invalidate;
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
-    // #1625 P1: the phase event delivers the turn outcome row, which emits no
-    // `harness.item.added` of its own.
+    // The phase event delivers the turn outcome row, which emits no `harness.item.added` of its own.
     expect(planned('harness.phase.changed')).toEqual([
       ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track-conversations', 'track-1'],
       ['track', 'track-1'],
@@ -273,23 +218,13 @@ describe('invalidation plan behavior', () => {
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],
       ['track-conversations', 'track-1'],
     ]);
-    // #1505 PR2. `harness-items` is for the `steered` value (#1625 P3), whose
-    // delivery adds a transcript row, and for `restored`, whose completion
-    // sweep deletes it again; the other three values do not touch it.
+    // `harness-items` is for `steered` (adds a transcript row) and `restored` (its sweep deletes it again).
     expect(planned('harness.queue.changed')).toEqual([
       ['planner-run', 'card-1'], ['harness-items', 'card-1'],
       ['track-conversations', 'track-1'],
     ]);
   });
 
-  /*
-   * The list is refetched wholesale, so every extra trigger is a whole refetch
-   * nobody asked for — and two triggers for one change make it impossible to
-   * prove either one is doing the work. The `actual` side is read out of the
-   * production planner by running every wire event kind through it; the
-   * `expected` side is the hand-kept list above, and the point is that the two
-   * are maintained separately.
-   */
   it('refetches the track conversation list from exactly the eight session-writing kinds', () => {
     const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = kinds.filter((kind) => invalidationPlanFor({ ev: kind, data: {} } as WireEvent)

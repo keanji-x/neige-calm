@@ -1,80 +1,10 @@
 #!/usr/bin/env bash
-# #1316 S4b — `SYNC_EVENT_VERSION` and the migrations' `event_version` stamps
-# must agree.
-#
-# WHY THIS EXISTS
-#
-# Two independent declarations of one number:
-#
-#   crates/calm-types/src/event.rs          pub const SYNC_EVENT_VERSION
-#   crates/calm-truth/migrations/*.sql      UPDATE events SET ... event_version = N
-#
-# A migration that rewrites an event KIND stamps the rewritten rows with the
-# version a client must be at to understand the new discriminator (0038, 0080,
-# 0081, and 0094 all do this). The client then drops every frame whose
-# `eventVersion` exceeds the `syncEventVersion` the server advertises — which
-# is `SYNC_EVENT_VERSION` verbatim (`routes/version.rs`).
-#
-# So if the migration stamps 16 while the constant stays 15, every row the
-# migration touched is PERMANENTLY invisible: the frames are read out of the
-# database, shipped, and discarded by the client's own gate. Nothing goes red.
-# The Rust tests only ever see the constant; the migration tests only ever see
-# the literal; no test in the tree compares them. The failure is a silently
-# truncated conversation history on a live database, discovered by a human.
-#
-# WHAT THIS GATE ENFORCES — exactly three rules, no more.
-#
-# All three read only EXECUTABLE SQL: `--` comments are stripped before any
-# literal is extracted, so a `event_version = N` written in prose satisfies
-# nothing. (Without that, a migration whose only literal sits in a comment
-# stamps zero rows while looking compliant.)
-#
-#   R1 NO LITERAL ABOVE THE CONSTANT. No `event_version = N` anywhere under
-#      the migrations dir may exceed `SYNC_EVENT_VERSION`. A stamp above the
-#      constant is the data-loss direction: the client gate discards those
-#      rows outright.
-#
-#   R2 THE NEWEST STAMPING MIGRATION IS PINNED, LITERAL BY LITERAL. Take the
-#      highest-numbered migration file that stamps at all; EVERY literal in it
-#      must equal `SYNC_EVENT_VERSION`. Not the maximum — every one. A file
-#      whose statements disagree with each other (one at 15, its siblings at
-#      16) has a maximum that still matches the constant, so a max-equality
-#      check passes it while the rows stamped by the odd statement out are
-#      visible to a client that cannot classify them. Equality also catches
-#      the reverse drift: a constant bumped without the accompanying
-#      migration.
-#
-#   R3 A KIND REWRITE MUST RAISE THE VERSION. Every `UPDATE events` statement
-#      that assigns `kind` must assign `event_version` in the same statement,
-#      and the version a migration stamps on its kind rewrites must be
-#      STRICTLY GREATER than every literal stamped by any earlier-numbered
-#      migration. Equality is not enough: a new migration that renames a kind
-#      while restamping the version already in force ships a new discriminator
-#      to a client that is exactly at that version — the client accepts the
-#      frame (its gate is `eventVersion > syncEventVersion`), fails to
-#      classify the new tag, and advances its cursor past a row it never
-#      rendered. R2 then forces the newest such stamp to be the constant, so
-#      R1+R2+R3 together mean: rename a kind => raise the version => raise the
-#      constant.
-#
-# NOT ENFORCED (deliberate scope): whether a kind rewrite exists at all for a
-# given Rust-side rename, whether payload-key rewrites carry a stamp (0094 §3
-# stamps them; 0083 §3/§4 deliberately does not), and anything about tables
-# other than `events`. `UPDATE operations SET kind` (0083 §5) and
-# `UPDATE cards SET kind` (0081) are outside R3 by construction — they are not
-# the client's frame discriminator.
-#
-# HOW IT PARSES. Textually, not with a SQL parser: `--` to end of line is
-# dropped, then `;` splits statements. Two assumptions, both true of every file
-# under the migrations dir today and both cheap to re-check: no migration puts
-# `--` or `;` inside a quoted string literal. If one ever does, the split
-# misreads that file — which surfaces as a spurious failure here, not as a
-# silent pass, because every rule below is a "must equal"/"must exist" test.
-#
-# `--selftest` runs six single-edit mutations against throwaway copies and
-# asserts this script rejects every one. Each mutation is ONE edit: one
-# literal, or one new file. A mutation that rewrites every literal at once
-# cannot distinguish R2 from a max-equality check.
+# `SYNC_EVENT_VERSION` (crates/calm-types/src/event.rs) and the migrations' executable
+# `event_version = N` stamps must agree: a stamp above the constant makes every row it
+# touched permanently invisible to the client's eventVersion gate, and nothing else goes red.
+# R1: no literal exceeds the constant. R2: EVERY literal in the newest stamping migration
+# equals it (not merely the maximum). R3: an `UPDATE events` assigning `kind` must stamp a
+# version strictly above every earlier migration's. Parsing is textual (`--` stripped, `;` splits).
 
 set -euo pipefail
 
@@ -83,24 +13,19 @@ cd "$(git rev-parse --show-toplevel)"
 RUST=crates/calm-types/src/event.rs
 MIGRATIONS=crates/calm-truth/migrations
 
-# Executable SQL of one file: `--` comments removed, blank lines dropped.
 exec_sql() { # <file>
   sed -E 's/--.*$//' "$1" | sed -E '/^[[:space:]]*$/d'
 }
 
-# One SQL statement per output line, comments already stripped.
 exec_statements() { # <file>
   exec_sql "$1" | tr '\n' ' ' | tr ';' '\n' | sed -E '/^[[:space:]]*$/d'
 }
 
-# Every `event_version = N` literal in executable SQL, one per line.
 file_literals() { # <file>
   exec_sql "$1" | grep -oP '(?<![\w])event_version\s*=\s*\K[0-9]+' || true
 }
 
-# The SET clause of an `UPDATE events` statement: everything between `SET` and
-# the first `WHERE` (or end of statement). Non-greedy, so a `WHERE` cannot be
-# swallowed by a later one.
+# Non-greedy so a `WHERE` cannot be swallowed by a later one.
 set_clause() { # reads statement on stdin
   grep -oiP '^\s*UPDATE\s+events\s+SET\s+\K.*?(?=\s+WHERE\s|$)' || true
 }
@@ -124,10 +49,7 @@ check() { # <rust-file> <migrations-dir>
     return 1
   fi
 
-  # --- Collect, per file, the executable literals and the kind-rewrite stamps.
-  # `seen_max` is the highest literal in any file processed SO FAR. Inside the
-  # per-file R3 loop it is therefore "everything strictly earlier"; after the
-  # loop it is the global maximum.
+  # `seen_max` is the highest literal in files processed SO FAR: inside the R3 loop it is "everything strictly earlier", after the loop the global maximum.
   local newest_stamping="" seen_max=""
   local -a stamping_files=()
   local f lits stmt setc s_lits l
@@ -191,9 +113,6 @@ check() { # <rust-file> <migrations-dir>
   echo "OK: SYNC_EVENT_VERSION == $const_v; every executable event_version literal in $newest_stamping equals it, nothing under $migrations exceeds it, and every 'UPDATE events SET kind' stamp strictly raises the version"
 }
 
-# --- selftest helpers -------------------------------------------------------
-
-# Print the newest .sql under <dir> that carries an executable literal.
 newest_stamping_file() { # <migrations-dir>
   local f out=""
   while IFS= read -r f; do
@@ -202,30 +121,7 @@ newest_stamping_file() { # <migrations-dir>
   printf '%s' "$out"
 }
 
-# The number one past the highest-numbered migration under <dir>, zero-padded
-# to four digits.
-#
-# A planted fixture MUST sort after every real migration, and this is not
-# cosmetic. R3 compares a kind rewrite's stamp against `seen_max` — the highest
-# literal in files sorting strictly EARLIER — so a fixture dropped into the
-# middle of the sequence is judged against an OLDER maximum, where its stamp can
-# be a legitimate strict raise rather than the hazard the mutation is supposed to
-# model. The mutation then passes the gate and the selftest reports the gate as
-# broken, when in fact the fixture stopped describing a hazard.
-#
-# That is measured, not hypothetical. These fixtures were written with a
-# hardcoded `0095_` prefix while 0094 was the newest stamping migration. #1449
-# then added `0095_worker_sessions_queue_harvested.sql` and #1505 PR2 added
-# `0096_harness_queue_changed_event_version.sql`, which raised the constant to
-# 17. The fixture landed between 0094 (stamping 16) and 0096 (stamping 17), so
-# `seen_max` was 16 when R3 reached it and its own 17 was a strict raise — a
-# correct migration, correctly accepted. CI caught the resulting selftest
-# failure; nothing inside the selftest would have.
-#
-# Deriving the prefix also removes a second hazard the literal carried: a real
-# migration that ever took the fixture's exact filename would be silently
-# overwritten in the throwaway copy, and the mutation would then be testing
-# something else entirely.
+# One past the highest-numbered migration, zero-padded: a planted fixture must sort after every real migration, or R3 judges it against an older `seen_max` and the mutation stops modelling its hazard.
 next_migration_prefix() { # <migrations-dir>
   local f n max=0
   while IFS= read -r f; do
@@ -241,12 +137,7 @@ next_migration_prefix() { # <migrations-dir>
   printf '%04d' "$((max + 1))"
 }
 
-# Fail unless <file> is the last .sql in sort order under <dir>.
-#
-# The premise every planted-fixture mutation rests on, asserted rather than
-# assumed: if the fixture does not sort last, R3 weighs it against an older
-# `seen_max` and the mutation is no longer the hazard its label names. This is
-# the check whose absence let the `0095_` fixtures go inert.
+# Fail unless <file> is the last .sql in sort order under <dir> — the premise every planted-fixture mutation rests on.
 assert_sorts_last() { # <migrations-dir> <fixture-path>
   local dir="$1" fixture="$2" last
   last="$(find "$dir" -maxdepth 1 -name '*.sql' | sort | tail -n1)"
@@ -271,9 +162,7 @@ mutate_one_literal() { # <file> <from> <to>
   mv "$tmpf" "$file"
 }
 
-# Rewrite exactly ONE `event_version = <from>` literal — the LAST one in the
-# file — to <to>. Used where the mutation must land on a statement that is not
-# a kind rewrite, so that R2 (per-literal equality) is the rule under test.
+# Rewrite exactly ONE literal — the LAST one — so the mutation lands on a statement that is not a kind rewrite and R2 is the rule under test.
 mutate_last_literal() { # <file> <from> <to>
   local file="$1" from="$2" to="$3" tmpf line
   line="$(grep -nP "(?<![\w])event_version = ${from}(?![0-9])" "$file" \
@@ -303,8 +192,7 @@ selftest() {
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" RETURN
 
-  # Baseline: the real tree must pass, otherwise the mutations below prove
-  # nothing.
+  # Baseline: the real tree must pass, otherwise the mutations below prove nothing.
   if ! check "$RUST" "$MIGRATIONS" >/dev/null; then
     echo "::error::selftest: the unmutated tree already fails — fix that first" >&2
     return 1
@@ -323,8 +211,7 @@ selftest() {
     printf '%s' "$d"
   }
 
-  # 1. Bump the constant alone. R2: the newest stamping migration still says
-  #    $const_v.
+  # 1. Bump the constant alone (R2).
   sed -E "s/(pub const SYNC_EVENT_VERSION: u32 = )[0-9]+/\1${bumped}/" "$RUST" > "$tmp/event_bumped.rs"
   base="$(fresh_migrations m1)"
   expect_reject "constant bumped alone ($const_v -> $bumped)" \
@@ -344,10 +231,7 @@ selftest() {
   expect_reject "empty migrations dir" "$tmp/event.rs" "$tmp/m3" \
     "this gate can then scan nothing and pass"
 
-  # 4. (A1) COMMENT-ONLY STAMP. One new migration that renames a kind and
-  #    writes its version in a `--` comment instead of in the SQL. A gate that
-  #    greps the raw file sees a literal equal to the constant and passes,
-  #    while ZERO rows are stamped.
+  # 4. Comment-only stamp: a gate that greps the raw file sees a literal equal to the constant while ZERO rows are stamped.
   base="$(fresh_migrations m4)"
   fixture="$base/$(next_migration_prefix "$base")_selftest_comment_only_stamp.sql"
   cat > "$fixture" <<EOF
@@ -359,10 +243,7 @@ EOF
     "$tmp/event.rs" "$base" \
     "comments are not executable SQL; that migration stamps nothing"
 
-  # 5. (A2) KIND REWRITE THAT DOES NOT RAISE THE VERSION. One new migration
-  #    renaming a kind while restamping the version already in force. Max
-  #    equality passes it; a client at exactly that version accepts the frame,
-  #    cannot classify the new tag, and loses the row.
+  # 5. Kind rewrite restamping the version already in force: max-equality passes it.
   base="$(fresh_migrations m5)"
   fixture="$base/$(next_migration_prefix "$base")_selftest_kind_rewrite_no_bump.sql"
   cat > "$fixture" <<EOF
@@ -373,11 +254,7 @@ EOF
     "$tmp/event.rs" "$base" \
     "a rename must raise the version strictly or the new discriminator reaches a client that cannot read it"
 
-  # 6. (A3) LOCAL DECOUPLING. Lower exactly ONE literal in the newest stamping
-  #    migration; its siblings keep the constant, so the file's MAXIMUM is
-  #    unchanged. The LAST literal is chosen so the mutation lands on a
-  #    payload-rewrite statement rather than a kind rewrite: R2 (per-literal
-  #    equality), not R3, is the rule under test here.
+  # 6. Lower exactly ONE literal in the newest stamping migration so the file's MAXIMUM is unchanged; R2, not R3, is under test.
   base="$(fresh_migrations m6)"
   newest="$(newest_stamping_file "$base")"
   mutate_last_literal "$newest" "$const_v" "$lowered"

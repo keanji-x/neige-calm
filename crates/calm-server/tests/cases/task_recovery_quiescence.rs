@@ -172,9 +172,7 @@ done
             supervisor_sock: control_sock,
         };
 
-        // This witness represents an already-started legacy execution. Create
-        // it through the real supervisor, then exercise the renderer's read
-        // side; opening a task-owned renderer is no longer launch permission.
+        // An already-started execution created through the real supervisor; opening a task-owned renderer is not launch permission.
         let mut control = tokio::net::UnixStream::connect(&cfg.supervisor_sock)
             .await
             .unwrap();

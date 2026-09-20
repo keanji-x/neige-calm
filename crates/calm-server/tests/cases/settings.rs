@@ -1,13 +1,4 @@
-//! Settings persistence + REST end-to-end.
-//!
-//! Two layers exercised here:
-//!   1. Direct `Repo` calls against an in-memory SQLite — proves the KV
-//!      surface (`settings_get_all`, `settings_upsert`, `settings_delete`)
-//!      round-trips and is idempotent.
-//!   2. `GET /api/settings` / `PUT /api/settings` against the full router
-//!      with an `AppState` wired to the same repo — proves the route
-//!      collapses empty/null values to deletes and returns the resulting
-//!      bag.
+//! Settings persistence + REST end-to-end: the `Repo` KV surface and `GET`/`PUT /api/settings`.
 
 use std::sync::Arc;
 
@@ -74,7 +65,6 @@ async fn repo_round_trips_settings_kv() {
         ]
     );
 
-    // Upsert is idempotent and overrides.
     repo.settings_upsert("http_proxy", "http://proxy.example:3128")
         .await
         .unwrap();
@@ -82,7 +72,6 @@ async fn repo_round_trips_settings_kv() {
     let http = rows.iter().find(|(k, _)| k == "http_proxy").unwrap();
     assert_eq!(http.1, "http://proxy.example:3128");
 
-    // Delete is idempotent.
     repo.settings_delete("http_proxy").await.unwrap();
     repo.settings_delete("http_proxy").await.unwrap();
     let rows = repo.settings_get_all().await.unwrap();
@@ -244,7 +233,6 @@ async fn put_with_empty_or_null_clears_key() {
         .merge(routes::router())
         .with_state(state);
 
-    // Empty string + null both clear.
     let body = serde_json::json!({
         "settings": {
             "http_proxy": "",

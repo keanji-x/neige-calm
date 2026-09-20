@@ -1,15 +1,5 @@
-//! Dispatcher worker.
-//!
-//! Subscribes to task, report, hook, plan, and track events that drive
-//! planner-harness push observations and scheduler pokes.
-//!
-//! Worker spawns are now owned by the plan scheduler: planners maintain
-//! `calm.plan.*`, the scheduler emits `task.dispatched`, and the worker
-//! adapters start `codex-worker` / `terminal-worker` operations from there.
-//!
-//! Terminal process cleanup remains a hard boundary owned by
-//! `terminal_sweeper`; adapter compensation only mirrors the required
-//! reap-before-delete ordering when undoing a failed worker operation.
+//! Dispatcher worker: subscribes to task, report, hook, plan, and track events
+//! that drive planner-harness push observations and scheduler pokes.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,16 +42,11 @@ use sha2::{Digest, Sha256};
 
 pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 
-/// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
-/// invalid / `0`. Mirrors the v2 specification for issue #136.
+/// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset / invalid / `0`.
 const DEFAULT_PERMITS: usize = 8;
 
-/// The report-edit authors that wake the planner agent, as a single source of
-/// truth: `event_warrants_planner_push_with_role` reads this list, and the planner
-/// system prompt renders it (`planner_card::render_system_prompt`), so the
-/// prompt cannot drift away from dispatch behaviour. Planner/Kernel authors are
-/// deliberately absent — the planner (or the kernel on its behalf) wrote those,
-/// and pushing them back would loop.
+/// Report-edit authors that wake the planner; the planner system prompt renders this same list.
+/// Planner/Kernel authors are absent — pushing their own edits back would loop.
 pub(crate) const PLANNER_WAKE_AUTHORS: &[EditAuthor] =
     &[EditAuthor::User, EditAuthor::Plugin, EditAuthor::Assistant];
 
@@ -71,27 +56,16 @@ fn supervisor_sock_for_provider_registry(daemon: &DaemonClient) -> PathBuf {
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock"))
 }
-/// The event kinds `event_warrants_planner_push_with_role` can answer `true`
-/// for under SOME actor / author / role — exactly the rows the boot catch-up
-/// (`harness::catch_up::observations_since`) reads back from the events
-/// table. Any kind outside this list is a constant `false` in the predicate,
-/// so reading it at boot would be wasted I/O; any kind inside it that the
-/// predicate could never push would be a silent catch-up/live divergence.
-/// `dispatcher::tests::planner_catch_up_kinds_equal_the_push_capable_kinds`
-/// pins the equivalence against the per-kind predicate table.
+/// The event kinds `event_warrants_planner_push_with_role` can answer `true` for — exactly the
+/// rows the boot catch-up reads back from the events table.
 pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "task.completed",
     "task.failed",
     "task.execution_settled",
     "task.file_publication_settled",
     "task.candidate_verification_settled",
-    // Issue #644 PR-C (§6.5/§8) — gate verdicts that landed while the
-    // kernel was down replay like live pushes.
     "task.gate_result",
     "track.report_edited",
-    // #1727 S1 — `workspace.leased/released`, `worktree.provisioned/committed`
-    // and `review.round` are no longer wakes (the predicate returns false
-    // for them), so they are absent here and from the live subscription.
     "forge.scan.completed",
     "forge.pr.opened",
     "forge.pr.checks",
@@ -103,14 +77,8 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "claude.hook",
 ];
 
-/// The kinds the dispatcher subscribes to that never enter the push branch:
-/// they only poke the plan scheduler or the task-context monitor
-/// (`Inner::handle_envelope`'s scheduler-only arms — Issue #644 PR-B §5.1
-/// triggers 1 + 4, round-2 review F4 for `track.updated`, and the deletion
-/// sweeps). Disjoint from `PLANNER_CATCH_UP_KINDS` by construction: a kind
-/// in both would be a push-capable kind the catch-up list already owns.
-/// `dispatcher::tests::dispatcher_subscription_is_push_kinds_plus_scheduler_kinds`
-/// pins the union against the live subscription and the handler arms.
+/// Subscribed kinds that only poke the plan scheduler or the task-context monitor;
+/// disjoint from `PLANNER_CATCH_UP_KINDS`.
 pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
     "plan.updated",
     "track.lifecycle_changed",
@@ -119,12 +87,7 @@ pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
     "area.deleted",
 ];
 
-/// The ONE kind list the dispatcher's `SubscribeFilter` is built from:
-/// `PLANNER_CATCH_UP_KINDS ⊕ SCHEDULER_TRIGGER_KINDS`, in that order. The
-/// spawn site (`Dispatcher::spawn`) and the filter test read this same
-/// function, so a kind dropped from either const disappears from the live
-/// subscription and from the test in the same edit — there is no second
-/// hand-written copy to go stale (#1727 S1 fix H4).
+/// The one kind list the dispatcher's `SubscribeFilter` is built from.
 pub(crate) fn dispatcher_subscription_kinds() -> Vec<String> {
     PLANNER_CATCH_UP_KINDS
         .iter()
@@ -150,32 +113,16 @@ pub(crate) fn event_warrants_planner_push_with_role(
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
             !crate::track_lifecycle::actor_is_planner_author(actor)
         }
-        // Issue #644 PR-C (§6.5) — the gate runner's verdict is always
-        // pushed: it is kernel-only at the role gate (actor
-        // `KernelDispatcher`), so no self-push loop is possible. For a
-        // gated task this is the wake-up that replaces the suppressed
-        // worker self-report (the gated-self-report consultation is a
-        // tasks-row lookup and lives with the async callers — see
-        // `is_gated_self_report`).
+        // Kernel-only at the role gate (no self-push loop); for a gated task this wake
+        // replaces the suppressed worker self-report.
         Event::TaskGateResult { .. } => true,
         Event::TaskExecutionSettled { .. }
         | Event::TaskCandidateVerificationSettled { .. }
         | Event::TaskFilePublicationSettled { .. } => {
             matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
         }
-        // Issue #955 §5.7 — plugin-authored report edits (the accept
-        // transaction's Batch apply) wake the planner exactly like user
-        // edits: the report is the planner's work product, and neither a
-        // user nor a plugin edit was authored by the planner itself, so
-        // no self-push loop is possible. Planner/Kernel authors stay
-        // suppressed (the planner wrote those — or the kernel rewrote on
-        // its behalf — and pushing them back would loop).
-        //
-        // #1189 §3.4 — `Assistant` joins that set for the same reason and
-        // by explicit ruling: an assistant session is a *different*
-        // session editing the planner's work product, so it cannot loop, and
-        // leaving the planner unaware that its report changed under it is a
-        // worse failure than one extra wake-up.
+        // User/Plugin/Assistant edits were not authored by the planner, so no self-push loop;
+        // Planner/Kernel authors would loop.
         Event::TrackReportEdited { author, .. } => PLANNER_WAKE_AUTHORS.contains(author),
         Event::ForgePrMerged { .. }
         | Event::RatifyRequested { .. }
@@ -184,20 +131,8 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. } => true,
-        // #1727 S1 — workspace / worktree lifecycle notices and
-        // `review.round` no longer wake the planner. The facts stay in the
-        // `workspace_leases` and `events` rows and are read back on demand:
-        // `calm.plan.list` renders the worker's lease path / slice branch /
-        // the last commit the kernel recorded for the card as `worktree`
-        // (`operation::workspace_lease::facts::worker_worktree_facts_tx`);
-        // each of these used to cost a whole turn that ended in one
-        // `calm.plan.list`. `review.round` can only be written by the
-        // planner author (`calm-truth::role_gate`), so pushing it is pure
-        // self-echo. A successful `worktree.committed` needs no wake either.
-        // KNOWN GAP (#1615 A): a FAILED auto commit writes only its
-        // operation row — no event, tasks row untouched — and
-        // `worktree.last_commit` shows only the last SUCCESSFUL kernel
-        // commit, so the failure is invisible.
+        // Workspace / worktree lifecycle notices are read back on demand (`calm.plan.list`);
+        // `review.round` is planner-authored, so pushing it would be self-echo.
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
         | Event::WorktreeProvisioned { .. }
@@ -243,29 +178,9 @@ pub(crate) fn event_warrants_planner_push_with_role(
     }
 }
 
-/// Issue #644 PR-C (§6.5) — the gated-self-report predicate shared by
-/// the live push branch and the boot replay
-/// (`harness::replay_harness_events_since`): a worker `task.completed`
-/// whose idempotency key resolves to a tasks row **with `gate_json`
-/// set** is not pushed — the planner hears the gate verdict
-/// (`task.gate_result`), not the self-report. Deliberately NOT
-/// status-based: a fast gate can flip the row terminal before this
-/// read, and a status predicate would then push both.
-///
-/// Round-3 review F1 — a `task.failed` for a GATED row is suppressed
-/// too UNLESS the failure actually landed on the row pre-gate
-/// (`failed` + `worker-reported`/`spawn-failed`/`worker-timeout`, the
-/// details the worker/kernel failure flip writes — design §6.5's "worker
-/// `task.failed` pushes as today; no gate runs on failure"). Any
-/// other row state means the gate already owns the task: a stale or
-/// retried `calm.task.fail` against a `verifying` row (or one the
-/// gate already decided — `done`, or `failed` with a `gate-*` detail)
-/// is a claim that lost the race, and pushing it would let the worker
-/// wake/mislead the planner instead of the machine `task.gate_result`.
-///
-/// Ungated tasks, non-task keys (legacy), and lookup errors
-/// (fail-open: a spurious self-report push is benign; a silently lost
-/// wake-up is not) all push as today.
+/// A worker self-report for a tasks row with `gate_json` set is not pushed — the planner hears
+/// `task.gate_result` instead. Not status-based: a fast gate can flip the row terminal before this
+/// read. A gated `task.failed` is pushed only when the failure landed pre-gate; lookup errors fail open.
 pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Event) -> bool {
     let (idempotency_key, is_failure) = match event {
         Event::TaskCompleted {
@@ -284,8 +199,6 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
             if !is_failure {
                 return true;
             }
-            // #1147 ① — `status_detail` may carry a `": <reason>"` tail
-            // now; the vocabulary lives in the classifier prefix.
             let failure_landed_pre_gate = task.status == crate::model::TaskStatus::Failed
                 && matches!(
                     task.status_detail
@@ -307,19 +220,9 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
     }
 }
 
-/// #1727 S1 — the stale-worker-stop consultation shared by the live
-/// `CodexHook | ClaudeHook` push arm and the boot catch-up
-/// (`harness::catch_up::observations_since`), run AFTER the sync
-/// predicate said the hook is a worker stop. A worker card's stop hook is
-/// only a wake while its tasks row is still `dispatched | running`: once
-/// the row moved on (`verifying`, or terminal) the gate result / task
-/// terminal event IS the wake, and the stop hook would cost the planner
-/// an extra turn that ends in one `calm.plan.list`. Returns `true` when
-/// the push must be suppressed.
-///
-/// No tasks row for the card (ungated / legacy worker cards) → push.
-/// Lookup error → push (fail-open, same shape as `is_gated_self_report`:
-/// a spurious wake is benign, a silently lost one is not).
+/// A worker stop hook is a wake only while its tasks row is still `dispatched | running`; past that
+/// the gate result / terminal event is the wake. Returns `true` when the push must be suppressed;
+/// no tasks row or a lookup error → push (fail-open).
 pub(crate) async fn is_stale_worker_stop_hook(repo: &dyn crate::db::Repo, event: &Event) -> bool {
     let card_id = match event {
         Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => card_id,
@@ -519,67 +422,33 @@ pub struct TaskFailurePushTestHook {
     pub finished: Arc<tokio::sync::Notify>,
 }
 
-/// Subscribed handle. Holding the [`Dispatcher`] keeps the spawned
-/// task alive; dropping it closes the broadcast receiver's end (the
-/// task exits cleanly on the next `Closed` recv).
-///
-/// Today nothing outside `AppState::new` reaches in here — the
-/// dispatcher is fire-and-forget. We still hand back the struct so
-/// `AppState` can store it as `Arc<Dispatcher>` (matching the
-/// terminal_sweeper / card_fsm convention) and so tests can assert on
-/// the configured permit count.
+/// Subscribed handle. Holding the [`Dispatcher`] keeps the spawned task alive; dropping it
+/// closes the broadcast receiver's end.
 pub struct Dispatcher {
     semaphore: Arc<Semaphore>,
-    /// Number of permits the semaphore was constructed with — surfaced
-    /// for tests so they don't have to introspect `Semaphore` itself.
     permits: usize,
-    /// Background task handle. Kept on the struct so future shutdown
-    /// can `abort()` it; not used today (we let the broadcast `Closed`
-    /// signal drive the loop down naturally).
     #[allow(dead_code)]
     handle: JoinHandle<()>,
-    /// #313 problem #1 — catch-up reaches harness observation through
-    /// this. Held as a strong `Arc` so the same instance the background
-    /// task is consuming is the one [`Dispatcher::catch_up_push`] calls
-    /// into; the background task also holds its own clone, so the
-    /// dispatcher stays alive as long as either side does.
     inner: Arc<Inner>,
-    /// Owns a dispatcher-local runtime while the dispatcher handle is alive.
-    /// The background task only keeps a `Weak` so it cannot keep AppState
-    /// resources alive after shutdown.
+    /// The background task only keeps a `Weak`; this keeps the runtime alive while the handle lives.
     #[allow(dead_code)]
     operation_runtime: Arc<OperationRuntime>,
-    /// Issue #644 PR-B — the kernel task scheduler, owned here (the
-    /// dispatcher construction site owns the operation runtime + event
-    /// subscription loop, design §5). Exposed via
-    /// [`Dispatcher::scheduler`] for the boot sweep and tests.
     scheduler: Arc<Scheduler>,
     context_monitor: Arc<TaskContextMonitor>,
-    /// §5.1 liveness backstop — slow periodic reconcile sweep
-    /// (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300). Held so a future
-    /// shutdown can `abort()` it; runs for the process lifetime today,
-    /// like `handle`.
+    /// Slow periodic reconcile sweep (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300).
     #[allow(dead_code)]
     reconcile_handle: JoinHandle<()>,
-    /// #679 PR8a — observational worker-session liveness reaper.
     /// `None` when `NEIGE_REAPER_DISABLED` is set.
     #[allow(dead_code)]
     reaper_handle: Option<JoinHandle<()>>,
-    /// #741 §1.3 — the durable codex worker-liveness feeder (OBSERVATIONAL).
-    /// Push-feeds `worker_sessions.{last_activity_ms,last_thread_status}` from
-    /// the daemon notification stream. `None` (not spawned) when the reaper is
-    /// disabled, since nothing consumes the columns then. Held so a future
-    /// shutdown can `abort()` it.
+    /// Durable codex worker-liveness feeder; `None` when the reaper is disabled.
     #[allow(dead_code)]
     liveness_feeder_handle: Option<JoinHandle<()>>,
 }
 
 impl Dispatcher {
-    /// Resolve the permit count from `NEIGE_DISPATCHER_PERMITS` (parsed
-    /// as `usize`), falling back to [`DEFAULT_PERMITS`] when unset,
-    /// empty, unparseable, or zero. Surfaced as a free helper so tests
-    /// can verify the env-override logic without spawning a full
-    /// dispatcher.
+    /// Permit count from `NEIGE_DISPATCHER_PERMITS`, falling back to `default` when unset,
+    /// unparseable, or zero.
     pub fn permits_from_env(default: usize) -> usize {
         match std::env::var("NEIGE_DISPATCHER_PERMITS") {
             Ok(raw) => match raw.trim().parse::<usize>() {
@@ -590,7 +459,6 @@ impl Dispatcher {
         }
     }
 
-    /// Configured permit count. Exposed for assertions in tests.
     pub fn permits(&self) -> usize {
         self.permits
     }
@@ -605,30 +473,13 @@ impl Dispatcher {
     }
 
     /// Test-only — read the current in-memory push cursor for a card.
-    /// Used by harness catch-up tests to assert that delivered envelopes
-    /// advance the push cursor.
     #[doc(hidden)]
     pub fn push_cursor_for_test(&self, planner_card_id: &CardId) -> i64 {
         self.inner.push_cursor.get(planner_card_id)
     }
 
-    /// #313 problem #1 (catch-up) — replay an already-persisted
-    /// `(envelope_id, scope, event)` through the dispatcher's push path,
-    /// **without** going through the broadcast bus.
-    ///
-    /// Used by boot/recovery paths to catch a harness-backed planner runtime up
-    /// with events that landed while the kernel was down. Reuses the same
-    /// harness observation helper that live envelopes go through.
-    ///
-    /// `envelope_id` must be the real persisted `events.id` — the watermark
-    /// dedup keys on it. If the caller hands the same `(id, event)` twice
-    /// (e.g. via a redelivery on the bus right after catch-up), the second
-    /// call is a no-op (it `<= cursor`); see the dedup invariant in
-    /// `Inner::push_to_planner`.
-    ///
-    /// Track-scope-only: the live push path discards events without a track
-    /// scope before they reach the observer; this helper preserves that
-    /// invariant (caller filters to track-scoped events).
+    /// Replay an already-persisted `(envelope_id, scope, event)` through the push path without the
+    /// broadcast bus. `envelope_id` must be the real persisted `events.id` — the watermark dedup keys on it.
     pub async fn catch_up_push(
         &self,
         track_id: TrackId,
@@ -638,14 +489,10 @@ impl Dispatcher {
         Inner::observe_harness(&self.inner, track_id, &event, envelope_id).await;
     }
 
-    /// Reference to the global semaphore. Exposed so tests can probe
-    /// `available_permits()` to verify the cap.
     pub fn semaphore(&self) -> Arc<Semaphore> {
         Arc::clone(&self.semaphore)
     }
 
-    /// Issue #644 PR-B — handle to the kernel task scheduler. Used by
-    /// the boot sweep (`lib.rs::scheduler_sweep_on_boot`) and tests.
     pub fn scheduler(&self) -> Arc<Scheduler> {
         Arc::clone(&self.scheduler)
     }
@@ -654,10 +501,7 @@ impl Dispatcher {
         Arc::clone(&self.context_monitor)
     }
 
-    /// Fixtures that exercise request handlers without scheduler behavior can
-    /// stop only the event listener before emitting any events. The dispatcher
-    /// handle remains available to satisfy `AppState`'s production-shaped
-    /// state, while `PlanUpdated` cannot race the fixture's next request.
+    /// Stops only the event listener so `PlanUpdated` cannot race a fixture's next request.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn abort_event_listener_for_test(&self) {
         self.handle.abort();
@@ -681,17 +525,8 @@ impl Dispatcher {
         self.inner.reconcile_once().await;
     }
 
-    /// Spawn the dispatcher background task.
-    ///
-    /// `permits` configures the global concurrent-spawn cap. The
-    /// production caller (`AppState::new`) uses
-    /// [`Dispatcher::permits_from_env`]`(DEFAULT_PERMITS)` so the
-    /// `NEIGE_DISPATCHER_PERMITS` env var stays the single dial.
-    /// Tests inject an explicit count.
-    ///
-    /// The codex / daemon / renderer / MCP handles are threaded into the
-    /// dispatcher-local operation runtime for compatibility callers. The
-    /// dispatcher itself only keeps the operation runtime after construction.
+    /// Spawn the dispatcher background task. Production passes
+    /// `permits_from_env(DEFAULT_PERMITS)`; tests inject an explicit count.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         repo: Arc<dyn Repo>,
@@ -887,9 +722,6 @@ impl Dispatcher {
             permits
         };
         let semaphore = Arc::new(Semaphore::new(permits));
-        // Issue #644 PR-B — the scheduler lives at the dispatcher
-        // construction site: same `Weak<OperationRuntime>` discipline,
-        // same global spawn semaphore (§5.3).
         let scheduler = Scheduler::new_with_task_budget_default(
             repo.clone(),
             events.clone(),
@@ -904,11 +736,8 @@ impl Dispatcher {
             write.clone(),
             scheduler.context_metrics(),
         ));
-        // #741 §1.3 — take the durable-liveness feeder's notification
-        // subscription BEFORE `shared_codex_appserver` is moved into the
-        // provider registry below, and clone the repo before it is moved into
-        // `Inner`. The feeder is spawned (behind the same kill-switch as the
-        // reaper) further down.
+        // Take the feeder's notification subscription BEFORE `shared_codex_appserver` is moved
+        // into the provider registry.
         let liveness_feeder_rx = shared_codex_appserver.subscribe_notifications();
         let liveness_feeder_repo = repo.clone();
         let provider_registry = WorkerProviderRegistry::new(
@@ -921,9 +750,6 @@ impl Dispatcher {
             events.clone(),
             write.clone(),
         ));
-        // Issue #644 M2 (live path) — install the terminal-exit
-        // completion bundle on the renderer registry so the
-        // attach-reader exit branch can flip plan-task rows.
         terminal_renderer.set_task_hook(TerminalTaskHook::new(
             repo.clone(),
             events.clone(),
@@ -935,31 +761,17 @@ impl Dispatcher {
             harness,
             scheduler: Arc::clone(&scheduler),
             context_monitor: Arc::clone(&context_monitor),
-            // #293 PR3b — a DEDICATED push watermark cache. Intentionally
-            // a SEPARATE instance from anything else: keyed by the planner
-            // `CardId`;
-            // a push only fires when `envelope_id > cursor`, making pushes
-            // idempotent under the broadcast's at-least-once delivery.
+            // A push only fires when `envelope_id > cursor`, making pushes idempotent under
+            // at-least-once delivery.
             push_cursor: EventCursorCache::new(),
-            // #293 PR3b (S1) — per-track push serialization lock-map.
             push_locks: DashMap::new(),
             #[cfg(any(test, feature = "fixtures"))]
             failure_push_hook: std::sync::Mutex::new(None),
             semaphore: Arc::clone(&semaphore),
         });
 
-        // Filter: push events route to harness observation delivery;
-        // scheduler trigger events poke the plan scheduler. Hook events
-        // are coarse-filtered by `kind_tag()` here; the exact turn-ending
-        // hook discriminators are checked synchronously in the push branch
-        // below. The kind list is `PLANNER_CATCH_UP_KINDS` (every
-        // push-capable kind — Issue #644 PR-C's `task.gate_result` is both
-        // a push and a scheduler trigger and lives there) plus
-        // `SCHEDULER_TRIGGER_KINDS` (Issue #644 PR-B §5.1 scheduler pokes
-        // and the deletion sweeps); nothing is listed here by hand. #1727
-        // S1 — `workspace.leased/released`, `worktree.provisioned/committed`
-        // and `review.round` are in neither: the push predicate is a
-        // constant `false` for them and they poke nothing else.
+        // Hook events are coarse-filtered by `kind_tag()` here; the exact turn-ending hook
+        // discriminators are checked in the push branch.
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
             include_descendants: true,
@@ -973,11 +785,7 @@ impl Dispatcher {
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
-                        // Apply the filter — `subscribe_filtered`
-                        // hands back the raw firehose, callers run the
-                        // match themselves (see `EventBus::subscribe_filtered`
-                        // doc on why we ship that shape rather than a
-                        // BroadcastStream wrapper).
+                        // `subscribe_filtered` hands back the raw firehose; callers run the match themselves.
                         if !filter_for_task.matches(&envelope) {
                             continue;
                         }
@@ -990,21 +798,12 @@ impl Dispatcher {
                         });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        // A lag means we missed `n` events. The scheduler
-                        // sweep below is the durable backstop for missed
-                        // plan/task trigger events. Log and continue.
                         tracing::warn!(
                             skipped = n,
                             "dispatcher subscriber lagged; missed events may need a retry from the requester"
                         );
-                        // Issue #644 PR-B (§5.1 backstop a): a lagged
-                        // `plan.updated` / `task.completed` would strand
-                        // pending tasks until the next reconcile tick —
-                        // schedule a full sweep now. Every sweep arm is
-                        // guarded + idempotent, so racing live handling
-                        // is a no-op. `sweep_all` is boot-gated (round-3
-                        // review F2): a lag during boot no-ops here and
-                        // the boot sweep itself covers the missed events.
+                        // A lagged `plan.updated` / `task.completed` would strand pending tasks until the next
+                        // reconcile tick — sweep now. `sweep_all` is boot-gated, so a lag during boot no-ops here.
                         let scheduler = Arc::clone(&inner_for_task.scheduler);
                         let context_monitor = Arc::clone(&inner_for_task.context_monitor);
                         tokio::spawn(async move {
@@ -1021,9 +820,7 @@ impl Dispatcher {
             }
         });
 
-        // §5.1 backstop b — slow reconcile tick running the same sweep
-        // as boot. Correctness never depends on it (every arm is
-        // guarded); it restores liveness after a lost envelope.
+        // Slow reconcile tick; correctness never depends on it, it restores liveness after a lost envelope.
         let tick_inner = Arc::clone(&inner);
         let reconcile_handle = tokio::spawn(async move {
             let period = std::time::Duration::from_secs(Scheduler::reconcile_secs_from_env(
@@ -1031,11 +828,8 @@ impl Dispatcher {
             ));
             let mut interval = tokio::time::interval(period);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // The first tick fires immediately; skip it — boot runs its
-            // own sweep in the asserted boot order. Later ticks that
-            // still beat the boot funnel (low reconcile period / slow
-            // recovery) are handled by `sweep_all`'s boot gate (round-3
-            // review F2): they no-op until `sweep_boot` completes.
+            // The first tick fires immediately; skip it — boot runs its own sweep, and `sweep_all`'s
+            // boot gate covers later ticks that beat the boot funnel.
             interval.tick().await;
             loop {
                 interval.tick().await;
@@ -1060,17 +854,12 @@ impl Dispatcher {
                 loop {
                     interval.tick().await;
                     tick_reaper.sweep_all().await;
-                    // #741-4 (DR-2/DR-5) — the dead-ROOT convergence scan runs
-                    // as a sibling in the same boot-gated reconcile loop.
                     tick_reaper.sweep_dead_roots().await;
                 }
             }))
         };
 
-        // #741 §1.3 — the durable liveness feeder, gated behind the SAME
-        // kill-switch as the reaper: if the reaper is disabled, its writes
-        // would be unused, so don't spawn it. (`daemon_connected_at_ms`
-        // tracking stays always-on in the connect path — it's cheap.)
+        // Gated behind the same kill-switch as the reaper: nothing consumes its writes otherwise.
         let liveness_feeder_handle = if reaper_disabled_from_env() {
             None
         } else {
@@ -1098,18 +887,11 @@ impl Dispatcher {
 struct Inner {
     repo: Arc<dyn Repo>,
     write: WriteContext,
-    /// Harness-backed shared planners are driven by dispatcher observations
-    /// through the active harness registry.
     harness: HarnessRegistry,
-    /// Issue #644 PR-B — scheduler poked by the subscription arms
-    /// (`plan.updated`, `track.lifecycle_changed`, `track.updated`, and
-    /// the task report kinds after their push handling).
     scheduler: Arc<Scheduler>,
     context_monitor: Arc<TaskContextMonitor>,
-    /// #293 PR3b — DEDICATED push watermark cache keyed by the planner
-    /// `CardId`. A push fires only when `envelope_id > cursor`, then bumps;
-    /// this makes pushes idempotent under at-least-once broadcast delivery
-    /// and survives a re-delivered envelope without double-pushing.
+    /// A push fires only when `envelope_id > cursor`, making pushes idempotent under
+    /// at-least-once broadcast delivery.
     push_cursor: EventCursorCache,
     /// Serialize cursor/enqueue updates. Lock acquisition does not order
     /// separately spawned handlers by event ID. Settlement catches up its
@@ -1121,9 +903,7 @@ struct Inner {
 }
 
 impl Inner {
-    /// Run one production reconcile cycle. The periodic loop and focused
-    /// scheduler tests share this exact body so ordering changes are exercised,
-    /// not inferred from a copied test helper.
+    /// The periodic loop and scheduler tests share this exact body.
     async fn reconcile_once(&self) {
         if let Err(error) = self.context_monitor.sweep().await {
             tracing::warn!(%error, "periodic task context sweep failed");
@@ -1134,8 +914,6 @@ impl Inner {
     }
 
     async fn handle_envelope(self: Arc<Self>, envelope: BroadcastEnvelope) {
-        // Acquire a permit before doing any per-spawn work. Dropped on
-        // task end (the `_permit` binding holds it across the function).
         let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
             Ok(p) => p,
             Err(_) => {
@@ -1161,26 +939,13 @@ impl Inner {
             hook.resume.notified().await;
         }
 
-        // #293 — push branch. The track-event kinds the filter matches route
-        // HERE. For `track.report_edited` we act ONLY on a User- or
-        // Plugin-authored edit (#955 §5.7) — Planner/Kernel-authored edits are
-        // the planner writing its own report, and
-        // pushing those back would be a feedback loop. Worker hook events
-        // also return from here, even when ignored, because they are
-        // lifecycle notices rather than scheduler requests.
+        // Push branch. Planner/Kernel-authored report edits are the planner writing its own
+        // report; pushing them back would loop.
         match &envelope.event {
             Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. }
             | Event::TaskExecutionSettled { .. } | Event::TaskCandidateVerificationSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
-                // Issue #644 PR-C (§6.5) — gated self-report
-                // suppression: a `task.completed` whose key resolves
-                // to a tasks row WITH a gate is a claim, not evidence;
-                // the planner hears the gate result instead. Round-3
-                // review F1 extends this to a gated `task.failed`
-                // that did not land a pre-gate row failure (stale /
-                // retried report while the gate is in flight or
-                // already decided) — see `is_gated_self_report`.
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write)
                     && !is_gated_self_report(self.repo.as_ref(), &envelope.event).await
                 {
@@ -1194,17 +959,11 @@ impl Inner {
                         );
                     }
                 }
-                // Issue #644 PR-B (§5.1 trigger 2) — a task terminal
-                // event may free budget / satisfy deps; poke the
-                // scheduler AFTER the push branch. Fire-and-forget; the
-                // scheduler's guards make spurious pokes no-ops.
+                // A task terminal event may free budget / satisfy deps; poke the scheduler AFTER the push branch.
                 if let Some(track_id) = envelope.scope.track_id().cloned() {
                     self.scheduler.poke(track_id);
                 }
             }
-            // Issue #644 PR-B (§5.1 triggers 1 + 4) — scheduler-only
-            // arms. They never enter the push branch or the worker-spawn
-            // path below.
             Event::PlanUpdated { track_id, .. } => {
                 self.scheduler.poke(track_id.clone());
             }
@@ -1212,20 +971,15 @@ impl Inner {
                 self.scheduler.reconcile_child_track(id.clone());
                 self.scheduler.poke(id.clone());
             }
-            // Round-2 review F4 — `PATCH /api/tracks` emits only
-            // `track.updated` when it changes `task_budget` without a
-            // lifecycle transition; without this arm a raised budget
-            // would strand pending tasks until the reconcile tick. Poke
-            // only (never the push branch); pokes are idempotent and
-            // cheap, so no budget diffing.
+            // `PATCH /api/tracks` emits only `track.updated` when it changes `task_budget`; without
+            // this arm a raised budget would strand pending tasks until the reconcile tick.
             Event::TrackUpdated(payload) => {
                 self.scheduler.poke(payload.id.clone());
             }
             Event::TrackReportEdited {
                 author, track_id, ..
             } => {
-                // #985 PR3a-ii: mechanical invalidation is independent of
-                // author and runs before the self-push suppression below.
+                // Mechanical invalidation is independent of author and runs before the self-push suppression.
                 let context_monitor = Arc::clone(&self.context_monitor);
                 let detection_track_id = track_id.clone();
                 tokio::spawn(async move {
@@ -1236,9 +990,6 @@ impl Inner {
                         tracing::warn!(%error, track_id = %detection_track_id, "task context edit detection failed");
                     }
                 });
-                // Only user/plugin edits warrant a push (#955 §5.7).
-                // The planner authored Planner/Kernel edits itself;
-                // re-notifying it would loop.
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
                         .await;
@@ -1259,8 +1010,6 @@ impl Inner {
                 });
             }
             Event::AreaDeleted { .. } => {
-                // Payloads intentionally stay unchanged. The tasks-based
-                // sweep discovers vanished tracks/areas fail-closed.
                 let context_monitor = Arc::clone(&self.context_monitor);
                 tokio::spawn(async move {
                     if let Err(error) = context_monitor.sweep().await {
@@ -1281,21 +1030,8 @@ impl Inner {
                 }
             }
             Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
-                // Only the precise Stop hooks mean a worker turn truly
-                // ended. Other hooks may project to the same FSM state (for
-                // example `hook.codex.permission_request` -> AwaitingInput)
-                // but are mid-turn pauses, so they must not wake the planner.
-                //
-                // The Worker role gate prevents planner self-push loops: planner
-                // cards can emit their own hook lifecycle events, but only
-                // worker cards should notify the planner. Stop hooks carry no
-                // result/artifacts, so the pushed observation is a light
-                // wake-up that asks the planner to re-read track state.
-                //
-                // #1727 S1 — and only while the card's task is still
-                // `dispatched | running`: past that the gate result / task
-                // terminal event is the wake (`is_stale_worker_stop_hook`,
-                // the same consultation the boot catch-up runs).
+                // Only the precise Stop hooks end a worker turn; other hooks may project to the same FSM
+                // state but are mid-turn pauses. The Worker role gate prevents planner self-push loops.
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write)
                     && !is_stale_worker_stop_hook(self.repo.as_ref(), &envelope.event).await
                 {
@@ -1342,16 +1078,10 @@ impl Inner {
             | Event::TaskContextAdvanced { .. }
             | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
-            // Issue #955 — proposal lifecycle events reach the planner
-            // indirectly: an accepted proposal lands a plugin-authored
-            // `track.report_edited` in the same tx, and THAT frame is
-            // the wake-up. The proposal records themselves are
-            // adjudication history (user/plugin facing), so they are
-            // not in the dispatcher's kind filter.
+            // Proposal lifecycle events reach the planner via the plugin-authored
+            // `track.report_edited` landed in the same tx.
             | Event::ProposalSubmitted { .. }
             | Event::ProposalResolved { .. }
-            // #1727 S1 — the five quiet kinds: not subscribed, never
-            // pushed (`PLANNER_CATCH_UP_KINDS`), nothing else to do.
             | Event::WorkspaceLeased { .. }
             | Event::WorkspaceReleased { .. }
             | Event::WorktreeProvisioned { .. }
@@ -1376,9 +1106,7 @@ impl Inner {
             .await;
     }
 
-    /// #313 round-2 (B3) — per-track push lock helper used by harness
-    /// observation so same-track replay and live pushes serialize around
-    /// `(get → compare → bump)`.
+    /// Per-track push lock so same-track replay and live pushes serialize around `(get → compare → bump)`.
     async fn acquire_push_lock(self: &Arc<Self>, track_id: &TrackId) -> PushLockGuard {
         // IMPORTANT: do NOT bind the DashMap Entry to a `let` — the shard
         // guard must drop at this statement's `;` before we `.await` below.
@@ -1398,7 +1126,6 @@ impl Inner {
         envelope_id: i64,
     ) {
         let track_id = guard.track_id().clone();
-        // Resolve the planner card for this track via the role cache.
         let planner_card_id = match self.resolve_planner_card(&track_id).await {
             Some(id) => id,
             None => {
@@ -1410,14 +1137,8 @@ impl Inner {
             }
         };
 
-        // Dedup: push only when this envelope is newer than the watermark
-        // for the planner card. A persisted event always has a positive id;
-        // a synthetic id-0 envelope (test `EventBus::emit`) is never above
-        // the initial 0 cursor, so it is skipped — we only push real,
-        // persisted, ordered events. `bump` is monotonic, so a re-delivered
-        // (lower-or-equal) id is a no-op and can't double-push. Under the
-        // per-track lock above this check-then-bump is now atomic w.r.t. other
-        // same-track pushes.
+        // A synthetic id-0 envelope (test `EventBus::emit`) is never above the initial 0 cursor, so it
+        // is skipped; `bump` is monotonic, so a re-delivered id can't double-push.
         let cursor = self.push_cursor.get(&planner_card_id);
         if envelope_id <= cursor {
             tracing::debug!(
@@ -1534,10 +1255,7 @@ impl Inner {
         self.push_cursor.bump(planner_card_id.clone(), envelope_id);
     }
 
-    /// Find the [`CardRole::Planner`] card for a track. Scans the track's cards
-    /// and consults `card_role_cache` (write-through, in-memory) for the
-    /// role. Returns `None` if the track has no planner card (shouldn't happen
-    /// for a live push-enabled track) or the lookup errors.
+    /// Find the planner card for a track via `card_role_cache`; `None` if the track has none or the lookup errors.
     async fn resolve_planner_card(self: &Arc<Self>, track_id: &TrackId) -> Option<CardId> {
         let cards = match self.repo.cards_by_track(track_id.as_str()).await {
             Ok(c) => c,
@@ -1654,9 +1372,8 @@ pub(crate) async fn resolve_harness_observation(
                 "gate observation execution identity mismatch".into(),
             ));
         }
-        // The persisted observation already carries this exact execution ID and
-        // gate number. Validate their canonical reader address before either
-        // live push or boot replay renders it; never use the current-key alias.
+        // Validate the canonical reader address before either live push or boot replay renders it;
+        // never use the current-key alias.
         calm_truth::track_fs_view::task_gate_log_path(task_id, *attempt).map_err(|error| {
             crate::error::CalmError::Conflict(format!("gate observation: {error:?}"))
         })?;
@@ -1683,19 +1400,9 @@ pub(crate) async fn resolve_harness_observation(
     Ok(observation)
 }
 
-/// #1667 round-2 F1 — give a `ReportEdited` observation the block ids /
-/// revs and the `docRev` of the body it carries, read from the report
-/// card now (the sync `Event -> Observation` mapping cannot query).
-///
-/// Best-effort by design: the refs are attached only when the report as
-/// read still projects to the event's `body_after` and each block is one
-/// diff slice (`report_edit_diff::align_block_refs`). A later write that
-/// landed before this push — or a read error — leaves both fields `None`
-/// and the diff nameless, rather than naming blocks by ids and revs that
-/// belong to a different body. Runs for live pushes and boot replay
-/// alike (both come through `resolve_harness_observation`); on replay the
-/// current report usually differs from an old event's body and the
-/// alignment simply declines.
+/// Attach block ids / revs and `docRev` read from the report card now. Best-effort: refs are
+/// attached only when the report as read still projects to the event's `body_after`; otherwise
+/// both fields stay `None`.
 async fn attach_report_block_refs(
     repo: &dyn crate::db::RepoRead,
     event: &Event,
@@ -1800,15 +1507,9 @@ pub(crate) fn harness_observation_from_event(
             track_id: track_id.clone(),
             body_sha256: sha256_hex(body_after),
             body: body_after.clone(),
-            // #1252 S0 R1/F2 — the event's own attribution, carried through
-            // so the turn text names the real author instead of calling
-            // every edit a user edit.
             author: Some(*author),
-            // #1667 D1 — the event's pre-edit body, so the turn text can
-            // render what changed instead of ordering a re-read.
             body_before: Some(body_before.clone()),
-            // #1667 round-2 F1 — filled by `attach_report_block_refs` in
-            // the async resolver; this sync mapping cannot read the report.
+            // Filled by `attach_report_block_refs`; this sync mapping cannot read the report.
             doc_rev_after: None,
             blocks_after: None,
         }),

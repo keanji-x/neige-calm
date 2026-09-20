@@ -1,38 +1,5 @@
-//! `task-verify` operation — the kernel gate runner (issue #644 PR-C,
-//! reformulated on the #653 parked-operations primitive).
-//!
-//! One operation per gate **attempt**, idempotency key
-//! `"{task.id}#g{N}"`. The saga guarantees at-least-once *start*;
-//! everything after the spawn is owned by the durable parked op row +
-//! the runtime-spawned exit observer:
-//!
-//! * `prepare_tx` — guarded `gate_attempt` bump (`N-1 → N`, only while
-//!   the row is `verifying`) + freezes the gate definition, resolved
-//!   cwd (`gate.cwd → worker checkout → task.cwd → Track workspace`) and attempt
-//!   into `tx_output.data`. The gate that runs is the one recorded.
-//! * `spawn_side_effect` — kill-prior (own-row artifacts per the #653
-//!   §3.2 MUST, the previous attempt's op artifacts, and the tasks-row
-//!   pid triple), unlink the stale exit file, spawn the POSIX wrapper
-//!   **held** at a stdin handshake (`read -r _go || exit 75`), record
-//!   the `(pid, starttime, boot_id)` identity on the tasks row AND as
-//!   op spawn artifacts, release the go-token, and park the op with an
-//!   exit observer. Every gate process that can execute a step is
-//!   recorded before release — there is no fork-window orphan.
-//! * The **observer** (runtime-spawned only after the park committed,
-//!   #653 §3.1) waits the child (group-killing at `timeout_secs`),
-//!   derives the verdict from the WAIT STATUS (§6.7 — the exit file is
-//!   never a live verdict source; untrusted step children could forge
-//!   it), and lands op completion + the `verifying → done|failed` task
-//!   flip + `Event::TaskGateResult` + the §3 lifecycle promotion in
-//!   ONE tx — gated on `ParkedCompletion::Completed` (#653 §3.3
-//!   write-gate contract).
-//! * `recover_parked` — liveness first: boot reattach for a healthy
-//!   running gate; for DEAD work the exit file is the crashed-kernel
-//!   recovery hint (present → real verdict, absent/foreign →
-//!   infra-fail); timeout fail past deadline.
-//!
-//! Gate red / timeout / infra all land `failed` — "gate didn't prove
-//! green" is the invariant (§6.3); the planner re-plans.
+//! `task-verify` operation — the kernel gate runner. One operation per gate attempt (`"{task.id}#g{N}"`); the wrapper is held at a stdin
+//! handshake until its pid triple is recorded, the verdict comes from the WAIT STATUS (the exit file is only a dead-work recovery hint), and gate red / timeout / infra all land `failed`.
 
 #[path = "task_verify_display.rs"]
 mod display;
@@ -67,28 +34,21 @@ use super::{
 
 pub const TASK_VERIFY_KIND: &str = "task-verify";
 
-/// Default / cap mirror plan.rs rule 7; the adapter re-clamps
-/// defensively because the gate ran through `prepare_tx` freezing.
+/// Mirror plan.rs; the adapter re-clamps defensively because the gate ran through `prepare_tx` freezing.
 const GATE_TIMEOUT_DEFAULT_SECS: i64 = 1800;
 const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
 
-/// Kernel-side release-handshake timeout (design §6.2 steps 3-4): the
-/// record + go-token write must complete within this or the held group
-/// is killed and the op fails `gate-infra`.
+/// The record + go-token write must complete within this or the held group is killed and the op fails `gate-infra`.
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Slack added to `timeout_secs` for the parked deadline (#653 §6.1
-/// step 6): live timeout enforcement stays with the observer; the
-/// parked deadline is the backstop for a dead observer.
+/// Live timeout enforcement stays with the observer; the parked deadline is the backstop for a dead observer.
 const PARKED_DEADLINE_SLACK_SECS: i64 = 120;
 
 /// Trailing log bytes copied into `gate_result_json` and the event.
 #[cfg(test)]
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
 
-/// Reattach-observer liveness poll cadence (#653 §6.3 — a non-child
-/// cannot be `waitpid`ed; polling + exit-file is the only
-/// cross-restart observation).
+/// A non-child cannot be `waitpid`ed; polling + exit-file is the only cross-restart observation.
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 
 const TASK_VERIFY_PHASES: &[PhaseTag] = &[
@@ -99,8 +59,7 @@ const TASK_VERIFY_PHASES: &[PhaseTag] = &[
     PhaseTag::Succeeded,
 ];
 
-/// Deterministic payload — a pure function of the frozen task row, so
-/// a post-crash resubmit always idempotency-matches.
+/// A pure function of the frozen task row, so a post-crash resubmit always idempotency-matches.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskVerifyOperationPayload {
     pub actor: ActorId,
@@ -109,8 +68,7 @@ pub struct TaskVerifyOperationPayload {
     pub attempt: i64,
 }
 
-/// Wire-compatible mirror of plan.rs's validated `gate` shape (stored
-/// verbatim in `tasks.gate_json`).
+/// Wire-compatible mirror of plan.rs's validated `gate` shape (stored verbatim in `tasks.gate_json`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GateSpec {
     #[serde(default)]
@@ -134,9 +92,7 @@ impl GateSpec {
     }
 }
 
-/// The machine verdict of one gate attempt. `status_detail` is `None`
-/// on green, else `gate-red` / `gate-timeout` / `gate-infra` — the
-/// task row's `status_detail` vocabulary (§3/§6.3).
+/// `status_detail` is `None` on green, else `gate-red` / `gate-timeout` / `gate-infra`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GateVerdict {
     pub passed: bool,
@@ -151,8 +107,6 @@ pub struct GateVerdict {
     pub attempt: i64,
 }
 
-/// Everything the gate-result tx needs to address the task row and the
-/// track-scoped event.
 #[derive(Clone, Debug)]
 pub(crate) struct GateResultCtx {
     pub task_id: String,
@@ -160,13 +114,8 @@ pub(crate) struct GateResultCtx {
     pub area_id: AreaId,
 }
 
-/// The ONE gate-result body (design §3 / §6.5): guarded
-/// `verifying → done|failed` flip + `Event::TaskGateResult` + the
-/// lifecycle promotion (`Working → Reviewing` — on ANY verdict, green
-/// or red: either way there is now something to review), all appended
-/// in the caller's tx. Returns the post-commit broadcast envelopes, or
-/// an empty vec when the guard missed (task moved on / superseded
-/// attempt) — in which case NOTHING else was written.
+/// The ONE gate-result body: guarded `verifying → done|failed` flip + `Event::TaskGateResult` + the `Working → Reviewing` promotion on ANY verdict.
+/// Returns an empty vec when the guard missed (task moved on / superseded attempt), in which case NOTHING else was written.
 pub(crate) async fn apply_gate_result_in_tx(
     tx: &mut super::Tx<'_>,
     rctx: &GateResultCtx,
@@ -175,13 +124,7 @@ pub(crate) async fn apply_gate_result_in_tx(
     apply_gate_result_with_guard_in_tx(tx, rctx, verdict, verdict.attempt).await
 }
 
-/// [`apply_gate_result_in_tx`] with an explicit row-guard attempt
-/// (PR #685 review F4): the scheduler's pre-bump reconcile arm flips a
-/// row still sitting at `verdict.attempt - 1` — the shape left behind
-/// when `prepare_tx` failed with a client error BEFORE the guarded
-/// bump (track row gone → Conflict, gate_json gone → Conflict). The
-/// recorded verdict keeps the op's attempt number; only the in-tx
-/// guard differs.
+/// [`apply_gate_result_in_tx`] with an explicit row-guard attempt: the reconcile arm flips a row still at `verdict.attempt - 1`, the shape left when `prepare_tx` failed BEFORE the guarded bump.
 pub(crate) async fn apply_gate_result_with_guard_in_tx(
     tx: &mut super::Tx<'_>,
     rctx: &GateResultCtx,
@@ -255,10 +198,7 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
         .collect())
 }
 
-/// Complete the parked op AND apply the consumer writes in one tx,
-/// honoring the #653 §3.3 write gate: on `AlreadyResolved` nothing is
-/// written (rollback) — the scheduler's reconcile copies the
-/// enforcement outcome to the row instead.
+/// On `AlreadyResolved` nothing is written (rollback); the scheduler's reconcile copies the enforcement outcome to the row instead.
 pub(crate) async fn complete_gate_op_with_result(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
@@ -293,14 +233,6 @@ pub(crate) async fn complete_gate_op_with_result(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Wrapper script
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Frozen tx_output.data shape
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FrozenVerify {
@@ -341,10 +273,6 @@ pub fn gate_attempt_key(task_id: &str, attempt: i64) -> String {
     format!("{task_id}#g{attempt}")
 }
 
-// ---------------------------------------------------------------------------
-// Adapter
-// ---------------------------------------------------------------------------
-
 pub struct TaskVerifyAdapter {
     /// `<data_dir>/gate-logs` — wrapper scripts, logs, exit files.
     gate_logs_dir: PathBuf,
@@ -362,15 +290,7 @@ impl TaskVerifyAdapter {
         }
     }
 
-    /// Resolve the gate-logs dir for the GENUINELY config-less call
-    /// sites only (test `AppState::from_parts`, the dispatcher test
-    /// runtime): `NEIGE_GATE_LOGS_DIR` env override, else
-    /// `$CALM_DATA_DIR/gate-logs` (the env spelling of
-    /// `Config::data_dir`), else the same XDG chain
-    /// `Config::data_dir_resolved` uses, joined `gate-logs`. Every
-    /// config-ful site — `AppState::new`'s adapter AND the MCP
-    /// `plan/<key>/gate.log` view via `AppContext.gate_logs_dir`
-    /// (PR #685 F3) — passes the resolved dir explicitly instead.
+    /// For the GENUINELY config-less call sites only; every config-ful site passes the resolved dir explicitly.
     pub fn default_gate_logs_dir() -> PathBuf {
         if let Some(dir) = std::env::var_os("NEIGE_GATE_LOGS_DIR") {
             return PathBuf::from(dir);
@@ -399,8 +319,7 @@ impl TaskVerifyAdapter {
     }
 }
 
-/// Kill the recorded gate group iff the identity triple still matches
-/// (double-kill-safe: verify-fail → skip; ESRCH swallowed).
+/// Kill the recorded gate group iff the identity triple still matches (verify-fail → skip; ESRCH swallowed).
 fn kill_recorded_group(pid: i64, start_time: i64, boot_id: &str, pgid: i64) {
     let (Ok(pid), Ok(pgid)) = (i32::try_from(pid), i32::try_from(pgid)) else {
         return;
@@ -502,8 +421,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let gate: GateSpec = serde_json::from_str(gate_json)
             .map_err(|e| CalmError::Internal(format!("task {} gate_json: {e}", task.id)))?;
 
-        // Freeze the execution directory, including released leases: successful
-        // workers release their lease before the gate starts, retaining files.
+        // Successful workers release their lease before the gate starts, retaining files.
         let track: Option<(String, String)> =
             sqlx::query_as("SELECT workspace_path, area_id FROM tracks WHERE id = ?1")
                 .bind(&task.track_id)
@@ -514,8 +432,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let cwd = if let Some(cwd) = gate.cwd.as_ref().filter(|c| !c.trim().is_empty()) {
             cwd.clone()
         } else if let Some(card_id) = task.worker_card_id.as_deref() {
-            // Agent workers always have a durable lease. A missing lease is
-            // an infrastructure defect, never a reason to inspect the Track.
+            // A missing lease is an infrastructure defect, never a reason to inspect the Track.
             let worker_cwd: Option<String> = sqlx::query_scalar(
                 "SELECT path FROM workspace_leases WHERE card_id = ?1 AND track_id = ?2 \
                  ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1",
@@ -527,8 +444,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             if let Some(cwd) = worker_cwd {
                 cwd
             } else if task.kind == crate::model::TaskKind::Terminal {
-                // Terminal tasks do not acquire a worktree lease; use the
-                // immutable spawn operation, not the mutable card payload.
+                // Terminal tasks do not acquire a worktree lease; use the immutable spawn operation, not the mutable card payload.
                 sqlx::query_scalar::<_, Option<String>>(
                     "SELECT json_extract(tx_output_json, '$.data.cwd') FROM operations \
                      WHERE kind = 'terminal-worker' AND idempotency_key = ?1 \
@@ -615,10 +531,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let frozen = FrozenVerify::from_output(output)?;
         let pool = ctx.operation_repo.sqlite_pool();
 
-        // 1. Kill prior (design §6.2 step 1 + #653 §3.2 contract item 2):
-        //    (a) this op's own recorded artifacts (same-op re-drive),
-        //    (b) the previous attempt's op artifacts,
-        //    (c) the tasks-row pid triple.
+        // Kill prior: this op's own artifacts (same-op re-drive), the previous attempt's, and the tasks-row pid triple.
         if let Some(artifacts) = &op.spawn_artifacts {
             kill_artifacts_group(artifacts);
         }
@@ -653,8 +566,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
 
         super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
 
-        // 2. Unlink the stale exit file (strictly after the kills,
-        //    strictly before the spawn — #653 §6.1 step 2).
+        // Unlink the stale exit file strictly after the kills, strictly before the spawn.
         let exit_path = self.exit_path(&frozen.task_id, frozen.attempt);
         let log_path = self.log_path(&frozen.task_id, frozen.attempt);
         let script_path = self.script_path(&frozen.task_id, frozen.attempt);
@@ -684,14 +596,12 @@ impl ProviderAdapter for TaskVerifyAdapter {
         })?;
         let pgid = pid;
 
-        // 4-5. Record then release, under the kernel-side 60s timeout.
         let record_release = async {
             let start_time = read_proc_start_time(pid).ok_or_else(|| {
                 CalmError::Internal(format!("gate wrapper pid {pid}: starttime unreadable"))
             })?;
             let boot_id =
                 read_boot_id().ok_or_else(|| CalmError::Internal("boot_id unreadable".into()))?;
-            // Durable record on the tasks row (guarded), …
             let rows = sqlx::query(
                 r#"UPDATE tasks
                    SET gate_pid = ?1, gate_pid_starttime = ?2, gate_pid_boot_id = ?3,
@@ -713,9 +623,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     frozen.task_id, frozen.attempt
                 )));
             }
-            // … AND the op spawn artifacts (#653 §3.2 hook) — both
-            // BEFORE release, so every gate process that can execute a
-            // step is recorded.
+            // Both records land BEFORE release, so every gate process that can execute a step is recorded.
             let artifacts = SpawnArtifacts {
                 pid,
                 pgid,
@@ -732,8 +640,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             if let Some(hook) = &self.before_release {
                 hook().await;
             }
-            // Release the go-token (newline-terminated — POSIX `read`
-            // returns non-zero on EOF-before-newline).
+            // Newline-terminated — POSIX `read` returns non-zero on EOF-before-newline.
             let mut stdin = child
                 .stdin
                 .take()
@@ -752,8 +659,6 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let artifacts = match tokio::time::timeout(RELEASE_TIMEOUT, record_release).await {
             Ok(Ok(artifacts)) => artifacts,
             Ok(Err(e)) => {
-                // Kill the held child; its handshake `read` may also
-                // already have EOF'd via the dropped stdin.
                 signal_process_group(pgid, libc::SIGKILL);
                 return Err(e);
             }
@@ -765,8 +670,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             }
         };
 
-        // 6. Build the exit observer — the runtime spawns it only
-        //    AFTER the park commits (#653 §3.1).
+        // The runtime spawns the observer only AFTER the park commits.
         let timeout_secs = frozen.gate.timeout_secs_clamped();
         let rctx = frozen.result_ctx();
         let attempt = frozen.attempt;
@@ -810,10 +714,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         })
     }
 
-    /// #653 §4.2/§6.3 — liveness first; the exit file is consulted
-    /// only for DEAD work (§6.7: it is the crashed-kernel recovery
-    /// hint — once no wait status can ever exist it is the only
-    /// verdict channel left — never a live gate's verdict source).
+    /// Liveness first; the exit file is consulted only for DEAD work, never as a live gate's verdict source.
     async fn recover_parked(
         &self,
         op: &Operation,
@@ -849,11 +750,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         }
         match mode {
             RecoveryMode::Boot => {
-                // Re-attach: a healthy running gate survives the
-                // kernel restart. A non-child cannot be waitpid'ed —
-                // poll the identity triple until it dies, then read
-                // the exit file; complete via the same
-                // Completed-gated one-tx body.
+                // Re-attach: a non-child cannot be waitpid'ed — poll the identity triple until it dies, then read the exit file.
                 let pool = ctx.operation_repo.sqlite_pool();
                 let completion = ctx.completion.clone();
                 let events = ctx.events.clone();
@@ -905,11 +802,9 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 });
                 Ok(ParkedRecovery::LeaveParked)
             }
-            // §4.4 only probes dead work pre-deadline; defensive.
+            // Only dead work is probed pre-deadline; defensive.
             RecoveryMode::PreDeadlineProbe => Ok(ParkedRecovery::LeaveParked),
-            // The caller kills the group next and runs the post-kill
-            // re-check; spawning a reattach observer here would watch
-            // a corpse and double-report.
+            // The caller kills the group next; a reattach observer here would watch a corpse and double-report.
             RecoveryMode::PastDeadline => Ok(ParkedRecovery::Fail {
                 reason: "gate timeout (parked deadline exceeded)".into(),
             }),
@@ -972,9 +867,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     let artifacts: SpawnArtifacts = serde_json::from_value(artifacts.clone())?;
                     kill_artifacts_group(&artifacts);
                 }
-                // Belt-and-suspenders: the tasks-row triple (recorded
-                // before release) covers the window where the op-row
-                // artifacts never committed.
+                // The tasks-row triple (recorded before release) covers the window where the op-row artifacts never committed.
                 if let Some(task_id) = step.args.get("task_id").and_then(Value::as_str) {
                     let pool = ctx.operation_repo.sqlite_pool();
                     let triple: Option<(Option<i64>, Option<i64>, Option<String>)> =
@@ -1057,9 +950,7 @@ mod tests {
     fn attempt_key_round_trip() {
         assert_eq!(gate_attempt_key("w:impl", 3), "w:impl#g3");
         assert_eq!(parse_attempt_key("w:impl#g3"), Some(("w:impl", 3)));
-        // Task keys may contain '#g' lookalikes only via the track id /
-        // key alphabet — keys are [a-z0-9._-], so the LAST '#g' is
-        // always the attempt separator.
+        // Keys are [a-z0-9._-], so the LAST '#g' is always the attempt separator.
         assert_eq!(parse_attempt_key("w:impl#g0"), None, "attempt >= 1");
         assert_eq!(parse_attempt_key("w:impl"), None);
         assert_eq!(parse_attempt_key("#g2"), None, "empty task id");
@@ -1079,28 +970,20 @@ mod tests {
             },
         ];
         let script = render_gate_wrapper(&steps);
-        // Handshake is the FIRST action — nothing executes before it.
         let first_action = script
             .lines()
             .find(|l| !l.starts_with('#') && !l.trim().is_empty())
             .unwrap();
         assert_eq!(first_action, "read -r _go || exit 75");
         assert!(script.contains("'::gate-step fmt'"));
-        // Single quotes in step names are escaped, not script-breaking.
         assert!(script.contains("'::gate-step it'\\''s-quoted'"));
-        // F2: each step body runs in a subshell so `exit`/`exec`/`set
-        // -e` inside it cannot bypass `neige_gate_finish`.
         assert!(script.contains("(\ncargo fmt --check\n)\n"));
-        // F1: the exit path is captured into a shell variable and the
-        // env var is unset BEFORE any step runs — step children must
-        // not inherit the verdict-file path.
+        // The env var is unset BEFORE any step runs — step children must not inherit the verdict-file path.
         let unset_pos = script
             .find("unset NEIGE_GATE_EXIT_PATH")
             .expect("unset line");
         let first_step_pos = script.find("'::gate-step fmt'").expect("first step");
         assert!(unset_pos < first_step_pos, "unset precedes every step");
-        // Exit file lands via tmp + rename, and the wrapper always
-        // finishes through the helper.
         assert!(
             script.contains("mv -f -- \"$neige_gate_exit_path.tmp\" \"$neige_gate_exit_path\"")
         );
@@ -1113,14 +996,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("v.log");
 
-        // Green.
         std::fs::write(&log, "::gate-step fmt\nok\n").unwrap();
         let v = verdict_from_exit_code(0, &log, 1);
         assert!(v.passed);
         assert_eq!(v.status_detail, None);
         assert_eq!(v.failing_step, None);
 
-        // Red with sentinel → gate-red + failing step attribution.
         std::fs::write(&log, "::gate-step fmt\nok\n::gate-step test\nboom\n").unwrap();
         let v = verdict_from_exit_code(101, &log, 2);
         assert!(!v.passed);
@@ -1129,13 +1010,11 @@ mod tests {
         assert_eq!(v.exit_code, Some(101));
         assert_eq!(v.attempt, 2);
 
-        // Non-zero with NO sentinel (handshake EOF exit 75) → infra.
         std::fs::write(&log, "").unwrap();
         let v = verdict_from_exit_code(75, &log, 1);
         assert!(!v.passed);
         assert_eq!(v.status_detail.as_deref(), Some("gate-infra"));
 
-        // Timeout verdict.
         let v = timeout_verdict(&log, 1, 7);
         assert_eq!(v.status_detail.as_deref(), Some("gate-timeout"));
         assert!(v.log_tail.contains("timed out after 7s"));
@@ -1170,9 +1049,7 @@ mod tests {
         assert!(tail.ends_with("tail-end\n"));
         assert_eq!(sentinel.as_deref(), Some("last"));
 
-        // PR #685 F9 — a log larger than the bounded read window
-        // (tail + sentinel margin) still yields the right tail and the
-        // last sentinel; only the window is read, not the whole file.
+        // A log larger than the bounded read window still yields the right tail and the last sentinel.
         let mut content = String::from("::gate-step ancient\n");
         content.push_str(&"y".repeat(200 * 1024));
         content.push_str("\n::gate-step recent\nbig-tail-end\n");
@@ -1184,12 +1061,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The record-then-release handshake's failure half, against a REAL
-    /// `/bin/sh`: kernel death before release drops the only write end
-    /// of the stdin pipe — the wrapper's first action (`read -r _go`)
-    /// hits EOF and the child exits 75 having executed **nothing** (no
-    /// step ran, no exit file written; the verdict classifier maps the
-    /// sentinel-less 75 to `gate-infra`).
+    /// Against a REAL `/bin/sh`: dropping the only write end of the stdin pipe makes `read -r _go` hit EOF and the child exit 75 having executed nothing.
     #[tokio::test]
     async fn wrapper_handshake_eof_exits_75_having_run_nothing() {
         let dir = std::env::temp_dir().join(format!(
@@ -1216,8 +1088,7 @@ mod tests {
             .env("NEIGE_GATE_EXIT_PATH", &exit_path)
             .spawn()
             .unwrap();
-        // Kernel-death stand-in: drop the held stdin WITHOUT writing
-        // the go-token.
+        // Kernel-death stand-in: drop the held stdin WITHOUT writing the go-token.
         drop(child.stdin.take());
         let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
             .await
@@ -1230,7 +1101,6 @@ mod tests {
             "the handshake exit path bypasses neige_gate_finish"
         );
 
-        // And the classifier lands it as infra, never red.
         let log = dir.join("empty.log");
         std::fs::write(&log, "").unwrap();
         let verdict = verdict_from_exit_code(75, &log, 1);

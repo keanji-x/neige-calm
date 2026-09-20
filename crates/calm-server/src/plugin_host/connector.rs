@@ -1,20 +1,5 @@
-//! #1164 — connector runtime: the client union, `secrets.json`, and tool
-//! materialization.
-//!
-//! Three pieces live here because they are the only things a non-`app`
-//! connector needs that an `app` plugin does not:
-//!
-//! * [`ConnectorClient`] — the union that replaced `RunningPlugin.mcp`'s
-//!   `Arc<McpClient>` (§2.2 / D8). Every variant is `Arc`-wrapped so a caller
-//!   can clone one out from under the *synchronous* process-table mutex and
-//!   only then `.await` on it. Holding that lock across an await is a deadlock
-//!   the existing code is careful to avoid (`plugin_host::mod` §"Process
-//!   table"), and a non-`Clone` client would have forced exactly that.
-//! * [`read_secrets`] — §2.4's `secrets.json`. No DB table in v0.
-//! * [`materialize_http_tools`] / [`materialize_cli_tools`] — §2.7's synthesis
-//!   of `ExposedTool` entries for a connector whose tool catalog does not live
-//!   in `exposes_tools` (an upstream `tools/list` for `mcp-http`, the manifest's
-//!   own `cli_query.tools` for `cli-query`).
+//! Connector runtime: the client union, `secrets.json`, and tool materialization.
+//! Every [`ConnectorClient`] variant is `Arc`-wrapped so a caller can clone one out from under the synchronous process-table mutex and only then `.await` on it.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -31,32 +16,20 @@ use super::mcp::McpClient;
 /// File name of the per-connector secret bundle, read only by the kernel.
 pub const SECRETS_FILENAME: &str = "secrets.json";
 
-// ---------------------------------------------------------------------------
-// ConnectorClient
-// ---------------------------------------------------------------------------
-
-/// What a running plugin/connector talks to.
-///
-/// `Clone` is cheap by construction (every payload is behind an `Arc`) — see
-/// the module header for why that is a hard requirement rather than a
-/// convenience.
+/// What a running plugin/connector talks to; `Clone` is cheap by construction (every payload is behind an `Arc`).
 #[derive(Clone)]
 pub enum ConnectorClient {
-    /// `kind: app` — today's stdio child process. Behaviour unchanged.
+    /// `kind: app` — the stdio child process.
     Stdio(Arc<McpClient>),
     /// `kind: mcp-http` — remote streamable-HTTP MCP server.
     Http(Arc<HttpMcpClient>),
-    /// `kind: cli-query` — a pinned local query binary, exec'd per call
-    /// (#1164 P3). No child process is supervised: the runtime holds the
-    /// resolved path plus the child environment, and each `tools/call` forks a
-    /// fresh, short-lived process.
+    /// `kind: cli-query` — a pinned local query binary; no child is supervised, each `tools/call` forks a fresh short-lived process.
     Cli(Arc<CliQueryRuntime>),
 }
 
 impl std::fmt::Debug for ConnectorClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // No payloads: the HTTP variant holds an API key and the CLI variant
-        // holds a secret environment.
+        // No payloads: the HTTP variant holds an API key and the CLI variant holds a secret environment.
         f.write_str(match self {
             Self::Stdio(_) => "ConnectorClient::Stdio",
             Self::Http(_) => "ConnectorClient::Http",
@@ -75,9 +48,7 @@ impl ConnectorClient {
         }
     }
 
-    /// The stdio client, or `None` for connectors. Callers that genuinely
-    /// require a `kind: app` plugin (forge-action dispatch, card creation via
-    /// tool call, `neige.*` callbacks) use this rather than widening.
+    /// The stdio client, or `None` for connectors; used by callers that genuinely require a `kind: app` plugin rather than widening.
     pub fn as_stdio(&self) -> Option<&Arc<McpClient>> {
         match self {
             Self::Stdio(c) => Some(c),
@@ -86,12 +57,7 @@ impl ConnectorClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// secrets.json (§2.4)
-// ---------------------------------------------------------------------------
-
-/// Cap on `secrets.json`. It holds a handful of API keys; anything larger is a
-/// mistake or an attempt to make the kernel buffer an unbounded file.
+/// Cap on `secrets.json`: it holds a handful of API keys; anything larger is a mistake or an attempt to make the kernel buffer an unbounded file.
 pub const MAX_SECRETS_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -102,32 +68,19 @@ pub enum SecretsError {
         #[source]
         source: std::io::Error,
     },
-    /// The refusal that matters: a world- or group-readable secret file is not
-    /// quietly accepted. Enable fails and says exactly what to run.
+    /// A world- or group-readable secret file is not quietly accepted: enable fails and says exactly what to run.
     #[error(
         "{path} must be mode 0600 or stricter (no group/other bits), found {found:04o}; \
          run `chmod 600 {path}` and re-enable"
     )]
     BadPermissions { path: String, found: u32 },
-    /// Not a regular file. A FIFO here would block the reader forever — and
-    /// before this slice that reader was an async runtime worker.
-    ///
-    /// Reached from two places, because not every non-regular file survives
-    /// `open(2)` long enough to be classified by `fstat`: a unix-domain socket
-    /// fails the open outright with `ENXIO`. That arm re-stats the path purely
-    /// to produce this error instead of a bare `Io { "No such device or
-    /// address" }`, which named neither the file's kind nor what to do.
+    /// Not a regular file (a FIFO here would block the reader forever). Also reached when `open(2)` itself fails `ENXIO` on a unix-domain socket, which never survives long enough for `fstat` to classify it.
     #[error("{path} must be a regular file (found {found})")]
     NotRegularFile { path: String, found: &'static str },
-    /// The `fstat` size was already over the cap. Distinct from
-    /// [`Self::GrewWhileReading`] so each of the two independent size checks
-    /// has an error only IT can produce — deleting either one is then
-    /// observable.
+    /// The `fstat` size was already over the cap. Distinct from [`Self::GrewWhileReading`] so each of the two independent size checks has an error only IT can produce.
     #[error("{path} is {size} bytes, over the {MAX_SECRETS_BYTES}-byte limit")]
     TooLarge { path: String, size: u64 },
-    /// The `fstat` size was within the cap but the descriptor yielded more
-    /// bytes. This is the check that actually enforces the bound: `fstat` size
-    /// is a snapshot and a file can grow after it.
+    /// The `fstat` size was within the cap but the descriptor yielded more bytes; this is the check that actually enforces the bound, since `fstat` size is a snapshot.
     #[error(
         "{path} exceeded the {MAX_SECRETS_BYTES}-byte limit while being read \
          (it grew after its size was checked)"
@@ -137,21 +90,8 @@ pub enum SecretsError {
     Malformed { path: String, reason: String },
 }
 
-/// Read `<install_path>/secrets.json`.
-///
-/// Returns `Ok(None)` when the file is absent — a connector with no
-/// credentials is legal. Returns an error (never a partial map) when the file
-/// exists but is unreadable, wrongly permissioned, not a regular file, over
-/// [`MAX_SECRETS_BYTES`], or malformed.
-///
-/// **Async on purpose.** The synchronous `metadata` + `read_to_string` this
-/// replaced ran directly on the spawn path, which `AppState::new` awaits
-/// inline: a 0600 FIFO at that path blocked a runtime worker and, with it,
-/// boot. `spawn_blocking` + the regular-file check close both halves.
-///
-/// Values are returned to the caller and go nowhere else: they are not merged
-/// into the `Manifest`, so they cannot reach `GET /api/plugins/{id}` (which
-/// serves the DB row's manifest blob) or any other REST surface.
+/// Read `<install_path>/secrets.json`. `Ok(None)` when absent; an error (never a partial map) when unreadable, wrongly permissioned, not a regular file, over [`MAX_SECRETS_BYTES`], or malformed.
+/// Async on purpose: a 0600 FIFO at this path once blocked a runtime worker, and with it boot. Values go nowhere but the caller — never into the `Manifest` or any REST surface.
 pub async fn read_secrets(
     install_path: &Path,
 ) -> Result<Option<BTreeMap<String, String>>, SecretsError> {
@@ -169,24 +109,8 @@ pub async fn read_secrets(
 fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>, SecretsError> {
     let display = path.display().to_string();
 
-    // ---- One open, one handle, one file. -------------------------------
-    //
-    // The previous shape was `metadata(path)` → checks → `read_to_string(path)`,
-    // which re-resolves the PATHNAME. That is a TOCTOU: swapping what the name
-    // points at between the two calls bypassed all three checks at once — a
-    // FIFO stranded a blocking worker despite the `is_file()` guard, and a file
-    // that grew after the stat bypassed the 64 KiB cap. Everything below is
-    // derived from THIS descriptor: `File::metadata` is `fstat(2)` on it, and
-    // the read goes through the same handle.
-    //
-    // `O_NONBLOCK` is what makes the FIFO case a prompt refusal rather than a
-    // hang: opening a FIFO read-only BLOCKS until a writer appears, so the
-    // `is_file()` check below would never be reached without it. It is a no-op
-    // for the regular files this function is actually for.
-    //
-    // The open FOLLOWS symlinks on purpose (as `metadata` did): a symlink to a
-    // FIFO must resolve to the FIFO and be refused as "not a regular file",
-    // not silently accepted as "a symlink, fine".
+    // One open, one handle, one file: `metadata(path)` then `read_to_string(path)` re-resolves the pathname, a TOCTOU that bypassed every check at once. Everything below derives from THIS descriptor.
+    // `O_NONBLOCK` makes the FIFO case a prompt refusal (a read-only FIFO open blocks until a writer appears); the open FOLLOWS symlinks on purpose so a link to a FIFO is refused as "not a regular file".
     let mut opts = std::fs::OpenOptions::new();
     opts.read(true);
     #[cfg(unix)]
@@ -197,10 +121,7 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
     let file = match opts.open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        // Some non-regular files never reach `fstat`: `open(2)` on a
-        // unix-domain socket fails with ENXIO before we hold a descriptor to
-        // classify. Re-stat the path only to name the kind — the refusal is
-        // already decided, so this stat cannot be a TOCTOU on any check.
+        // `open(2)` on a unix-domain socket fails ENXIO before we hold a descriptor; re-stat only to name the kind — the refusal is already decided, so this cannot be a TOCTOU on any check.
         #[cfg(unix)]
         Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {
             return Err(SecretsError::NotRegularFile {
@@ -245,9 +166,7 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = meta.permissions().mode() & 0o777;
-        // 0600-or-stricter: the requirement is that NOTHING outside the owner
-        // can read it. Demanding exactly 0600 rejected the strictly safer
-        // 0400, which is a refusal with no security story behind it.
+        // 0600-or-stricter: NOTHING outside the owner may read it; demanding exactly 0600 would reject the strictly safer 0400.
         if mode & 0o077 != 0 {
             return Err(SecretsError::BadPermissions {
                 path: display,
@@ -287,25 +206,7 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
     Ok(Some(out))
 }
 
-/// The only constraint that is true of EVERY secret, whatever consumes it.
-///
-/// The HTTP-redaction constraints (printable ASCII, no quote/backslash, a
-/// length floor, not all digits) deliberately do **not** live here any more.
-/// They now sit on [`super::http_mcp::HttpCredential`], the parameter type of
-/// `HttpMcpClient::new`, for two reasons this file cannot satisfy:
-///
-/// * **they were bypassable.** `HttpMcpClient::new` is `pub` and took a
-///   `&str`, so a credential that reaches the wire never had to come through
-///   `read_secrets` at all — checking here bounded one route to the client, not
-///   the client;
-/// * **they over-constrained.** `secrets.json` is not an HTTP-only file: a
-///   `cli-query` secret is interpolated into a subprocess argument and is on no
-///   redaction path, so refusing it for containing a space is a refusal with no
-///   security story behind it.
-///
-/// What survives is the rule that has nothing to do with HTTP: a key whose
-/// value is empty or whitespace-only is an authoring mistake in every
-/// consumer's terms — the operator meant to supply a credential and did not.
+/// The only constraint true of EVERY secret, whatever consumes it: an empty or whitespace-only value is an authoring mistake. HTTP-redaction constraints live on `HttpCredential`, since a `cli-query` secret is on no redaction path.
 fn validate_secret_value(s: &str) -> Result<(), String> {
     if s.trim().is_empty() {
         return Err(
@@ -315,20 +216,8 @@ fn validate_secret_value(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The read-side half of the size cap — the one that actually ENFORCES it.
-///
-/// The `fstat` check in [`read_secrets_blocking`] is a courtesy that produces
-/// the nicer error (it can name the real size) and avoids reading a
-/// known-oversized file at all; but `fstat` size is a snapshot, and a file that
-/// grows between the stat and the read would sail past it. `take(MAX + 1)`
-/// makes "one byte over" observable without ever buffering more than that.
-///
-/// Split out as a function over `impl Read` for one reason: a test cannot
-/// interleave a write between production's `fstat` and its read — the two are
-/// adjacent, and a racing writer thread would make the test flaky rather than
-/// decisive. Handing THIS function (the same code production calls, on the
-/// real descriptor) a reader that yields more than `stat_len` claimed is the
-/// deterministic form of exactly that file.
+/// The read-side half of the size cap, the one that actually ENFORCES it: `fstat` size is a snapshot and a file can grow between the stat and the read; `take(MAX + 1)` makes "one byte over" observable without buffering more.
+/// A function over `impl Read` so a test can hand it a reader that yields more than `stat_len` claimed, deterministically.
 fn read_capped(
     mut src: impl std::io::Read,
     stat_len: u64,
@@ -349,20 +238,7 @@ fn read_capped(
     Ok(buf)
 }
 
-// ---------------------------------------------------------------------------
-// Tool materialization (§2.7)
-// ---------------------------------------------------------------------------
-
-/// Turn the complete upstream `tools/list` payload into `ExposedTool` entries.
-/// `tools_all: true` keeps every valid upstream tool; otherwise only names in
-/// the strict `tools_allow` list are kept.
-///
-/// An allowlisted name the server does not serve is warned about and skipped —
-/// one stale entry must not take the whole connector down (§2.2).
-///
-/// There is no `ExposedTool::validate` in the tree (`Manifest::validate` only
-/// covers views / templates / permissions / entrypoint), so the name check is
-/// applied here explicitly; a rejected name is skipped, not fatal.
+/// Turn the complete upstream `tools/list` payload into `ExposedTool` entries: `tools_all: true` keeps every valid upstream tool, otherwise only names in `tools_allow`. An allowlisted name the server does not serve, or a name the connector rule refuses, is warned about and skipped, never fatal.
 pub fn materialize_http_tools(
     plugin_id: &str,
     block: &McpHttpBlock,
@@ -414,21 +290,14 @@ fn push_http_tool(
             .get("description")
             .and_then(|description| description.as_str())
             .map(str::to_string),
-        // Connector tools are ordinary calls, never forge actions: a forge
-        // action would receive the forge credential passthrough.
+        // Connector tools are ordinary calls, never forge actions: a forge action would receive the forge credential passthrough.
         kind: None,
         input_schema: tool.get("inputSchema").cloned(),
         annotations: tool.get("annotations").cloned(),
     });
 }
 
-/// The `cli-query` half of §2.7: turn the manifest's hand-declared
-/// `cli_query.tools` into `ExposedTool` entries.
-///
-/// There is no upstream to ask — the manifest IS the catalog — so unlike
-/// [`materialize_http_tools`] nothing can be "allowlisted but missing". What is
-/// shared is the name rule: a rejected name is warned about and skipped, never
-/// fatal, so one bad entry does not take the whole connector down.
+/// The `cli-query` half: the manifest IS the catalog, so nothing can be "allowlisted but missing"; a rejected name is warned about and skipped, never fatal.
 pub fn materialize_cli_tools(plugin_id: &str, block: &CliQueryBlock) -> Vec<ExposedTool> {
     let mut out = Vec::new();
     for tool in &block.tools {
@@ -439,15 +308,10 @@ pub fn materialize_cli_tools(plugin_id: &str, block: &CliQueryBlock) -> Vec<Expo
         out.push(ExposedTool {
             name: tool.name.clone(),
             description: tool.description.clone(),
-            // `kind` stays `None` for the same reason as the HTTP path (D6): a
-            // forge action would hand this tool the forge credential
-            // passthrough, which is exactly what `cli-query` must never get.
+            // `kind` stays `None`: a forge action would hand this tool the forge credential passthrough, which `cli-query` must never get.
             kind: None,
             input_schema: Some(tool.input_schema.clone()),
-            // cli-query is read-only by contract (#1164 §2.3). With `annotations: None`
-            // Codex under `approval_policy: never` refused every call (#1744); the general
-            // waiver rule lives at `mcp_server::registry::role_gated_write_annotations`, and
-            // `report_series::resolver` reads the same `readOnlyHint` to admit a series source.
+            // cli-query is read-only by contract, and Codex under `approval_policy: never` refuses every call to a tool without annotations; `report_series::resolver` reads the same `readOnlyHint` to admit a series source.
             annotations: Some(crate::mcp_server::registry::read_only_annotations()),
         });
     }
@@ -563,14 +427,7 @@ mod tests {
         );
     }
 
-    /// #1744: `materialize_cli_tools` built every cli-query tool with
-    /// `annotations: None`, and Codex under `approval_policy: never` refused
-    /// every call to a tool without annotations, so no agent could call any
-    /// cli-query tool. The kind is read-only by contract (#1164 §2.3), so every
-    /// materialized tool carries `readOnlyHint: true`. The general waiver rule
-    /// lives at `mcp_server::registry::role_gated_write_annotations`, and
-    /// `report_series::resolver` reads the same hint to admit a plugin tool as
-    /// a series source.
+    /// Codex under `approval_policy: never` refuses every call to a tool without annotations, so every materialized cli-query tool must carry `readOnlyHint: true`.
     #[test]
     fn cli_query_tools_publish_read_only_hint_so_codex_never_asks_for_approval() {
         let block: crate::plugin_host::manifest::CliQueryBlock = serde_json::from_value(json!({
@@ -624,13 +481,11 @@ mod tests {
             assert!(err.to_string().contains("0600"), "{err}");
         }
 
-        // 0600 and everything STRICTER must be accepted: 0400 is safer than
-        // 0600, and refusing it would be a rule with no security story.
+        // 0600 and everything STRICTER must be accepted: 0400 is safer than 0600.
         for good in [0o600, 0o400, 0o200] {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(good)).unwrap();
             if good == 0o200 {
-                // Write-only: the read itself fails, but NOT as a permissions
-                // refusal — the mode check must have passed.
+                // Write-only: the read itself fails, but NOT as a permissions refusal — the mode check must have passed.
                 let err = read_secrets(tmp.path()).await.unwrap_err();
                 assert!(matches!(err, SecretsError::Io { .. }), "got {err:?}");
                 continue;
@@ -662,9 +517,7 @@ mod tests {
         );
     }
 
-    /// One byte over the cap — the tightest input the stat check must still
-    /// catch on its own. (Which check catches which case is pinned by
-    /// `the_stat_check_…` / `the_read_side_cap_…` below.)
+    /// One byte over the cap — the tightest input the stat check must still catch on its own.
     #[tokio::test]
     async fn a_secrets_file_one_byte_over_the_cap_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
@@ -679,9 +532,7 @@ mod tests {
         assert!(matches!(err, SecretsError::TooLarge { .. }), "{err:?}");
     }
 
-    /// An empty credential would become an empty scrub pattern, and an empty
-    /// pattern turns `String::replace` into a memory amplifier rather than a
-    /// redaction. Refused at the source.
+    /// An empty credential would become an empty scrub pattern, which turns `String::replace` into a memory amplifier.
     #[tokio::test]
     async fn an_empty_or_whitespace_only_secret_value_is_refused() {
         for bad in ["", "   ", "\t\n"] {
@@ -702,14 +553,7 @@ mod tests {
         }
     }
 
-    /// The HTTP-redaction constraints are no longer `read_secrets`' business —
-    /// they live on `HttpCredential`, the parameter type of
-    /// `HttpMcpClient::new`, and are witnessed there
-    /// (`a_credential_the_scrubber_cannot_handle_is_refused`). What this file
-    /// still owes is the complement: a value that is merely *unusual* for HTTP
-    /// but perfectly valid for another consumer must NOT be refused here, or
-    /// the check is back to over-constraining `cli-query` secrets that are
-    /// interpolated into argv and are on no redaction path at all.
+    /// A value that is merely unusual for HTTP but valid for another consumer must NOT be refused here.
     #[tokio::test]
     async fn read_secrets_does_not_apply_http_redaction_rules_to_every_secret() {
         for value in [
@@ -733,15 +577,7 @@ mod tests {
         }
     }
 
-    /// Witness for the **stat** check specifically.
-    ///
-    /// Round-3 finding: the previous version of this test asserted only
-    /// "TooLarge or not", which BOTH checks can satisfy — deleting either one
-    /// left it green, while its comment claimed it pinned both. The two now
-    /// have distinct error variants, so this fixture can only be satisfied by
-    /// the stat check: delete it and the same file is refused by the read side
-    /// as `GrewWhileReading`, and the `size` this asserts (the file's real
-    /// length, which the read side never sees) is gone with it.
+    /// Witness for the **stat** check specifically: the two size checks have distinct error variants, and the `size` asserted here (the file's real length) is one the read side never sees.
     #[tokio::test]
     async fn the_stat_check_refuses_a_file_that_is_already_over_the_cap() {
         let tmp = tempfile::tempdir().unwrap();
@@ -760,15 +596,7 @@ mod tests {
         );
     }
 
-    /// Witness for the **read-side** cap specifically: the case it exists for
-    /// is a file that grows after its size was checked.
-    ///
-    /// Driving that through a real file would need a write interleaved between
-    /// production's `fstat` and its read — two adjacent statements, so a
-    /// racing writer makes a flaky test rather than a decisive one. This calls
-    /// the same production function on a reader that yields more than the stat
-    /// claimed, which is that file, deterministically. Delete the
-    /// `buf.len() > MAX` refusal in `read_capped` and this goes green-to-red.
+    /// Witness for the **read-side** cap specifically: a file that grows after its size was checked, driven deterministically by a reader that yields more than the stat claimed.
     #[test]
     fn the_read_side_cap_refuses_a_file_that_grew_after_its_size_was_checked() {
         let grown = vec![b'x'; MAX_SECRETS_BYTES as usize + 1];
@@ -777,14 +605,12 @@ mod tests {
             matches!(err, SecretsError::GrewWhileReading { .. }),
             "a descriptor yielding more than `fstat` promised must be refused: {err:?}"
         );
-        // …and one byte under the cap, with the same lying stat, is fine: the
-        // rule is a size bound, not "distrust short stats".
+        // …and one byte under the cap, with the same lying stat, is fine: the rule is a size bound, not "distrust short stats".
         let ok = read_capped(&grown[..MAX_SECRETS_BYTES as usize], 16, "secrets.json").unwrap();
         assert_eq!(ok.len(), MAX_SECRETS_BYTES as usize);
     }
 
-    /// Exactly at the cap is accepted by both checks (and then fails as
-    /// non-JSON) — the boundary is `>`, not `>=`.
+    /// Exactly at the cap is accepted by both checks (and then fails as non-JSON) — the boundary is `>`, not `>=`.
     #[tokio::test]
     async fn a_file_of_exactly_the_cap_is_not_refused_for_size() {
         let tmp = tempfile::tempdir().unwrap();
@@ -799,14 +625,11 @@ mod tests {
         assert!(matches!(err, SecretsError::Malformed { .. }), "{err:?}");
     }
 
-    /// `open(2)` on a unix-domain socket fails `ENXIO` before `File::metadata`
-    /// can classify it, so the descriptor-based check never runs. It must
-    /// still be refused as "not a regular file" rather than as an opaque
-    /// `Io { "No such device or address" }`.
+    /// `open(2)` on a unix-domain socket fails `ENXIO` before `File::metadata` can classify it; it must still be refused as "not a regular file" rather than an opaque `Io`.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_unix_socket_at_the_secrets_path_is_refused_as_not_a_regular_file() {
-        // #1439: socket 目录钉在短基址上，不受 `$TMPDIR` 长度影响。
+        // Socket dir pinned to a short base path so `$TMPDIR` length cannot break it.
         let tmp = calm_test_sockets::socket_dir("sec");
         let path = calm_test_sockets::socket_path(tmp.path(), SECRETS_FILENAME);
         let _listener = calm_test_sockets::bind(&path);
@@ -818,9 +641,7 @@ mod tests {
         assert!(err.to_string().contains("regular file"), "{err}");
     }
 
-    /// The whole reason `read_secrets` moved to `spawn_blocking` + a
-    /// regular-file check: a 0600 FIFO at this path used to block a runtime
-    /// worker (and therefore boot) forever. It must now be refused promptly.
+    /// A 0600 FIFO at this path must be refused promptly, not block a runtime worker (and therefore boot) forever.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_fifo_at_the_secrets_path_is_refused_and_does_not_hang() {

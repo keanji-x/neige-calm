@@ -1,48 +1,26 @@
-//! #985 slice 6 — the bounded track-tree query surface.
-//!
-//! Every recursive walk over `tracks.parent_track_id` lives here, in ONE module,
-//! because all of them share a single non-negotiable property: the tree is a
-//! self-referencing table with no acyclicity constraint, so a recursive CTE
-//! over it terminates ONLY because of the `depth <= ?2` predicate. `UNION`
-//! (as opposed to `UNION ALL`) does NOT terminate these walks — PR-A proved
-//! that empirically — and a carried non-id column defeats even `UNION`'s
-//! duplicate elimination. Hence: every fragment below carries `id` (plus the
-//! depth counter) and nothing else. A production-scope property test scans the
-//! Rust strings and `.sql` files in both executing crates and rejects a
-//! recursive member touching `parent_track_id` unless its ON/WHERE predicate
-//! upper-bounds that CTE alias's own depth. There is no registry to remember to
-//! update: the property, rather than a list of known declarations, is the gate.
-//!
-//! PR-B adds the two downward walks: the creation-admission inventory count
-//! (`child-track`'s `prepare_tx`) and the tree membership enumeration that
-//! feeds the deterministic quota split in `evaluate_schedulability`.
+//! The bounded track-tree query surface. `tracks.parent_track_id` has no
+//! acyclicity constraint, so a recursive CTE terminates ONLY by the
+//! `depth <= ?2` predicate; every fragment carries `id` plus depth and nothing else.
 
 use sqlx::SqliteConnection;
 
 use crate::error::Result;
 
-/// Maximum legal track-tree depth. A root sits at depth 0, so a legal tree has
-/// at most four levels.
+/// A root sits at depth 0, so a legal tree has at most four levels.
 pub const MAX_TRACK_TREE_DEPTH: i64 = 3;
 
-/// Kernel default for `tracks.tree_task_budget` (the column is `NULL`-by-
-/// default on purpose; see migration 0072).
+/// Kernel default for `tracks.tree_task_budget` (the column is NULL by default).
 pub const DEFAULT_TREE_TASK_BUDGET: i64 = 32;
 
-/// Largest configurable tree budget. Member admission requires `N <= B`, so
-/// this also puts a hard ceiling on the amount of work an in-transaction
-/// whole-tree reprojection may perform.
+/// Member admission requires `N <= B`, so this also bounds in-transaction
+/// whole-tree reprojection work.
 pub const MAX_TREE_TASK_BUDGET: i64 = 64;
 
 /// Kernel default for `tracks.planner_task_ceiling`.
 pub(crate) const DEFAULT_PLANNER_TASK_CEILING: i64 = 32;
 
-/// Decode nullable persisted limits at every enforcement point.
-///
-/// Keeping the NULL fallback and non-negative clamp here matters more than it
-/// first appears: every enforcement point must decode nullable limits the
-/// same way. If one path decodes the bare SQL column on its own, SQLite/sqlx
-/// can turn NULL into a different value and silently remove an upper bound.
+/// Every enforcement point must decode nullable limits the same way, or a
+/// bare NULL can silently remove an upper bound.
 pub(crate) fn effective_limit(value: Option<i64>, default: i64) -> i64 {
     value.unwrap_or(default).max(0)
 }
@@ -91,9 +69,8 @@ pub const TRACK_BOUNDED_PATH_SQL: &str = concat!(
     "SELECT id, depth FROM up ORDER BY depth"
 );
 
-/// Tree membership in the deterministic `(created_at, id)` order the quota
-/// split is defined over. `created_at` is read by the OUTER join, never
-/// carried through the recursion.
+/// Deterministic `(created_at, id)` order; `created_at` is read by the OUTER
+/// join, never carried through the recursion.
 pub const TRACK_TREE_MEMBERS_SQL: &str = concat!(
     bounded_track_descendant_cte!(),
     "SELECT w.id, d.depth FROM tracks w \
@@ -101,10 +78,8 @@ pub const TRACK_TREE_MEMBERS_SQL: &str = concat!(
      ORDER BY w.created_at, w.id"
 );
 
-/// Membership plus fixed (non-cullable in this projection) planner occupancy.
-/// The outer correlated count preserves the same recursive shape/order while
-/// detecting a member already above its deterministic share. Pending rows are
-/// excluded because they re-enter projection as candidates.
+/// Membership plus fixed planner occupancy; pending rows are excluded because
+/// they re-enter projection as candidates.
 pub const TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL: &str = concat!(
     bounded_track_descendant_cte!(),
     "SELECT w.id, d.depth, (SELECT count(*) FROM current_tasks t \
@@ -122,16 +97,9 @@ pub const TRACK_TREE_PLANNER_INVENTORY_SQL: &str = concat!(
      JOIN (SELECT DISTINCT id FROM down) d ON t.track_id = d.id \
      WHERE t.declared_by = 'spec' AND t.status NOT IN ('done', 'failed', 'canceled')"
 );
-/// The deterministic share of `budget` handed to the member at `index` of a
-/// tree with `members` tracks, ordered by `(created_at, id)`.
-///
-/// `floor(B / N)` for everyone, and the remainder `r = B mod N` distributed
-/// one apiece to the first `r` members. `Σ share = B` exactly — that identity
-/// is what makes `Σ_v live_planner(v) ≤ B` the real tree bound.
-///
-/// Purely a function of the tree's SHAPE. It reads no projection output (no
-/// `pending` row, no sibling admission), which is precisely why the tree term
-/// leaves "rebuild ≡ incremental" (D.1 #11) intact.
+/// `floor(B / N)` each, remainder one apiece to the first `r` members, so
+/// `Σ share = B` exactly. Purely a function of tree SHAPE — no projection
+/// output — which keeps rebuild ≡ incremental.
 pub fn deterministic_share(budget: i64, members: i64, index: i64) -> i64 {
     if members <= 0 {
         return 0;
@@ -148,13 +116,10 @@ pub fn can_add_tree_member(budget: i64, members: i64) -> bool {
     members.saturating_add(1) <= budget.max(0)
 }
 
-/// The tree contribution to a track's effective ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackTreeTerm {
-    /// The track IS in a tree but its root could not be resolved (broken parent
-    /// link, cycle, or a chain deeper than [`MAX_TRACK_TREE_DEPTH`]). Callers
-    /// must fail closed: a single broken link would otherwise leave a whole
-    /// subtree unbounded.
+    /// The track IS in a tree but its root could not be resolved. Callers must
+    /// fail closed: one broken link would otherwise leave a whole subtree unbounded.
     RootUnresolved,
     Share(TreeShare),
 }
@@ -165,8 +130,6 @@ pub struct TreeShare {
     pub budget: i64,
     pub members: i64,
     /// Zero-based position in the deterministic `(created_at, id)` order.
-    /// Diagnostics use it to name the first B that increases THIS member's
-    /// share instead of assuming `B + 1` helps every remainder position.
     pub member_index: i64,
     pub share: i64,
     /// An upgrade/corruption state has at least one member whose immutable
@@ -179,17 +142,14 @@ pub struct TreeShare {
     pub minimum_budget_to_unfreeze: Option<i64>,
 }
 
-/// [`TrackTreeTerm`] plus the countable seam used by whole-tree reprojection to
-/// reject an accidental per-member recursive walk. Ordinary evaluation uses
-/// two bounded recursive statements even for a singleton; each CTE then has
-/// one row, so singleton work remains O(1) without a separate semantic path.
+/// [`TrackTreeTerm`] plus the countable seam whole-tree reprojection uses to
+/// reject an accidental per-member recursive walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackTreeTermOutcome {
     pub term: TrackTreeTerm,
     pub tree_cte_queries: u32,
 }
 
-/// Resolve `track_id`'s tree term.
 pub async fn track_tree_term(
     conn: &mut SqliteConnection,
     track_id: &str,
@@ -222,8 +182,7 @@ pub async fn track_tree_term(
             .await?;
     queries += 1;
     // Poisoned data: a member deeper than the legal bound, or a tree that does
-    // not contain the track we started from. Both mean the shape we would
-    // divide the budget over is not the shape the track actually lives in.
+    // not contain the track we started from.
     let budget = track_tree_budget(&mut *conn, &root_id).await?;
     let term = tree_share_from_member_inventory(root_id, track_id, budget, &members);
     Ok(TrackTreeTermOutcome {
@@ -242,8 +201,6 @@ fn tree_share_from_members(
     tree_share_from_members_with_freeze(root_id, track_id, budget, members, false, None)
 }
 
-/// Build one member's share and the tree-wide admission-freeze state from a
-/// single ordered snapshot of `(id, depth, fixed planner occupancy)` rows.
 pub fn tree_share_from_member_inventory(
     root_id: String,
     track_id: &str,
@@ -308,7 +265,6 @@ fn tree_share_from_members_with_freeze(
     })
 }
 
-/// The root's configured budget, or the kernel default when unset.
 pub async fn track_tree_budget(conn: &mut SqliteConnection, root_id: &str) -> Result<i64> {
     let row: Option<(Option<i64>,)> =
         sqlx::query_as("SELECT tree_task_budget FROM tracks WHERE id = ?1")
@@ -321,7 +277,6 @@ pub async fn track_tree_budget(conn: &mut SqliteConnection, root_id: &str) -> Re
     ))
 }
 
-/// Whole-tree non-terminal `declared_by='spec'` row count, rooted at `root_id`.
 pub async fn track_tree_planner_inventory(
     conn: &mut SqliteConnection,
     root_id: &str,
@@ -334,7 +289,6 @@ pub async fn track_tree_planner_inventory(
     Ok(count)
 }
 
-/// Number of tracks in the bounded member set rooted at `root_id`.
 pub async fn track_tree_member_count(conn: &mut SqliteConnection, root_id: &str) -> Result<i64> {
     let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
         .bind(root_id)
@@ -344,12 +298,8 @@ pub async fn track_tree_member_count(conn: &mut SqliteConnection, root_id: &str)
     Ok(members.len() as i64)
 }
 
-/// Per-member whole-tree non-terminal `declared_by='spec'` inventory.
-///
-/// The whole-tree reprojection seam uses this after deleting excess pending
-/// rows. A remaining member over its new share can only be over because of
-/// already in-flight work; callers then reject the shape/budget change rather
-/// than committing a tree for which `sum(live_planner) <= B` is false.
+/// Used after deleting excess pending rows: a member still over its new share
+/// is over because of in-flight work, so callers reject the change.
 pub async fn track_tree_planner_inventory_by_member(
     conn: &mut SqliteConnection,
     root_id: &str,
@@ -435,8 +385,6 @@ mod tests {
                 );
                 return;
             }
-            // Any declaration/claim order ends in one of these per-member live
-            // counts because projection never admits above the member share.
             for live in 0..=shares[index] {
                 visit(shares, index + 1, live_total + live, budget);
             }

@@ -1,10 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('keeps Today usable without claiming zero activity when Areas is unavailable', async ({ page }) => {
-  // Recovery starts with the real Retry click. The flag lives in Node rather
-  // than on the page: the handler then decides synchronously, so serving the
-  // stub never waits on a page round-trip, and flipping it immediately before
-  // the click still happens before the request that click triggers.
+  // The flag lives in Node so the route handler decides synchronously and flipping it before the click lands before the request.
   let recovered = false;
   let served = 0;
   await page.route('**/api/areas', async (route) => {
@@ -16,19 +13,11 @@ test('keeps Today usable without claiming zero activity when Areas is unavailabl
   await page.goto('/next/');
   const main = page.getByRole('main');
   const failure = main.getByRole('alert').filter({ hasText: 'Areas temporarily unavailable' });
-  // #1529 — the state under test cannot exist before the stub has answered.
-  // Waiting for that answer in Node first means a slow page load is reported as
-  // "the stub was never asked", not as "the failure state never rendered".
+  // Wait for the stub's answer first so a slow load reports as "stub never asked", not "failure state never rendered".
   await expect.poll(() => served, { timeout: 15_000 }).toBeGreaterThan(0);
-  // The alert is the state under test, not a deadline: how long the app takes to
-  // surface a failed read (a retry policy may sit in front of it) is not what
-  // this test asserts, so the wait is explicit and generous. Everything after it
-  // runs against the settled failure state on the default budget.
   await expect(failure).toBeVisible({ timeout: 15_000 });
   const header = main.locator('header[data-nc-header-rows]').first();
-  // #1529 — existence first. `not.toContainText` on its own reports `element(s)
-  // not found` for a header that never rendered, which is the same message as a
-  // header that rendered a count: two opposite verdicts under one failure.
+  // Existence first: `not.toContainText` alone passes for a header that never rendered.
   await expect(header).toBeVisible();
   await expect(header).not.toContainText(/\d\s*(waiting|in progress)/);
   await expect(main.getByText('Nothing scheduled.')).toHaveCount(0);

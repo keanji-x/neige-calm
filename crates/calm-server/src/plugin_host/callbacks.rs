@@ -1,14 +1,5 @@
-//! `neige.*` host-callback dispatcher.
-//!
-//! Slice B's `spawn_methodnotfound_drainer` is replaced by `dispatch()`, which
-//! takes one plugin-originated request and resolves it against the kernel:
-//! permission check → repo write → emit event → respond.
-//!
-//! Identity rule (design doc §6.2): the plugin's identity is implicit on the
-//! connection. The kernel **injects** `plugin_id` from `CallbackCtx`; it does
-//! **not** trust any `plugin_id` field in the plugin's params. This is the
-//! security spine — without it a misbehaving plugin could overlay-write under
-//! another plugin's name.
+//! `neige.*` host-callback dispatcher: one plugin-originated request → permission check → repo write → emit event → respond.
+//! The plugin's identity is implicit on the connection: the kernel injects `plugin_id` from `CallbackCtx` and never trusts one in the params.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,63 +35,39 @@ use super::events::SubscriptionFilter;
 use super::mcp::{CallToolResult, McpClient, RpcError};
 use super::registry::PluginRegistry;
 
-/// Subscription ids are monotonic per-process. We don't need cryptographic
-/// uniqueness — they're scoped to one plugin's MCP connection.
+/// Subscription ids are monotonic per-process; scoped to one plugin's MCP connection, so no cryptographic uniqueness is needed.
 static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
 
-// ---------------------------------------------------------------------------
-// CallbackCtx — handle passed to every dispatch
-// ---------------------------------------------------------------------------
-
-/// Everything `dispatch` needs to service one inbound request. Kept as
-/// `&CallbackCtx` so the router can construct it once per plugin and reuse it
-/// across the request loop.
+/// Everything `dispatch` needs to service one inbound request.
 pub struct CallbackCtx<'a> {
     /// The kernel-enforced plugin identity. NOT taken from request params.
     pub plugin_id: &'a str,
-    /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` — the
-    /// callback dispatcher only does eventized writes + out-of-domain
-    /// plugin/kv writes + reads. Raw sync-domain writes (`card_update`,
-    /// `overlay_upsert`, `area_create`, …) are unreachable so a plugin's
-    /// inbound RPC can't quietly bypass the audit log.
+    /// `RouteRepo`, not `Repo`: raw sync-domain writes are unreachable so a plugin's inbound RPC cannot bypass the audit log.
     pub repo: Arc<dyn RouteRepo>,
     pub event_bus: Arc<EventBus>,
     pub registry: Arc<PluginRegistry>,
     /// Outbound MCP channel — used to deliver subscription notifications.
     pub mcp: Arc<McpClient>,
-    /// Live subscription join-handles. Lives on `PluginHost` so `stop()` can
-    /// abort all subscriptions for a plugin.
+    /// Live subscription join-handles; lives on `PluginHost` so `stop()` can abort them.
     pub subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>>,
-    /// Scope β — caller-supplied tracing id. Set when the dispatch enters
-    /// from `routes::plugins::plugin_tool_call` (iframe AppBridge), `None`
-    /// when the plugin's own inbound MCP request triggers the callback.
-    /// Threaded into every `write_with_event_typed` / `log_pure_event`
-    /// call site as `correlation = Some("user_tool_call:<id>")`.
+    /// Caller-supplied tracing id, set when the dispatch enters from `routes::plugins::plugin_tool_call`; `None` when the plugin's own inbound request triggers the callback.
     pub call_id: Option<&'a str>,
-    /// #480 PR2 — write-surface caches shared with REST/worker paths.
+    /// Write-surface caches shared with REST/worker paths.
     pub write: WriteContext,
 }
 
 impl<'a> CallbackCtx<'a> {
-    /// Format the call_id as the `events.correlation` string. Returns an
-    /// owned `Option<String>` so callers can borrow into the
-    /// `Option<&str>` shape `write_with_event_typed`/`log_pure_event`
-    /// expect. Allocation is skipped entirely when `call_id` is None.
+    /// The call_id as the `events.correlation` string.
     pub(super) fn correlation(&self) -> Option<String> {
         self.call_id.map(|c| format!("user_tool_call:{c}"))
     }
 
-    /// Build the [`ActorId::Plugin`] tag for this dispatch. PR2 of #136
-    /// typed the actor field — plugin callback writes all attribute to
-    /// the plugin's id, server-enforced.
     fn actor(&self) -> ActorId {
         ActorId::Plugin(self.plugin_id.to_string())
     }
 }
 
-/// Build the `EventScope` for a plugin overlay write keyed by
-/// `(entity_kind, entity_id)`. Missing rows or transient read errors collapse
-/// to `EventScope::System` rather than failing the dispatch.
+/// Missing rows or transient read errors collapse to `EventScope::System` rather than failing the dispatch.
 async fn overlay_scope_for_callback(
     repo: &dyn RepoRead,
     entity_kind: &str,
@@ -112,10 +79,7 @@ async fn overlay_scope_for_callback(
         .unwrap_or(EventScope::System)
 }
 
-/// Build a `EventScope::Card { card, track, area }` for the given track +
-/// pre-minted card id. Falls back to `EventScope::System` when the track
-/// lookup fails so the dispatch doesn't refuse the write on a transient
-/// read error.
+/// Falls back to `EventScope::System` when the track lookup fails so the dispatch doesn't refuse the write on a transient read error.
 async fn card_scope_for_callback(repo: &dyn RepoRead, card: CardId, track_id: &str) -> EventScope {
     match repo.track_get(track_id).await {
         Ok(Some(w)) => EventScope::Card {
@@ -127,45 +91,20 @@ async fn card_scope_for_callback(repo: &dyn RepoRead, card: CardId, track_id: &s
     }
 }
 
-/// One live subscription. Held by `PluginHost`'s subscription table so the
-/// bridge task can be aborted on plugin stop.
+/// One live subscription; held so the bridge task can be aborted on plugin stop.
 pub struct SubscriptionRecord {
     pub plugin_id: String,
     pub task: JoinHandle<()>,
 }
 
-// ---------------------------------------------------------------------------
-// M2: tools/call → card creation
-// ---------------------------------------------------------------------------
-
-/// What we pull out of a successful `tools/call` response when the plugin
-/// declared it as a card-creating tool via `_meta.ui.resourceUri`.
-///
-/// `resource_uri` is the `ui://<plugin>/<view>` string the iframe / card
-/// registry will dispatch on (M4 will fully migrate `Card.kind` to this
-/// shape; M2 lets new cards adopt it directly).
-///
-/// `structured_content` is whatever the tool returned in
-/// `result.structuredContent` — opaque to the kernel, persisted verbatim in
-/// `Card.payload`. `None` is the legitimate "no payload" case; the caller
-/// should default to `Value::Null` (or `{}` if the route prefers that).
+/// What a successful `tools/call` response yields when the plugin declared the tool card-creating via `_meta.ui.resourceUri`; `structured_content` is opaque to the kernel and persisted verbatim in `Card.payload`.
 #[derive(Debug, Clone)]
 pub struct CardCreationFromTool {
     pub resource_uri: String,
     pub structured_content: Option<Value>,
 }
 
-/// Pull `_meta.ui.resourceUri` out of a `CallToolResult`. Returns `None` if
-/// the plugin didn't signal "this tool result should become a card" — the
-/// caller (M2's `routes::cards::create`) treats that as 422 / `not_a_card_tool`.
-///
-/// We **do not** inspect `is_error` here — that's the caller's responsibility
-/// (per the specification, a tool returning `isError: true` may still legitimately omit
-/// `_meta.ui.resourceUri`, but the route should surface the failure as 502
-/// before reaching this extractor).
-///
-/// We also don't validate the URI shape (e.g. `ui://` scheme) — M4 owns the
-/// URI parser; for M2 we only need round-trip persistence in `Card.kind`.
+/// Pull `_meta.ui.resourceUri` out of a `CallToolResult`; `None` means the plugin didn't signal a card. `is_error` and the URI shape are the caller's business.
 pub fn extract_card_creation_from_tool_call_result(
     result: &CallToolResult,
 ) -> Option<CardCreationFromTool> {
@@ -180,10 +119,6 @@ pub fn extract_card_creation_from_tool_call_result(
         structured_content: result.structured_content.clone(),
     })
 }
-
-// ---------------------------------------------------------------------------
-// dispatch — the entry point Slice B's drainer used to be
-// ---------------------------------------------------------------------------
 
 pub async fn dispatch(
     ctx: &CallbackCtx<'_>,
@@ -205,13 +140,7 @@ pub async fn dispatch(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Parse `params` into a per-method struct. Surfaces a JSON-RPC InvalidParams
-/// error with the serde message attached so plugins see exactly which field
-/// failed.
+/// Parse `params` into a per-method struct; surfaces InvalidParams with the serde message so plugins see which field failed.
 pub(super) fn parse_params<T: for<'de> Deserialize<'de>>(
     method: &str,
     params: &Value,
@@ -236,9 +165,7 @@ pub(super) fn internal_repo_err(e: impl std::fmt::Display) -> RpcError {
     RpcError::internal(format!("repo: {e}"))
 }
 
-/// Look up the plugin's manifest from the registry. A missing manifest at this
-/// point would mean the plugin was uninstalled mid-connection — we treat it as
-/// an internal error since the supervisor should have stopped the process.
+/// A missing manifest here means the plugin was uninstalled mid-connection; internal error since the supervisor should have stopped the process.
 pub(super) fn manifest_permissions(
     ctx: &CallbackCtx<'_>,
 ) -> Result<super::manifest::Permissions, RpcError> {
@@ -252,10 +179,6 @@ pub(super) fn manifest_permissions(
             ))
         })
 }
-
-// ---------------------------------------------------------------------------
-// neige.overlay.*
-// ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct OverlaySetParams {
@@ -283,7 +206,7 @@ async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
             ctx.plugin_id, p.entity_kind
         )));
     }
-    // D4: validate kernel-owned overlay kinds; plugin-defined kinds opaque.
+    // Kernel-owned overlay kinds are validated; plugin-defined kinds stay opaque.
     if let Err(e) = validate_overlay_payload(&p.kind, &p.payload) {
         return Err(RpcError::invalid_params(e.to_string()));
     }
@@ -342,8 +265,7 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
             ctx.plugin_id, p.entity_kind
         )));
     }
-    // Scope strictly to this plugin's overlays — repo enforces by passing the
-    // server-known plugin_id.
+    // Scoped strictly to this plugin's overlays via the server-known plugin_id.
     let actor = ctx.actor();
     let correlation = ctx.correlation();
     let plugin_id_owned = ctx.plugin_id.to_string();
@@ -376,16 +298,11 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
     .await;
     match result {
         Ok(_) => Ok(json!({ "deleted": true })),
-        // Treat a missing overlay as idempotent success; plugins reissuing
-        // delete during reconnect shouldn't fail their event loop.
+        // A missing overlay is idempotent success; plugins reissuing delete during reconnect shouldn't fail their event loop.
         Err(crate::error::CalmError::NotFound(_)) => Ok(json!({ "deleted": false })),
         Err(e) => Err(internal_repo_err(e)),
     }
 }
-
-// ---------------------------------------------------------------------------
-// neige.card.*
-// ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct CardCreateParams {
@@ -414,13 +331,10 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     } else {
         p.payload
     };
-    // #1620 / #1704 — the server-owned payload keys (hook-routing provenance,
-    // the effective permissions block) are kernel-stamped; a plugin never
-    // writes them (any kind).
+    // Server-owned payload keys are kernel-stamped; a plugin never writes them (any kind).
     reject_client_supplied_server_owned_keys(&payload)
         .map_err(|e| RpcError::invalid_params(e.to_string()))?;
-    // D4: kernel-owned card kinds (currently `terminal`) must match shape;
-    // plugin-prefixed and ui:// kinds remain opaque.
+    // Kernel-owned card kinds must match shape; plugin-prefixed and ui:// kinds remain opaque.
     validate_card_kind_global(&p.kind, &payload)
         .map_err(|e| RpcError::invalid_params(e.to_string()))?;
     let track_id_for_scope = p.track_id.clone();
@@ -433,9 +347,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     };
     let actor = ctx.actor();
     let correlation = ctx.correlation();
-    // Pre-mint the card id so the audit row's `EventScope::Card` is
-    // determinable before the txn opens (matches the REST routes/cards
-    // refactor in PR2 of #136).
+    // Pre-mint the card id so the audit row's `EventScope::Card` is determinable before the txn opens.
     let card_id = CardId::from(new_id());
     let scope =
         card_scope_for_callback(ctx.repo.as_ref(), card_id.clone(), &track_id_for_scope).await;
@@ -450,10 +362,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         &ctx.write,
         move |tx| {
             Box::pin(async move {
-                // Issue #229 PR A — plugin-driven creates are
-                // user-deletable. Plugins cannot today mint kernel-owned
-                // (undeletable) cards; only internal kernel paths
-                // (track-create, dispatcher) hold that authority.
+                // Plugin-driven creates are user-deletable; only internal kernel paths mint kernel-owned cards.
                 let stored = card_create_with_id_tx(
                     tx,
                     card_id_for_tx,
@@ -506,8 +415,7 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
             ctx.plugin_id, p.card_id, card.kind,
         )));
     }
-    // If the plugin tried to change `kind`, also require can_card_create on
-    // the new kind so it can't bypass create-permissions by patching.
+    // A `kind` change also requires can_card_create on the new kind so patching can't bypass create-permissions.
     if let Some(new_kind) = &p.kind
         && !perms.can_card_create(new_kind, ctx.plugin_id)
     {
@@ -516,11 +424,8 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
             ctx.plugin_id, new_kind,
         )));
     }
-    // D4: if the patch carries a payload, validate against the effective
-    // kind (the new kind if retargeting, otherwise the existing card's kind).
     if let Some(payload) = p.payload.as_ref() {
-        // #1620 / #1704 — see `card_create`; `card_update_tx` keeps every
-        // stored server-owned key sticky across the replacement.
+        // `card_update_tx` keeps every stored server-owned key sticky across the replacement.
         reject_client_supplied_server_owned_keys(payload)
             .map_err(|e| RpcError::invalid_params(e.to_string()))?;
         let kind = p.kind.as_deref().unwrap_or(card.kind.as_str());
@@ -532,10 +437,7 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         kind: p.kind,
         sort: p.sort,
         payload: p.payload,
-        // #229 PR A — plugins cannot patch `deletable`. The
-        // `CardUpdateParams` deserialize struct has no `deletable`
-        // field; even if a future change added one, the route-level
-        // 400 in `routes::cards::update_card` is the canonical guard.
+        // Plugins cannot patch `deletable`; the route-level 400 in `routes::cards::update_card` is the canonical guard.
         deletable: None,
     };
     let actor = ctx.actor();
@@ -582,12 +484,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         .await
         .map_err(internal_repo_err)?
         .ok_or_else(|| entity_not_found(format!("card {}", p.card_id)))?;
-    // Issue #229 PR A — kernel-owned card guard. Same shape as the REST
-    // path in `routes::cards::delete_card`: undeletable cards (planner
-    // today, report card in PR B) refuse this entry point. In practice
-    // plugins can't reach a kernel-owned card via `can_card_delete`
-    // (which gates on kind ownership), but the guard runs first so the
-    // policy is greppable at every delete entry.
+    // Kernel-owned card guard runs before the permission check so the policy is greppable at every delete entry.
     if !card.deletable {
         return Err(permission_denied(format!(
             "card `{}` is kernel-owned and cannot be deleted via plugin callback",
@@ -609,14 +506,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), track_id.as_str()).await;
     let write_for_tx = ctx.write.clone();
 
-    // Issue #197 — eager teardown. Mirrors `routes::cards::delete_card`:
-    // the `terminals.card_id` FK is `ON DELETE RESTRICT` (migration
-    // 0011) so we reap the terminal (if any) and drop the row inside
-    // the same txn that drops the card. In practice plugin-deletable
-    // cards never carry a terminal (`can_card_delete` gates the path
-    // on plugin-owned kinds, and `terminal`/`codex` kinds are kernel-
-    // owned), but we run cleanup unconditionally to keep the FK
-    // invariant inviolable from every write site.
+    // Eager teardown: `terminals.card_id` is `ON DELETE RESTRICT`, so the terminal is reaped and its row dropped in the same txn as the card, unconditionally.
     let term = ctx
         .repo
         .terminal_get_by_card(card_id.as_str())
@@ -666,10 +556,6 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     Ok(json!({}))
 }
 
-// ---------------------------------------------------------------------------
-// neige.event.subscribe — long-lived
-// ---------------------------------------------------------------------------
-
 #[derive(Deserialize)]
 struct EventSubscribeParams {
     #[serde(default)]
@@ -679,9 +565,7 @@ struct EventSubscribeParams {
 async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
     let p: EventSubscribeParams = parse_params("neige.event.subscribe", &params)?;
     let perms = manifest_permissions(ctx)?;
-    // Enforce one permission check per glob the plugin asked for. An empty
-    // `events` list means "match everything" — we treat that as needing the
-    // firehose grant.
+    // One permission check per glob; an empty `events` list means "match everything" and needs the firehose grant.
     if p.filter.events.is_empty() {
         if !perms.can_subscribe("*") {
             return Err(permission_denied(format!(
@@ -706,12 +590,7 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
     let mut rx = ctx.event_bus.subscribe();
     let filter = p.filter;
 
-    // Bridge task: pull from the broadcast, apply the filter, fan out as MCP
-    // notifications. Notifications use the standard JSON-RPC notification
-    // shape (no id, method `neige.event`). We try_send via call ... no —
-    // McpClient doesn't expose try_send; `notify` is the public surface.
-    // We don't await individual sends so a slow plugin can't stall the bus;
-    // the McpClient's outbound channel is bounded and will drop if backed up.
+    // Bridge task: the McpClient's outbound channel is bounded and drops if backed up, so a slow plugin can't stall the bus.
     let task = tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -720,10 +599,7 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
                     if !filter.matches(&ev) {
                         continue;
                     }
-                    // Plugin notification payload mirrors the WS wire shape:
-                    // `_id` is the persisted events.id, alongside the typed
-                    // event. Plugins can use `_id` for the same cursor /
-                    // dedupe purposes the browser will (Scope D).
+                    // Mirrors the WS wire shape: `_id` is the persisted events.id, usable as a cursor / dedupe key.
                     let mut body = serde_json::Map::new();
                     body.insert("subscription_id".into(), json!(sub_id));
                     body.insert("_id".into(), json!(env.id));
@@ -732,8 +608,7 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
                         serde_json::to_value(&ev).unwrap_or(serde_json::Value::Null),
                     );
                     let body = serde_json::Value::Object(body);
-                    // notify returns Err on transport-closed; bail then so we
-                    // don't spin until plugin stop.
+                    // notify returns Err on transport-closed; bail so we don't spin until plugin stop.
                     if mcp.notify("neige.event", body).await.is_err() {
                         tracing::debug!(
                             plugin_id = %plugin_id,
@@ -765,10 +640,6 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
     Ok(json!({ "subscription_id": sub_id }))
 }
 
-// ---------------------------------------------------------------------------
-// neige.kv.*
-// ---------------------------------------------------------------------------
-
 #[derive(Deserialize)]
 struct KvGetParams {
     key: String,
@@ -795,9 +666,7 @@ async fn kv_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError>
     let perms = manifest_permissions(ctx)?;
     let quota = perms.kv_quota_bytes();
 
-    // Quota: byte-count of the existing keyset plus the proposed value,
-    // minus the bytes the old value (if any) was using. Use serde_json's
-    // textual length as the proxy.
+    // Quota: existing keyset bytes plus the proposed value minus the old value's bytes, using serde_json's textual length as the proxy.
     let new_value_bytes = serde_json::to_string(&p.value)
         .map(|s| s.len() as u64)
         .unwrap_or(0);
@@ -872,22 +741,10 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
     Ok(json!({}))
 }
 
-// ===========================================================================
-// Unit tests — direct calls against `dispatch` with a hand-rolled
-// CallbackCtx (in-memory SqlxRepo + in-process EventBus + a stub McpClient
-// that we build with `tokio::io::duplex`). Slice C's binding specification calls these
-// "acceptable as long as they cover every method"; the end-to-end stub
-// alternative is heavier and adds little extra signal once the router is
-// directly exercised.
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Tests still seed fixtures via raw sync-domain writes (`area_create`,
-    // `track_create`, `card_create`), so the harness keeps a full
-    // `Arc<dyn Repo>`. Production `CallbackCtx::repo` is the narrowed
-    // `Arc<dyn RouteRepo>` — `ctx()` does the upcast.
+    // Tests seed fixtures via raw sync-domain writes, so the harness keeps a full `Arc<dyn Repo>`; `ctx()` upcasts to `RouteRepo`.
     use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
@@ -901,25 +758,16 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
-    /// Test scaffold: builds a CallbackCtx with a seeded area + track so card
-    /// tests have something to attach to. The McpClient is a real one wired
-    /// to a stub "plugin" that auto-replies to `initialize` then drains.
+    /// Test scaffold with a seeded area + track; the McpClient is real, wired to a stub plugin that answers `initialize` then drains.
     struct Harness {
         ctx_storage: Arc<HarnessStorage>,
         track_id: String,
     }
 
-    /// Owned state that backs every test's CallbackCtx. Stored behind an
-    /// Arc so we can clone-and-borrow without struggling with self-ref
-    /// lifetimes inside the test functions.
     struct HarnessStorage {
         plugin_id: String,
         repo: Arc<dyn Repo>,
-        /// Issue #229 PR A — concrete handle kept alongside the trait
-        /// object so tests that need transactional helpers (e.g. mint
-        /// an undeletable card via `card_create_with_id_tx`) can grab
-        /// the sqlx pool. Production code never reaches the concrete
-        /// type; this is a test-only convenience.
+        /// Concrete handle so tests can reach the sqlx pool for transactional helpers; production never reaches the concrete type.
         sqlx_repo: Arc<SqlxRepo>,
         event_bus: Arc<EventBus>,
         registry: Arc<PluginRegistry>,
@@ -959,9 +807,7 @@ mod tests {
         Manifest::parse(&json.to_string()).expect("manifest parses")
     }
 
-    /// Build a real `McpClient` wired to an in-process stub. The stub just
-    /// answers `initialize` and silently drops everything else; that's all
-    /// our callback tests need (they don't actually consume notifications).
+    /// The stub answers `initialize` and silently drops everything else.
     async fn stub_mcp_client() -> Arc<McpClient> {
         let (kernel, plugin) = tokio::io::duplex(64 * 1024);
         let (k_r, k_w) = tokio::io::split(kernel);
@@ -1028,9 +874,7 @@ mod tests {
                     .expect("open in-memory sqlite repo"),
             );
             let repo: Arc<dyn Repo> = sqlx_repo.clone();
-            // Seed a plugin row so kv writes pass the FK check (the production
-            // host always installs the plugin row before the child can call
-            // `neige.kv.*`; we mirror that here).
+            // Seed a plugin row so kv writes pass the FK check.
             repo.plugin_install(NewPlugin {
                 id: plugin_id.into(),
                 version: "0.1.0".into(),
@@ -1041,7 +885,6 @@ mod tests {
             })
             .await
             .unwrap();
-            // Seed an area + track so card tests can attach.
             let area = repo
                 .area_create(NewArea {
                     name: "test".into(),
@@ -1070,10 +913,7 @@ mod tests {
             let mcp = stub_mcp_client().await;
             let subs = Arc::new(Mutex::new(Vec::new()));
 
-            // Seed a fresh role cache from the in-memory repo so
-            // card_create dispatch tests see the roles for the cards they
-            // create. Going through the trait method keeps the harness
-            // pool-agnostic.
+            // Seed the role cache so card_create dispatch tests see the roles for the cards they create.
             let card_role_cache = CardRoleCache::new();
             repo.seed_card_role_cache(&card_role_cache)
                 .await
@@ -1099,12 +939,7 @@ mod tests {
         }
 
         fn ctx(&self) -> CallbackCtx<'_> {
-            // Upcast `Arc<dyn Repo>` (held in the harness so fixture seeds
-            // like `area_create` / `track_create` work) to the narrow
-            // `Arc<dyn RouteRepo>` the production `CallbackCtx` exposes.
-            // The let-binding with explicit type drives stable trait-object
-            // upcasting (Rust 1.86+) — `Arc::clone(&_)` alone wouldn't
-            // coerce because its return type is `Arc<dyn Repo>`.
+            // The explicit `Arc<dyn RouteRepo>` binding drives trait-object upcasting; `Arc::clone` alone wouldn't coerce.
             let route_repo: Arc<dyn RouteRepo> = self.ctx_storage.repo.clone();
             CallbackCtx {
                 plugin_id: &self.ctx_storage.plugin_id,
@@ -1118,8 +953,6 @@ mod tests {
             }
         }
     }
-
-    // ----- overlay -----------------------------------------------------------
 
     #[tokio::test]
     async fn overlay_set_writes_with_server_plugin_id() {
@@ -1213,8 +1046,7 @@ mod tests {
                 "entity_kind": "track",
                 "entity_id": h.track_id,
                 "kind": "status",
-                // D4: `status` payload must include `state` since it's a
-                // kernel-owned overlay kind.
+                // `status` is a kernel-owned overlay kind, so its payload must include `state`.
                 "payload": { "state": "running" }
             }),
         )
@@ -1284,8 +1116,6 @@ mod tests {
         }
     }
 
-    // ----- card --------------------------------------------------------------
-
     #[tokio::test]
     async fn card_create_with_own_prefix() {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
@@ -1327,10 +1157,6 @@ mod tests {
         assert_eq!(res["kind"], "terminal");
     }
 
-    /// #1620 / #1704 — no server-owned payload key (the hook-routing
-    /// provenance marker, the effective permissions block, S2's source) is
-    /// ever accepted from a plugin, on create (any permitted kind) or update,
-    /// with any value. Driven by the table every boundary consults.
     #[tokio::test]
     async fn card_create_and_update_reject_client_server_owned_keys() {
         use crate::validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS;
@@ -1503,15 +1329,7 @@ mod tests {
         assert!(cards.is_empty());
     }
 
-    /// Issue #229 PR A — kernel-owned cards refuse `neige.card.delete`
-    /// even when the plugin would otherwise be authorized for the
-    /// card kind (`can_card_delete` would say yes). We mint the
-    /// undeletable card via `card_create_with_id_tx` directly so the
-    /// test does not depend on the production track-create→planner path
-    /// (which carries a terminal row and a daemon stub we don't need
-    /// here). Plugin-owned `plugin:p1:demo` kind ensures the kind
-    /// check would otherwise let the plugin through — proving the
-    /// `deletable` guard runs first.
+    /// The undeletable card is minted via `card_create_with_id_tx` with a plugin-owned kind, so the kind check would let the plugin through and only the `deletable` guard refuses.
     #[tokio::test]
     #[allow(deprecated)]
     async fn card_delete_refused_for_undeletable_card() {
@@ -1540,20 +1358,15 @@ mod tests {
         let err = dispatch(&h.ctx(), "neige.card.delete", json!({ "card_id": cid }))
             .await
             .expect_err("undeletable card must refuse plugin-callback delete");
-        // Plugin host uses `permission_denied` (-32001) for this class
-        // of refusal. Asserting on the code (not the message string)
-        // keeps the test resistant to wording tweaks.
+        // Asserting on the code (-32001, permission_denied) rather than the message keeps the test resistant to wording tweaks.
         assert_eq!(
             err.code, -32001,
             "expected permission_denied (-32001); got: {err:?}",
         );
 
-        // Row still exists.
         let still_there = h.ctx_storage.repo.card_get(&cid).await.unwrap();
         assert!(still_there.is_some(), "undeletable card survives refusal");
     }
-
-    // ----- kv ----------------------------------------------------------------
 
     #[tokio::test]
     async fn kv_set_get_round_trip() {
@@ -1616,7 +1429,6 @@ mod tests {
 
     #[tokio::test]
     async fn kv_quota_enforced() {
-        // Manifest with a tiny 64-byte budget.
         let json = serde_json::json!({
             "manifest_version": 1,
             "id": "p1",
@@ -1628,7 +1440,6 @@ mod tests {
         });
         let m = Manifest::parse(&json.to_string()).unwrap();
         let h = Harness::new("p1", m).await;
-        // 64-byte quota: short value fits.
         dispatch(
             &h.ctx(),
             "neige.kv.set",
@@ -1636,7 +1447,6 @@ mod tests {
         )
         .await
         .unwrap();
-        // Large value should bust the quota.
         let big = "x".repeat(256);
         let err = dispatch(
             &h.ctx(),
@@ -1647,8 +1457,6 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, -32003);
     }
-
-    // ----- event.subscribe ---------------------------------------------------
 
     #[tokio::test]
     async fn event_subscribe_returns_id_and_registers_task() {
@@ -1679,8 +1487,6 @@ mod tests {
         assert_eq!(err.code, -32001);
     }
 
-    // ----- M2: extract_card_creation_from_tool_call_result -------------------
-
     #[test]
     fn extract_card_creation_picks_resource_uri_and_structured_content() {
         let result = CallToolResult {
@@ -1705,15 +1511,12 @@ mod tests {
 
     #[test]
     fn extract_card_creation_none_when_ui_resource_uri_absent() {
-        // `_meta` present but no `ui.resourceUri` → not a card-creating tool.
         let result = CallToolResult {
             meta: Some(json!({ "ui": { "permissions": {} } })),
             ..Default::default()
         };
         assert!(extract_card_creation_from_tool_call_result(&result).is_none());
     }
-
-    // ----- unknown method ----------------------------------------------------
 
     #[tokio::test]
     async fn unknown_method_returns_method_not_found() {

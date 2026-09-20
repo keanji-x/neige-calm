@@ -1,32 +1,5 @@
 //! Wire protocol + framing helpers shared between the daemon and its clients.
-//!
-//! As of v2 (issue #44) a client (neige-server, or the standalone test CLI)
-//! opens the daemon's Unix socket and sends [`ClientMsg::ClientHello`] as the
-//! first frame, carrying its `protocol_version`, `terminal_id`, `client_id`,
-//! desired viewport / cell metrics, optional resume cursor, role hint, and
-//! capability set. The daemon validates the handshake, assigns owner/observer
-//! role via a daemon-level `OwnerRegistry`, and replies with
-//! [`DaemonMsg::ServerHello`] including an initial [`RenderSnapshot`]. From
-//! there it's a duplex stream of [`ClientMsg::Input`] / [`ResizeCommit`] /
-//! ownership / ack frames upstream and [`DaemonMsg::RenderPatch`] /
-//! [`ResizeApplied`] / [`TerminalExited`] frames downstream.
-//!
-//! As of PR-2 the daemon runs a server-side VT model
-//! (`calm-session::terminal_model::TerminalModel`):
-//! - `RenderSnapshot.data` is the model's serialized ANSI representation
-//!   of the visible viewport, bound to the client's `desired_size`.
-//! - `RenderPatch.data` is the raw PTY chunk that triggered the rev
-//!   bump (still `encoding = Vt`); xterm.js applies it client-side.
-//!
-//! Cell-grid diff encoding is a follow-up; not in this PR.
-//!
-//! Framing: `[magic (4) = b"NEIG"] [version (u16 BE) = 4] [length (u32 BE)]
-//! [payload (bincode)]`.
-//!
-//! Magic + version were added in issue #45 so a daemon binary built against
-//! an incompatible `ClientMsg`/`DaemonMsg` enum (variant reorder, new variant
-//! inserted, etc.) fails fast at the read site with a typed [`FrameError`]
-//! instead of silently misinterpreting the bincode discriminants that follow.
+//! Framing: `[magic (4) = b"NEIG"] [version (u16 BE)] [length (u32 BE)] [payload (bincode)]`.
 
 pub mod control;
 pub mod terminal_model;
@@ -43,45 +16,20 @@ use uuid::Uuid;
 /// Cap on a single frame. Anything larger is either a bug or hostile.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
-/// Four-byte sentinel at the head of every frame. Lets the reader reject
-/// random bytes / wrong protocol on a connected socket before attempting a
-/// bincode decode that would otherwise succeed-with-garbage.
+/// Four-byte sentinel at the head of every frame, so the reader rejects wrong-protocol bytes before a bincode decode that would succeed-with-garbage.
 pub const FRAME_MAGIC: [u8; 4] = *b"NEIG";
 
-/// Bumped whenever the on-wire payload format changes incompatibly (enum
-/// variant reorder, payload shape change, ...). A reader seeing an
-/// unexpected version closes the connection cleanly via
-/// [`FrameError::UnsupportedFrameVersion`] rather than parsing the bytes
-/// against the wrong schema.
-///
-/// v2: `ClientMsg` / `DaemonMsg` terminal variants completely replaced (no
-/// v1 compatibility); chat variants unchanged. See issue #44.
-///
-/// v3 (#177): adds `ClientMsg::TerminalThemeUpdate`. Variant additions
-/// move the bincode discriminant space — anything that decodes an older
-/// `Input { data, input_seq }` frame against a v3 schema (or vice versa)
-/// will silently misread. `FRAME_VERSION` and `PROTOCOL_VERSION` move in
-/// lockstep on every breaking enum change so the magic+version preamble
-/// rejects skewed peers before bincode parses garbage.
-///
-/// v4 (#388): drop chat-mode variants alongside daemon binary retirement.
+/// Bumped whenever the on-wire payload format changes incompatibly (any enum variant addition or reorder
+/// moves the bincode discriminant space); moves in lockstep with `PROTOCOL_VERSION`.
 pub const FRAME_VERSION: u16 = 4;
 
-/// Application-layer protocol version carried in [`ClientMsg::ClientHello`]
-/// and [`DaemonMsg::ServerHello`]. Distinct from [`FRAME_VERSION`] because
-/// the wire envelope and the payload schema can move independently; today
-/// they happen to be in lockstep at 4/4 (#388 bump).
+/// Application-layer protocol version carried in `ClientHello`/`ServerHello`; distinct from [`FRAME_VERSION`] because envelope and payload schema can move independently.
 pub const PROTOCOL_VERSION: u16 = 4;
 
-/// Supervisor control wire version. Bumped when the ControlMsg / ControlReply
-/// shapes between calm-server and calm-proc-supervisor change in an
-/// incompatible way. Tier B per docs/upgrade-stability.md.
+/// Supervisor control wire version; bumped when the ControlMsg / ControlReply shapes change incompatibly.
 pub const SUPERVISOR_CONTROL_VERSION: u32 = 1;
 
-/// Typed errors from the framing layer. The kernel↔daemon WS bridge in
-/// `calm-server` matches on [`FrameError::BadMagic`] /
-/// [`FrameError::UnsupportedFrameVersion`] to log + close the connection on
-/// version skew (see `crates/calm-server/src/ws/terminal.rs`).
+/// Typed errors from the framing layer; the kernel↔daemon WS bridge matches on `BadMagic` / `UnsupportedFrameVersion` to close on version skew.
 #[derive(thiserror::Error, Debug)]
 pub enum FrameError {
     #[error("io: {0}")]
@@ -98,33 +46,21 @@ pub enum FrameError {
     Oversize { len: u32, max: u32 },
 }
 
-// ---- v2 protocol value types -------------------------------------------
-
-/// Per-connection role assigned by the daemon's `OwnerRegistry`. The first
-/// successful handshake on a freshly-spawned daemon becomes the
-/// [`Role::Owner`]; subsequent clients default to [`Role::Observer`] and can
-/// promote themselves with [`ClientMsg::OwnerClaim`] (hostile takeover —
-/// the daemon never negotiates).
+/// Per-connection role assigned by the daemon's `OwnerRegistry`: the first successful handshake becomes
+/// `Owner`; later clients default to `Observer` and can promote themselves with `OwnerClaim` (hostile takeover).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum Role {
     Owner,
     Observer,
 }
 
-/// Render-plane payload encoding. Today the daemon only ever advertises
-/// [`RenderEncoding::Vt`] (raw escape-sequence bytes); the enum exists so
-/// later additions (cell-grid diffs, sixel images, ...) don't require a
-/// fresh `FRAME_VERSION` bump.
+/// Render-plane payload encoding; only `Vt` (raw escape-sequence bytes) is advertised today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum RenderEncoding {
     Vt,
 }
 
-/// How much pre-attach history the client wants in the
-/// [`DaemonMsg::ServerHello`] snapshot. `None` = just the current viewport;
-/// `All` = everything the daemon still has; `Lines(n)` = up to n lines of
-/// scrollback (whole-chunk granularity in this PR, may tighten to
-/// line-granular when the VT model lands).
+/// How much pre-attach history the client wants in the `ServerHello` snapshot; `Lines(n)` is whole-chunk granularity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum InitialScrollback {
     None,
@@ -132,9 +68,7 @@ pub enum InitialScrollback {
     Lines(u32),
 }
 
-/// PTY viewport dimensions plus an optional pixel-size hint. The pixel
-/// fields are only consulted by programs that draw inline images (sixel /
-/// kitty graphics); most clients leave them `None`.
+/// PTY viewport dimensions plus an optional pixel-size hint, consulted only by programs that draw inline images.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PtySize {
     pub cols: u16,
@@ -143,97 +77,43 @@ pub struct PtySize {
     pub pixel_height: Option<u16>,
 }
 
-/// Default foreground / background RGB the daemon advertises to the PTY
-/// child in reply to OSC 10/11 color queries (#177). Plumbed two ways:
-///
-/// 1. As CLI args (`--terminal-fg`/`--terminal-bg`) on daemon spawn so
-///    the model can answer codex's startup probe before the first PTY
-///    chunk lands.
-/// 2. As [`ClientMsg::TerminalThemeUpdate`] when the browser toggles
-///    theme mid-session — the daemon updates the model's defaults and
-///    (when the child has DECSET 1004) writes `ESC[I` so a focus-aware
-///    TUI re-queries OSC 10/11; the daemon's vte parser then
-///    synthesizes the solicited reply (#305).
-///
-/// Each channel is a plain u8 (8-bit per channel); the daemon expands
-/// to xterm's 16-bit `rgb:RRRR/GGGG/BBBB` reply form (`c * 257`).
+/// Default foreground / background RGB the daemon advertises to the PTY child in reply to OSC 10/11 queries.
+/// Each channel is 8-bit; the daemon expands to xterm's 16-bit `rgb:RRRR/GGGG/BBBB` reply form (`c * 257`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TerminalTheme {
     pub fg: (u8, u8, u8),
     pub bg: (u8, u8, u8),
 }
 
-/// Single cell's pixel footprint as the client measured it. Sent only when
-/// it materially differs from the daemon-side default and the client wants
-/// pixel-accurate image alignment.
+/// Single cell's pixel footprint as the client measured it; sent only when it differs from the daemon-side default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CellSize {
     pub width: u16,
     pub height: u16,
 }
 
-/// Reconnect cursor — the latest `render_rev` and/or `pty_seq` the client
-/// already has. The daemon decides whether it can replay a delta from there
-/// or must send a fresh snapshot (in which case a
-/// [`HistoryGap`] is included in `ServerHello`).
+/// Reconnect cursor — the latest `render_rev` and/or `pty_seq` the client already has; if the daemon cannot replay from there a [`HistoryGap`] is included in `ServerHello`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ResumeFrom {
     pub render_rev: Option<u32>,
     pub pty_seq: Option<u32>,
 }
 
-/// What the client can decode / display. The daemon validates the
-/// intersection during handshake (e.g. no `Vt` in `render_encodings` →
-/// [`ProtocolErrorCode::UnsupportedEncoding`]).
+/// What the client can decode / display; the daemon validates the intersection during handshake.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ClientCapabilities {
     pub render_encodings: Vec<RenderEncoding>,
     pub supports_scrollback: bool,
     pub supports_sixel: bool,
     pub supports_images: bool,
-    /// When true, this client is trusted to send [`ClientMsg::Input`]
-    /// frames even when it is not the owner. Intended ONLY for
-    /// kernel-originated clients connecting over a kernel-private unix
-    /// domain socket (e.g. a future task-dispatch platform's
-    /// `DaemonClient::inject_stdin`).
-    ///
-    /// Scope: only [`ClientMsg::Input`] is relaxed. [`ClientMsg::ResizeCommit`]
-    /// and [`ClientMsg::Kill`] continue to require owner role even when
-    /// this flag is set — the kernel relays input on behalf of an agent
-    /// but is not itself the source of truth for viewport / lifecycle.
-    ///
-    /// # Trust model
-    ///
-    /// The daemon itself does NOT verify this flag — it trusts whatever
-    /// the ClientHello asserts. Authorization is enforced at the
-    /// ingress, not at the daemon:
-    ///
-    /// - **Kernel-private unix socket** (intended trusted ingress): the
-    ///   kernel's own `DaemonClient` may set this to `true` when it
-    ///   needs to inject stdin to a non-owner session (e.g. agent
-    ///   auto-submit). This socket never crosses a network boundary.
-    /// - **WebSocket bridge** (`crates/calm-server/src/ws/terminal.rs`,
-    ///   `pump`'s up arm): THIS IS AN UNTRUSTED NETWORK SURFACE. Any
-    ///   browser that can reach `/api/terminals/:id` can frame a
-    ///   `ClientHello` with arbitrary capabilities. The bridge MUST
-    ///   zero this field on every ClientHello before forwarding to the
-    ///   daemon. Without that strip a browser could forge
-    ///   `kernel_originated_input: true` and write arbitrary bytes to
-    ///   another user's PTY while connected as an Observer.
-    ///
-    /// Wire default is `false`; older peers that don't serialize this
-    /// field decode as `false` thanks to `#[serde(default)]`. Any
-    /// future ingress that proxies a `ClientHello` over a non-trusted
-    /// boundary MUST sanitize this field before forwarding to the
-    /// daemon.
+    /// When true, this client may send [`ClientMsg::Input`] even when not the owner (`ResizeCommit`/`Kill` still
+    /// require owner). The daemon does NOT verify this flag: the WebSocket bridge is an untrusted network surface and
+    /// MUST zero it on every ClientHello before forwarding, or a browser could write to another user's PTY as an Observer.
     #[serde(default)]
     pub kernel_originated_input: bool,
 }
 
-/// Self-contained snapshot of the current render state. Sent inside
-/// [`DaemonMsg::ServerHello`] and as a standalone frame when the daemon
-/// decides the client needs a hard resync (typically because the requested
-/// resume cursor fell off the history window).
+/// Self-contained snapshot of the current render state; sent inside `ServerHello` and standalone when the client needs a hard resync.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RenderSnapshot {
     pub render_rev: u32,
@@ -245,9 +125,7 @@ pub struct RenderSnapshot {
     pub scrollback: Option<Vec<u8>>,
 }
 
-/// Incremental render-plane update. `prev_render_rev` lets the client
-/// detect a gap (its last-known `render_rev` doesn't match) and request a
-/// fresh [`RenderSnapshot`].
+/// Incremental render-plane update; `prev_render_rev` lets the client detect a gap and request a fresh [`RenderSnapshot`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RenderPatch {
     pub render_rev: u32,
@@ -257,10 +135,7 @@ pub struct RenderPatch {
     pub data: Vec<u8>,
 }
 
-/// Communicates to the client that its requested resume cursor was older
-/// than what the daemon still has buffered. `requires_snapshot` is always
-/// `true` in this PR (we always re-send the snapshot rather than a partial
-/// catch-up).
+/// The client's requested resume cursor was older than what the daemon still has buffered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct HistoryGap {
     pub requested_render_rev: Option<u32>,
@@ -270,8 +145,7 @@ pub struct HistoryGap {
     pub requires_snapshot: bool,
 }
 
-/// Daemon-side back-pressure policy hint. The first track only encodes the
-/// shape; nothing in this PR ever sends a `Backpressure` frame.
+/// Daemon-side back-pressure policy hint; nothing sends a `Backpressure` frame yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum BackpressurePolicy {
     LatestOnly,
@@ -279,9 +153,7 @@ pub enum BackpressurePolicy {
     Close,
 }
 
-/// Typed codes for [`DaemonMsg::ProtocolError`]. Distinct from a free-form
-/// string so the client can branch on the error class (e.g. show
-/// "upgrade required" for `UnsupportedVersion`).
+/// Typed codes for [`DaemonMsg::ProtocolError`], so the client can branch on the error class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum ProtocolErrorCode {
     UnsupportedVersion,
@@ -292,24 +164,10 @@ pub enum ProtocolErrorCode {
     BadHandshake,
 }
 
-// ---- v2 ClientMsg / DaemonMsg ------------------------------------------
-
-// NOTE (D7 / issue #5): the kernel's `Event` enum in `calm-server` drives
-// its TS counterpart via `ts-rs` (see `web/src/api/generated-events.ts`).
-// As of PR-3 of #44, `ClientMsg` / `DaemonMsg` + all helper types here
-// follow the same pattern: `#[derive(TS)]` + `#[ts(export, export_to =
-// "../../web/src/api/generated-terminal.ts")]`, regenerated by `cargo test
-// export_bindings_` (driven by `npm run gen:api`). The hand-mirror
-// `web/src/api/terminal-v2-handmirror.ts` has been retired in favor of
-// the generated file.
+// `ClientMsg` / `DaemonMsg` and the helper types drive their TS counterparts via `ts-rs`, regenerated by `cargo test export_bindings_` (`npm run gen:api`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum ClientMsg {
-    /// First frame on every connection. Carries the application protocol
-    /// version, terminal identity, viewport / cell metrics, optional
-    /// resume cursor, role hint, and capability set. The daemon validates
-    /// (version match, terminal id match, encoding intersection non-empty)
-    /// and responds with [`DaemonMsg::ServerHello`] or
-    /// [`DaemonMsg::ProtocolError`].
+    /// First frame on every connection; the daemon validates it and responds with `ServerHello` or `ProtocolError`.
     ClientHello {
         protocol_version: u16,
         terminal_id: String,
@@ -322,100 +180,42 @@ pub enum ClientMsg {
         role_hint: Option<Role>,
         capabilities: ClientCapabilities,
     },
-    /// Raw bytes from the client keyboard → PTY stdin. Owner-only;
-    /// observers receive [`ProtocolErrorCode::NotOwner`].
-    ///
-    /// `input_seq` is a per-connection monotonic counter chosen by the
-    /// client. When `input_seq > 0`, the daemon emits
-    /// [`DaemonMsg::InputAck`] carrying the same `input_seq` *after* the
-    /// PTY master write returns successfully, so the sender can wait on a
-    /// deterministic delivery confirmation. `input_seq == 0` (the wire
-    /// default for older / browser clients that don't care) signals "no
-    /// ack requested" — the daemon writes the bytes and stays silent. The
-    /// daemon never validates ordering or uniqueness; it just echoes
-    /// whatever non-zero seq arrived on each Input frame. Matching acks
-    /// to outstanding requests is the client's responsibility.
-    ///
-    /// Wire shape: `#[serde(default)]` on `input_seq` so a JSON frame
-    /// missing the field (older browser clients, hand-rolled callers)
-    /// decodes as `input_seq: 0` and behaves identically to "no ack
-    /// requested". The bincode kernel↔daemon hop always upgrades the
-    /// `calm-session` crate in lockstep, so the tuple-→-struct variant
-    /// migration that introduced this field does not need a bincode
-    /// back-compat shim — same posture as `ServerHello.is_child_ready`.
+    /// Raw bytes from the client keyboard → PTY stdin. Owner-only. When `input_seq > 0` the daemon emits
+    /// [`DaemonMsg::InputAck`] with the same seq after the PTY write returns; `0` means no ack requested.
+    /// The daemon never validates ordering or uniqueness of `input_seq`.
     Input {
         data: Vec<u8>,
         #[serde(default)]
         input_seq: u64,
     },
-    /// Owner-driven viewport change. `epoch` is monotonic per-session and
-    /// lets the daemon ignore stale resizes that arrive after a newer one
-    /// has already been applied.
+    /// Owner-driven viewport change; `epoch` is monotonic per-session so the daemon can ignore stale resizes.
     ResizeCommit { epoch: u32, cols: u16, rows: u16 },
-    /// Observer asking to be promoted to owner. Hostile takeover — the
-    /// daemon transfers ownership immediately (no negotiation, no consent
-    /// from the current owner) and broadcasts
-    /// [`DaemonMsg::OwnerChanged`] to all connected clients.
+    /// Observer asking to be promoted to owner; the daemon transfers ownership immediately and broadcasts `OwnerChanged`.
     OwnerClaim,
-    /// Owner relinquishing ownership. Subsequent input is rejected with
-    /// [`ProtocolErrorCode::NotOwner`] until someone else claims.
+    /// Owner relinquishing ownership; subsequent input is rejected with `NotOwner` until someone else claims.
     OwnerRelease,
-    /// Client acknowledging it has rendered up through `render_rev`. Used
-    /// (in a later PR) to decide back-pressure policy.
+    /// Client acknowledging it has rendered up through `render_rev`.
     RenderAck {
         render_rev: u32,
         pty_seq: Option<u32>,
     },
-    /// Ask the terminal session to terminate the child (SIGHUP).
-    /// Owner-only.
+    /// Ask the terminal session to terminate the child (SIGHUP). Owner-only.
     Kill,
-    /// Resolve an `AskUserQuestion` posed by the SDK's `canUseTool`
-    /// callback. Bridges WS frontend → daemon → runner stdin so the
-    /// runner-side `canUseTool` promise can resolve and the agent loop
-    /// proceeds. Daemon writes
-    /// `{"kind":"answer_question","question_id":"<uuid>","answers": {...}}`
-    /// to the runner. Ignored in terminal mode.
+    /// Resolve an `AskUserQuestion` posed by the SDK's `canUseTool` callback; forwarded to the runner's stdin. Ignored in terminal mode.
     AnswerQuestion {
         #[ts(type = "string")]
         question_id: Uuid,
         answers: HashMap<String, String>,
     },
-    /// Browser-driven mid-session theme toggle (#177). Carries the new
-    /// host theme's foreground + background RGB. The daemon updates
-    /// its `TerminalModel::set_default_colors` and, when the child has
-    /// DECSET 1004 enabled, writes `ESC[I` to the PTY master (#305).
-    /// A focus-aware TUI (codex / claude-tui / ...) treats this as
-    /// `FocusGained` and re-queries OSC 10/11; the daemon's vte parser
-    /// then synthesizes the solicited reply from the updated defaults
-    /// and the child re-paints at the new theme.
-    ///
-    /// Owner-only — same gating as [`ClientMsg::Input`] including the
-    /// `kernel_originated_input` exception, since the bytes ultimately
-    /// hit the PTY master and the daemon must not let an observer (or a
-    /// malicious tab acting through a forged ClientHello) hijack the
-    /// child's terminal colors.
+    /// Browser-driven mid-session theme toggle. The daemon updates the model's default colors and, when the child has
+    /// DECSET 1004, writes `ESC[I` so a focus-aware TUI re-queries OSC 10/11. Owner-only, same gating as `Input`.
     TerminalThemeUpdate { fg: (u8, u8, u8), bg: (u8, u8, u8) },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum DaemonMsg {
-    /// Successful handshake response. Tells the client the daemon's
-    /// negotiated protocol version, the session id (rolls on each daemon
-    /// respawn), the role this client got assigned, the current owner (if
-    /// any), and the PTY/render head/tail cursors. The `snapshot` field
-    /// reproduces the current screen state; `history_gap` is set when the
-    /// client's `resume_from` cursor was older than what we still have.
-    ///
-    /// `is_child_ready` is a deterministic snapshot of whether the
-    /// `ChildReady` one-shot has already fired by the time of this attach.
-    /// Late-joining transient connections (notably the kernel's own
-    /// `DaemonClient` used for input injection) use this to decide whether
-    /// to wait for a subsequent `ChildReady` broadcast or to send input
-    /// immediately. The `ChildReady` broadcast remains one-shot per
-    /// session — clients that arrive *after* it fired only see the
-    /// snapshot here. `#[serde(default)]` for backward compat: older
-    /// peers that don't serialize this field decode as `false`, which
-    /// is the safe (wait-for-ready) default.
+    /// Successful handshake response. `is_child_ready` snapshots whether the one-shot `ChildReady` already fired,
+    /// so late-joining clients know whether to wait for it; older peers decode it as `false` (wait-for-ready).
     ServerHello {
         protocol_version: u16,
         terminal_id: String,
@@ -433,18 +233,11 @@ pub enum DaemonMsg {
         #[serde(default)]
         is_child_ready: bool,
     },
-    /// Standalone snapshot — sent when the daemon decided the client needs
-    /// a hard re-sync mid-stream. PR-2 emits this on PTY resize and on
-    /// broadcast lag (after a `SnapshotRequired`). Geometry-bound to the
-    /// requesting client's `desired_size`; `data` is the server-rendered
-    /// ANSI byte stream from `TerminalModel::snapshot_vt`.
+    /// Standalone snapshot for a hard re-sync mid-stream (on PTY resize and broadcast lag); geometry-bound to the requesting client's `desired_size`.
     RenderSnapshot(RenderSnapshot),
-    /// Incremental render-plane update. `data` is the raw PTY chunk that
-    /// triggered the rev bump (`encoding = Vt`); xterm.js applies it
-    /// directly to its own grid. Cell-grid diff encoding is a follow-up.
+    /// Incremental render-plane update; `data` is the raw PTY chunk that triggered the rev bump.
     RenderPatch(RenderPatch),
-    /// Confirms an owner-issued [`ClientMsg::ResizeCommit`] took effect.
-    /// `epoch` echoes the request so the owner can correlate.
+    /// Confirms an owner-issued [`ClientMsg::ResizeCommit`] took effect; `epoch` echoes the request.
     ResizeApplied {
         epoch: u32,
         pty_seq: u32,
@@ -452,75 +245,32 @@ pub enum DaemonMsg {
         cols: u16,
         rows: u16,
     },
-    /// Owner registry transition. Sent to every connected client whenever
-    /// a successful [`ClientMsg::OwnerClaim`] / [`ClientMsg::OwnerRelease`]
-    /// changes who holds owner. `None` means no one currently owns the
-    /// session.
+    /// Owner registry transition, sent to every connected client; `None` means no one currently owns the session.
     OwnerChanged {
         #[ts(type = "string | null")]
         owner_client_id: Option<Uuid>,
     },
-    /// Daemon is shedding load (lagged client, slow socket, ...). Wire
-    /// shape only in this PR; nothing in the daemon emits it yet.
+    /// Daemon is shedding load; wire shape only, nothing emits it yet.
     Backpressure { policy: BackpressurePolicy },
-    /// Daemon needs the client to discard its local state and accept a
-    /// fresh [`Self::RenderSnapshot`]. Wire shape only in this PR.
+    /// Daemon needs the client to discard its local state and accept a fresh snapshot; wire shape only.
     SnapshotRequired { reason: String },
-    /// Terminal child exited; daemon is about to shut down. `pty_seq` and
-    /// `render_rev` pin the cursor so the client can confirm it didn't
-    /// miss any output between the last patch and the exit.
+    /// Terminal child exited; `pty_seq` and `render_rev` pin the cursor so the client can confirm it missed no output.
     TerminalExited {
         code: Option<i32>,
         pty_seq: u32,
         render_rev: u32,
     },
-    /// Protocol-layer rejection. The shell closes the connection right
-    /// after delivering this frame.
+    /// Protocol-layer rejection; the shell closes the connection right after delivering this frame.
     ProtocolError {
         code: ProtocolErrorCode,
         message: String,
         expected_version: Option<u16>,
     },
-    /// One-shot signal sent after the PTY child has reached
-    /// input-readiness (e.g. shell prompt rendered, agent CLI listening
-    /// on stdin). Fired at most once per session; clients can use this
-    /// to know when injected stdin (e.g. auto-submit "\r") will be
-    /// processed instead of swallowed by the shell startup. Carries the
-    /// `pty_seq` and `render_rev` at the moment of detection so the
-    /// client can correlate against its own cursor.
-    ///
-    /// Detection: emitted by the daemon shell after `render_rev` has
-    /// remained stable for `CHILD_READY_QUIESCENT_MS` AND at least one
-    /// PTY chunk has been observed. See
-    /// [`crate::terminal_session::RenderPlane::detect_ready`] for the
-    /// timing constants. Terminal mode only.
+    /// One-shot signal after the PTY child has reached input-readiness (emitted once `render_rev` has been stable for
+    /// `CHILD_READY_QUIESCENT_MS` and at least one PTY chunk was seen); injected stdin before this may be swallowed.
     ChildReady { pty_seq: u32, render_rev: u32 },
-    /// Per-connection delivery acknowledgement for a previously-sent
-    /// [`ClientMsg::Input`]. Emitted to the originating connection — not
-    /// broadcast — after the PTY master write for that Input frame has
-    /// returned successfully. `input_seq` echoes the value the client
-    /// supplied on the corresponding `Input` frame.
-    ///
-    /// The daemon emits `InputAck` only when the originating frame had
-    /// `input_seq > 0`; `input_seq == 0` is the "no ack requested" wire
-    /// default and produces no ack frame. The daemon also does NOT emit
-    /// an ack if the PTY write fails (channel send error, writer thread
-    /// dead, ...) — in that failure case the client times out on its
-    /// outstanding seq, which is the correct semantics.
-    ///
-    /// Ordering: acks are emitted in the same order as the underlying
-    /// PTY writes complete on the daemon's blocking PTY-writer thread,
-    /// so two `Input` frames with seqs `N, N+1` from one connection will
-    /// produce `InputAck { N }` then `InputAck { N+1 }` in that order.
-    /// The daemon does not validate `input_seq` monotonicity — it just
-    /// echoes whatever arrived, in write-completion order.
-    ///
-    /// Intended consumer: the kernel-originated transient
-    /// `DaemonClient::inject_stdin` path (PR #110), which previously
-    /// guarded against a premature disconnect with a fixed
-    /// `tokio::time::sleep` and now awaits a matching `InputAck` instead.
-    /// Browser clients leave `input_seq` at 0 and don't observe this
-    /// frame.
+    /// Per-connection (not broadcast) acknowledgement of an `Input` with `input_seq > 0`, emitted after the PTY master
+    /// write returned; no ack is emitted if the write fails, so the client times out. Acks arrive in write-completion order.
     InputAck { input_seq: u64 },
 }
 
@@ -570,9 +320,7 @@ where
         });
     }
 
-    // Version — same role as magic but for incompatible schema bumps. We
-    // only accept the exact current version; older/newer peers are expected
-    // to be redeployed in lockstep with the kernel.
+    // Only the exact current version is accepted; peers are redeployed in lockstep with the kernel.
     let mut ver_buf = [0u8; 2];
     r.read_exact(&mut ver_buf).await?;
     let version = u16::from_be_bytes(ver_buf);
@@ -630,16 +378,11 @@ mod tests {
 
 #[cfg(test)]
 mod framing_tests {
-    //! Cover the magic+version+length framing layer end-to-end against an
-    //! in-memory `Vec<u8>` so we don't need real sockets. Each test drives
-    //! `write_frame` / `read_frame` directly (or hand-crafts the bytes for
-    //! the error paths).
+    //! Cover the magic+version+length framing layer against an in-memory `Vec<u8>`.
 
     use super::*;
     use std::io::Cursor;
 
-    /// Build a minimal `ClientHello` with default-everything for the
-    /// framing tests that don't care about handshake semantics.
     fn sample_hello() -> ClientMsg {
         ClientMsg::ClientHello {
             protocol_version: PROTOCOL_VERSION,
@@ -665,15 +408,11 @@ mod framing_tests {
         }
     }
 
-    /// Bincode-encode a payload exactly the way `write_frame` does, so we
-    /// can build a wire buffer with a *valid* payload but a *deliberately
-    /// wrong* header (mismatched version, etc.).
+    /// Encode a payload exactly as `write_frame` does, for building a valid payload under a deliberately wrong header.
     fn encode_payload<T: Serialize>(msg: &T) -> Vec<u8> {
         bincode::serde::encode_to_vec(msg, bincode_config()).expect("encode")
     }
 
-    /// Hand-build a frame with arbitrary magic + version, used by the error
-    /// path tests. Length and payload are always coherent.
     fn build_frame(magic: [u8; 4], version: u16, payload: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(10 + payload.len());
         buf.extend_from_slice(&magic);
@@ -689,8 +428,6 @@ mod framing_tests {
         let mut wire: Vec<u8> = Vec::new();
         write_frame(&mut wire, &original).await.expect("write");
 
-        // Sanity-check: header is exactly magic+version+len, version is the
-        // current FRAME_VERSION.
         assert_eq!(&wire[0..4], &FRAME_MAGIC);
         assert_eq!(
             u16::from_be_bytes([wire[4], wire[5]]),
@@ -705,9 +442,7 @@ mod framing_tests {
 
     #[tokio::test]
     async fn framing_current_version_round_trip() {
-        // Locks the current FRAME_VERSION wire shape. Hand-build the
-        // header so the version byte is asserted independently from
-        // FRAME_VERSION's value.
+        // Hand-build the header so the version byte is asserted independently from FRAME_VERSION's value.
         let payload = encode_payload(&ClientMsg::Kill);
         let wire = build_frame(FRAME_MAGIC, FRAME_VERSION, &payload);
         let mut cursor = Cursor::new(wire);
@@ -717,11 +452,7 @@ mod framing_tests {
 
     #[tokio::test]
     async fn framing_older_version_yields_unsupported_frame_version() {
-        // Bytes pretending to be an older protocol version: same magic,
-        // version=FRAME_VERSION-1, valid bincode. Post-#44 (and now #177)
-        // daemons MUST reject this — peers move in lockstep. Compile-
-        // time guard: `FRAME_VERSION >= 1` so the subtraction below is
-        // well-defined.
+        // Same magic, version=FRAME_VERSION-1, valid bincode: peers move in lockstep, so this MUST be rejected.
         const _: () = assert!(FRAME_VERSION >= 1, "FRAME_VERSION sanity");
         let payload = encode_payload(&ClientMsg::Kill);
         let older = FRAME_VERSION - 1;
@@ -759,8 +490,6 @@ mod framing_tests {
     #[tokio::test]
     async fn bad_version_is_typed_error() {
         let payload = encode_payload(&ClientMsg::Kill);
-        // Correct magic, version=FRAME_VERSION+1 (one ahead of current),
-        // valid payload — the version mismatch fires before bincode parse.
         let wire = build_frame(FRAME_MAGIC, FRAME_VERSION + 1, &payload);
         let mut cursor = Cursor::new(wire);
         let err = read_frame::<ClientMsg, _>(&mut cursor)
@@ -777,8 +506,7 @@ mod framing_tests {
 
     #[tokio::test]
     async fn oversize_length_is_typed_error() {
-        // Header advertises len = MAX_FRAME+1; we don't bother appending the
-        // (non-existent) payload — the length check fires before we read it.
+        // No payload appended: the length check fires before it is read.
         let bogus_len = (MAX_FRAME as u32) + 1;
         let mut wire = Vec::with_capacity(10);
         wire.extend_from_slice(&FRAME_MAGIC);

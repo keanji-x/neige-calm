@@ -103,16 +103,6 @@ describe('track create operation', () => {
   });
 });
 
-/*
- * The card writes, as requests.
- *
- * These three are the whole contract between the browser and the kernel for
- * adding and removing a card, and a wrong verb or a wrong path is a defect no
- * caller-side test can see: the mutation hooks report whatever the operation
- * says. The ids are percent-encoded because a track id or a card id is an opaque
- * kernel string, and one containing `/` would otherwise address a different
- * route entirely.
- */
 describe('card operations', () => {
   const theme = { fg: [1, 2, 3], bg: [4, 5, 6] } as const;
 
@@ -183,9 +173,6 @@ describe('lifecycle predicates', () => {
 
 describe('activity predicates read only the kernel activity overlay (INV-APP-118)', () => {
   it('does not derive attention from the lifecycle phase', () => {
-    // A track in a waiting *phase* whose kernel verdict is "none": the badge
-    // still says "In review", but no indicator lights up and no "waiting on
-    // you" bucket claims it. Restoring the lifecycle OR reddens this.
     const reviewing = track({ lifecycle: 'reviewing', attention: 'none' });
     expect(needsUserAttention(reviewing)).toBe(false);
     expect(hasFailed(reviewing)).toBe(false);
@@ -222,7 +209,6 @@ describe('activity predicates read only the kernel activity overlay (INV-APP-118
   it('ranks a failed track with the waiting ones, and a running phase in the middle', () => {
     expect(lifecycleRank(track({ lifecycle: 'done', attention: 'failed' }))).toBe(0);
     expect(lifecycleRank(track({ lifecycle: 'done', attention: 'input' }))).toBe(0);
-    // Phase, not motion: the middle bucket is the lifecycle's, on purpose.
     expect(lifecycleRank(track({ lifecycle: 'planning', working: false }))).toBe(1);
     expect(lifecycleRank(track({ lifecycle: 'done', working: true }))).toBe(2);
     expect(lifecycleRank(track({ lifecycle: 'reviewing', attention: 'none' }))).toBe(2);
@@ -255,7 +241,6 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
       { origin: 'lifecycle', id: 't1', cardId: null, atMs: 5, kind: 'failed' },
     ]);
     expect(activity.cards).toEqual({ 'worker-1': 'failed', planner: 'input', w2: 'working' });
-    // The older overlay kinds are untouched by the new one.
     expect(activity.progress).toBe(0);
     expect(activity.anyCardNeedsInput).toBe(false);
   });
@@ -292,12 +277,10 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
   });
 
   it('applies only the kernel-owned activity row; a plugin-owned one leaves the track quiet', () => {
-    // The public overlay endpoint lets a plugin write `kind: 'activity'` under
-    // its own id; that row is not the verdict (#1722 S2a review).
+    // A plugin can write `kind: 'activity'` under its own id; that row is not the verdict.
     const impostor = overlay(payload, { id: 'a2', plugin_id: 'dev.echo' });
     expect(trackActivityFrom('t1', [impostor])).toEqual(NEUTRAL_ACTIVITY);
     expect(trackActivityFrom('t1', [impostor]).working).toBe(false);
-    // Beside the kernel row it changes nothing, in either order.
     const kernel = overlay({ ...payload, working: false, attention: 'none', items: [], cards: [] });
     for (const rows of [[impostor, kernel], [kernel, impostor]]) {
       const activity = trackActivityFrom('t1', rows);
@@ -305,7 +288,6 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
       expect(activity.attention).toBe('none');
       expect(activity.cards).toEqual({});
     }
-    // The older plugin-written kinds stay ungated.
     expect(trackActivityFrom('t1', [overlay({ value: 0.5 }, { kind: 'progress', plugin_id: 'dev.echo' })]).progress).toBe(0.5);
   });
 });
@@ -373,8 +355,6 @@ describe('userVisibleTracks', () => {
   const archived = track({ id: 'w2', areaId: 'c1', archivedAt: 1 });
 
   it('[E2E-INV-SHELL-003] drops tracks hosted by the system area', () => {
-    // The track itself is perfectly ordinary — not archived, user-shaped. Only
-    // its area disqualifies it, which is the case `visibleTracks` alone misses.
     expect(userVisibleTracks([mine, scaffolding], [userArea, systemArea]).map((w) => w.id))
       .toEqual(['w1']);
   });
@@ -385,16 +365,7 @@ describe('userVisibleTracks', () => {
   });
 });
 
-/*
- * #1299 — the frontend's copy of the kernel's blank rule.
- *
- * The kernel refuses a first message whose `str::trim()` is empty, and Rust
- * trims on the Unicode `White_Space` property. This suite pins the two code
- * points where JS `trim()` and that property are known to differ in kind, and
- * pins the divergence itself rather than only the predicate: the second
- * assertion of the `U+0085` case is what says *why* this function exists, and
- * it is a live check of the platform, not a comment.
- */
+/* The kernel trims on the Unicode `White_Space` property, which JS `trim()` does not match exactly. */
 describe('isBlankForKernel', () => {
   it('is true for the empty string and for ordinary JS whitespace', () => {
     expect(isBlankForKernel('')).toBe(true);
@@ -408,17 +379,12 @@ describe('isBlankForKernel', () => {
 
   it('is true for U+0085 NEXT LINE, which JS trim() leaves standing', () => {
     expect(isBlankForKernel('\u0085')).toBe(true);
-    // The reason this predicate is not `text.trim() === ''`. A gate written
-    // that way calls this string non-blank, enables the send, and posts a body
-    // the kernel answers 400.
     expect('\u0085'.trim()).not.toBe('');
   });
 
   it('is false as soon as there is anything to say', () => {
     expect(isBlankForKernel('hi')).toBe(false);
     expect(isBlankForKernel('  keep indentation  ')).toBe(false);
-    // Whitespace *around* content is content's neighbour, not blankness — and
-    // the caller sends the string with it intact.
     expect(isBlankForKernel('\u0085x\u0085')).toBe(false);
   });
 });
@@ -442,10 +408,7 @@ describe('liveTableOverlayPayload', () => {
   });
 
   it('does not cross tracks, plugins, kinds or entity kinds', () => {
-    // Each of these differs from the addressed overlay in exactly one field,
-    // so a resolver that dropped any one of the four checks would return a
-    // payload written for something else — a number attributed to the wrong
-    // holding is worse than no number.
+    // Each of these differs from the addressed overlay in exactly one field.
     const wrong = [
       overlay({ entity_id: 't2' }),
       overlay({ plugin_id: 'other-plugin' }),
@@ -455,7 +418,6 @@ describe('liveTableOverlayPayload', () => {
     for (const row of wrong) {
       expect(liveTableOverlayPayload('t1', [row], SOURCE)).toBeUndefined();
     }
-    // …and all four together still leave the right one findable.
     expect(liveTableOverlayPayload('t1', [...wrong, overlay({})], SOURCE))
       .toEqual({ columns: [], rows: [] });
   });

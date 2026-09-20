@@ -1,29 +1,17 @@
-//! Issue #145 — Track lifecycle state machine, transaction-side helpers.
-//!
-//! #679 PR1: the pure edge table — [`ActorKind`], [`actor_kind`],
-//! [`validate_transition`], [`TransitionError`] — moved to
-//! `calm_types::track_lifecycle` (zero-IO vocabulary; PR0's
-//! `track_fsm_golden` pins the table itself) and is re-exported below so
-//! every `crate::track_lifecycle::validate_transition` path is unchanged.
-//! This file keeps the sqlx-transaction helpers that apply validated
-//! transitions inside audited write transactions.
+//! Track lifecycle transaction-side helpers; the pure edge table lives in `calm_types::track_lifecycle`.
 
 use crate::db::rows::TRACK_SELECT_COLUMNS;
 use crate::model::{Track, TrackLifecycle, TrackPatch};
 use crate::{error::CalmError, event::Event};
 use sqlx::{Sqlite, Transaction};
 
-// #679 PR1 — moved vocabulary, re-exported at the old paths. Source
-// definitions live in calm-types; do NOT re-declare them here.
+// Source definitions live in calm-types; do NOT re-declare them here.
 pub use calm_types::track_lifecycle::{
     ActorKind, TransitionError, actor_is_planner_author, actor_kind, planner_allowed_targets,
     user_can_resume, validate_transition,
 };
 
-/// Auto-promote a draft track to planning from inside an audited write tx.
-///
-/// Returns the lifecycle/update events the caller should append to the same
-/// event batch. Non-draft tracks are left untouched and return `None`.
+/// Auto-promote a draft track to planning from inside an audited write tx; non-draft tracks return `None`.
 pub async fn auto_promote_draft_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &crate::ids::TrackId,
@@ -39,13 +27,8 @@ pub async fn auto_promote_draft_in_tx(
     .await
 }
 
-/// Apply an explicit planner-requested lifecycle transition inside the caller's
-/// write tx and return the lifecycle/update events for the same batch.
-///
-/// If the requested target equals current lifecycle, no lifecycle events are
-/// emitted and the caller's `agent_message` is discarded. This is intentional —
-/// without a transition there is no lifecycle event to carry the message, and
-/// bumping `TrackUpdated.agent_message` on a no-op would emit a spurious event.
+/// Apply a planner-requested lifecycle transition inside the caller's write tx. A no-op target
+/// discards `agent_message` on purpose: without a transition there is no lifecycle event to carry it.
 pub async fn apply_requested_transition_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &crate::ids::TrackId,
@@ -83,13 +66,8 @@ pub async fn apply_requested_transition_in_tx(
     ]))
 }
 
-/// Re-check a REST handler's pre-transaction lifecycle snapshot after the
-/// IMMEDIATE write transaction has serialized with every competing writer.
-///
-/// `update_track` needs fields from a read before it opens the transaction, but
-/// that snapshot cannot authorize or describe a later lifecycle event. A stale
-/// snapshot is a retryable conflict: writing from it would persist an edge the
-/// FSM never approved and would record the wrong `from` value.
+/// Re-check a REST handler's pre-transaction lifecycle snapshot inside the IMMEDIATE tx: a stale
+/// snapshot is a retryable conflict, since writing from it would persist an edge the FSM never approved.
 pub async fn validate_transition_snapshot_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &crate::ids::TrackId,
@@ -108,12 +86,8 @@ pub async fn validate_transition_snapshot_in_tx(
         .map_err(|e| CalmError::Forbidden(format!("track lifecycle: {e}")))
 }
 
-/// Auto-transition a track when it is exactly in `from`.
-///
-/// Kernel auto hooks use this for idempotent current-state gating: only the
-/// first serialized tx sees the triggering `from` state, updates the row, and
-/// emits lifecycle/update events; later concurrent txs see the advanced state
-/// and do nothing.
+/// Auto-transition a track when it is exactly in `from`: only the first serialized tx sees the
+/// triggering state; later concurrent txs see the advanced state and do nothing.
 pub async fn auto_transition_if_current_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &crate::ids::TrackId,
@@ -155,10 +129,7 @@ pub async fn auto_transition_if_current_in_tx(
     ]))
 }
 
-/// In-tx track row read. `pub(crate)` since #955 PR-b: the proposal
-/// submit handler re-checks "track exists and is not terminal" inside its
-/// own write transaction (§5.5), which an outside-tx read cannot make
-/// authoritative.
+/// In-tx track row read, for handlers that must re-check the track inside their own write transaction.
 pub(crate) async fn track_get_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &crate::ids::TrackId,

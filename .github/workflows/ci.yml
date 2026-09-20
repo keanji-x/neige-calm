@@ -22,27 +22,13 @@ permissions:
   contents: read
 
 env:
-  # `npm ci` audits by default, but that advisory request is not a gate and a
-  # retired audit endpoint stalled fe-unit for five minutes in #1394. Keep all
-  # installs independent of that service; vulnerability policy belongs in an
-  # explicit, separately bounded audit job.
+  # `npm ci` audits by default; that advisory request is not a gate and a retired audit endpoint can stall installs.
   NPM_CONFIG_AUDIT: "false"
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   RUST_BACKTRACE: short
-  # #903 — dev profile debuginfo drops 1 → line-tables-only; test profile rises
-  # back to line-tables-only from #913's [profile.test] debug=0, restoring
-  # file:line in panic backtraces (RUST_BACKTRACE=short) while variable-level
-  # DWARF stays cut — CI has no debugger consumers.
-  # The TEST line mirrors the Cargo.toml [profile.test] rider (same value, kept
-  # in sync); the DEV line is CI-only on top of the manifest's dev debug=1, and
-  # the manifest's [profile.*.package."*"] debug=0 dep override outranks both.
-  # Both DEV and TEST are set explicitly (test inherits dev; double-write
-  # avoids inheritance ambiguity). Release profiles (debug=false) are
-  # unaffected. Set globally, not per-job, so the shared rust-cache key (env
-  # hash) doesn't split across jobs; the env change itself rotates all cache
-  # keys once (one cold-compile round, then warm).
+  # Set globally, not per-job: the shared rust-cache key hashes env, so a per-job value would split the cache.
   CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
   CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 jobs:
@@ -102,9 +88,7 @@ jobs:
             echo "$output_name=$output_value" >> "$GITHUB_OUTPUT"
           done
 
-  # #903 — fmt + grep ratchets + clippy split off the critical path. The stable
-  # required context always runs the cheap cross-tree ratchets; Rust setup,
-  # probes, fmt, and clippy are step-scoped to Rust-relevant changes.
+  # The stable required context always runs the cheap cross-tree ratchets; Rust steps are scoped to Rust-relevant changes.
   lint:
     name: lint (fmt + ratchets + clippy)
     needs: changes
@@ -123,11 +107,7 @@ jobs:
         if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/local-rust-gates-selftest.sh
 
-      # #1289 — the toolchain version lives in rust-toolchain.toml (single
-      # source of truth shared with local gates); rustup honors it as a
-      # directory override, so no version is named here. The zero-argument
-      # form needs rustup >= 1.28 (where it was introduced); hosted runner
-      # images ship 1.29.x, and a pre-1.28 rustup fails closed on missing args.
+      # Version comes from rust-toolchain.toml; the zero-argument form needs rustup >= 1.28.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         if: env.RUN_RUST_CHECKS == 'true'
         run: rustup toolchain install --no-self-update
@@ -135,15 +115,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: env.RUN_RUST_CHECKS == 'true'
         with:
-          # Deliberately NOT the shared `workspace` key: clippy (check-mode)
-          # produces mostly rmeta artifacts, disjoint from the test job's
-          # dependency rlibs. rust-cache skips saving when the primary key
-          # already exists — with a shared key, whichever job finishes first
-          # saves and the rest are discarded, so a faster lint job would
-          # persist an rmeta-only cache and the test job would cold-compile
-          # its rlib deps for minutes on the next round. A separate key costs
-          # one extra cache entry (within the GH 10GB quota) and keeps both
-          # jobs warm.
+          # Not the shared `workspace` key: rust-cache saves only the first finisher, and clippy's rmeta-only artifacts would starve the test job.
           shared-key: lint
 
       - name: cargo fmt --all --check
@@ -154,8 +126,6 @@ jobs:
         if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/frozen-vector-gate-selftest.sh
 
-      # This used to be a standalone, non-required eight-second job. Folding it into the required
-      # lint context removes one runner and makes the security-vector freeze gate enforceable.
       - name: vectors dir changes require FROZEN-VECTOR-CHANGE rationale
         if: env.RUN_RUST_CHECKS == 'true'
         env:
@@ -224,12 +194,6 @@ jobs:
         if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/dropped_runtimes_table.sh
 
-      # #1318 §1 — replaced #1300's whole-repository `persist_report` census.
-      # The writer is now private to `track_report::write`, so `rustc` decides
-      # the caller set (that module's subtree) and this gate is only a drift
-      # detector over the file, with the same threat model the census declared:
-      # it catches a writer added by somebody who does not know the boundary
-      # exists. The script's KNOWN GAPS section lists what it cannot see.
       - name: report-write boundary selftest (#1318)
         if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/report_write_boundary_selftest.sh
@@ -238,19 +202,6 @@ jobs:
         if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/report_write_boundary.sh
 
-      # #1252 S3′ PR-B. Two halves, two different statements — do not merge them
-      # in your head:
-      #
-      #   * the escape-probe step below and the trybuild suite (run by the Rust
-      #     shards) are the COMPILE-TIME half. What they pin is narrow and exact:
-      #     in safe code, no path reaches `SqlxRepo::event_append_in_tx` without a
-      #     gate decision on the very triple it inserts. Not "the events table
-      #     cannot be written".
-      #   * these two steps are a TEXT scan. They are a drift detector with the
-      #     same threat model #1318 declared for itself, plus the one thing no
-      #     type carries: a raw `INSERT INTO events` written elsewhere against
-      #     the bare `Transaction` that `RepoEventWrite::write_in_tx` still
-      #     hands out.
       - name: append-seam boundary selftest (#1252 S3′)
         if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/append_seam_boundary_selftest.sh
@@ -335,14 +286,7 @@ jobs:
           esac
           echo "OK: MCP token authority is session-bound and transport per-call auth is session-derived"
 
-      # Soft backstop alongside the cargo-feature gate on
-      # `AppState::raw_repo` (see `state.rs` and design doc §1.4.1).
-      # The compile gate already blocks production builds from reaching
-      # raw sync-domain writes; if a contributor turns on
-      # `--features fixtures` for a production module they could
-      # re-expose it. This grep catches that case at CI time. Tests
-      # under `tests/*.rs` are the legitimate consumers and are not
-      # scanned.
+      # Backstop for the cargo-feature gate on `AppState::raw_repo`; tests under `tests/*.rs` are legitimate consumers and are not scanned.
       - name: sanity — no raw_repo escape in production
         if: env.RUN_RUST_CHECKS == 'true'
         run: |
@@ -378,28 +322,8 @@ jobs:
 
       - name: pgid escape gate (#1013 T11)
         if: env.RUN_RUST_CHECKS == 'true'
-        # The `pgid-escape-probe` feature compiles a module whose only job is to
-        # read `pgid_lease::Pgid`'s private field from outside the module. The
-        # build MUST fail with E0616. Asserting only "it failed" would be a fake
-        # gate — any typo makes a build fail — so both the error code AND the
-        # specific diagnostic (field `0` of struct `Pgid` is private, in
-        # calm-proc-supervisor/src/lib.rs) are asserted.
-        #
-        # What this step proves, exactly — ONE thing: the `Pgid` tuple field is
-        # not readable outside `pgid_lease`. It proves nothing else. The probe
-        # only reads `p.0`, so an added `pub(super) fn raw2()` or an added
-        # `#[derive(Debug)]` leaves `p.0` private and this step stays green.
-        # The next step (a grep ratchet) catches *some* of those shapes; it is
-        # defense-in-depth against accidental drift, NOT a proof — see its own
-        # comment. The primary guarantee here is the type system, not either
-        # gate: reviewers wrote and compiled seven distinct escape attempts, and
-        # only `unsafe` transmutes, the acknowledged destructure/re-wrap seam
-        # (pgid_lease regulation 5), and writing a fresh `libc::kill` succeeded.
-        #
-        # NOTE: this crate can never be built with `--all-features` (that turns
-        # this feature on). That is by design; see crates/calm-proc-supervisor/Cargo.toml.
-        # The other direction (default build green, probe absent) is covered by
-        # the clippy step below, which builds this crate without the feature.
+        # The probe must fail with E0616 on Pgid's field specifically; "it failed" alone is a fake gate.
+        # This feature means calm-proc-supervisor can never be built with `--all-features`.
         run: |
           set -uo pipefail
           out="$(cargo check -p calm-proc-supervisor --features pgid-escape-probe 2>&1)" && rc=0 || rc=$?
@@ -420,53 +344,16 @@ jobs:
 
       - name: append-seam escape probe (#1252 S3′ PR-B)
         if: env.RUN_RUST_CHECKS == 'true'
-        # `mod append_seam_escape_probe` in
-        # crates/calm-truth/src/db/sqlite/events.rs holds four samples, each a
-        # bypass that a review channel wrote and COMPILED against the seam's
-        # first draft. Enabling a feature compiles one sample, and that build
-        # MUST fail with the named diagnostic. Asserting only "it failed" would
-        # be a fake gate — any typo makes a build fail.
-        #
-        # **One `cargo check` per shape, and that is not tidiness.** The first
-        # draft put all four behind a single feature and only TWO diagnostics
-        # came out: `rustc` aborts after type checking, and the struct-expression
-        # privacy check (E0451) runs in a later pass, so the two forging samples
-        # compiled silently while a single-feature step would have reported
-        # success on four. Do not re-merge these.
-        #
-        # What this step proves, exactly: a module INSIDE `calm-truth` and
-        # inside the `events` subtree — one that CAN name `Authorized` and CAN
-        # name the private appender — still cannot forge a capability, cannot
-        # retarget one it earned, and cannot hand the appender a loose triple.
-        # The CROSS-crate statement is a different one and `trybuild` carries it
-        # (crates/calm-truth/tests/append_seam_trybuild.rs, run by the Rust
-        # shards); neither suite can carry the other's statement, because
-        # trybuild compiles its samples as external crates where none of these
-        # paths resolve at all and every case would pass vacuously.
-        #
-        # NOTE: `calm-truth` can therefore never be built with `--all-features`.
-        # That is by design; see crates/calm-truth/Cargo.toml. The other
-        # direction (default build green, probes absent) is covered by the
-        # clippy step below, which builds this crate without these features.
+        # One `cargo check` per probe feature: rustc aborts after type checking, so the later-pass E0451 privacy check never runs when probes share a feature.
+        # calm-truth can therefore never be built with `--all-features`.
         run: |
           set -uo pipefail
           fail=0
           check_probe() {
             local feature="$1" want="$2"
             local out rc
-            # `CARGO_TERM_COLOR=never` is load-bearing, not cosmetic. This
-            # workflow sets `CARGO_TERM_COLOR: always` at the env level, which
-            # forces colour even when cargo's output is captured rather than
-            # attached to a terminal. rustc then writes the diagnostic as
-            # `<esc>[1m<esc>[91merror[E0061]<esc>[0m<esc>[1m: this function ...`,
-            # so the escape run lands exactly between `]` and `:` and the
-            # substring test below stops matching at that boundary — while
-            # `error[E0061]` on its own still matches, which is why a laxer
-            # pattern would have hidden this. Two of the four probes failed CI
-            # this way on the first push, each reporting "the probe is broken,
-            # not the invariant" while rustc had in fact emitted precisely the
-            # wanted diagnostic. Capturing output locally disables colour by
-            # default, so the local run cannot reproduce it: pin it here.
+            # `CARGO_TERM_COLOR=never` is load-bearing: the workflow forces colour at the env level, and the escape codes rustc
+            # then emits land between `]` and `:` so the substring test below stops matching. Local runs cannot reproduce it.
             out="$(CARGO_TERM_COLOR=never cargo check -p calm-truth --features "$feature" 2>&1)" && rc=0 || rc=$?
             if [ "$rc" -eq 0 ]; then
               printf '%s\n' "$out"
@@ -474,10 +361,7 @@ jobs:
               fail=1
               return
             fi
-            # bash's own substring test, no subprocess: a `printf | grep` in an
-            # assertion path in this repo produced a false RED about once in
-            # forty runs, and a gate that cries wolf is a gate people re-run
-            # until it passes.
+            # bash's own substring test, no subprocess: a `printf | grep` in an assertion path here produced a false RED about once in forty runs.
             case "$out" in
               *"$want"*) ;;
               *)
@@ -510,40 +394,7 @@ jobs:
 
       - name: pgid accessor ratchet (#1013 T11 companion)
         if: env.RUN_RUST_CHECKS == 'true'
-        # DEFENSE IN DEPTH, NOT A PROOF. Read this before trusting it.
-        #
-        # The compile-fail probe above pins exactly one thing: `Pgid`'s tuple
-        # field is not readable outside `pgid_lease`. It cannot see an added
-        # accessor or derive (it only reads `p.0`). This grep catches the
-        # accessor/derive SHAPES listed below, inside `mod pgid_lease`'s own
-        # text. It is a text scan, so it can never be complete: a determined
-        # author can still route the number out (e.g. through a type that is not
-        # named `Pgid` here, or through code outside this module). The claim
-        # "the accessor and derive cases are covered by the ratchet" was written
-        # twice and defeated twice — do not restore it.
-        #
-        # The primary guarantee is the type system. Two review channels wrote
-        # and compiled seven distinct escapes against this design; only `unsafe`
-        # transmutes, the acknowledged destructure/re-wrap seam (regulation 5),
-        # and writing a fresh `libc::kill` succeeded. This step exists to make
-        # accidental drift loud, and each pattern below is there because a
-        # reviewer defeated the previous version of this step with it:
-        #   * a second method on `impl Pgid`, or a `pub`/`pub(super)` one;
-        #   * ANY `pub(super) fn` in the module returning a `pid_t` — including
-        #     a free function, or a method on `GroupSignalTarget`, neither of
-        #     which lives in the `impl Pgid` block;
-        #   * a trait impl with `Pgid` on EITHER side of `for`
-        #     (`impl Display for Pgid` and `impl From<Pgid> for pid_t` both);
-        #   * a `derive` anywhere in the module.
-        # Whitespace is normalized to one line before the signature/trait scans
-        # so a multiline `impl\n Display\nfor Pgid` cannot evade a line-by-line
-        # regex (it did). `[^!{;]` keeps each match inside one impl header;
-        # `[^!]`-style exclusion of `!` keeps negative impls out.
-        #
-        # Scoped to `mod pgid_lease`'s own text so it says nothing about the
-        # rest of the crate. Whole-line `//` comments are stripped first: the
-        # module's prose talks *about* `pub(super)` and accessors, and matching
-        # that text would make this a self-tripping gate.
+        # Text-scan drift detector, not a proof: the E0616 probe only sees `p.0`, so this catches accessor/derive shapes inside `mod pgid_lease`.
         run: |
           set -euo pipefail
           src=crates/calm-proc-supervisor/src/lib.rs
@@ -577,21 +428,12 @@ jobs:
             printf '%s\n' "$impl_block"
             exit 1
           fi
-          # The `impl Pgid` block is not the only place an accessor can live: a
-          # free `pub(super) fn raw2(p: &Pgid) -> pid_t` in the module, or a
-          # `pub(super) fn raw_pgid(&self) -> pid_t` on `impl GroupSignalTarget`,
-          # both hand the number to the parent module while leaving `p.0`
-          # private and the `impl Pgid` block untouched. Both defeated the
-          # previous version of this step with CI green.
+          # A free `pub(super) fn` returning `pid_t`, or one on `impl GroupSignalTarget`, hands the number out while leaving `p.0` private and `impl Pgid` untouched.
           if printf '%s\n' "$flat" | grep -oE 'pub\(super\)[[:space:]]+fn[^;{]*->[^;{]*pid_t'; then
             echo "::error::a pub(super) fn in mod pgid_lease returns a pid_t — the number is readable outside the module (the E0616 probe only sees p.0)"
             exit 1
           fi
-          # No trait impls involving Pgid and no derives anywhere in the module:
-          # a Display/Debug that prints a decimal pgid is an accessor in text,
-          # and `impl From<Pgid> for libc::pid_t` is one with the conversion
-          # spelled out. Both sides of `for` are checked — the old `for Pgid`
-          # pattern missed the `From<Pgid>` direction, where Pgid is the source.
+          # A Display/Debug that prints the pgid is an accessor in text, and `impl From<Pgid> for pid_t` is one with the conversion spelled out; both sides of `for` are checked.
           if printf '%s\n' "$flat" | grep -oE 'impl[^!{;]*[[:space:]]for[[:space:]]+Pgid[^[:alnum:]_]'; then
             echo "::error::a trait is implemented for Pgid — Debug/Display/Deref all leak the number"
             exit 1
@@ -642,12 +484,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Hosted PR runs have four effective test workers. Four count-balanced
-        # partitions keep a cold compile plus one quarter of the suite near the
-        # five-minute target; timing data showed two hash partitions at
-        # 496s/717s of cumulative test work.
-        # Trusted main pushes stay single-job because concurrent jobs must not
-        # share the persistent self-hosted target directory.
+        # Trusted main pushes stay single-job: concurrent jobs must not share the persistent self-hosted target directory.
         shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1,2,3,4]' || '[1]') }}
     # This repository is public: fork PRs stay on isolated GitHub-hosted
     # runners. Only trusted pushes to the canonical repository use the local
@@ -664,69 +501,34 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: |
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          # Persistent hosts can have /tmp fixtures owned by another user, so
-          # tests must not use the shared /tmp. RUNNER_TEMP is writable, but
-          # on this host the runner does NOT empty it between jobs (#1637:
-          # 19 393 leftover entries from ten days of runs were found in it on
-          # 2026-09-13). This job therefore owns a private subdirectory and
-          # removes it itself in the "remove job-private TMPDIR" step below.
+          # Persistent hosts can have /tmp fixtures owned by another user, and this runner does not empty RUNNER_TEMP between jobs,
+          # so the job owns a private subdirectory and removes it itself in the "remove job-private TMPDIR" step.
           TMPDIR="$(mktemp -d "$RUNNER_TEMP/rust-XXXXXXXX")"
           echo "TMPDIR=$TMPDIR" >> "$GITHUB_ENV"
 
-      # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
-      # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
-      # with ~89G free (145G disk, run 29140215747), and post-#913 (test bins 153→35)
-      # + #918 (debuginfo) target/ peaks ~5G, rust-cache ~321MB — the 2m47s was waste.
-
-      # #1289 — the toolchain version lives in rust-toolchain.toml (single
-      # source of truth shared with local gates); rustup honors it as a
-      # directory override, so no version is named here. The zero-argument
-      # form needs rustup >= 1.28 (where it was introduced); hosted runner
-      # images ship 1.29.x, and a pre-1.28 rustup fails closed on missing args.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
 
-      # #903 — link with mold. Default takeover mode: the action installs mold
-      # and symlinks /usr/local/bin/ld to it, so cc/rustc pick it up via PATH.
-      # Deliberately NOT via `RUSTFLAGS=-C link-arg=-fuse-ld=mold`: RUSTFLAGS
-      # feeds both cargo's fingerprint and rust-cache's env-hashed key, so a
-      # per-job RUSTFLAGS delta would split the shared `workspace` cache key
-      # across jobs and invalidate every cached artifact. The ld symlink is
-      # transparent to cargo fingerprints — cached dependency rlibs still hit;
-      # only the final link swaps tools. The action writes under /usr/local,
-      # so trusted main pushes on the unprivileged self-hosted runner use the
-      # system linker instead.
+      # mold via ld takeover rather than RUSTFLAGS: RUSTFLAGS feeds the rust-cache key and would split the shared cache across jobs.
+      # The action writes under /usr/local, so the unprivileged self-hosted runner uses the system linker.
       - uses: rui314/setup-mold@v1
         if: runner.environment == 'github-hosted'
 
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
-          # Test artifacts are profile/feature-specific. Sharing this key with the faster OpenAPI
-          # and release jobs made the first finisher persist a partial cache that could never be
-          # augmented (GitHub cache keys are immutable), so every exact "hit" still rebuilt all 105
-          # test binaries. Include workspace crates and rotate on Rust source changes; non-Rust PRs
-          # then restore the complete test graph, while Rust PRs fall back and rebuild what changed.
-          # Self-hosted jobs skip this action and reuse their dedicated CARGO_TARGET_DIR directly.
+          # Test artifacts are profile/feature-specific; GitHub cache keys are immutable, so sharing a key with faster jobs persists a partial cache forever.
           shared-key: rust-test
           key: ${{ hashFiles('**/*.rs') }}
           cache-workspace-crates: true
 
-      # #1747 — since #1731 two neige-app tailnet tests build the Go helper
-      # (`go build` / `go test -c` in tailnet/) at test time. Hosted runners
-      # ship a Go toolchain; the self-hosted main runner does not have one on
-      # PATH, so main was red on exactly those two tests on every push. Pin
-      # the same toolchain the e2e and tailnet jobs use (tailnet/go.mod).
-      # Module/build caching goes through GitHub's cache only on hosted
-      # runners — the persistent runner keeps its own GOMODCACHE/GOCACHE.
+      # Two neige-app tailnet tests build the Go helper at test time; the self-hosted runner has no Go on PATH.
       - uses: actions/setup-go@v5
         with:
           go-version-file: tailnet/go.mod
           cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: tailnet/go.sum
 
-      # #903 — cargo-nextest (prebuilt binary, ~5s). Profiles in
-      # .config/nextest.toml; CI uses --profile ci below.
       - uses: taiki-e/install-action@nextest
 
       - name: install isolated provider fixture dependencies
@@ -747,30 +549,8 @@ jobs:
             --bin calm-worker-boundary --bin neige-mcp-stdio-shim
 
       - name: cargo nextest run --workspace --locked
-        # #903 — nextest replaces `cargo test`: cross-binary test parallelism
-        # (the old runner executed the ~74 test binaries — post-#913 suite
-        # consolidation — serially). The build
-        # phase is equivalent to `cargo test --no-run`, so everything below
-        # still holds:
-        # - Feature enabled for compile-check coverage; codex-e2e tests
-        #   self-skip at runtime when no codex binary is discoverable (#868
-        #   resolver: unset NEIGE_CODEX_BIN → eprintln + early return, counted
-        #   as pass) — the default in GHA runners; unchanged under nextest.
-        # - No separate `cargo build --workspace` step: the test build covers
-        #   its CARGO_BIN_EXE_* targets plus the replay bin. Cross-package
-        #   isolated fixture executables are explicitly built above.
-        #   (required-features=fixtures, via calm-server's dev-dep self-loop —
-        #   which also means fixtures is always ON here). Compile coverage of
-        #   the not(fixtures) production cfg branches is carried by the
-        #   chromium-e2e / stack-e2e release jobs (no fixtures, global
-        #   RUSTFLAGS=-D warnings) on every PR.
-        # - nextest does not run doctests, which loses nothing here: this repo
-        #   has 0 doctests — every doc fence carries a non-rust language tag
-        #   (json/text/sh/jsonc), see #903 design doc §0.1. If rust doctests
-        #   are ever introduced, add a `cargo test --doc` step alongside.
-        # - The migration replay harness is part of this full suite. Hash
-        #   partitioning assigns it to exactly one shard; a second filtered
-        #   invocation would duplicate 34–68s of work without adding coverage.
+        # codex-e2e tests self-skip at runtime when no codex binary is discoverable. nextest runs no doctests and this repo
+        # has none (every doc fence carries a non-rust tag); add a `cargo test --doc` step if that changes.
         run: |
           set -euo pipefail
           partition_args=()
@@ -790,12 +570,7 @@ jobs:
             sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$original_policy"
           fi
 
-      # #903 — per-test timing (junit.xml, written by the ci nextest profile),
-      # the input for the Slice C timing analysis. nextest's store dir is
-      # target/nextest under the workspace root, not under CARGO_TARGET_DIR;
-      # the two only coincide on hosted shards. The self-hosted main job
-      # (CARGO_TARGET_DIR=/home/runner/target-neige-calm-main) logged
-      # "No files were found" and never uploaded this artifact.
+      # nextest's store dir is target/nextest under the workspace root, not under CARGO_TARGET_DIR.
       - name: upload nextest junit timing
         if: always()
         uses: actions/upload-artifact@v4
@@ -805,11 +580,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # #1637 — the self-hosted runner does not empty RUNNER_TEMP between
-      # jobs, so remove the directory the prepare step allocated. Fail-closed
-      # on the path shape: only a `$RUNNER_TEMP/rust-*` directory is ever
-      # removed, so a missing or foreign TMPDIR cannot turn this into
-      # `rm -rf` of something else.
+      # The self-hosted runner does not empty RUNNER_TEMP between jobs; only a `$RUNNER_TEMP/rust-*` directory is ever removed.
       - name: remove job-private TMPDIR
         if: always() && runner.environment == 'self-hosted'
         run: |
@@ -975,20 +746,10 @@ jobs:
       - name: Install Chromium with system dependencies
         run: npx playwright install --with-deps chromium
 
-      # Two Vitest projects, one job: `browser` and `browser-coarse`. The second
-      # exists because `pointer: coarse` can only be set on a Playwright
-      # *context*, and CDP touch emulation is a one-way door that poisons the
-      # shared page for every file after it. Both are in the `test:browser`
-      # script, so this step covers them; splitting them into two jobs would
-      # buy a second `npx playwright install` and nothing else.
       - name: npm run test:browser
         run: npm run test:browser
 
-  # #1119 — the shard count follows the selected-entry count instead of being
-  # frozen at 6. For mutation-relevant changes this job runs the SAME selection
-  # code path as the shards (`run.mjs --plan`), so the plan cannot drift from
-  # what the shards run. Known-unrelated changes emit an explicit zero-selection
-  # plan without provisioning Node; classifier fixtures pin that boundary.
+  # The shard count follows the selected-entry count; this job runs the same selection code path as the shards (`run.mjs --plan`), so the plan cannot drift from what they run.
   fe-mutation-plan:
     name: fe-mutation-plan
     needs: changes
@@ -1036,9 +797,7 @@ jobs:
           echo 'selected=0' >> "$GITHUB_OUTPUT"
           echo 'test_scope=witness' >> "$GITHUB_OUTPUT"
 
-      # Run harness fixtures once here, before any fan-out. They used to run once per shard even
-      # though they do not depend on shard contents. Chromium is still unnecessary: the fixtures
-      # and --plan use only the platform-independent project.
+      # Harness fixtures run once here, before any fan-out.
       - name: Plan mutation shards
         id: plan
         if: env.RUN_MUTATION_PLAN == 'true'
@@ -1055,10 +814,8 @@ jobs:
           fi
           plan=$(npm run --silent test:mutation:plan -- "${args[@]}")
           echo "plan=$plan"
-          # jq parses the WHOLE captured stdout, so any extra line (prefix OR suffix) is a parse
-          # error rather than a silently wrong plan. Each value is its own assignment so `set -e`
-          # actually fires on a jq failure — inside `echo "x=$(...)"` the status was discarded and
-          # the run only died much later at fromJSON('') in the shard matrix, off the required check.
+          # jq parses the WHOLE captured stdout, so any extra line is a parse error rather than a silently wrong plan.
+          # Each value is its own assignment so `set -e` fires on a jq failure (inside `echo "x=$(...)"` the status is discarded).
           shards=$(printf '%s' "$plan" | jq -c '.shards')
           matrix=$(printf '%s' "$plan" | jq -c '.matrix')
           total=$(printf '%s' "$plan" | jq -r '.total')
@@ -1075,10 +832,7 @@ jobs:
             echo "mutation plan did not produce a usable shard matrix; raw plan: $plan" >&2
             exit 1
           fi
-          # The shard list must be EXACTLY 1..total. `[` plus a digit-total is not enough:
-          # {"total":99999,"shards":[1]} passed both, and the single shard job then ran
-          # `--shard 1/99999` — about one of 65 entries — and the aggregate gate went green.
-          # plan-purity.mjs asserts the same identity but runs in the SHARD job, too late to stop this.
+          # The shard list must be EXACTLY 1..total: `{"total":99999,"shards":[1]}` would run one shard of `--shard 1/99999` and the aggregate gate would go green.
           if ! printf '%s' "$plan" | jq -e '
             (.shards | length) == .total
             and .shards == [range(1; .total + 1)]
@@ -1089,9 +843,7 @@ jobs:
             echo "mutation plan shard list/matrix is not exactly 1..total; raw plan: $plan" >&2
             exit 1
           fi
-          # The warning below never fails the step; a malformed plan always does, above.
-          # Past the cap the shards stop being ~4 entries each and a full run drifts towards the
-          # 25min shard timeout (fe-mutation-shard timeout-minutes), which would read as flake.
+          # The warning never fails the step. Past the cap a full run drifts towards the 25min shard timeout, which would read as flake.
           if [ "$clamped" = "true" ]; then
             per_shard=$(( (selected + total - 1) / total ))
             echo "::warning::fe-mutation: $selected selected entries exceed the $total-shard cap; ~$per_shard entries per shard (cap keeps wall clock from being flat — consider raising maxShards in fe/tools/mutation/runner.ts)"
@@ -1105,17 +857,9 @@ jobs:
   fe-mutation-shard:
     name: fe-mutation shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}
     runs-on: ubuntu-latest
-    # Full scheduled/manual evidence keeps eight entries per shard: the current manifest then fits
-    # in one nine-job batch, so browser/system setup happens at most nine times instead of 18.
-    # PR/main witness evidence runs declared test files only, so it uses twelve entries per shard.
-    # Nine-way max-parallel matches the full-plan cap without taking every repository runner slot;
-    # witness mode currently produces at most six shards for 66 entries.
     timeout-minutes: 30
     needs: fe-mutation-plan
-    # `changes` is intentionally skipped for scheduled and manually dispatched
-    # runs. The plan overrides that skipped ancestor with `always()`; this job
-    # must do the same or GitHub's implicit success() suppresses the entire
-    # full-sweep matrix even after the plan succeeds and selects entries.
+    # `always()` is required: `changes` is skipped on schedule/dispatch, and GitHub's implicit success() would suppress the whole matrix.
     if: ${{ always() && needs.fe-mutation-plan.result == 'success' && needs.fe-mutation-plan.outputs.selected != '0' }}
     strategy:
       fail-fast: false
@@ -1175,10 +919,7 @@ jobs:
           path: /tmp/mutation-report-${{ matrix.shard }}.json
           if-no-files-found: warn
 
-  # #1119 — THE required check. It exists so branch protection can pin ONE
-  # stable context name while the shard count floats with the manifest.
-  # Fail-closed except for the deliberate zero-selection shape: the plan succeeds, the shard job is
-  # skipped before provisioning a runner, and this stable required context records success.
+  # The required check: branch protection pins this one stable context while the shard count floats with the manifest.
   fe-mutation:
     name: fe-mutation (tracked evidence)
     runs-on: ubuntu-latest
@@ -1209,16 +950,6 @@ jobs:
             exit 1
           fi
 
-  # #1297 — the `a11y (replay + playwright)` and `chromium e2e` jobs were
-  # removed here. Both drove the unmaintained `web/` app, and both broke on
-  # a change that is correct: their shared fixture
-  # (`web/e2e/helpers/reset.ts` `seedTrackViewMode`) seeds view state by
-  # POSTing a `plugin_id: kernel` overlay through `/api/overlays`, which is
-  # exactly the forge #1297 closes. `web/` is no longer maintained and is not
-  # a compatibility target, so the gates were dropped rather than the fix
-  # weakened. The legacy source and its unit job are now retired; the
-  # maintained frontend is gated by `fe-*` and stack smoke checks /calm/ is gone.
-
   fe-e2e:
     name: fe e2e (playwright + docker stack)
     needs: changes
@@ -1229,7 +960,6 @@ jobs:
       CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@v4
-      # #1289 — version comes from rust-toolchain.toml; none is named here.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
       - uses: rui314/setup-mold@v1
@@ -1244,14 +974,7 @@ jobs:
       - name: npm ci
         working-directory: fe
         run: npm ci
-      # `osc-probe-child` joins the compose binaries here (#1189 S6): mounted
-      # in as `codex`, it is the app-server stand-in the Rust suites already
-      # trust (tests/fixtures/osc-probe-child/appserver.rs). It is a `[[bin]]`
-      # of calm-server, so it builds from the same invocation and shares the
-      # cache. Without it `POST /api/tracks/{id}/conversations` fails in the
-      # daemon preflight, *before* the card/session/token mint — and an e2e
-      # that only ever sees that 500 cannot tell a correct mint from a broken
-      # one.
+      # `osc-probe-child` (a calm-server `[[bin]]`) is mounted in as `codex`; without it conversation creation fails in the daemon preflight before any mint.
       - name: cargo build --release (compose binaries)
         run: cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin osc-probe-child --locked
       - name: write CI .env overrides
@@ -1321,29 +1044,20 @@ jobs:
     name: stack e2e (tier 1)
     needs: changes
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.stack_changed == 'true') }}
-    # Match the chromium stack job's runner pin so the host-built release
-    # binaries remain ABI-compatible with the bookworm-slim runtime image.
+    # ubuntu-22.04 keeps the host-built release binaries ABI-compatible with the bookworm-slim runtime image.
     runs-on: ubuntu-22.04
     timeout-minutes: 45
-    # #903 — e2e verifies behavior, not performance: opt-level 1 nearly halves
-    # the dominant release build. Must stay identical to chromium-e2e's value
-    # or the shared rust-cache key's dep fingerprints split; see the rationale
-    # and revert note on that job.
+    # opt-level 1 nearly halves the release build; must stay identical across jobs sharing the `workspace` cache key.
     env:
       CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@v4
 
-      # #1289 — version comes from rust-toolchain.toml; none is named here.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
 
-      # #903 — mold via ld takeover; see the rust job's step for rationale.
-      # Same ubuntu-22.04 / release-link notes as the chromium e2e job.
       - uses: rui314/setup-mold@v1
 
-      # Same cache key as the chromium e2e job: debug/release targets differ,
-      # but the shared registry + git index still avoid a cold dependency run.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace
@@ -1418,17 +1132,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
-      # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
-      # with ~89G free (145G disk, run 29140215747), and post-#913 (test bins 153→35)
-      # + #918 (debuginfo) target/ peaks ~5G, rust-cache ~321MB — the 2m47s was waste.
-      # The `df -h` step below stays as a zero-cost headroom sentinel.
-
-      # #1289 — version comes from rust-toolchain.toml; none is named here.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
 
-      # #903 — mold via ld takeover; see the rust job's step for rationale.
       - uses: rui314/setup-mold@v1
 
       - uses: Swatinem/rust-cache@v2
@@ -1442,9 +1148,7 @@ jobs:
           cache: npm
           cache-dependency-path: fe/package-lock.json
 
-      # Acceptance criterion for #634: ≥5GB free at the link stage.
-      # Printed immediately before the cargo build so the run log shows the
-      # headroom the linker actually sees.
+      # Printed immediately before the cargo build so the run log shows the headroom the linker actually sees.
       - name: df -h (pre-gen:api headroom check)
         run: df -h /
 

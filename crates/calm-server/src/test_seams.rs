@@ -1,35 +1,9 @@
-//! Deterministic crash injection for out-of-process crash-recovery tests
-//! (#840 e2/e3).
-//!
-//! Prod-safety contract:
-//!   * `crash_point` only exists under the `fixtures` feature, which the
-//!     production `calm-server` binary never enables, and every call site
-//!     must be wrapped in `#[cfg(feature = "fixtures")]` — there is no
-//!     unconditional stub, so a non-gated call site fails to compile in a
-//!     release build. A `cargo build --release` therefore compiles zero
-//!     code for the seam: no call, no argument construction, and no "an
-//!     env var could crash prod" surface at all.
-//!     `CARGO_BIN_EXE_calm-server` under `cargo test` IS built with
-//!     `fixtures` on (the `[dev-dependencies]` self-loop in Cargo.toml), so
-//!     the harness-spawned binary can reach it with zero CI plumbing.
-//!   * Even in a fixtures build it is double-gated: it fires only when the
-//!     process env var `CALM_TEST_CRASH_AT` equals `point` exactly. When the
-//!     env var is unset (a fixtures build outside a crash test), each call
-//!     costs one `env::var` lookup plus the call site's argument
-//!     construction — nothing more.
-//!   * It aborts rather than panics: a panic unwinds, so `Drop` impls would
-//!     roll transactions back gracefully and only the calling task would die
-//!     while the server keeps serving — not a crash. `abort()` kills the
-//!     process instantly (SIGABRT), no destructors — SIGKILL durability
-//!     semantics, deterministically placed.
+//! `fixtures`-only seams for integration tests: deterministic crash injection and reach-through
+//! to `pub(crate)` production paths. The production binary compiles none of this.
 
-/// Crash the process here iff `CALM_TEST_CRASH_AT` equals `point` exactly.
-///
-/// Call sites MUST be gated with `#[cfg(feature = "fixtures")]` (the whole
-/// statement, so the argument expression is compiled out too) and qualify
-/// `point` with enough context (e.g. the typed event kind) that a test can
-/// target one specific operation without tripping on other operations
-/// flowing through the same completion path.
+/// Crash the process here iff `CALM_TEST_CRASH_AT` equals `point` exactly. Aborts rather than
+/// panics so no destructor runs (SIGKILL durability semantics). Call sites MUST be gated with
+/// `#[cfg(feature = "fixtures")]` as a whole statement.
 #[cfg(feature = "fixtures")]
 pub fn crash_point(point: &str) {
     if std::env::var("CALM_TEST_CRASH_AT").is_ok_and(|v| v == point) {
@@ -38,14 +12,7 @@ pub fn crash_point(point: &str) {
     }
 }
 
-/// #1147 S2 (red-team B5) — reach the production worker-lease preparation from
-/// an integration test.
-///
-/// `prepare_workspace_lease_target_tx` is `pub(crate)`, and the point of the
-/// test that uses this is that the **real** lease path repairs an
-/// un-materialized managed workspace. Re-implementing the lease path in the
-/// test would prove nothing about production. `fixtures`-only, like the rest of
-/// this module, so the production binary compiles none of it.
+/// Reach the production worker-lease preparation from an integration test.
 #[cfg(feature = "fixtures")]
 pub async fn prepare_workspace_lease_target_for_test(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -63,26 +30,8 @@ pub async fn prepare_workspace_lease_target_for_test(
     .map(|target| target.repo_root)
 }
 
-/// #1318 S3 — take a *whole* first-worker workspace lease from an integration
-/// test: `prepare_workspace_lease_target_tx` → commit →
-/// `provision_workspace_worktree`, in that order.
-///
-/// Why the pair and not just the first half: the seam above stops one step
-/// short of where a materialized workspace is actually *used*. Production runs
-/// both (`operation::codex_adapter` provisions from the prepared target after
-/// the tx commits; `decision_sink`'s own harness does the same), and every
-/// existing assertion on a materialized workspace stopped at "`.git` exists and
-/// `HEAD` resolves" — which a `git branch -m neige` inside a freshly
-/// materialized workspace satisfies while making the first
-/// `git worktree add -b neige/<track>/<card>` fail on a `refs/heads/neige`
-/// file/directory conflict. Only running the second half sees that.
-///
-/// Returns the provisioned worktree path (`target.path`). `WorkspaceLeaseTarget`
-/// is `pub(crate)`, so the seam does the sequencing rather than handing the
-/// target out — which also keeps the ordering itself in production-adjacent
-/// code instead of being re-stated (and drifting) per test.
-///
-/// `fixtures`-only, like the rest of this module.
+/// Take a whole first-worker workspace lease: prepare → commit → provision, in that order.
+/// Returns the provisioned worktree path.
 #[cfg(feature = "fixtures")]
 pub async fn provision_workspace_lease_for_test(
     pool: &sqlx::SqlitePool,
@@ -103,18 +52,7 @@ pub async fn provision_workspace_lease_for_test(
     Ok(target.path)
 }
 
-/// #1147 S3 — reach the production workspace-lease *acquisition* from an
-/// integration test.
-///
-/// Freeze point 1 ("the first workspace lease") lives inside
-/// `acquire_workspace_lease_at_path_tx`, the single statement both public
-/// `acquire_*` wrappers bottom out in. The alternative for testing it is
-/// `POST /api/tracks/{id}/codex-cards`, which needs a live codex app-server —
-/// so the test would either be skipped in CI or would assert on a
-/// re-implementation of the lease, and a fixture that re-implements the thing
-/// under test proves nothing. This calls the real function.
-///
-/// `fixtures`-only, like the rest of this module.
+/// Reach the production workspace-lease acquisition from an integration test.
 #[cfg(feature = "fixtures")]
 pub async fn acquire_workspace_lease_for_test(
     pool: &sqlx::SqlitePool,
@@ -136,13 +74,8 @@ pub async fn acquire_workspace_lease_for_test(
     Ok(())
 }
 
-/// #1727 S1 (fix round 2, H5) — release a card's active workspace lease
-/// through the production "flip the row only" path
-/// (`release_workspace_lease_for_card_repo`: `held|releasing → released`,
-/// `workspace.released`, checkout left on disk) from an integration test.
-/// `worker_worktree_facts_tx` must tell this release apart from the
-/// removing one below, and a test that flipped the row by hand would not be
-/// exercising the row shape production writes. `fixtures`-only.
+/// Release a card's active workspace lease through the production "flip the row only" path
+/// (checkout left on disk).
 #[cfg(feature = "fixtures")]
 pub async fn release_workspace_lease_for_card_for_test(
     repo: &dyn crate::db::RepoEventWrite,
@@ -153,11 +86,8 @@ pub async fn release_workspace_lease_for_card_for_test(
         .await
 }
 
-/// #1727 S1 (fix round 2, H5) — release a lease through the production
-/// "remove the worktree" path (`release_workspace_lease_by_id`: the checkout
-/// is removed, `worktree.removed` is appended card-scoped, then the row is
-/// released). On a non-git lease root this removes the directory, exactly
-/// as production does for such a lease. `fixtures`-only.
+/// Release a lease through the production "remove the worktree" path; on a non-git lease root
+/// this removes the directory.
 #[cfg(feature = "fixtures")]
 pub async fn release_workspace_lease_by_id_for_test(
     pool: &sqlx::SqlitePool,
@@ -167,20 +97,9 @@ pub async fn release_workspace_lease_by_id_for_test(
     crate::operation::workspace_lease::release_workspace_lease_by_id(pool, events, lease_id).await
 }
 
-/// #1147 S3 — build git commands in a test exactly the way the server does.
-///
-/// `neige_git_command` is `pub(crate)` and deliberately so: every git spawn on
-/// the workspace path must go through it, and nothing outside the crate has a
-/// reason to spawn git *as the server*. A test that probes "would the server
-/// consider this path a Git work tree?" is the exception. A bare `git` there
-/// answers a different question — `GIT_DIR`, `GIT_WORK_TREE`,
-/// `GIT_CEILING_DIRECTORIES` and the `GIT_CONFIG_*` family are all present in
-/// hook and CI environments and all redirect the answer — so a test probe that
-/// does not scrub them can disagree with the server it is predicting, and a
-/// precondition assertion that can be wrong about the production behaviour is
-/// worse than none.
-///
-/// `fixtures`-only, like the rest of this module.
+/// Build git commands in a test exactly the way the server does: a bare `git` is redirected by
+/// `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CEILING_DIRECTORIES` and `GIT_CONFIG_*` in hook and CI
+/// environments, so a probe that does not scrub them can disagree with the server.
 #[cfg(feature = "fixtures")]
 pub fn neige_git_command_for_test() -> std::process::Command {
     crate::workspace_materialize::neige_git_command()

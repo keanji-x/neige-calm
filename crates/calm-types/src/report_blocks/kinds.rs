@@ -1,32 +1,5 @@
-//! #960 PR3 — the non-prose block-kind vocabulary + payload validation.
-//!
-//! Three data kinds ship in this slice. Payloads are validated
-//! strictly at every write end (`blocks.upsert`, `write_markdown`,
-//! and the prose `Replace` shim when a body introduces new fences):
-//! unknown fields are rejected, and every violation is reported with
-//! a field-level path so the agent can self-correct.
-//!
-//! | kind | payload |
-//! |---|---|
-//! | `chart.candles` | `{ symbol, period?, candles: [[ts_ms,o,h,l,c,v?];2..], overlays?, caption? }` |
-//! | `chart.series` | `{ source: neige://plugin/<id>/<tool>, series: [venue:symbol;1..8], field?, range?, period?, view?, as_of?, overlays?, caption? }` (#1628; [`chart_series`](super::chart_series)) |
-//! | `table` | inline: `{ columns: [{key,label,align?};1..], rows: [{<key>: string\|number\|null}], caption?, highlight? }`; live: `{ source: "neige://plugin/<id>/<overlay-kind>", caption? }` |
-//! | `app` | `{ src: same-origin path, title?, height? (120..2000 px) }` |
-//!
-//! `chart.candles` inlines its data: the agent fetches candles itself and
-//! writes them in; range switching is client-side filtering. It remains
-//! the escape hatch for data no plugin resolves. `chart.series` (#1628)
-//! names its data instead — a plugin tool plus asset ids — and the kernel
-//! resolves the points on the read path.
-//!
-//! A `table` is the one kind that may instead *name* its data: the live
-//! form carries a `source` pointing at a plugin-written overlay, and the
-//! renderer reads whatever that overlay currently holds. The document keeps
-//! the reference; the value moves underneath it. This is what makes a
-//! pushing plugin — one that re-prices on its own clock — visible in a
-//! report without rewriting (and re-revisioning) the report on every tick.
-//! The two forms are mutually exclusive: a payload either carries rows or
-//! names where rows come from, never both.
+//! The non-prose block-kind vocabulary + payload validation. Payloads are validated strictly at
+//! every write end: unknown fields are rejected and every violation carries a field-level path.
 
 use serde_json::{Map, Value};
 
@@ -40,15 +13,9 @@ pub const KIND_TABLE: &str = "table";
 pub const KIND_APP: &str = "app";
 pub const KIND_TASK: &str = "task";
 
-// -- payload size caps (#960 PR3 review round 1) ----------------------
-//
-// Hard limits enforced by [`validate_payload`] and advertised in the
-// `blocks.kinds` JSON Schemas (maxItems / maxLength) so an agent can
-// self-limit before the round-trip. Every violation names its limit.
-
 /// Maximum candle rows in a `chart.candles` payload.
 pub const MAX_CHART_CANDLES: usize = 5000;
-/// Maximum asset ids in a `chart.series` payload (#1628).
+/// Maximum asset ids in a `chart.series` payload.
 pub const MAX_CHART_SERIES: usize = 8;
 /// Maximum column definitions in a `table` payload.
 pub const MAX_TABLE_COLUMNS: usize = 32;
@@ -56,8 +23,7 @@ pub const MAX_TABLE_COLUMNS: usize = 32;
 pub const MAX_TABLE_ROWS: usize = 500;
 /// Maximum length (chars) of any string field in a data payload.
 pub const MAX_STRING_CHARS: usize = 2048;
-/// Maximum size (bytes) of a payload's canonical JSON rendering —
-/// i.e. of the fence interior that lands in the flat `body`.
+/// Maximum size (bytes) of a payload's canonical JSON rendering.
 pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
@@ -73,9 +39,7 @@ pub fn is_data_kind(kind: &str) -> bool {
     DATA_KINDS.contains(&kind)
 }
 
-/// Markdown-bearing payload fields the kernel declares safe to scan for
-/// report links. Structured blocks are opt-in: scanning their canonical
-/// JSON fence would corrupt Markdown syntax through JSON escaping.
+/// Markdown-bearing payload fields the kernel declares safe to scan for report links.
 pub fn scannable_text_fields<'a>(kind: &str, payload: &'a Value) -> Vec<&'a str> {
     let Some(payload) = payload.as_object() else {
         return Vec::new();
@@ -94,10 +58,8 @@ pub fn scannable_text_fields<'a>(kind: &str, payload: &'a Value) -> Vec<&'a str>
     }
 }
 
-/// Validate a non-prose payload against its kind's schema. `Err` is a
-/// `"; "`-joined list of field-level violations (paths like
-/// `candles[3]`), suitable for a `-32602` message verbatim. Unknown
-/// kinds are themselves an error.
+/// Validate a non-prose payload against its kind's schema. `Err` is a `"; "`-joined list of
+/// field-level violations; unknown kinds are themselves an error.
 pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
     let Some(map) = payload.as_object() else {
         return Err(format!(
@@ -118,10 +80,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         )),
     }
     if errors.is_empty() {
-        // Total-size cap, measured once on the canonical rendering
-        // (the exact bytes the fence contributes to `body`). Only
-        // checked when the shape is otherwise valid — field errors
-        // are more actionable than a size number.
+        // Total-size cap on the canonical rendering, checked only when the shape is otherwise valid.
         let canonical_len = super::fence::canonical_json(payload).len();
         if canonical_len > MAX_CANONICAL_BYTES {
             errors.push(format!(
@@ -138,28 +97,12 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
     }
 }
 
-/// URI prefix of a live `table`'s [`source`](validate_payload): the overlay
-/// written by plugin `<id>` under overlay kind `<kind>`.
-///
-/// Deliberately *not* the report-link scheme parsed by
-/// [`crate::report_links`]: that one
-/// addresses a block inside another report and is scanned for backlinks, and
-/// a live source is neither. Keeping them apart means
-/// `report_links::visit_links` never has to decide which of two meanings a
-/// `neige://` destination carries.
+/// URI prefix of a live `table`'s [`source`](validate_payload): the overlay written by plugin `<id>`
+/// under overlay kind `<kind>`. Deliberately not the report-link scheme parsed by [`crate::report_links`].
 pub const LIVE_SOURCE_PREFIX: &str = "neige://plugin/";
 
-/// Shape check for a live `table`'s `source` (and, since #1628, a
-/// `chart.series` `source`, whose second segment names a plugin *tool*
-/// rather than an overlay kind — same two-segment shape, same characters).
-///
-/// `neige://plugin/<plugin_id>/<overlay_kind>` — exactly two non-empty
-/// segments after the prefix, each drawn from the same characters plugin ids
-/// and overlay kinds already use. Existence is deliberately NOT checked here:
-/// this crate has no registry, and a report that names a plugin which is not
-/// installed *yet* is a normal state (install order is the operator's), one
-/// the renderer reports as an empty table rather than the writer refusing the
-/// block.
+/// Shape check for a live `table`'s `source` (and a `chart.series` `source`): exactly two non-empty
+/// segments after the prefix. Existence is deliberately NOT checked: this crate has no registry.
 pub fn validate_live_source(source: &str) -> Result<(), String> {
     let Some(rest) = source.strip_prefix(LIVE_SOURCE_PREFIX) else {
         return Err(format!(
@@ -545,12 +488,7 @@ fn validate_chart(map: &Map<String, Value>, errors: &mut Vec<String>) {
     optional_string(map, "caption", errors);
 }
 
-/// The live `table` form: `{ source, caption? }`.
-///
-/// `columns` / `rows` / `highlight` are rejected rather than ignored. A
-/// payload carrying both a source and rows has two answers to "what does this
-/// table show", and whichever the renderer picked would make the other one a
-/// lie that survives review because it still renders.
+/// The live `table` form: `{ source, caption? }`. `columns` / `rows` / `highlight` are rejected rather than ignored.
 fn validate_live_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
     reject_unknown(map, &["source", "caption"], errors);
     match map.get("source") {
@@ -568,9 +506,7 @@ fn validate_live_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
 }
 
 fn validate_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
-    // The live form is selected by the *presence* of `source`, not by its
-    // validity: a malformed `source` must be reported as a bad source, never
-    // silently re-read as an inline table missing its columns.
+    // The live form is selected by the *presence* of `source`, not by its validity.
     if map.contains_key("source") {
         validate_live_table(map, errors);
         return;
@@ -692,12 +628,8 @@ fn validate_app(map: &Map<String, Value>, errors: &mut Vec<String>) {
     }
 }
 
-/// Characters the WHATWG URL parser strips or reinterprets before
-/// parsing (#960 PR3 review round 2): ASCII C0 controls + DEL
-/// (`is_ascii_control` — includes tab/LF/CR) and the C1 control range
-/// U+0080..=U+009F. A `src` containing any of these could normalize
-/// into a different URL in the browser, so they are rejected outright;
-/// visible ASCII (incl. space) and non-control UTF-8 stay legal.
+/// Characters the WHATWG URL parser strips or reinterprets before parsing (ASCII C0 controls + DEL
+/// and C1 U+0080..=U+009F); a `src` containing any could normalize into a different URL in the browser.
 fn is_url_hostile_char(c: char) -> bool {
     c.is_ascii_control() || matches!(c, '\u{80}'..='\u{9f}')
 }
@@ -716,8 +648,7 @@ pub(super) fn optional_string(map: &Map<String, Value>, key: &str, errors: &mut 
     }
 }
 
-/// Every string field in a data payload is capped at
-/// [`MAX_STRING_CHARS`] characters.
+/// Every string field in a data payload is capped at [`MAX_STRING_CHARS`] characters.
 pub(super) fn check_string_cap(path: &str, value: &str, errors: &mut Vec<String>) {
     let chars = value.chars().count();
     if chars > MAX_STRING_CHARS {

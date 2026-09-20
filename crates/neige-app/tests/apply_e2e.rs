@@ -170,9 +170,6 @@ impl Drop for Harness {
 
 #[test]
 #[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
-/// PTY survival under preserving apply is verified by the proc-supervisor PID
-/// invariant in `apply_preserving_supervisor_change_defers` (TODO: upgrade
-/// that test to use a process-level fake supervisor).
 fn apply_preserving_commits_calm_server_change() -> anyhow::Result<()> {
     let mut h = Harness::start("preserving", "0.1.0")?;
     let package = h.package(
@@ -206,9 +203,7 @@ fn apply_preserving_commits_calm_server_change() -> anyhow::Result<()> {
 
 #[test]
 #[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
-/// Limitation: fake proc-supervisor is a thread; for production-fidelity
-/// PID-stays testing, use the systemd integration test (out-of-scope for cargo
-/// test).
+/// Limitation: fake proc-supervisor is a thread, so PID survival is not production-fidelity here.
 fn apply_preserving_supervisor_change_defers() -> anyhow::Result<()> {
     let mut h = Harness::start("defer", "0.1.0")?;
     let package = h.package(
@@ -1395,9 +1390,6 @@ fn make_symlink(target: &Path, link: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `$TMPDIR/neige-app-<name>-<random>/`, removed when the guard drops
-/// (#1637). This is a bin-only crate, so the integration test cannot share
-/// `src/test_support.rs`; the guard type is the same `tempfile::TempDir`.
 fn test_root(name: &str) -> anyhow::Result<tempfile::TempDir> {
     Ok(tempfile::Builder::new()
         .prefix(&format!("neige-app-{name}-"))

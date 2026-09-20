@@ -1,16 +1,5 @@
-//! Integration tests for D4 per-kind payload validators wired into the
-//! `cards` and `overlays` route layer.
-//!
-//! Boots a minimal Axum app with the cards + overlays routers + a stub-only
-//! AppState (in-memory SqlxRepo, EventBus, stub DaemonClient, stub PluginHost),
-//! then POSTs payloads through `tower::ServiceExt::oneshot` to verify HTTP-level
-//! behavior:
-//!
-//!   * Bad terminal Card payload → 400 with a clear `bad_request` error code.
-//!   * `ui://` Card with arbitrary garbage payload → 201 (opaque path works).
-//!   * Bad `status` Overlay payload → 400.
-//!   * Good `status` Overlay payload → 200.
-//!   * Card `PATCH` with bad payload for an existing `terminal` card → 400.
+//! Integration tests for per-kind payload validators wired into the `cards` and `overlays` route layer:
+//! a minimal Axum app with a stub-only AppState, driven through `tower::ServiceExt::oneshot`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,17 +22,13 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// Build a minimal AppState + seed one area + track + (optional) card. Returns
-/// the track id (and an optional card id) the test will hit.
+/// Minimal AppState + one seeded area + track; returns the track id.
 async fn boot() -> (AppState, String) {
     let (state, track_id, _repo) = boot_with_repo().await;
     (state, track_id)
 }
 
-/// [`boot`] variant that also hands back the full-capability repo —
-/// `AppState.repo` is the narrower `RouteRepo`, which deliberately has
-/// no `sqlite_pool` escape hatch, but the #644 TrackPatch tests need raw
-/// column reads (the `Track` row struct doesn't carry the new columns).
+/// [`boot`] variant that also hands back the full-capability repo: `AppState.repo` is the narrower `RouteRepo` with no `sqlite_pool` escape hatch.
 async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -96,15 +81,7 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
 }
 
 fn app(state: AppState) -> axum::Router {
-    // Scope G: the cards / overlays handlers extract `Actor` from request
-    // extensions, which means the middleware that populates it must be
-    // present. Mirror main.rs by layering it on the REST router.
-    //
-    // `tracks::router` is also merged here so the PR #214 follow-up tests
-    // can exercise `GET /api/tracks/{id}` for the track-detail read-side
-    // schemaVersion guard. Adding the router is a no-op for the existing
-    // card/overlay tests; we only ever hit the track route from the tests
-    // that explicitly construct that URI.
+    // The cards / overlays handlers extract `Actor` from request extensions, so the middleware that populates it must be layered on, mirroring main.rs.
     axum::Router::new()
         .merge(routes::cards::router())
         .merge(routes::overlays::router())
@@ -197,10 +174,6 @@ async fn get_overlays(
     .unwrap()
 }
 
-// --------------------------------------------------------------------------
-// Cards
-// --------------------------------------------------------------------------
-
 #[tokio::test]
 async fn post_terminal_card_with_bad_payload_returns_400() {
     let (state, track_id) = boot().await;
@@ -209,7 +182,6 @@ async fn post_terminal_card_with_bad_payload_returns_400() {
         &track_id,
         json!({
             "kind": "terminal",
-            // terminal_id must be a string when present.
             "payload": { "terminal_id": 42 }
         }),
     )
@@ -240,8 +212,7 @@ async fn post_terminal_card_with_valid_payload_creates() {
 
 #[tokio::test]
 async fn post_terminal_card_with_no_payload_is_accepted() {
-    // Payload defaults to null on the wire — validator must accept that
-    // because freshly-created terminal cards have no PTY yet.
+    // Payload defaults to null on the wire; freshly-created terminal cards have no PTY yet.
     let (state, track_id) = boot().await;
     let resp = post_card(app(state), &track_id, json!({ "kind": "terminal" })).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -249,8 +220,6 @@ async fn post_terminal_card_with_no_payload_is_accepted() {
 
 #[tokio::test]
 async fn post_ui_kind_card_with_junk_payload_is_accepted() {
-    // D4 acceptance criterion: `ui://*` cards stay opaque — a junk payload
-    // must NOT be rejected. Proves the plugin-defined opt-out works.
     let (state, track_id) = boot().await;
     let resp = post_card(
         app(state),
@@ -270,7 +239,6 @@ async fn post_ui_kind_card_with_junk_payload_is_accepted() {
 
 #[tokio::test]
 async fn patch_terminal_card_with_bad_payload_returns_400() {
-    // Seed a terminal card directly via the repo so we can patch it.
     let (state, track_id) = boot().await;
     let seeded = state
         .raw_repo()
@@ -295,10 +263,7 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
     assert_eq!(body["code"], "bad_request");
 }
 
-/// The client-supplied values a server-owned key is refused with, whatever
-/// they are (#1620 `terminal_signals`, #1704 `claude_permissions` and S2's
-/// `claude_permissions_source`): the minted shapes, a wrong-typed one, an
-/// empty object and null.
+/// Client-supplied values a server-owned key is refused with: the minted shapes, a wrong-typed one, an empty object and null.
 fn server_owned_probe_values() -> [Value; 5] {
     [
         json!(true),
@@ -309,12 +274,8 @@ fn server_owned_probe_values() -> [Value; 5] {
     ]
 }
 
-/// #1620 / #1704 — `terminal_signals` (hook-routing provenance),
-/// `claude_permissions` (the effective permissions block) and S2's
-/// `claude_permissions_source` are stamped by the kernel on Planner-opened
-/// terminals; no client may write any of them, for any kind and with any
-/// value (the hook route reads the marker from the payload, not the kind).
-/// Driven by the table every boundary consults.
+/// `terminal_signals`, `claude_permissions` and `claude_permissions_source` are stamped by the kernel on Planner-opened
+/// terminals; no client may write any of them, for any kind (the hook route reads the marker from the payload, not the kind).
 #[tokio::test]
 async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
     let (state, track_id, repo) = boot_with_repo().await;
@@ -336,7 +297,6 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
         ]
         .into_iter()
         .chain(
-            // Value-agnostic: false, an empty object and null are refused too.
             server_owned_probe_values()
                 .into_iter()
                 .map(|value| ("terminal", value)),
@@ -413,14 +373,11 @@ async fn patch_card_with_a_server_owned_key_is_rejected() {
     );
 }
 
-/// #1620 — a PATCH that replaces the whole payload of a card carrying the
-/// marker cannot drop it: the kernel re-stamps `terminal_signals: true` on
-/// the replacement. A card without the marker never gains it.
+/// The kernel re-stamps `terminal_signals: true` on a whole-payload replacement; a card without the marker never gains it.
 #[tokio::test]
 async fn patch_replacing_payload_keeps_the_planner_terminal_marker() {
     let (state, track_id, repo) = boot_with_repo().await;
-    // Seeded through the repo (the kernel's own creation route), which is
-    // the only writer allowed to mint the marker.
+    // Seeded through the repo, the only writer allowed to mint the marker.
     let marked = repo
         .card_create(NewCard {
             track_id: track_id.clone().into(),
@@ -477,7 +434,6 @@ async fn patch_replacing_payload_keeps_the_planner_terminal_marker() {
 
 #[tokio::test]
 async fn patch_ui_card_with_junk_payload_is_accepted() {
-    // Patching a ui://* card must remain opaque too.
     let (state, track_id) = boot().await;
     let seeded = state
         .raw_repo()
@@ -499,10 +455,6 @@ async fn patch_ui_card_with_junk_payload_is_accepted() {
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
-
-// --------------------------------------------------------------------------
-// Overlays
-// --------------------------------------------------------------------------
 
 #[tokio::test]
 async fn post_status_overlay_with_bad_payload_returns_400() {
@@ -540,23 +492,8 @@ async fn post_status_overlay_with_valid_payload_returns_200() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-/// #1297: the `view` / `system` entity kinds are kernel-reserved, so the
-/// public endpoint refuses them however well-formed the payload is.
-///
-/// The carrier is `layout`, the kernel-owned kind that still lives under the
-/// `view` namespace. It used to be `template`; #1318 S2 retired that kind
-/// along with the whole template-overlay mechanism, and a retired kind has no
-/// validator left, which would have made "regardless of payload validity"
-/// vacuous — every payload would be accepted by the (absent) validator, so a
-/// 403 would prove nothing about ordering. `layout` keeps the property
-/// falsifiable: the first payload below is valid and the rest are not, and
-/// they are indistinguishable from outside because the gate runs **before**
-/// the validator.
-///
-/// The second half — a refused write must not land — came from
-/// `track_template_overlay::overlay_post_cannot_mark_an_existing_track_as_template`,
-/// deleted with that file. A 403 that still wrote the row would be worse than
-/// no gate at all, and no other case asserts it.
+/// The carrier is `layout`: its first payload below is valid and the rest are not, indistinguishable from
+/// outside because the gate runs before the validator. A refused write must also not land.
 #[tokio::test]
 async fn post_reserved_view_overlay_is_forbidden_regardless_of_payload_validity() {
     let (state, track_id, repo) = boot_with_repo().await;
@@ -581,9 +518,7 @@ async fn post_reserved_view_overlay_is_forbidden_regardless_of_payload_validity(
         let body = body_to_json(resp).await;
         assert_eq!(body["code"], "forbidden", "payload={payload:?}");
     }
-    // The seeded track is minted through `Repo::track_create`, which writes no
-    // overlays at all, so "nothing under `view`" is the exact statement here —
-    // no kernel-authored `layout` row to except.
+    // `Repo::track_create` writes no overlays at all, so "nothing under `view`" is exact.
     let overlays = repo
         .overlays_for("view", &track_id)
         .await
@@ -594,10 +529,6 @@ async fn post_reserved_view_overlay_is_forbidden_regardless_of_payload_validity(
     );
 }
 
-/// The two reserved namespaces are independent: neither one alone lets a
-/// write through. A non-kernel `plugin_id` on a reserved `entity_kind` is
-/// still refused, and the reserved `plugin_id` on an externally-writable
-/// `entity_kind` is refused too.
 #[tokio::test]
 async fn post_overlay_reserved_namespaces_are_independently_enforced() {
     let (state, track_id) = boot().await;
@@ -626,10 +557,6 @@ async fn post_overlay_reserved_namespaces_are_independently_enforced() {
     }
 }
 
-/// The positive half of #1297 acceptance: an ordinary client writing an
-/// ordinary overlay under its own `plugin_id` is untouched. Without this the
-/// gate could be tightened to "reject everything" and the tests above would
-/// stay green.
 #[tokio::test]
 async fn post_overlay_still_accepts_non_reserved_plugin_and_entity_kind() {
     let (state, track_id) = boot().await;
@@ -647,8 +574,6 @@ async fn post_overlay_still_accepts_non_reserved_plugin_and_entity_kind() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-/// Deleting is the second half of the forge — mark, act, remove the evidence
-/// — so the same gate covers it.
 #[tokio::test]
 async fn delete_overlay_rejects_reserved_namespaces() {
     let (state, track_id) = boot().await;
@@ -719,12 +644,7 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
                 area: track.area_id.clone(),
             },
         ),
-        // `view` / `system` are kernel-reserved since #1297 and can no
-        // longer be reached through this route at all. Their scope mapping
-        // (both → `EventScope::System`) is asserted directly against the
-        // registry in `calm_truth::validation`'s
-        // `overlay_entity_scope_registry_reserved_kinds_scope_to_system`,
-        // which is where that mapping still has a live reader.
+        // `view` / `system` are kernel-reserved and cannot be reached through this route.
     ];
 
     for (entity_kind, entity_id, expected_scope) in cases {
@@ -774,7 +694,6 @@ async fn post_progress_overlay_with_string_value_returns_400() {
 
 #[tokio::test]
 async fn post_unknown_overlay_kind_with_arbitrary_payload_returns_200() {
-    // Plugin-defined overlay kinds remain opaque.
     let (state, track_id) = boot().await;
     let resp = post_overlay(
         app(state),
@@ -790,18 +709,7 @@ async fn post_unknown_overlay_kind_with_arbitrary_payload_returns_200() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// --------------------------------------------------------------------------
-// Overlay schemaVersion read-side guard (issue #198 concern 4)
-//
-// These tests bypass the write-side validator by seeding via `raw_repo()`,
-// then call the read route and assert future-version kernel-owned overlays
-// are filtered out while plugin-defined kinds (and supported kernel rows)
-// pass through.
-// --------------------------------------------------------------------------
-
-/// Seed an overlay row directly via `raw_repo`, bypassing
-/// `validate_overlay_payload` so we can simulate a future-version row that
-/// a newer kernel binary left in the DB.
+/// Seed an overlay row directly via `raw_repo`, bypassing `validate_overlay_payload`, to simulate a future-version row a newer kernel binary left in the DB.
 async fn seed_overlay(
     state: &AppState,
     plugin_id: &str,
@@ -825,8 +733,6 @@ async fn seed_overlay(
 
 #[tokio::test]
 async fn list_overlays_filters_kernel_owned_future_schema_version() {
-    // A kernel-owned overlay with `schemaVersion = MAX + 1` (simulating a
-    // row written by a newer binary) must not appear in the read response.
     let (state, track_id) = boot().await;
     seed_overlay(
         &state,
@@ -850,7 +756,6 @@ async fn list_overlays_filters_kernel_owned_future_schema_version() {
 
 #[tokio::test]
 async fn list_overlays_keeps_kernel_owned_supported_schema_version() {
-    // Sanity check: a row at the supported version still comes through.
     let (state, track_id) = boot().await;
     seed_overlay(
         &state,
@@ -872,9 +777,7 @@ async fn list_overlays_keeps_kernel_owned_supported_schema_version() {
 
 #[tokio::test]
 async fn list_overlays_keeps_kernel_owned_missing_schema_version() {
-    // Historical rows written before `schemaVersion` was stamped should
-    // still surface — `payload_schema_version` defaults absent to `1`,
-    // which is `<= MAX` for every kernel-owned kind today.
+    // `payload_schema_version` defaults absent to `1`, so historical rows without a stamp still surface.
     let (state, track_id) = boot().await;
     seed_overlay(
         &state,
@@ -894,9 +797,7 @@ async fn list_overlays_keeps_kernel_owned_missing_schema_version() {
 
 #[tokio::test]
 async fn list_overlays_passes_through_plugin_kind_with_future_schema_version() {
-    // Plugin-defined overlay kinds are opaque — the kernel has no version
-    // policy for them, so a "future" value on the schemaVersion field must
-    // not cause the read guard to drop the row.
+    // Plugin-defined overlay kinds are opaque: the kernel has no version policy for them.
     let (state, track_id) = boot().await;
     seed_overlay(
         &state,
@@ -921,10 +822,6 @@ async fn list_overlays_passes_through_plugin_kind_with_future_schema_version() {
 
 #[tokio::test]
 async fn list_overlays_filters_mixed_kernel_and_plugin_rows() {
-    // Mixed scenario: one kernel-owned overlay with a future schemaVersion,
-    // one kernel-owned overlay at the supported version, one plugin-owned
-    // overlay with an arbitrary schemaVersion. Only the future kernel row
-    // is filtered.
     let (state, track_id) = boot().await;
     seed_overlay(
         &state,
@@ -975,8 +872,7 @@ async fn list_overlays_filters_mixed_kernel_and_plugin_rows() {
 
 #[tokio::test]
 async fn list_overlays_by_kind_also_filters_future_versions() {
-    // The `entity_id`-omitted branch (`overlays_by_kind`) shares the same
-    // guard — sidebar fetches go through this code path.
+    // The `entity_id`-omitted branch (`overlays_by_kind`) shares the same guard.
     let (state, track_id) = boot().await;
     seed_overlay(
         &state,
@@ -998,17 +894,6 @@ async fn list_overlays_by_kind_also_filters_future_versions() {
     );
 }
 
-// --------------------------------------------------------------------------
-// Track detail read-side guard (PR #214 review follow-up, issue #198 concern 4)
-//
-// `GET /api/tracks/{id}` returns `TrackDetail { track, cards, overlays }` and is
-// the primary read path the frontend uses to render status/progress/eta/now
-// overlays on a track's detail view. The PR #214 reviewer flagged that the
-// initial fix only guarded `GET /api/overlays` — a future-`schemaVersion`
-// row would still sail through the track-detail route. These tests assert
-// the same filter applies there.
-// --------------------------------------------------------------------------
-
 async fn get_track_detail(app: axum::Router, track_id: &str) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
@@ -1023,12 +908,6 @@ async fn get_track_detail(app: axum::Router, track_id: &str) -> axum::http::Resp
 
 #[tokio::test]
 async fn track_detail_filters_kernel_owned_future_schema_version() {
-    // Seed a kernel-owned status overlay with `schemaVersion = MAX + 1`
-    // (simulating a row a newer kernel binary left in the DB), then hit
-    // `GET /api/tracks/{id}` and assert the future-version row is filtered
-    // out of `TrackDetail.overlays`. The frontend's `adaptTrack` consumes
-    // exactly this field — without this guard a future row would defeat
-    // the PR #214 read-side check for the primary track-rendering path.
     let (state, track_id) = boot().await;
     seed_overlay(
         &state,
@@ -1052,9 +931,6 @@ async fn track_detail_filters_kernel_owned_future_schema_version() {
 
 #[tokio::test]
 async fn track_detail_keeps_kernel_owned_supported_schema_version() {
-    // Paired sanity check: a kernel-owned overlay at the supported version
-    // still surfaces through `GET /api/tracks/{id}`, so the guard is not
-    // accidentally dropping everything.
     let (state, track_id) = boot().await;
     seed_overlay(
         &state,
@@ -1194,17 +1070,6 @@ async fn track_detail_withholds_resume_from_area_chat_tracks() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-// --------------------------------------------------------------------------
-// Track lifecycle PATCH — issue #145 followup, idempotent same-state semantics
-//
-// `PATCH /api/tracks/{id}` with `{"lifecycle": "<current>"}` from an
-// authorized actor (default = user via missing header) must succeed
-// silently: HTTP 200, no `TrackLifecycleChanged` event, no `TrackUpdated`
-// event (lifecycle was the only field), and the row's `updated_at`
-// stays put. This pins the idempotent contract on the REST surface so
-// a client retry doesn't pollute the event log.
-// --------------------------------------------------------------------------
-
 async fn patch_track(app: axum::Router, track_id: &str, body: Value) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
@@ -1237,22 +1102,18 @@ async fn track_patch_same_state_lifecycle_is_idempotent_no_event() {
         "boot fixture lands in Draft",
     );
 
-    // Default actor (no `X-Calm-Actor` header → "user"). User is
-    // an authorized actor for lifecycle, so a same-state request
-    // takes the idempotent path.
+    // No `X-Calm-Actor` header → "user", an authorized actor for lifecycle.
     let resp = patch_track(app(state.clone()), &track_id, json!({"lifecycle": "draft"})).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp).await;
     assert_eq!(body["lifecycle"], "draft");
 
-    // No bus envelope at all.
     let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         bus.is_err(),
         "no event should fire for same-state lifecycle PATCH (got {bus:?})",
     );
 
-    // Row untouched.
     let post = state.repo.track_get(&track_id).await.unwrap().unwrap();
     assert_eq!(post.lifecycle, calm_server::model::TrackLifecycle::Draft);
     assert_eq!(
@@ -1387,10 +1248,6 @@ async fn racing_rest_lifecycle_patch_rechecks_the_snapshot_before_writing_or_emi
 
 #[tokio::test]
 async fn track_patch_same_state_lifecycle_with_title_still_writes_title() {
-    // Companion: lifecycle is a no-op but `title` legitimately changes
-    // — we still bump the row, emit `TrackUpdated`, but NOT
-    // `TrackLifecycleChanged`. Verifies the strip-and-continue path in
-    // `routes::tracks::update_track`.
     use calm_server::event::Event;
     let (state, track_id) = boot().await;
     let mut rx = state.events.subscribe();
@@ -1406,8 +1263,6 @@ async fn track_patch_same_state_lifecycle_with_title_still_writes_title() {
     assert_eq!(body["title"], "renamed-via-rest");
     assert_eq!(body["lifecycle"], "draft");
 
-    // Exactly one envelope: TrackUpdated. The lifecycle envelope is
-    // suppressed because from == to.
     let env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
@@ -1418,22 +1273,12 @@ async fn track_patch_same_state_lifecycle_with_title_still_writes_title() {
         env.event,
     );
 
-    // No follow-up envelope.
     let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         bus.is_err(),
         "no TrackLifecycleChanged should be emitted for same-state lifecycle (got {bus:?})",
     );
 }
-
-// --------------------------------------------------------------------------
-// Track scheduler-policy PATCH — issue #644 `task_budget` / `require_task_gates`
-//
-// Route-level coverage for the new TrackPatch fields: a valid patch lands in
-// the DB columns (the `Track` row struct doesn't carry them, so persistence is
-// asserted against the table), and a negative budget is rejected with 400
-// before anything is written.
-// --------------------------------------------------------------------------
 
 async fn track_policy_columns(repo: &Arc<dyn Repo>, track_id: &str) -> (Option<i64>, i64) {
     let pool = repo.sqlite_pool().expect("sqlite pool");
@@ -1462,8 +1307,6 @@ async fn track_patch_task_budget_and_require_task_gates_persist() {
     assert_eq!(budget, Some(3));
     assert_eq!(require_gates, 0);
 
-    // `task_budget: null` clears back to the kernel default; the other
-    // column is left alone.
     let resp = patch_track(app(state.clone()), &track_id, json!({"task_budget": null})).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let (budget, require_gates) = track_policy_columns(&repo, &track_id).await;
@@ -1487,7 +1330,6 @@ async fn track_patch_negative_task_budget_rejected_with_400() {
         "error message should explain the bound: {body:?}"
     );
 
-    // Nothing was written.
     let (budget, require_gates) = track_policy_columns(&repo, &track_id).await;
     assert_eq!(budget, None);
     assert_eq!(

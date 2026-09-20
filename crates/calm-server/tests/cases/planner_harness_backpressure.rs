@@ -235,9 +235,6 @@ async fn oversized_snapshot_keeps_newest_pending_queue_tail() {
     let restored = harness.snapshot().await;
     let restored_entries = restored.pending_entries();
 
-    // #1505 PR1 — head-side truncation used to drain two arrays separately;
-    // asserting on the fused entries is what makes a one-sided drain visible
-    // (before, a missed second drain was re-padded and only shifted the ids).
     assert_eq!(restored_entries.len(), 256);
     assert!(matches!(
         restored.pending_observations().first(),

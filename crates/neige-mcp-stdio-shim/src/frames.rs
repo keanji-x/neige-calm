@@ -1,14 +1,5 @@
-//! Line-level JSON-RPC frame handling for the shim: classification by
-//! presence of `id` / `method` (looser than the kernel's
-//! `mcp_server/framing.rs::parse_frame`, which also rejects
-//! non-u64/non-string ids and responses without `result`/`error`), the
-//! `initialize` token injector (issue #236 followup), and the error the
-//! pump synthesizes for a request whose outcome the kernel restart made
-//! unknown (#1699).
-//!
-//! Apart from the token injection into `initialize`, frames are
-//! forwarded verbatim; classification decides what the pump remembers
-//! about a line.
+//! Line-level JSON-RPC frame handling for the shim: classification, the
+//! `initialize` token injector, and the error synthesized for a lost request.
 
 use std::io::{self, Write};
 
@@ -19,8 +10,8 @@ use serde_json::Value;
 pub(crate) enum Frame {
     /// `id` + `method`: a request the peer expects an answer to.
     Request { id: Value, method: String },
-    /// `id` without `method`: an answer. `error_code` is `error.code`
-    /// when the answer is an error object.
+    /// `id` without `method`: an answer. `error_code` is `error.code` when the answer
+    /// is an error object.
     Response { id: Value, error_code: Option<i64> },
     /// `method` without `id`: fire-and-forget (the kernel drops these).
     Notification,
@@ -28,8 +19,7 @@ pub(crate) enum Frame {
     Other,
 }
 
-/// Classify one line (trailer included or not). Never fails: anything
-/// unparseable is [`Frame::Other`] and gets forwarded as-is.
+/// Never fails: anything unparseable is [`Frame::Other`] and gets forwarded as-is.
 pub(crate) fn classify(line: &[u8]) -> Frame {
     let Ok(value) = serde_json::from_slice::<Value>(line) else {
         return Frame::Other;
@@ -53,22 +43,18 @@ pub(crate) fn classify(line: &[u8]) -> Frame {
     }
 }
 
-/// The kernel's `-32603` (`InternalError`): `handshake.rs` returns it
-/// for a repo lookup failure, which a fresh connection may not hit again.
+/// The kernel's `-32603` (`InternalError`), which a fresh connection may not hit again.
 pub(crate) const RPC_INTERNAL_ERROR: i64 = -32603;
 
-/// Code of the error the pump synthesizes for a request it cannot
-/// answer honestly (#1699 D5-b).
+/// Code of the error the pump synthesizes for a request it cannot answer honestly.
 pub(crate) const LOST_ERROR_CODE: i64 = -32000;
 
-/// Two pieces so no single literal trips the long-literal prose ratchet.
 const LOST_ERROR_MESSAGE: &str = concat!(
     "neige-mcp-stdio-shim: connection to kernel lost after the request was sent; ",
     "outcome unknown — re-read state before retrying"
 );
 
-/// The exact error frame (trailer included) for request `id`. Built by
-/// hand so key order and the id's JSON type are preserved.
+/// Built by hand so key order and the id's JSON type are preserved.
 pub(crate) fn lost_error_frame(id: &Value) -> String {
     format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":{LOST_ERROR_CODE},\"message\":{}}}}}\n",
@@ -76,18 +62,10 @@ pub(crate) fn lost_error_frame(id: &Value) -> String {
     )
 }
 
-/// Try to parse `line` as a JSON-RPC `initialize` request and inject
-/// `params._meta["dev.neige/auth"].token = <token>`. On any non-applicable
-/// shape (non-JSON, not an `initialize` request, `dev.neige/auth`
-/// already populated, etc.) returns the input unchanged so the kernel
-/// sees what codex actually sent.
-///
-/// Returns an owned `String` because the inject path re-serializes the
-/// JSON; the no-op path just clones the input slice. Keeping the return
-/// type uniform avoids a `Cow`-shaped API for a once-per-connection call.
+/// Inject `params._meta["dev.neige/auth"].token` into a JSON-RPC `initialize` request;
+/// any other shape is returned unchanged so the kernel sees what codex actually sent.
 pub(crate) fn maybe_inject_token(line: &str, token: &str) -> String {
-    // Preserve the trailer the input carried (the kernel's `read_line`
-    // expects each frame to end with `\n`).
+    // The kernel's `read_line` expects each frame to end with `\n`; preserve the trailer.
     let (body, trailer) = match line.strip_suffix('\n') {
         Some(rest) => (rest, "\n"),
         None => (line, ""),
@@ -101,14 +79,10 @@ pub(crate) fn maybe_inject_token(line: &str, token: &str) -> String {
     let mut value: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(_) => {
-            // Not JSON — pass through unchanged. The kernel's framer
-            // will surface the malformed frame; nothing for us to do.
             return line.to_string();
         }
     };
 
-    // Only mutate `initialize` requests. Anything else (notifications,
-    // tool calls, responses) is forwarded unchanged.
     let is_initialize = value
         .get("method")
         .and_then(|m| m.as_str())
@@ -117,19 +91,11 @@ pub(crate) fn maybe_inject_token(line: &str, token: &str) -> String {
         return line.to_string();
     }
 
-    // Walk down to `params._meta["dev.neige/auth"].token`, creating
-    // intermediate objects as needed. The codex CLI's `initialize`
-    // always carries a `params` object (it's required by the JSON-RPC
-    // planner for `initialize`), but we defensively handle missing /
-    // wrong-type cases by replacing them with empty objects.
     let params = ensure_object(&mut value, "params");
     let meta = ensure_object_in(params, "_meta");
 
-    // Forward-compat: if `dev.neige/auth.token` is already populated
-    // (a future codex revision, or an intermediate proxy), leave it
-    // alone. The kernel still verifies via constant-time hash compare,
-    // so a stale upstream stamp will be rejected cleanly — silently
-    // overwriting it would mask a configuration bug.
+    // An already-populated token is left alone: the kernel still verifies it, and
+    // silently overwriting it would mask a configuration bug.
     if let Some(existing) = meta.get("dev.neige/auth")
         && existing.get("token").and_then(|t| t.as_str()).is_some()
     {
@@ -137,12 +103,9 @@ pub(crate) fn maybe_inject_token(line: &str, token: &str) -> String {
             io::stderr(),
             "neige-mcp-stdio-shim: initialize already carries _meta[\"dev.neige/auth\"].token; leaving untouched"
         );
-        // Re-serialize the unchanged-shape frame (parsed fine, so the
-        // round-trip is semantically a no-op) and re-emit the trailer.
         return format!("{value}{trailer}");
     }
 
-    // Insert / overwrite our auth slot.
     meta.insert(
         "dev.neige/auth".to_string(),
         serde_json::json!({ "token": token }),
@@ -151,9 +114,8 @@ pub(crate) fn maybe_inject_token(line: &str, token: &str) -> String {
     format!("{value}{trailer}")
 }
 
-/// Walk into `value[key]`, replacing the slot with an empty object if
-/// it's missing or not an object. Returns a `&mut serde_json::Map` so
-/// the caller can chain another `ensure_object_in` or `insert`.
+/// Walk into `value[key]`, replacing the slot with an empty object if it's missing or
+/// not an object.
 fn ensure_object<'a>(
     value: &'a mut serde_json::Value,
     key: &str,
@@ -165,10 +127,6 @@ fn ensure_object<'a>(
     ensure_object_in(map, key)
 }
 
-/// Same as `ensure_object` but operates on an existing `&mut Map`
-/// (avoids the outer "make sure root is an object" step). Borrow-
-/// checker-friendlier when chaining: `params -> _meta` doesn't need a
-/// second mutable borrow of the root `Value`.
 fn ensure_object_in<'a>(
     map: &'a mut serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -187,16 +145,9 @@ fn ensure_object_in<'a>(
 
 #[cfg(test)]
 mod tests {
-    //! Issue #236 followup — unit tests for the `initialize` token
-    //! injector. Pure-function tests (no UDS, no process spawn); the
-    //! integration tests in `tests/stdio_shim.rs` cover the wired-up
-    //! shape end-to-end.
-
     use super::maybe_inject_token;
     use serde_json::Value;
 
-    /// Helper: parse `injected` back as JSON and pluck out the
-    /// auth-slot token.
     fn extract_token(injected: &str) -> Option<String> {
         let v: Value = serde_json::from_str(injected.trim_end()).ok()?;
         v.get("params")?
@@ -216,19 +167,13 @@ mod tests {
 
     #[test]
     fn initialize_with_existing_meta_block_preserves_siblings() {
-        // The kernel's `handle_initialize` reads only
-        // `_meta["dev.neige/auth"].token`, but MCP tooling may set
-        // other `_meta` siblings (e.g. `progress-token` for
-        // long-running ops). The shim must merge — not clobber.
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"progress-token":"abc"},"protocolVersion":"2024-11-05"}}"#;
         let out = maybe_inject_token(line, "tok-xyz");
         let v: Value = serde_json::from_str(out.trim_end()).expect("re-parse");
-        // Auth slot landed:
         let token = v["params"]["_meta"]["dev.neige/auth"]["token"]
             .as_str()
             .expect("token present");
         assert_eq!(token, "tok-xyz");
-        // Pre-existing sibling preserved:
         let progress = v["params"]["_meta"]["progress-token"]
             .as_str()
             .expect("progress-token preserved");
@@ -237,13 +182,6 @@ mod tests {
 
     #[test]
     fn initialize_already_stamped_with_auth_is_left_untouched() {
-        // Forward-compat path: if a future codex revision (or an
-        // intermediate proxy) already stamped `_meta["dev.neige/auth"]
-        // .token`, the shim must not clobber it. The kernel verifies
-        // the token via constant-time hash compare regardless of who
-        // stamped the slot, so a stale upstream stamp will be cleanly
-        // rejected — but silently overwriting it would mask a real
-        // configuration bug.
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"dev.neige/auth":{"token":"upstream-stamp"}}}}"#;
         let out = maybe_inject_token(line, "shim-stamp");
         assert_eq!(extract_token(&out).as_deref(), Some("upstream-stamp"));
@@ -254,15 +192,12 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
         let out = maybe_inject_token(line, "tok-xyz");
         assert_eq!(out, line);
-        // No auth slot injected:
         let v: Value = serde_json::from_str(out.trim_end()).expect("re-parse");
         assert!(v["params"]["_meta"].is_null());
     }
 
     #[test]
     fn malformed_json_passes_through_unchanged() {
-        // A non-JSON line shouldn't crash the shim or get rewritten —
-        // the kernel's framer will surface the malformed frame.
         let line = "this is not JSON\n";
         let out = maybe_inject_token(line, "tok-xyz");
         assert_eq!(out, line);
@@ -270,24 +205,17 @@ mod tests {
 
     #[test]
     fn newline_trailer_is_preserved() {
-        // The kernel's `read_line` expects each frame to terminate
-        // with `\n`. The injector must re-emit the trailer the input
-        // carried.
         let line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n";
         let out = maybe_inject_token(line, "tok");
         assert!(
             out.ends_with('\n'),
             "expected trailing newline; got {out:?}"
         );
-        // And the body still parses + carries the token:
         assert_eq!(extract_token(&out).as_deref(), Some("tok"));
     }
 
     #[test]
     fn crlf_trailer_is_preserved() {
-        // Defensive: some MCP clients on Windows-y stacks emit \r\n.
-        // Codex itself uses \n on POSIX, but the shim should survive
-        // either shape.
         let line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\r\n";
         let out = maybe_inject_token(line, "tok");
         assert!(out.ends_with("\r\n"), "expected trailing CRLF; got {out:?}");
@@ -295,21 +223,14 @@ mod tests {
 
     #[test]
     fn params_with_non_object_is_replaced() {
-        // Defensive: malformed `initialize` that sets `params` to a
-        // non-object (null, array, etc.). JSON-RPC says params for
-        // `initialize` must be an object; the shim treats wrong-type
-        // as missing and stamps the token slot.
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":null}"#;
         let out = maybe_inject_token(line, "tok");
-        // Token landed:
         assert_eq!(extract_token(&out).as_deref(), Some("tok"));
     }
 }
 
 #[cfg(test)]
 mod classify_tests {
-    //! #1699 — classification and the synthesized-error shape.
-
     use super::{Frame, classify, lost_error_frame};
     use serde_json::json;
 
@@ -351,11 +272,9 @@ mod classify_tests {
                         \"neige-mcp-stdio-shim: connection to kernel lost after the request was sent; \
                         outcome unknown — re-read state before retrying\"}}\n";
         assert_eq!(lost_error_frame(&json!(42)), expected);
-        // A string id stays a string.
         assert!(
             lost_error_frame(&json!("req-1")).starts_with("{\"jsonrpc\":\"2.0\",\"id\":\"req-1\",")
         );
-        // And it round-trips as a response frame.
         assert_eq!(
             classify(lost_error_frame(&json!("req-1")).as_bytes()),
             Frame::Response {

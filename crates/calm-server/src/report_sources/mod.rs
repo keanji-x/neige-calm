@@ -1,16 +1,5 @@
-//! #1669 S1 — captured source texts (`report_sources` rows) and what the
-//! kernel vouches for about them.
-//!
-//! A source belongs to one track. Its `body` and metadata are immutable
-//! and it cannot be deleted; `quotes` only grow (each an exact byte
-//! substring of `body`, I2). Sources follow their track — FK cascade on
-//! delete, a verbatim copy on fork (I3). A `provenance != manual` body is
-//! the text the kernel's plugin proxy returned to the Planner for one
-//! recorded call (I1); `manual` bodies are the Planner's own bytes and say
-//! so on the page.
-//!
-//! Modules: `store` (rows), `warnings` (unresolved `neige://source/` links
-//! in a report write, for the receipt).
+//! Captured source texts (`report_sources` rows) and what the kernel vouches for about them.
+//! A source belongs to one track; its `body` and metadata are immutable and it cannot be deleted; `quotes` only grow, each an exact byte substring of `body`. Sources follow their track (FK cascade on delete, verbatim copy on fork).
 
 pub mod store;
 pub mod warnings;
@@ -33,8 +22,7 @@ pub const MAX_QUOTES_PER_SOURCE: usize = 32;
 pub const MAX_SOURCES_PER_TRACK: i64 = 128;
 pub const MAX_BODY_BYTES_PER_TRACK: i64 = 16 * 1024 * 1024;
 
-/// The wire vocabulary lives in calm-types (TS-exported); the store and
-/// the tool use it under the shorter names.
+/// The wire vocabulary lives in calm-types (TS-exported).
 pub use calm_types::report_sources::{
     SourceOrigin as Origin, SourceProvenance as Provenance, SourceQuote as Quote,
     TrackSourceDetail, TrackSourceList, TrackSourceSummary,
@@ -54,11 +42,7 @@ pub fn captured_at_text(captured_at_ms: i64) -> String {
 /// Per requested quote text, in request order, the anchor id it maps to.
 pub type QuoteMapping = Vec<(String, String)>;
 
-/// Resolve requested quote texts against `body` on top of the anchors the
-/// source already has. Returns the full anchor list after the append and,
-/// per requested text in request order, the id it maps to (an existing
-/// anchor with the same text keeps its id; duplicates within the request
-/// collapse to one). Every refusal is a `BadRequest` naming the quote.
+/// Resolve requested quote texts against `body` on top of the existing anchors; an existing anchor with the same text keeps its id, and duplicates within the request collapse to one. Every refusal is a `BadRequest` naming the quote.
 pub fn append_quotes(
     body: &str,
     existing: &[Quote],

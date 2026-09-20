@@ -1,4 +1,3 @@
-//! Backend identity comes from immutable Operation/session binding, never card flags.
 use super::{OPERATION_KIND, journal};
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
@@ -6,13 +5,8 @@ use crate::operation::Tx;
 use crate::session_projection_repo::WorkerSessionProjection;
 use std::path::PathBuf;
 
-/// The ONE card-keyed isolated predicate, as a SQL fragment: `card_expr` is
-/// spliced in as the card id (a bind marker such as `?1`, or a correlated
-/// column such as `c.id`). [`is_isolated_card_tx`] and the track activity
-/// projector's session-eligibility SELECT (#1722 §4.2 S0) both read this
-/// fragment, so the two cannot drift: isolated is a property of the CARD's
-/// spawn operation, never of `worker_sessions.spawn_op_id`, which a re-minted
-/// session may leave NULL.
+/// Isolated is a property of the CARD's spawn operation, never of
+/// `worker_sessions.spawn_op_id`, which a re-minted session may leave NULL.
 pub(crate) fn isolated_card_exists_sql(card_expr: &str) -> String {
     format!(
         "EXISTS(SELECT 1 FROM operations WHERE kind='{OPERATION_KIND}' \
@@ -125,9 +119,7 @@ pub(crate) async fn recorded_worker_kind_tx(
     }
 }
 
-/// Resolve tool grants before the provider startup acknowledgement has attached
-/// worker_card_id to the task. The immutable Operation/session binding is already
-/// committed at this point. A missing or contradictory isolated binding is never legacy.
+/// Resolves tool grants before the provider startup acknowledgement has attached worker_card_id to the task.
 pub(crate) async fn delegated_plugin_tools(
     repo: &dyn RepoEventWrite,
     card_id: &str,

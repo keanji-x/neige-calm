@@ -217,13 +217,8 @@ describe('architecture/no-class-dom-query', () => {
   });
 });
 
-/*
- * #1191 §3.2. The two branches get one fixture each and each fixture violates
- * *only* its own branch: `breakpoint-import.ts` never calls `matchMedia`, and
- * `width-match-media.ts` never imports the breakpoint module. A single fixture
- * carrying both would stay red with either branch deleted, which is the shape
- * `fe/AGENTS.md` calls out.
- */
+/* Each fixture violates *only* its own branch: `breakpoint-import.ts` never calls `matchMedia`, and
+   `width-match-media.ts` never imports the breakpoint module. */
 describe('architecture/single-viewport-source', () => {
   it('rejects the breakpoint import outside ui/viewport, and only that', async () => {
     const messages = await lintFixture('single-viewport-source', 'viewport/breakpoint-import.ts');

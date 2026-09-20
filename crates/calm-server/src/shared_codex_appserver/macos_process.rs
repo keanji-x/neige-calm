@@ -84,10 +84,8 @@ impl ExitWatcher {
     }
 }
 
-/// Blocks until the one-shot `NOTE_EXIT` is retrieved (`Ok(true)`) or the
-/// deadline passes (`Ok(false)`). `EINTR` (SIGCHLD from ordinary child churn
-/// interrupts `kevent`) is retried with the time remaining against the
-/// original deadline instead of surfacing as a reaping failure.
+/// Blocks until the one-shot `NOTE_EXIT` is retrieved (`Ok(true)`) or the deadline
+/// passes (`Ok(false)`); `EINTR` is retried against the original deadline.
 fn wait_blocking(queue: i32, timeout: Duration) -> io::Result<bool> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -122,14 +120,9 @@ fn wait_blocking(queue: i32, timeout: Duration) -> io::Result<bool> {
     }
 }
 
-/// Runs on ONE blocking thread with no scheduling gap between the poll and
-/// the `kill`: an `EVFILT_PROC` watch reports the exit but does not reserve
-/// the numeric pid or pgid, so a listener that exited and was reaped while
-/// the Tokio task was parked could otherwise be signalled at a recycled
-/// identifier. `Ok(true)`: the exit event was pending and is now retrieved,
-/// nothing was signalled. `Ok(false)`: `kill` was issued, or returned
-/// `ESRCH` (the caller must still observe the exit event; `ESRCH` alone
-/// proves nothing about which process is gone). Any other errno is `Err`.
+/// Runs on ONE blocking thread with no scheduling gap between the poll and the `kill`:
+/// an `EVFILT_PROC` watch does not reserve the pid/pgid, so a reaped listener could
+/// otherwise be signalled at a recycled identifier. `ESRCH` alone proves nothing.
 fn poll_exit_then_signal(queue: i32, pid: i32, pgid: Option<i32>, signal: i32) -> io::Result<bool> {
     if wait_blocking(queue, Duration::ZERO)? {
         return Ok(true);
@@ -161,18 +154,9 @@ fn signal_target(pid: i32, pgid: Option<i32>) -> io::Result<i32> {
     })
 }
 
-/// SIGTERM, grace, SIGKILL, 500 ms. The ONLY way this returns `Ok(())` is a
-/// `NOTE_EXIT` retrieved from the kqueue that `ExitWatcher::new` registered
-/// for the socket-identified pid; both signals go through
-/// `poll_exit_then_signal`, so an exit that is already reported is never
-/// followed by a `kill` at a possibly recycled identifier, and `EINTR` inside
-/// the waits is retried against the original deadline.
-///
-/// Declared gap (README, macOS section): group signalling reaches every
-/// member while the leader is alive; there is no per-member straggler sweep
-/// afterwards, because macOS has no `/proc` identity to sweep by. A member
-/// that ignores SIGTERM and outlives a leader that exited on SIGTERM is left
-/// running.
+/// SIGTERM, grace, SIGKILL, 500 ms. `Ok(())` only on a `NOTE_EXIT` retrieved from the
+/// kqueue registered for the socket-identified pid. A group member that ignores SIGTERM
+/// and outlives the leader is left running (macOS has no `/proc` identity to sweep by).
 pub(super) async fn terminate_listener(
     watcher: ExitWatcher,
     pgid: Option<i32>,

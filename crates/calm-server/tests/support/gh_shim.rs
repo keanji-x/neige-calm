@@ -2,11 +2,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Seed a fixture-controlled issue body for the shim's `issue view --json
-/// body` branch (#840 capstone S0). The shim keys state by the `--repo`
-/// selector string, so `repo_selector` must be byte-identical to the selector
-/// agents will pass. Absent a seeded file the shim keeps returning its
-/// hardcoded fallback body — behavior-preserving for every existing suite.
+/// Seed a fixture-controlled issue body for the shim's `issue view --json body` branch;
+/// `repo_selector` must be byte-identical to the selector agents will pass.
 pub fn seed_shim_issue_body(repo_selector: &Path, issue: u64, body: &str) {
     let issues_dir = PathBuf::from(format!("{}.shimstate", repo_selector.display())).join("issues");
     std::fs::create_dir_all(&issues_dir).expect("create gh shim issues state dir");
@@ -24,14 +21,8 @@ pub fn write_gh_shim(dir: &Path) {
     std::fs::set_permissions(&path, perms).expect("chmod gh shim");
 }
 
-/// Run the freshly written `gh` shim, retrying on transient ETXTBSY.
-///
-/// In a multi-threaded test process, `fork` duplicates every open fd; CLOEXEC
-/// only closes them at `exec`. A child forked by another thread can therefore
-/// briefly hold an inherited write fd to this shim's inode (e.g. from a
-/// concurrent `fs::write` of another shim copy), making a direct exec fail
-/// with ETXTBSY until that child execs or exits. Retrying the spawn is the
-/// only reliable fix — fsync or write-to-temp+rename do not release the fd.
+/// Run the freshly written `gh` shim, retrying on transient ETXTBSY: a child forked by
+/// another thread can briefly hold an inherited write fd to the shim's inode until it execs.
 pub fn run_gh(gh: &Path, args: &[&str]) -> std::process::Output {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

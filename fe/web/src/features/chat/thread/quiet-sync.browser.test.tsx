@@ -1,16 +1,9 @@
-/*
- * #1667 D3 — the quiet-sync fold in a real engine. jsdom proves the grouping
- * and the words; only this tier can prove the fold line is a real target
- * (control height, keyboard toggle) and that what is under it is genuinely
- * hidden while closed and reachable once open — `<details>` visibility is
- * layout, and jsdom has none.
- */
+/* The quiet-sync fold in a real engine: `<details>` visibility is layout, and jsdom has none. */
 import { act, render } from '@testing-library/react';
 import { userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
-/* The whole cascade before the component, for the reason
-   `thread.browser.test.tsx` gives at its top: layer order is first-come. */
+/* The whole cascade before the component: layer order is first-come. */
 import '../../../styles/entry.css';
 
 import { ChatThread } from './public.tsx';
@@ -59,16 +52,13 @@ describe('the quiet-sync fold in a real engine', () => {
     expect(summary.getBoundingClientRect().height).toBeGreaterThanOrEqual(24);
     expect(getComputedStyle(summary).justifyContent).toBe('flex-start');
 
-    /* Closed: the folded reply is not rendered (a closed `<details>` skips
-       its contents; `checkVisibility` is the engine's own word for it); the
-       notify bubble outside the fold is. */
+    /* A closed `<details>` skips its contents; `checkVisibility` is the engine's own word for it. */
     const folded = fold.querySelector<HTMLElement>('[data-nc-turn="agent"]')!;
     expect(folded.checkVisibility()).toBe(false);
     const bubbles = [...document.querySelectorAll<HTMLElement>('[data-nc-turn="agent"]')];
     const spoken = bubbles.find((bubble) => bubble.closest('[data-nc-turn="quiet-sync"]') === null)!;
     expect(spoken.textContent).toBe('You changed the block I was writing.');
     expect(spoken.getBoundingClientRect().height).toBeGreaterThan(0);
-    /* Line above bubble. */
     expect(summary.getBoundingClientRect().bottom).toBeLessThanOrEqual(spoken.getBoundingClientRect().top);
 
     summary.focus();

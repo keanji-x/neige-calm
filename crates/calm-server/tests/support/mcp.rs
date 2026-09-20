@@ -22,26 +22,21 @@ use tokio::time::timeout;
 
 pub const TEST_BUDGET: Duration = Duration::from_secs(5);
 
-/// Carded boot helper — mints one card with the requested role and
-/// returns everything callers need to drive an MCP session.
+/// Carded boot helper — mints one card with the requested role and returns everything callers need to drive an MCP session.
 pub struct CardBoot {
     pub server: Arc<McpServer>,
     pub repo: Arc<dyn Repo>,
-    /// Same handle as `repo`, kept concrete so a fixture can open a
-    /// transaction and mint through the production `*_tx` helpers.
+    /// Same handle as `repo`, kept concrete so a fixture can open a transaction and mint through the production `*_tx` helpers.
     pub sqlx: Arc<SqlxRepo>,
-    /// The caches the booted `McpServer` actually gates on — a fixture
-    /// that mints a card outside `card_with_codex_create_tx` must write
-    /// through THESE, not a private cache of its own, or the role gate
-    /// will see a card with no role.
+    /// The caches the booted `McpServer` gates on — a fixture that mints a card outside
+    /// `card_with_codex_create_tx` must write through THESE, or the role gate sees a card with no role.
     pub card_role_cache: CardRoleCache,
     pub track_area_cache: calm_server::track_area_cache::TrackAreaCache,
     /// Home track of the minted card(s).
     pub track_id: calm_server::ids::TrackId,
     pub events: EventBus,
     pub card_id: String,
-    /// Other card id tests may try to smuggle into tool args to prove the
-    /// identity binding ignores it.
+    /// Other card id tests may try to smuggle into tool args to prove the identity binding ignores it.
     pub other_card_id: String,
     pub raw_token: String,
     pub daemon_token: Option<String>,
@@ -51,19 +46,8 @@ pub struct CardBoot {
     pub _tmp: TempDir,
 }
 
-/// Pin a card's **persisted** `cards.role` column.
-///
-/// `Repo::card_create` mints everything that is not a `track-report` as
-/// `CardRole::Worker`, so a fixture that only writes the role into a
-/// `CardRoleCache` leaves the database disagreeing with the test's own
-/// story. That was harmless while every role check read the cache; #1189
-/// §3.6 made the recorder gate resolve session → card → `{role, track}`
-/// with a live in-tx `cards` read, and a fixture whose "planner card" is
-/// persisted as a worker now denies for a reason the test never intended.
-///
-/// Production mints go through `card_with_codex_create_tx`, which writes
-/// the row and the cache together; fixtures that bypass it must reproduce
-/// both halves.
+/// Pin a card's **persisted** `cards.role` column: `Repo::card_create` mints everything but `track-report`
+/// as `CardRole::Worker`, and the recorder gate reads the live `cards` row, not only the cache.
 pub async fn set_persisted_card_role(repo: &dyn Repo, card_id: &str, role: CardRole) {
     let pool = repo
         .sqlite_pool()
@@ -86,7 +70,6 @@ pub async fn boot_shared_daemon_with_planner_thread() -> CardBoot {
 }
 
 async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<String>) -> CardBoot {
-    // #1439: 短路径 socket 目录，与 `$TMPDIR` 长度无关。
     let tmp = calm_test_sockets::socket_dir("mcp");
     let socket_path = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
 
@@ -340,12 +323,8 @@ pub fn tools_list_frame(id: i64, thread_id: &str) -> Value {
     })
 }
 
-/// Scripted MCP `tools/call` over a kernel UDS socket (hoisted from
-/// forge_template_e2e.rs's fixture-local `call_tool`, generalized off that
-/// file's `Fixture`). `token` may be a card-bound session token or the
-/// shared-daemon token; identity resolves from `_meta.threadId` either way,
-/// so callers that only hold the daemon token (codex forge E2E) can drive
-/// scripted setup calls through the same wire as real agent sessions.
+/// Scripted MCP `tools/call` over a kernel UDS socket. `token` may be a card-bound session token or the
+/// shared-daemon token; identity resolves from `_meta.threadId` either way.
 pub async fn call_tool_via_socket(
     socket_path: &std::path::Path,
     token: &str,
@@ -360,13 +339,8 @@ pub async fn call_tool_via_socket(
     recv_frame(&mut rd).await
 }
 
-/// Fire-and-forget MCP `tools/call` (#840 e2): connect, handshake, send the
-/// call — and return WITHOUT ever awaiting the reply. Used to drive an
-/// operation whose kernel is expected to crash while (or racing) the response
-/// write; `call_tool_via_socket` would panic on EOF or its 5s `TEST_BUDGET`
-/// when the crash wins that race. The socket halves are returned so the caller
-/// can hold the connection open across the crash window instead of injecting
-/// an early client-side EOF; callers that don't care can drop them.
+/// Fire-and-forget MCP `tools/call`: connect, handshake, send — and return WITHOUT awaiting the reply,
+/// for operations whose kernel is expected to crash; the socket halves are returned so the caller can hold the connection open.
 pub async fn send_tool_call_without_reply(
     socket_path: &std::path::Path,
     token: &str,

@@ -1,16 +1,5 @@
-//! #1628 S2 — shared fixture for the `chart.series` resolver tests.
-//!
-//! Builds on `mcp_track_report::boot()` (one track, planner + report cards,
-//! the real tool registry) and adds a plugin host running the
-//! file-programmed `plugin-host-stub-series` plugin under the id the design
-//! uses (`dev-neige-market`), a second stub `aa` exposing `b_c` (the A11
-//! underscore probe), an injectable clock, and a `SeriesResolver` wired into
-//! a fresh `AppContext`.
-//!
-//! Replies are programmed by writing `reply.json` in the plugin's control
-//! directory; every `tools/call` the plugin receives is one line of
-//! `calls.jsonl`, which is what the "how many times was the plugin called"
-//! assertions read.
+//! Shared fixture for the `chart.series` resolver tests: `mcp_track_report::boot()` plus
+//! the file-programmed `plugin-host-stub-series` plugin (`reply.json` in, `calls.jsonl` out).
 
 #![cfg(unix)]
 
@@ -37,16 +26,15 @@ pub(crate) const SERIES_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-series"
 pub(crate) const MARKET_PLUGIN_ID: &str = "dev-neige-market";
 pub(crate) const SERIES_TOOL: &str = "market.series";
 pub(crate) const SOURCE: &str = "neige://plugin/dev-neige-market/market.series";
-/// Exposed with `readOnlyHint: false` (A11).
+/// Exposed with `readOnlyHint: false`.
 pub(crate) const WRITE_TOOL_SOURCE: &str = "neige://plugin/dev-neige-market/market.holdings.set";
-/// Exposed with `kind: forge-action` (A11).
+/// Exposed with `kind: forge-action`.
 pub(crate) const FORGE_TOOL_SOURCE: &str = "neige://plugin/dev-neige-market/execute";
 /// A tool the manifest does not list (`NotExposed`).
 pub(crate) const UNEXPOSED_SOURCE: &str = "neige://plugin/dev-neige-market/market.nothing";
 /// A plugin id no manifest carries (`NotInstalled`).
 pub(crate) const UNINSTALLED_SOURCE: &str = "neige://plugin/nobody/market.series";
-/// The underscore probe: plugin `aa` exposes `b_c`; a `plugin.aa_b_c` re-parse
-/// would hit it, an exact lookup of `aa_b` must not.
+/// The underscore probe: plugin `aa` exposes `b_c`; a `plugin.aa_b_c` re-parse would hit it, an exact lookup of `aa_b` must not.
 pub(crate) const UNDERSCORE_PLUGIN_ID: &str = "aa";
 pub(crate) const UNDERSCORE_TOOL: &str = "b_c";
 pub(crate) const UNDERSCORE_SOURCE: &str = "neige://plugin/aa_b/c";
@@ -57,12 +45,10 @@ pub(crate) const T0_MS: i64 = 1_789_387_200_000;
 pub(crate) const DAY_MS: i64 = 86_400_000;
 
 pub(crate) struct FixtureOptions {
-    /// `true` → `SeriesResolver::new_unstarted` (jobs are recorded, run them
-    /// with [`SeriesFixture::run_recorded_jobs`]); `false` → lanes drain.
+    /// `true` → `SeriesResolver::new_unstarted` (jobs are recorded; run them with [`SeriesFixture::run_recorded_jobs`]).
     pub unstarted: bool,
     pub resolve_timeout: Duration,
-    /// Spawn the market plugin at boot. `false` leaves it installed but
-    /// stopped (`NotRunning`).
+    /// Spawn the market plugin at boot; `false` leaves it installed but stopped (`NotRunning`).
     pub spawn_market: bool,
 }
 
@@ -291,10 +277,7 @@ impl SeriesFixture {
         self.clock.fetch_add(delta_ms, Ordering::SeqCst);
     }
 
-    // --- plugin programming ------------------------------------------------
-
-    /// Program the market plugin's next replies (see the stub's header for
-    /// the shapes).
+    /// Program the market plugin's next replies.
     pub fn program(&self, program: Value) {
         write_program(&self.market_dir, program);
     }
@@ -311,8 +294,7 @@ impl SeriesFixture {
         self.program(json!({ "mode": "is_error", "text": text }));
     }
 
-    /// Every `tools/call` the market plugin received, in order: the
-    /// request `params` (`name`, `arguments`, `_meta`).
+    /// Every `tools/call` the market plugin received, in order.
     pub fn calls(&self) -> Vec<Value> {
         read_calls(&self.market_dir)
     }
@@ -338,10 +320,7 @@ impl SeriesFixture {
         }
     }
 
-    // --- report writes and reads ------------------------------------------
-
-    /// The read snapshot WITHOUT hydration — fixture plumbing must not
-    /// enqueue on the block under test.
+    /// The read snapshot WITHOUT hydration: fixture plumbing must not enqueue on the block under test.
     async fn snapshot(&self) -> calm_server::track_report_read::ReportReadSnapshot {
         calm_server::track_report_read::load_report_read_snapshot(
             self.boot.repo.as_ref(),
@@ -427,8 +406,6 @@ impl SeriesFixture {
         SeriesRequest::from_payload(&block.payload).expect("payload derives")
     }
 
-    // --- resolver driving ---------------------------------------------------
-
     /// `enqueue` for a block, deriving the request from its current payload.
     pub async fn enqueue(&self, block_id: &str) -> Enqueue {
         let request = self.current_request(block_id).await;
@@ -437,8 +414,7 @@ impl SeriesFixture {
             .await
     }
 
-    /// Take every recorded job (unstarted mode) and run it; outcomes in
-    /// order.
+    /// Take every recorded job (unstarted mode) and run it; outcomes in order.
     pub async fn run_recorded_jobs(&self) -> Vec<ResolveOutcome> {
         let jobs: Vec<Job> = self.resolver().take_recorded_jobs();
         let mut outcomes = Vec::with_capacity(jobs.len());
@@ -448,18 +424,14 @@ impl SeriesFixture {
         outcomes
     }
 
-    /// `enqueue` + run the recorded jobs, for tests that just want "resolve
-    /// this block now".
+    /// `enqueue` + run the recorded jobs.
     pub async fn resolve_block(&self, block_id: &str) -> (Enqueue, Vec<ResolveOutcome>) {
         let enqueued = self.enqueue(block_id).await;
         let outcomes = self.run_recorded_jobs().await;
         (enqueued, outcomes)
     }
 
-    // --- rows ---------------------------------------------------------------
-
-    /// Every `report_series` row of the fixture track, ordered by
-    /// `(block_id, request_hash)`.
+    /// Every `report_series` row of the fixture track, ordered by `(block_id, request_hash)`.
     pub async fn rows(&self) -> Vec<Row> {
         rows_for(self.boot.repo.as_ref(), self.track_id()).await
     }
@@ -512,9 +484,7 @@ impl Row {
     }
 }
 
-/// Poll `done` until it holds, panicking past `within`. For waiting on an
-/// event a seam exposes (a failpoint counter, a call count), never as a
-/// stand-in for ordering two tasks by delay.
+/// Poll `done` until it holds, panicking past `within`. Never a stand-in for ordering two tasks by delay.
 pub(crate) async fn wait_until(what: &str, within: Duration, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + within;
     while !done() {
@@ -545,9 +515,8 @@ pub(crate) fn write_program(control_dir: &Path, program: Value) {
 
 pub(crate) fn read_calls(control_dir: &Path) -> Vec<Value> {
     let text = std::fs::read_to_string(control_dir.join("calls.jsonl")).unwrap_or_default();
-    // The stub appends each call as ONE write of `line + '\n'`, so a tail
-    // without its newline is a line still landing: skip it, the next poll
-    // sees it whole. A newline-terminated line that fails to parse is a bug.
+    // The stub appends each call as ONE write of `line + '\n'`, so a tail without its newline is
+    // a line still landing: skip it. A newline-terminated line that fails to parse is a bug.
     let complete = text.rfind('\n').map_or("", |end| &text[..=end]);
     complete
         .lines()
@@ -566,7 +535,7 @@ fn read_calls_skips_the_half_written_tail() {
     assert_eq!(read_calls(dir.path()).len(), 2);
 }
 
-/// The A4 seam fixture (`tests/fixtures/market_series_reply.json`).
+/// The seam fixture (`tests/fixtures/market_series_reply.json`).
 pub(crate) fn seam_fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/market_series_reply.json"))
         .expect("market_series_reply.json parses")

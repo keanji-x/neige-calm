@@ -1,14 +1,6 @@
-//! Harness vocabulary shared across crates (#679 PR1).
-//!
-//! The phase tag and persisted header constants live here; the phase tag is
-//! referenced by `Event::HarnessPhaseChanged` and TS-exported.
-//! The full `HarnessSnapshot` (and the harness state
-//! machine it snapshots) stays in calm-server's `harness` module: it is
-//! provider-side machinery, scheduled to move behind the calm-exec
-//! provider boundary in #679 PR6.
+//! Harness vocabulary shared across crates: the phase tag and persisted header constants.
 
-/// Persisted harness header and failure vocabulary used by the codec and
-/// transactional recovery guards. These are wire values, not runtime policy.
+/// Persisted harness header and failure vocabulary used by the codec and transactional recovery guards.
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const HARNESS_MODE: &str = "harness";
 pub const HARNESS_SYSTEM_ERROR_REASON: &str = "system_error";

@@ -15,8 +15,7 @@ import { pathFor, routeParamFromPath, type NavTarget } from './navigation.ts';
 const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
-/** The areas list is non-empty on purpose: with zero areas a fan-out in the
- *  loader would be unobservable and the INV-APP-084 assertion vacuous. */
+/** Non-empty on purpose: with zero areas a fan-out in the loader would be unobservable. */
 function recordingTransport(): { transport: ApiTransportPort; paths: string[] } {
   const paths: string[] = [];
   const transport: ApiTransportPort = {
@@ -81,16 +80,10 @@ describe('route registration', () => {
     );
 
     expect(await screen.findByRole('complementary')).toBeTruthy();
-    /* The index route really rendered *Today* and not just some page with a
-       panel. The anchor used to be the retired placeholder's `aria-label`,
-       which no longer exists; the status counts are the replacement — they are
-       in `TodayHeader` and on no other route. */
+    /* The status counts are in `TodayHeader` and on no other route. */
     expect(screen.getByText('waiting on you')).toBeTruthy();
-    /* And this is the exact locator the two Playwright suites now anchor
-       `/next/` on. It is asserted here, against the real route tree, so that
-       "the anchor exists" is something a run proves rather than something a
-       reader concluded from the source: Today's calendar module is the only
-       place in the app that renders a `Previous week` control. */
+    /* The locator the Playwright suites anchor `/next/` on: only Today's calendar
+           module renders a `Previous week` control. */
     expect(screen.getByRole('button', { name: 'Previous week' })).toBeTruthy();
   });
 
@@ -107,33 +100,9 @@ describe('route registration', () => {
     ]);
   });
 
-  /**
-   * Set equality between `NavTarget` and the route tree, in both directions.
-   *
-   * The old version of this test spelled out one `expect(pathFor(...))` per
-   * target, which checks the *shape* of each path and not the thing that
-   * actually breaks: a `NavTarget` variant nobody registered a route for
-   * (`go` then lands on a blank screen), or a route nobody can navigate to.
-   * Adding `settings-templates` in #1230 would have passed that version
-   * untouched — and #1300 S1, which removed those same two entries, would have
-   * needed one hand edit per deleted `expect` instead of the two-line diff the
-   * set-equality shape gives it.
-   */
   it('matches every navigation target to a registered route, and no route is unreachable', () => {
-    /*
-     * The forward direction is enforced by the **type**, not by this array.
-     *
-     * The previous version listed targets by hand and claimed set equality with
-     * `NavTarget`. It could not deliver that: adding a variant to `NavTarget`
-     * and a case to `pathFor` left this array untouched, the exhaustive switch
-     * still compiled, and the test stayed green while `go` landed on a blank
-     * screen — literally the failure its own comment said it had fixed.
-     *
-     * A mapped type over the union's discriminant makes the omission a
-     * *compile* error instead: a new `NavTarget` variant means a missing key
-     * here, and `tsc` refuses. That is the only place the coverage can be
-     * enforced, because the union does not exist at runtime.
-     */
+    /* A mapped type over the union's discriminant makes a missing `NavTarget` variant
+         a compile error; the union does not exist at runtime. */
     const samples: { [K in NavTarget['name']]: Extract<NavTarget, { name: K }> } = {
       'today': { name: 'today' },
       'new-track': { name: 'new-track', areaId: 'c1' },

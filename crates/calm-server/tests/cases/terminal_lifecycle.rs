@@ -1,31 +1,5 @@
-//! Issue #197 — eager-teardown regression tests for card/track/area
-//! delete.
-//!
-//! Unix-only: SIGTERM via `nix::sys::signal::kill` is the cleanup
-//! helper's enforcement lever; on non-unix the helper is a no-op and
-//! these tests don't carry signal.
-//!
-//! Pre-#197 the lifecycle leaked: `terminals.card_id` was
-//! `ON DELETE CASCADE`, so the FK quietly nuked the terminal row when
-//! its card was deleted — but the terminal process lived
-//! on until the orphan sweeper caught them ~30-60 s later (or never,
-//! if the server restarted in between).
-//!
-//! Post-#197 the FK is `ON DELETE RESTRICT` (migration 0011) and the
-//! route handlers own the synchronous teardown:
-//! `terminal_sweeper::reap_terminal_artifacts` is called for every
-//! terminal under the entity being deleted, *before* the row delete
-//! fires.
-//!
-//! These tests drive the real route handlers via `tower::ServiceExt::oneshot`,
-//! seed a terminal row with a real spawned child process, then assert
-//! post-delete that:
-//!   * the child process is gone (waited away or signalled away),
-//!   * the terminal row is removed from the DB.
-//!
-//! The child we spawn is `/bin/sleep` (POSIX guaranteed) — we never
-//! stand up a terminal renderer, just a long-running process that the
-//! cleanup helper can SIGTERM via the persisted pid fallback.
+//! Eager-teardown tests for card/track/area delete: the real route handlers reap a seeded terminal
+//! row whose process is a spawned `/bin/sleep`, signalled through the persisted-pid fallback (unix only).
 
 #![cfg(unix)]
 
@@ -45,10 +19,7 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 use serde_json::json;
 use tower::ServiceExt;
 
-/// Spin up an `AppState` backed by an in-memory SQLite repo, mirroring
-/// the existing test fixtures (`payload_validation.rs`,
-/// `terminal_sweeper.rs`). No real codex binaries — we never
-/// invoke them in this file.
+/// An `AppState` backed by an in-memory SQLite repo; no real codex binaries.
 fn state_from_repo(repo: Arc<dyn Repo>) -> AppState {
     AppState::from_parts(
         repo.clone(),
@@ -85,9 +56,6 @@ async fn fresh_state() -> AppState {
     fresh_state_with_repo().await.0
 }
 
-/// Compose a minimal Axum app with the cards + tracks + areas routers
-/// + the `actor_middleware` that the handlers depend on. Same shape
-///   as `payload_validation.rs::app`.
 fn build_app(state: AppState) -> axum::Router {
     axum::Router::new()
         .merge(routes::cards::router())
@@ -99,9 +67,6 @@ fn build_app(state: AppState) -> axum::Router {
         .with_state(state)
 }
 
-/// Spawn a long-running child process and return its pid + a JoinHandle
-/// the test can use to confirm reap. `/bin/sleep 60` is the lightest
-/// process that won't exit on its own inside the test budget.
 fn spawn_long_running_child() -> std::process::Child {
     Command::new("/bin/sleep")
         .arg("60")
@@ -112,24 +77,13 @@ fn spawn_long_running_child() -> std::process::Child {
         .expect("spawn /bin/sleep")
 }
 
-/// Confirm that a child process spawned by the test has been killed by
-/// the cleanup helper. Since the test process is the parent of the
-/// child, we have to reap via `try_wait` ourselves to see the exit —
-/// `kill(pid, 0)` reports success on zombies and would yield a false
-/// "still alive" reading.
-///
-/// Up to ~2 s of polling. The cleanup helper's SIGTERM is delivered
-/// synchronously inside the route handler, but the kernel's process
-/// teardown is asynchronous; `/bin/sleep` typically exits within
-/// single-digit ms of receiving SIGTERM.
+/// The test process is the child's parent, so the exit must be reaped via `try_wait`:
+/// `kill(pid, 0)` reports success on zombies and would read as "still alive".
 async fn await_child_killed(child: &mut std::process::Child) {
     let pid = child.id();
     for _ in 0..40 {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Sanity: `/bin/sleep` killed by SIGTERM exits with no
-                // status code — the unix exit-status carries the
-                // signal. We just want non-None.
                 let _ = status;
                 return;
             }
@@ -143,10 +97,6 @@ async fn await_child_killed(child: &mut std::process::Child) {
     let _ = child.wait();
     panic!("pid {pid} was still alive after 2s (force-killed by fixture cleanup)");
 }
-
-// ---------------------------------------------------------------------------
-// Card delete eager teardown
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn card_delete_reaps_terminal_process() {
@@ -246,18 +196,13 @@ async fn card_delete_reaps_terminal_process() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Track delete eager teardown
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn track_delete_refuses_unowned_live_pid_only_terminals() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: area → track with TWO terminal cards whose rows contain only raw
-    // live pids. There is no renderer-owned proc_id or persisted identity tuple,
-    // so deletion cannot prove either pid still names our child.
+    // Seed: a track with TWO terminal cards whose rows contain only raw live pids, so deletion
+    // cannot prove either pid still names our child.
     let area = raw
         .area_create(NewArea {
             name: "c".into(),
@@ -458,10 +403,6 @@ async fn track_delete_external_teardown_does_not_hold_the_sqlite_writer() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
-// ---------------------------------------------------------------------------
-// Area delete eager teardown
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn area_delete_refuses_an_unowned_live_pid_only_terminal() {
     let state = fresh_state().await;
@@ -571,10 +512,6 @@ async fn area_delete_refuses_an_unowned_live_pid_only_terminal() {
     child.kill().unwrap();
     let _ = child.wait();
 }
-
-// ---------------------------------------------------------------------------
-// Idempotency: card delete on a card that has no terminal
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn card_delete_succeeds_when_card_has_no_terminal() {

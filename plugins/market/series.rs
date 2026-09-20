@@ -1,50 +1,6 @@
-//! `market.series` — historical daily, weekly and monthly bars (#1628 S3).
-//!
-//! This is the resolution backend of a report's `chart.series` block. The
-//! kernel derives one request per block and calls this tool in the
-//! background; the tool is also visible to agents as
-//! `plugin.dev-neige-market_market.series`, and a direct call gets the same
-//! contract with **no defaults**: all seven request keys are required, and a
-//! missing or malformed one is a `tool_error` before any network request.
-//!
-//! **Sources.** Tencent's `web.ifzq.gtimg.cn` daily K-line endpoint serves the
-//! `US`, `HK`, `SH` and `SZ` venues from one URL (adjusted, `qfq`); Binance
-//! klines serve `CRYPTO`. Weekly and monthly bars are aggregated here from the
-//! daily ones — the source's own `week`/`month` modes answer only the current
-//! bar. There is no fallback source in this slice: an ifzq failure is
-//! `unavailable` with its reason (Sina fallback is S3b).
-//!
-//! **Order of operations per series** (design §2.5 S3 constraint 1, S3.2):
-//!
-//! 1. **probe** the newest daily bar the source lists (`complete_through`),
-//! 2. fetch the window `[start − 14d, as_of]`, paging as the source requires,
-//! 3. depth and near-end checks,
-//! 4. aggregate and apply the inclusion rule.
-//!
-//! The probe comes FIRST because it is what certifies a bar as closed: a bar
-//! is only emitted under the strict rule when a LATER daily bar was already
-//! listed before the window was fetched. Fetching first and probing after
-//! would let a still-changing intraday bar be certified by a later probe.
-//!
-//! **Inclusion** (S3.5, S3.6, spike U9): the one relaxed branch is
-//! `mode = live ∧ period = day ∧ venue ∈ {HK, SH, SZ}`, where a bar dated
-//! `≤ as_of` (yesterday UTC) has closed hours before the request; see
-//! [`venue_relaxes_live_daily`] for why `US` is NOT in that set today. Every
-//! other combination — `frozen`, week/month, `CRYPTO`, `US` — requires
-//! `period_end < complete_through`.
-//!
-//! **Cache** (S3.4): fetched pages are kept in memory keyed by source, code,
-//! page range and the UTC date they were fetched on, so a page is never reused
-//! across a UTC midnight. Each page remembers the probe value observed before
-//! it was fetched, and that is the ONLY probe allowed to certify its bars: a
-//! period is emitted under the strict rule when its end is before the
-//! smallest such value over the pages its bars came from (and before this
-//! call's probe). The page covering `as_of` is refetched whenever its
-//! observation is behind the current probe, so the bars nearest the cutoff
-//! are always certified by the probe just made; older pages are reused and
-//! keep certifying their own, far older, bars. The reply's `complete_through`
-//! is this call's probe — every emitted period ends before it, because a
-//! page's observation never exceeds a later probe of the same source.
+//! `market.series` — historical daily, weekly and monthly bars for `chart.series` blocks. ifzq serves `US`/`HK`/`SH`/`SZ`, Binance klines `CRYPTO`; weekly and monthly bars are aggregated from daily ones.
+//! Per series: probe the newest daily bar first (it is what certifies a bar as closed), then fetch the window with margin, then depth/near-end checks, then aggregate and include.
+//! Pages are cached per source, code, range and UTC fetch date, each remembering the probe observed before it was fetched — the only probe allowed to certify its bars.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
@@ -55,16 +11,11 @@ use serde_json::{Value, json};
 
 use super::{AssetId, Config, Venue, binance_symbol, parse_asset, text_result, tool_error};
 
-/// How far beyond the requested window the source is asked for, on both
-/// sides of the depth / near-end checks. Estimate; reviewers may tune it.
 pub(super) const SERIES_FETCH_MARGIN_DAYS: i64 = 14;
-/// Upper bound on `series` per request — the kernel's `MAX_CHART_SERIES`.
 const MAX_SERIES: usize = 8;
-/// Hard stop on paging for one series. 5Y of daily bars is about 1260 rows;
-/// at 640 per page that is two pages, so eight is a generous ceiling.
+/// Hard stop on paging for one series; 5Y of daily bars is two 640-row pages.
 const MAX_PAGES: usize = 8;
-/// ifzq keeps the NEWEST 640 rows of a window for `sh`/`sz` codes (spike U8);
-/// a page this long may have been truncated at its early end.
+/// ifzq keeps the NEWEST 640 rows of a window for `sh`/`sz` codes; a page this long may have been truncated at its early end.
 const IFZQ_PAGE_CAP: usize = 640;
 /// The row count asked of ifzq per window request. 3000 answers
 /// `param error`; 2000 is accepted, and 5Y is 1827 calendar days.
@@ -86,12 +37,7 @@ const USER_AGENT: &str = "Mozilla/5.0";
 const MAX_BODY_BYTES: u64 = 4 * 1024 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
-// ---------------------------------------------------------------------------
-// Calendar — pure functions, no clock
-// ---------------------------------------------------------------------------
-
-/// Days since 1970-01-01 (UTC). Every date in this module is one of these;
-/// `ts_ms = day * MS_PER_DAY` is the UTC midnight the kernel checks for.
+/// Days since 1970-01-01 (UTC); `ts_ms = day * MS_PER_DAY` is the UTC midnight the kernel checks for.
 type Day = i64;
 
 fn is_leap_year(year: i64) -> bool {
@@ -169,12 +115,10 @@ fn iso_weekday(day: Day) -> i64 {
     (day + 3).rem_euclid(7) + 1
 }
 
-/// The Monday of `day`'s ISO week.
 fn week_start(day: Day) -> Day {
     day - (iso_weekday(day) - 1)
 }
 
-/// The Sunday of `day`'s ISO week.
 fn week_end(day: Day) -> Day {
     week_start(day) + 6
 }
@@ -188,10 +132,6 @@ fn month_end(day: Day) -> Day {
     let (y, m, _) = civil_from_days(day);
     days_from_civil(y, m, days_in_month(y, m))
 }
-
-// ---------------------------------------------------------------------------
-// Request
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -239,8 +179,7 @@ struct Request {
     deadline_ms: i64,
 }
 
-/// Every key is required and checked; nothing is defaulted. The message
-/// names the first offending key so a direct caller can fix its call.
+/// Every key is required and checked; nothing is defaulted.
 fn parse_request(args: &Value) -> Result<Request, String> {
     let Some(obj) = args.as_object() else {
         return Err("arguments must be an object".into());
@@ -325,12 +264,6 @@ fn parse_request(args: &Value) -> Result<Request, String> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Clock
-// ---------------------------------------------------------------------------
-
-/// The plugin's wall clock — frozen at `debug_clock_ms` when that test seam
-/// is configured.
 fn now_ms(cfg: &Config) -> i64 {
     cfg.debug_clock_ms.unwrap_or_else(|| {
         SystemTime::now()
@@ -339,10 +272,6 @@ fn now_ms(cfg: &Config) -> i64 {
             .unwrap_or(0)
     })
 }
-
-// ---------------------------------------------------------------------------
-// Bars and sources
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Bar {
@@ -372,9 +301,7 @@ impl Bar {
     }
 }
 
-/// A daily bar together with the probe that may certify it: the newest
-/// daily date the source listed BEFORE the page holding this bar was fetched
-/// (capped by this call's probe, should a source ever move backwards).
+/// A daily bar with the probe that may certify it: the newest daily date the source listed BEFORE the page holding this bar was fetched.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Certified {
     bar: Bar,
@@ -387,16 +314,11 @@ enum Source {
     Binance,
 }
 
-/// Which end a source KEEPS when a window holds more rows than one page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Truncation {
-    /// ifzq `sh`/`sz`: the newest 640 rows survive (spike U8), so the missing
-    /// rows are EARLIER than the page and the next page ends the day before
-    /// its earliest row.
+    /// ifzq `sh`/`sz`: the newest 640 rows survive, so the next page ends the day before its earliest row.
     KeepsLatest,
-    /// Binance: klines are returned from `startTime` forward up to `limit`,
-    /// so the missing rows are LATER and the next page starts the day after
-    /// its latest row.
+    /// Binance: klines run from `startTime` forward up to `limit`, so the next page starts the day after its latest row.
     KeepsEarliest,
 }
 
@@ -416,16 +338,13 @@ impl Source {
     }
 }
 
-/// How one series fails, per item — never the whole request.
 #[derive(Debug)]
 enum Failure {
     UnknownAsset(String),
     Unavailable(String),
 }
 
-/// The next page to ask for after a FULL page spanning `[earliest, latest]`
-/// within the requested `[lo, hi]`, or `None` when the window is covered or
-/// the source stopped making progress.
+/// The next page after a FULL page spanning `[earliest, latest]` within `[lo, hi]`, or `None` when covered or no progress.
 fn next_page(
     truncation: Truncation,
     lo: Day,
@@ -448,9 +367,7 @@ fn number(value: &Value) -> Option<f64> {
     }
 }
 
-/// Bounded GET with the browser User-Agent ifzq requires. A non-2xx status
-/// still yields its body, because Binance spells "unknown symbol" as a 400
-/// with a JSON body that says so.
+/// Bounded GET with the browser User-Agent ifzq requires. A non-2xx still yields its body: Binance spells "unknown symbol" as a 400 with a JSON body.
 fn http_get(url: &str) -> Result<(u16, String), String> {
     let response = match ureq::get(url)
         .set("User-Agent", USER_AGENT)
@@ -471,16 +388,13 @@ fn http_get(url: &str) -> Result<(u16, String), String> {
     Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
 }
 
-/// A source message is quoted back only when it is short plain ASCII; the
-/// body is attacker-influenced text that would otherwise ride into a stored
-/// reason.
+/// A source message is quoted back only when it is short plain ASCII; the body is attacker-influenced.
 fn quotable(message: &str) -> Option<&str> {
     let ok = message.len() <= 64 && message.bytes().all(|b| b.is_ascii_graphic() || b == b' ');
     ok.then_some(message)
 }
 
-/// One ifzq answer: the daily rows and, for a bare `us` code, the
-/// exchange-suffixed code the window fetch must use.
+/// The daily rows and, for a bare `us` code, the exchange-suffixed code the window fetch must use.
 #[derive(Debug)]
 struct IfzqAnswer {
     bars: Vec<Bar>,
@@ -509,11 +423,7 @@ fn ifzq_fetch(
     parse_ifzq(&body, code, &url)
 }
 
-/// The parser half of [`ifzq_fetch`]. Rows are
-/// `[date, open, close, high, low, volume, …]` — note the o,c,h,l,v order —
-/// under `qfqday` (`sh`/`sz`) or `day` (`hk`/`us`); a seventh element may be
-/// a dividend note object and is ignored. A row that does not parse is
-/// dropped rather than failing the answer.
+/// Rows are `[date, open, close, high, low, volume, …]` — note the o,c,h,l,v order — under `qfqday` (`sh`/`sz`) or `day` (`hk`/`us`). A row that does not parse is dropped.
 fn parse_ifzq(body: &str, code: &str, url: &str) -> Result<IfzqAnswer, Failure> {
     let parsed: Value = serde_json::from_str(body)
         .map_err(|e| Failure::Unavailable(format!("{url} returned non-JSON: {e}")))?;
@@ -597,9 +507,7 @@ fn binance_fetch(
     parse_binance(&body, symbol, &url)
 }
 
-/// The parser half of [`binance_fetch`]. A kline is
-/// `[openTime, open, high, low, close, volume, closeTime, …]`; its date is
-/// the UTC day of `openTime`.
+/// A kline is `[openTime, open, high, low, close, volume, closeTime, …]`; its date is the UTC day of `openTime`.
 fn parse_binance(body: &str, symbol: &str, url: &str) -> Result<Vec<Bar>, Failure> {
     let parsed: Value = serde_json::from_str(body)
         .map_err(|e| Failure::Unavailable(format!("{url} returned non-JSON: {e}")))?;
@@ -634,12 +542,9 @@ fn parse_binance(body: &str, symbol: &str, url: &str) -> Result<Vec<Bar>, Failur
         .collect())
 }
 
-/// Where one asset's bars come from, and how the source spells it.
 struct Route {
     source: Source,
-    /// The code the probe asks about. For `US` this is the BARE `us<SYM>`,
-    /// which is the only spelling that answers the newest bar AND names the
-    /// exchange-suffixed code a window fetch needs (spike U8).
+    /// For `US` this is the BARE `us<SYM>`: the only spelling that answers the newest bar AND names the exchange-suffixed code a window fetch needs.
     probe_code: String,
     currency: &'static str,
 }
@@ -666,16 +571,12 @@ fn route(asset: &AssetId) -> Result<Route, Failure> {
     })
 }
 
-/// What a probe learned: the newest daily bar the source lists, and the code
-/// the window fetch must use.
 struct Probe {
     complete_through: Day,
     window_code: String,
 }
 
-/// Step 1. Always runs, for every mode: `complete_through` is what certifies
-/// bars as closed and what the reply reports, and it is a DAILY date whatever
-/// `period` is.
+/// Step 1. Always runs: `complete_through` is what certifies bars as closed, and it is a DAILY date whatever `period` is.
 fn probe(cfg: &Config, route: &Route, venue: Venue, start: Day) -> Result<Probe, Failure> {
     let (bars, suffixed) = match route.source {
         Source::Ifzq => {
@@ -710,27 +611,20 @@ fn probe(cfg: &Config, route: &Route, venue: Venue, start: Day) -> Result<Probe,
     })
 }
 
-// ---------------------------------------------------------------------------
-// Page cache
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct PageKey {
     source: Source,
     code: String,
     lo: Day,
     hi: Day,
-    /// The UTC date the page was fetched on. Part of the KEY, so a page fetched
-    /// at 23:59 is invisible at 00:01: "later time" must never certify
-    /// "earlier bytes".
+    /// Part of the KEY, so a page fetched at 23:59 is invisible at 00:01.
     fetched_on: Day,
 }
 
 #[derive(Clone, Debug)]
 struct CachedPage {
     bars: Vec<Bar>,
-    /// The probe value seen BEFORE this page was fetched — the only probe that
-    /// can certify these bars.
+    /// The probe value seen BEFORE this page was fetched — the only probe that can certify these bars.
     observed_complete_through: Day,
 }
 
@@ -766,7 +660,6 @@ fn fetch_page(
     }
 }
 
-/// The window one series is fetched over.
 struct Window<'a> {
     source: Source,
     code: &'a str,
@@ -775,10 +668,7 @@ struct Window<'a> {
     hi: Day,
 }
 
-/// Step 2. The window, paged and deduplicated by date. Every bar carries
-/// the probe that certifies it: the one made before its page was fetched —
-/// this call's for a page fetched now, the stored observation for a reused
-/// page (never more than this call's probe).
+/// Step 2. The window, paged and deduplicated by date; every bar carries the probe made before its page was fetched.
 fn fetch_window(
     cfg: &Config,
     window: &Window<'_>,
@@ -796,10 +686,7 @@ fn fetch_window(
             fetched_on: today,
         };
         let (page, certified_by) = match cache_lookup(&key) {
-            // The page covering the cutoff is reused only when the probe it
-            // was fetched under IS this call's probe; otherwise the source
-            // has advanced since, and the bars near the cutoff are refetched
-            // so the newest ones are certified by the probe just made.
+            // The page covering the cutoff is reused only when fetched under this call's probe, so the newest bars are certified by the probe just made.
             Some(cached)
                 if !(page_hi >= window.hi && cached.observed_complete_through != probed) =>
             {
@@ -849,19 +736,12 @@ fn fetch_window(
     Ok(bars.into_values().collect())
 }
 
-// ---------------------------------------------------------------------------
-// Aggregation and inclusion
-// ---------------------------------------------------------------------------
-
-/// One output bar: a day, an ISO week or a calendar month.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Candle {
     period_start: Day,
     period_end: Day,
     bar: Bar,
-    /// The smallest certification over the member bars: a period is proven
-    /// closed only by a probe that was made before EVERY one of its bars was
-    /// fetched.
+    /// The smallest certification over the member bars.
     certified_by: Day,
 }
 
@@ -873,8 +753,6 @@ fn period_bounds(period: Period, day: Day) -> (Day, Day) {
     }
 }
 
-/// Aggregate ascending daily bars: open of the first day, close of the last,
-/// max high, min low, summed volume.
 fn aggregate(bars: &[Certified], period: Period) -> Vec<Candle> {
     let mut out: Vec<Candle> = Vec::new();
     for Certified { bar, by } in bars {
@@ -901,20 +779,8 @@ fn aggregate(bars: &[Certified], period: Period) -> Vec<Candle> {
     out
 }
 
-/// **The only venue-level relaxation in this plugin.**
-///
-/// A `live` DAILY request may include a bar dated `≤ as_of` (yesterday UTC)
-/// without a later bar proving it closed, when the venue's regular session
-/// for day D ends hours before D+1 00:00 UTC: HK closes 08:00 UTC, SH/SZ
-/// 07:00 UTC (design §2.5 closing-time table, margin ≥ 15h).
-///
-/// `US` is NOT relaxed (spike U9 was not run: it needs two reads of the same
-/// ticker during the after-hours session, 20:00–00:00 UTC in EDT, on both
-/// ifzq and Sina, compared against the exchange's regular-session volume, to
-/// prove neither source folds after-hours trades into the daily bar; until
-/// that evidence exists US takes the strict arm, design §9 U9). `CRYPTO` is
-/// never relaxed: Binance's day closes exactly at D+1 00:00 UTC, so the
-/// margin is zero and relaxation buys nothing but a clock-skew window.
+/// The only venue-level relaxation: a `live` DAILY request may include a bar dated `≤ as_of` without a later bar proving it closed, when the venue's session ends hours before D+1 00:00 UTC (HK 08:00, SH/SZ 07:00).
+/// `US` is not relaxed until it is proven neither source folds after-hours trades into the daily bar; `CRYPTO` never is, since Binance's day closes exactly at 00:00 UTC.
 fn venue_relaxes_live_daily(venue: Venue) -> bool {
     match venue {
         Venue::Hk | Venue::Sh | Venue::Sz => true,
@@ -922,7 +788,6 @@ fn venue_relaxes_live_daily(venue: Venue) -> bool {
     }
 }
 
-/// The inclusion rule's inputs for one series.
 #[derive(Clone, Copy, Debug)]
 struct Cutoff {
     mode: Mode,
@@ -933,11 +798,7 @@ struct Cutoff {
 }
 
 impl Cutoff {
-    /// The inclusion rule, by `(mode, period, venue)`. The cutoff is compared
-    /// against the PERIOD END (a week's Sunday, a month's last day), never
-    /// the stored `ts_ms`, so a half-built week is never "before the cutoff".
-    /// `complete_through` is the newest daily date the probe certifying this
-    /// period saw; the strict arm needs the period to end before it.
+    /// The cutoff is compared against the PERIOD END, never the stored `ts_ms`, so a half-built week is never "before the cutoff".
     fn includes(&self, period_start: Day, period_end: Day, complete_through: Day) -> bool {
         if self.mode == Mode::Live
             && self.period == Period::Day
@@ -948,10 +809,6 @@ impl Cutoff {
         period_start >= self.start && period_end <= self.as_of && period_end < complete_through
     }
 }
-
-// ---------------------------------------------------------------------------
-// One series, end to end
-// ---------------------------------------------------------------------------
 
 struct Resolved {
     currency: &'static str,
@@ -1029,16 +886,13 @@ fn resolve_one(cfg: &Config, req: &Request, raw: &str) -> Result<Resolved, Failu
     })
 }
 
-/// The `market.series` tool. No Track is needed: the reply depends on the
-/// request alone.
+/// The `market.series` tool. No Track is needed.
 pub(super) fn handle(cfg: &Config, args: &Value) -> Value {
     let req = match parse_request(args) {
         Ok(req) => req,
         Err(why) => return tool_error(format!("market.series: {why}")),
     };
-    // The kernel gave up on this call already (its own timeout is shorter
-    // than the queue this request sat in); answering it would only spend
-    // network on a reply nobody reads.
+    // The kernel gave up on this call already; answering would spend network on a reply nobody reads.
     if req.deadline_ms < now_ms(cfg) {
         return tool_error("deadline exceeded");
     }
@@ -1161,10 +1015,7 @@ mod tests {
         );
     }
 
-    /// Every `(mode, period, venue)` cell: a bar dated exactly
-    /// `complete_through` (no later bar exists) inside `[start, as_of]` is
-    /// emitted ONLY by the relaxed live-daily arm, and that arm exists only
-    /// for HK, SH and SZ.
+    /// A bar dated exactly `complete_through` inside `[start, as_of]` is emitted ONLY by the relaxed live-daily arm, which exists only for HK, SH and SZ.
     #[test]
     fn inclusion_table_is_relaxed_only_for_live_daily_stock_venues() {
         let start = d("2026-08-01");

@@ -45,8 +45,7 @@ fn receipt(id: &str) -> Value {
     }}})
 }
 
-/// The table's column list as a quoted `SELECT` fragment, read from the
-/// schema the connection currently holds.
+/// The table's column list as a quoted `SELECT` fragment, from the schema the connection currently holds.
 async fn columns_of(db: &mut SqliteConnection, table: &str) -> String {
     assert!(matches!(table, "operations" | "worker_sessions"));
     let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
@@ -64,11 +63,8 @@ async fn columns_of(db: &mut SqliteConnection, table: &str) -> String {
         .join(",")
 }
 
-/// Every row of `table` over exactly `columns`. The upgrade test reads the
-/// column list ONCE, on the pre-upgrade schema, and re-uses it after the
-/// upgrade: the claim is that the released columns keep their values, and a
-/// later migration that adds a column (0110's
-/// `worker_sessions.last_turn_completed_ms`) is not a change to any of them.
+/// Every row of `table` over exactly `columns`. The column list is read ONCE, on the pre-upgrade
+/// schema, and re-used after the upgrade: a later migration that adds a column is not a change to any of them.
 async fn all_rows(db: &mut SqliteConnection, table: &str, columns: &str) -> Vec<String> {
     assert!(matches!(table, "operations" | "worker_sessions"));
     sqlx::query_scalar(&format!(

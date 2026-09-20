@@ -1,34 +1,5 @@
-//! #1013 T1/T2/T10 — the pty leader's pid is pinned for the entry's whole
-//! registry lifetime, and released exactly when the entry is.
-//!
-//! The defect: `spawn_pty_waiter` used to `child.wait()`, which reaps. The
-//! instant it returned, the leader's pid — and the pgid numerically equal to it
-//! — went back into the kernel's allocator, while the entry stayed in the
-//! registry for at least `PTY_RECLAIM_GRACE` (60s), or *unboundedly* when a
-//! grandchild holds the slave. Every signal path that resolves to
-//! `entry.pid` was aiming at a number that could already belong to someone
-//! else. Retaining the zombie is the only mechanism that keeps a pid number
-//! out of the allocator — no pidfd, tty reference or other handle does it.
-//!
-//! **T1 and T2 must exist as a pair.** T1 alone would pass an implementation
-//! that pins forever and leaks; T2 alone would pass one that never pins at all.
-//!
-//! **What this pair does *not* prove**, stated plainly so nobody reads more
-//! into it: it says nothing about Pipe entries (their child belongs to tokio
-//! and is not pinned — see `pipe_procs_are_not_signalable.rs`), nothing about
-//! the former `tcgetpgrp` foreground-group target (deleted by the Q1 fix), nothing
-//! about a wildcard `wait` stealing the zombie (that is the
-//! `no_wildcard_wait_in_the_supervisor_host` lint), nothing about `SIGCHLD`
-//! being made auto-reaping after spawn (`pin_lost_on_autoreap.rs`), and nothing
-//! about a waiter that panics (the `WaiterCompletion` guard plus typed
-//! ownership). All five stay green here.
-//!
-//! Every counter read here is `debug_pin_count()`, which is **registry-scoped**
-//! on purpose. `cargo test` runs the cases in this file as threads of one
-//! process; a process-global counter would make T1's `== 1`, T2's `-> 0` and
-//! T10's `== 2` redden each other deterministically. If someone moves the
-//! counter to a `static`, these three go red together — that coupling is
-//! intentional.
+//! The pty leader's pid is pinned (retained as a zombie) for the entry's whole registry lifetime, and released exactly when the entry is.
+//! The pinned/released cases must exist as a pair; every counter read is the registry-scoped `debug_pin_count()`, because the cases run as threads of one process.
 
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_session::control::{
@@ -43,28 +14,19 @@ use tokio::net::UnixStream;
 /// it; it only stops a broken build from hanging a CI runner.
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
-/// T1 — while the entry is registered, the leader's pid is still ours.
-///
-/// The exit is *established*, not raced: we send `Signal(Kill)` and poll the
-/// attach stream until `Exited { signalled: true }` arrives. Only then do the
-/// three main assertions run, and all three describe the same instant.
+/// The exit is established, not raced: `Signal(Kill)` then poll until `Exited { signalled: true }`; the main assertions describe that one instant.
 #[tokio::test]
 async fn pty_pid_stays_pinned_while_the_entry_is_registered() {
-    // Default 60s reclaim grace on purpose: the assertions must not be racing a
-    // sweep, and 60s against a handful of polls is three orders of magnitude of
-    // headroom.
+    // Default 60s reclaim grace on purpose: the assertions must not be racing a sweep.
     let supervisor = InProcessProcSupervisor::start()
         .await
         .expect("start supervisor");
     let proc_id = "pty-pin-held";
 
-    // `exec` so the pid we are handed is the `sleep`'s own — no intermediate
-    // shell that could exit on its own and make the test vacuous.
+    // `exec` so the pid we are handed is the `sleep`'s own, not an intermediate shell.
     let leader = ensure_pty(supervisor.sock(), proc_id, &["-c", "exec sleep 600"]).await;
 
-    // Degeneracy self-check: the child really started. Without it, a spawn
-    // failure would leave a pid that was never alive and the "state == Z"
-    // assertion below could pass for the wrong reason.
+    // Degeneracy self-check: the child really started, so "state == Z" below cannot pass for the wrong reason.
     let state = await_proc_state_in(leader, &["S", "R"], Duration::from_secs(5)).await;
     assert!(
         state.is_some(),
@@ -72,11 +34,7 @@ async fn pty_pid_stays_pinned_while_the_entry_is_registered() {
         proc_state(leader)
     );
 
-    // --- The M3 lock: the counter counts *handles*, not *observed exits*. ---
-    //
-    // Asserted here, while the leader is still running, precisely because that
-    // is the only place where the two definitions disagree. Under the rejected
-    // "increment when the waiter observes an exit" definition this is 0.
+    // The counter counts handles, not observed exits: asserted while the leader is still running, the only place the two definitions disagree.
     assert_eq!(
         supervisor.registry().debug_pin_count(),
         1,
@@ -90,7 +48,7 @@ async fn pty_pid_stays_pinned_while_the_entry_is_registered() {
     signal(supervisor.sock(), proc_id, ProcSignal::Kill).await;
     await_exited(&mut attach, true).await;
 
-    // --- Main assertions: one instant, three views of it. -----------------
+    // Main assertions: one instant, three views of it.
     assert_eq!(
         proc_state(leader).as_deref(),
         Some("Z"),
@@ -111,8 +69,7 @@ async fn pty_pid_stays_pinned_while_the_entry_is_registered() {
     );
 }
 
-/// T2 — and it is released when the entry goes away. The pin is a lifetime,
-/// not a leak.
+/// The pin is a lifetime, not a leak.
 #[tokio::test]
 async fn the_pinned_pid_is_released_when_the_entry_is_removed() {
     let supervisor = InProcessProcSupervisor::start_with_grace(Duration::from_millis(50))
@@ -125,8 +82,7 @@ async fn the_pinned_pid_is_released_when_the_entry_is_removed() {
     await_exited(&mut attach, false).await;
     drop(attach);
 
-    // Registry release first — necessary, but on its own it proves nothing
-    // about the reap.
+    // Registry release first — necessary, but on its own it proves nothing about the reap.
     assert!(
         poll_until(Duration::from_secs(20), || supervisor
             .registry()
@@ -136,16 +92,8 @@ async fn the_pinned_pid_is_released_when_the_entry_is_removed() {
         "entry was never swept out of the registry"
     );
 
-    // Then poll for the reap itself, rather than asserting it immediately.
-    // `debug_entry_stats() == None` only means the registry let go; at that
-    // instant the reader thread and the sweeper's `doomed` vec still hold their
-    // own `Arc`s, so `Drop for ProcEntry` has not run yet. An immediate
-    // assertion here would make the test that locks the invariant into a flake
-    // — and a flake gets its budget widened, not its bug fixed.
-    //
-    // The conjunction is deliberate. `pin_count` is our own definite state;
-    // `/proc/<pid>` alone is ambiguous because a recycled pid makes the
-    // directory reappear. Neither is sufficient alone.
+    // Poll for the reap rather than asserting immediately: when the registry lets go, the reader thread and the sweeper's `doomed` vec still hold `Arc`s.
+    // The conjunction is deliberate: `/proc/<pid>` alone is ambiguous because a recycled pid makes the directory reappear.
     assert!(
         poll_until(Duration::from_secs(5), || {
             supervisor.registry().debug_pin_count() == 0
@@ -161,24 +109,8 @@ async fn the_pinned_pid_is_released_when_the_entry_is_removed() {
     );
 }
 
-/// T10 — the counter sees entries that have left the registry.
-///
-/// `try_spawn_pty` inserts by `proc_id` and **overwrites**. The displaced entry
-/// leaves the map but keeps its own `Arc`s (here: a reader thread blocked
-/// forever in `read()`, because a grandchild still holds the slave), so it is
-/// never dropped and its leader stays pinned. A counter defined as "entries in
-/// the map with such-and-such bits set" cannot see it, and rebuilding
-/// `term:<id>` N times would leak N permanent zombies with the threshold WARN
-/// never firing.
-///
-/// One honest limit: this locks the *counter's definition*, not a fix — the
-/// orphaned entry's own leak is #996's business.
-///
-/// It *does* lock M3's `fetch_add` placement, contrary to what this comment
-/// claimed before: the second entry below is a still-running `exec sleep 600`,
-/// so moving the `fetch_add` from handle-install to exit-observed turns the
-/// main assertion red (`left: 1, right: 2`), measured. T1's live-leader
-/// assertion is the other lock on that placement.
+/// `try_spawn_pty` inserts by `proc_id` and overwrites; the displaced entry keeps its own `Arc`s (a reader blocked in `read()` because a grandchild holds the slave), so its leader stays pinned.
+/// A counter derived from the map cannot see it. This locks the counter's definition, not a fix for the orphaned entry's leak.
 #[tokio::test]
 async fn orphaned_entries_are_visible_to_the_pin_counter() {
     let supervisor = InProcessProcSupervisor::start_with_grace(Duration::from_millis(50))
@@ -188,8 +120,7 @@ async fn orphaned_entries_are_visible_to_the_pin_counter() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let pid_file = scratch.path().join("grandchild.pid");
 
-    // First entry: its grandchild keeps the slave open, so the reader thread
-    // never sees EOF, never returns, and never releases its `Arc`.
+    // First entry: its grandchild keeps the slave open, so the reader thread never returns and never releases its `Arc`.
     ensure_pty(
         supervisor.sock(),
         proc_id,
@@ -228,12 +159,8 @@ async fn orphaned_entries_are_visible_to_the_pin_counter() {
     );
 }
 
-/// The fixture from `pty_entry_reclaim.rs`: a backgrounded subshell that
-/// reopens the pty slave (`exec < /dev/tty`, since a non-interactive shell
-/// redirects a background job's stdin to /dev/null) and blocks on it forever.
-/// `trap '' HUP` is required — the pty child is the session leader, so the
-/// kernel SIGHUPs the foreground group when it exits, and without the trap the
-/// grandchild would die with its parent and the master would EOF immediately.
+/// A backgrounded subshell that reopens the pty slave (`exec < /dev/tty`) and blocks on it forever.
+/// `trap '' HUP` is required: the session leader's exit SIGHUPs the foreground group, and without it the grandchild dies with its parent.
 fn grandchild_script(pid_file: &Path) -> String {
     format!(
         "(trap '' HUP; exec < /dev/tty; while read _; do :; done) & \
@@ -292,11 +219,7 @@ async fn await_pid_file(path: &Path, budget: Duration) -> u32 {
     }
 }
 
-/// Polls a condition with a deadline. **`async` and `tokio::time::sleep`, not
-/// `std::thread::sleep`**: `#[tokio::test]` gives a current-thread runtime, so
-/// blocking this thread also blocks the supervisor's serve loop — including its
-/// periodic sweeper. A blocking poll for "the entry was swept" can therefore
-/// never succeed; it deadlocks and then fails on its own deadline.
+/// `async` and `tokio::time::sleep`, not `std::thread::sleep`: on the current-thread runtime a blocking poll also blocks the supervisor's serve loop and sweeper.
 async fn poll_until(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {

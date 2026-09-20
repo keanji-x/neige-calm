@@ -48,20 +48,13 @@ impl Plan {
 }
 
 impl ArtifactStore {
-    /// Materialize exact named slots under disjoint relative destinations. The
-    /// caller has already authorized these bindings. Missing output paths fail;
-    /// presence of a slot is not evidence that it passed a gate.
+    /// Materialize exact named slots under disjoint relative destinations; presence of a slot is not evidence that it passed a gate.
     pub fn materialize(&self, inputs: &[SlotBinding], destination: &Path) -> Result<Materialized> {
         self.publish_plan(self.slot_plan(inputs)?, destination)
     }
 
-    /// Explicit reconciliation of a possibly published destination, before consumer
-    /// start. The caller must supply the original frozen bindings and keep the
-    /// destination and its ancestors protected from writers through verification
-    /// and launch. Exact inventory, types, hashes, modes and single file links must
-    /// match; no destination is created, rewritten or replaced. Successful checks
-    /// repeat file/directory and publication fsync barriers after an uncertain rename.
-    /// This checks content, not Operation ownership or consumption authority.
+    /// Reconcile a possibly published destination before consumer start, against the original frozen bindings; exact
+    /// inventory, types, hashes, modes and links must match, and nothing is created or rewritten. Checks content, not authority.
     pub fn verify_materialized(
         &self,
         inputs: &[SlotBinding],
@@ -174,9 +167,8 @@ impl ArtifactStore {
             Err(e) => return Err(e.into()),
         }
         let _lock = self.lock()?;
-        // Preparation uses the store's private staging area, so startup can
-        // reclaim abandoned data without traversing a worker destination. Atomic
-        // publication requires the destination to be on this same filesystem.
+        // Preparation uses the store's private staging area so startup can reclaim abandoned data;
+        // atomic publication requires the destination to be on this same filesystem.
         let stage = tempfile::Builder::new()
             .prefix("prepare-")
             .permissions(fs::Permissions::from_mode(0o700))

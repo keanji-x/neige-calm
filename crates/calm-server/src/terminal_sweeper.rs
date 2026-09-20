@@ -1,93 +1,5 @@
-//! The terminal sweeper: one 30 s tick with two independent arms — the
-//! orphan arm reaps terminal rows whose card has no active worker session
-//! (issue #197), and the completed-track arm ends worker sessions that were
-//! still running on a PTY when their track was completed (#1743 §4.2).
-//!
-//! ## Two-layer cleanup model (issue #197)
-//!
-//! Terminal rows are owned by a single card row via
-//! `terminals.card_id` (UNIQUE, NOT NULL). A terminal renderer entry
-//! can live alongside the row. Cleanup happens in two
-//! layers:
-//!
-//!   1. **Eager teardown in the route handler.** When a user issues
-//!      `DELETE /api/cards/:id`, `DELETE /api/tracks/:id`, or
-//!      `DELETE /api/areas/:id`, the handler walks the affected card
-//!      list, calls [`reap_terminal_artifacts`] to stop the renderer and
-//!      delete the terminal row, *then* deletes the
-//!      card / track / area row. The `terminals.card_id` FK is
-//!      `ON DELETE RESTRICT` (migration 0011), so a missed cleanup
-//!      surfaces as a transaction-level FK error rather than a silent
-//!      renderer-process leak. Track deletion performs this external work
-//!      before its short row-delete transaction.
-//!   2. **This sweeper.** Catches the residual shape: a crashed server,
-//!      a SIGKILL'd writer, or a partial-success transaction that left
-//!      a terminal row whose card has no active worker session. The orphan SQL
-//!      definition is worker-sessions-active-card based (see
-//!      [`crate::db::RepoRead::terminals_orphaned`]); the 60-second grace
-//!      absorbs terminal/session creation races.
-//!
-//!      **Exited Terminal-card terminals are not residue (#1701).** A
-//!      Terminal card (`cards.kind = 'terminal'`; human "New terminal" or
-//!      Planner `calm.terminal.open`) owns an ephemeral worker session that
-//!      completes when the PTY exits, so from that moment its row has no
-//!      active session — yet the attach reader already recorded the exit
-//!      (`exit_code` / `signal_killed`, `pty_output`) and the card still
-//!      exists. Reaping it left the card pointing at nothing and made
-//!      `observe` / `control release` on it fail. Such a row follows its
-//!      card: layer 1 removes it with the card, and this sweeper skips it.
-//!      A terminal without a recorded exit (crash, partial write) and the
-//!      terminals of other card kinds (task/worker) keep the rule above.
-//!
-//! ## The completed-track arm (#1743 §4.2)
-//!
-//! The same tick runs a second, independent arm: every worker session that
-//! was still `running` on a PTY when its track was completed (`done`,
-//! `terminal_at`) or archived, and whose card has no task in flight, is
-//! ENDED — its row is written `exited` first (one IMMEDIATE transaction, no
-//! event, the shape of the attach reader's own exit path), then the process
-//! is killed through the renderer entry (or a lazy reattach after a kernel
-//! restart). Write-then-kill: the reader's ephemeral completion then finds
-//! no live session and is a no-op, so every provider ends as `exited`
-//! instead of `failed` (signalled) / `running` (resumable codex). The
-//! terminal row is NOT deleted here: an exited Terminal-card row follows its
-//! card (#1701); a worker card's row is the orphan arm's on its next pass.
-//! The set is [`COMPLETED_TRACK_LIVE_SESSIONS_SQL`]; a session opened AFTER
-//! the completion (`created_at_ms > terminal_at`) is never in it, which is
-//! what keeps "reopen" working with no event to tell the two apart.
-//!
-//! ## What the sweeper is *not*
-//!
-//! Pre-#197, the sweeper was documented as the cleanup path for the
-//! card-delete happy case: the FK cascade nuked the `terminals` row,
-//! and the sweeper was supposed to "catch the leak" — but in practice
-//! it had nothing to catch (the row was already gone) and the daemon
-//! process kept running until the next 30 s tick at best. That model
-//! was wrong; the design doc lied.
-//!
-//! ## Cleanup sequence per orphan
-//!
-//! 1. **Graceful Kill via unix socket** (`GRACEFUL_KILL_TIMEOUT`). The
-//!    daemon's `Attach → Kill` path triggers a SIGHUP to its child and
-//!    a clean shutdown. Best-effort: if the socket doesn't connect or
-//!    `Kill` write fails, fall through.
-//! 2. **SIGTERM via PID** (`SIGTERM_GRACE`). Falls back when the
-//!    graceful path didn't take. Skipped if `pid` is `None` (row
-//!    predates Scope C).
-//! 3. **Socket file removal.** Best-effort `unlink`; missing socket is
-//!    fine (the daemon may already have removed it on clean exit).
-//! 4. **Row delete via `write_with_event`** emitting
-//!    `Event::TerminalDeleted { id, card_id }` with `actor = "kernel"`.
-//!    This step IS the audit signal — steps 1-3 are housekeeping.
-//!
-//! Steps 1-3 are also what the eager-teardown helper
-//! [`reap_terminal_artifacts`] runs from the route handler. The
-//! sweeper's row-delete step is what differentiates it: it happens
-//! through `write_with_event` to emit an audit event in the
-//! crash-recovery path, whereas the route-handler eager teardown
-//! deletes the row inside the same transaction that's about to delete
-//! the card and emits `Event::CardDeleted` (or `TrackDeleted` /
-//! `AreaDeleted`) as the audit signal.
+//! The terminal sweeper: one 30 s tick, two independent arms — the orphan arm reaps terminal rows whose card
+//! has no active worker session; the completed-track arm ends worker sessions still running on a completed or archived track.
 
 use std::time::Duration;
 
@@ -103,11 +15,8 @@ use crate::terminal_renderer::{RendererDropOutcome, TerminalRendererRegistry};
 use calm_session::control::ProcSignal;
 use sqlx::Row;
 
-/// A PTY exit ends an ephemeral session. For a resumable session it is only
-/// viewer/liveness evidence: the existing provider death arbiter and explicit
-/// business/session completion retain authority over the durable session.
-/// Decide the mode and complete the same session in one write transaction.
-/// Explicit truth completion APIs are unchanged.
+/// A PTY exit ends an ephemeral session. For a resumable session it is only viewer/liveness
+/// evidence: the provider death arbiter and explicit completion retain authority.
 pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
     repo: &dyn crate::db::RouteRepo,
     terminal_id: &str,
@@ -138,43 +47,24 @@ pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
     .await
 }
 
-/// Actor stamped on every event the sweeper produces. Distinct from
-/// [`ActorId::User`] (REST) and [`ActorId::Plugin`]; matches the convention
-/// used by `card_fsm` for kernel-internal projectors. PR2 of #136 typed
-/// this from the legacy `"kernel"` string.
+/// Actor stamped on every event the sweeper produces.
 const fn sweeper_actor() -> ActorId {
     ActorId::Kernel
 }
 
-/// How often the sweep runs. 30 s is comfortably below the 1-minute grace
-/// window — every orphan that exists at one tick is caught the next.
+/// 30 s is comfortably below the 1-minute grace window — every orphan that exists at one tick is caught the next.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Grace window between terminal creation and orphan eligibility. Absorbs
-/// the 3-step terminal-card create race (POST card → POST terminal →
-/// PATCH card.payload — `web/src/app/eventBridge.tsx:60-70`). One minute
-/// is overkill for the ~10 ms race window in practice; we err on the side
-/// of "never reap a live terminal mid-create".
+/// Grace window between terminal creation and orphan eligibility. Absorbs the 3-step
+/// terminal-card create race; err on the side of "never reap a live terminal mid-create".
 const ORPHAN_GRACE_SECONDS: i64 = 60;
 
-/// Maximum time we wait for the daemon to accept a `ClientMsg::Kill` and
-/// drop its socket. Short — if the daemon is healthy this completes in
-/// single-digit ms; if it's hung, we fall through to SIGTERM rather than
-/// block the sweep tick.
+/// Maximum time we wait for the daemon to accept a `Kill`; if it's hung, fall through to SIGTERM
+/// rather than block the sweep tick.
 const GRACEFUL_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// #1743 §4.2 — the set the completed-track arm ends, one autocommit
-/// SELECT: worker sessions still `running` whose PTY (`terminal_run_id`)
-/// has no recorded exit, on a track that was completed (`done`, K20's
-/// `terminal_at`) or archived AFTER the session was minted
-/// (`created_at_ms <=`) — so a terminal the user opens on a done track, a
-/// reopened card or a new planner round survive — and whose card has no
-/// task in flight (`NOT EXISTS`: a `dispatched` / `running` / `verifying`
-/// worker is settled by its own path first, next tick ends it). Harness
-/// rows (planner / assistant) are outside structurally: never `running`
-/// and no `terminal_run_id`; isolated sessions have no PTY (K24). A done
-/// track with `terminal_at` NULL is not collected (fail-closed to "leave
-/// it"). `pub` so the test suite runs THIS text.
+/// The set the completed-track arm ends. `created_at_ms <=` keeps a session opened on an already-done
+/// track out of the set; harness rows are outside structurally (never `running`, no `terminal_run_id`).
 pub const COMPLETED_TRACK_LIVE_SESSIONS_SQL: &str = "SELECT ws.id, ws.provider, ws.card_id, te.id AS terminal_id, ws.thread_id \
        FROM worker_sessions ws JOIN tracks t ON t.id = ws.track_id \
        JOIN terminals te ON te.id = ws.terminal_run_id AND te.exit_code IS NULL AND te.signal_killed = 0 \
@@ -188,9 +78,7 @@ pub const COMPLETED_TRACK_LIVE_SESSIONS_SQL: &str = "SELECT ws.id, ws.provider, 
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(SWEEP_INTERVAL);
-        // Skip the immediate first tick — there's no point sweeping a
-        // freshly-booted kernel with no terminals yet, and the test
-        // harness is happier when boot doesn't race the sweep.
+        // Skip the immediate first tick so boot doesn't race the sweep.
         tick.tick().await;
         loop {
             tick.tick().await;
@@ -201,9 +89,7 @@ pub fn spawn(state: AppState) {
     });
 }
 
-/// One sweep pass: the orphan arm, then the completed-track arm (#1743
-/// §4.2). Public so integration tests can drive it without standing up the
-/// interval task.
+/// One sweep pass: the orphan arm, then the completed-track arm; integration tests drive it without the interval task.
 pub async fn sweep(state: &AppState) -> Result<()> {
     let orphans = state.repo.terminals_orphaned(ORPHAN_GRACE_SECONDS).await?;
     if !orphans.is_empty() {
@@ -248,12 +134,8 @@ pub struct CompletedTrackSession {
     pub provider: String,
     pub card_id: String,
     pub terminal_id: String,
-    /// `worker_sessions.thread_id`, captured with the candidate: step 3's
-    /// interrupt is addressed by it, never by a lookup through the session
-    /// row (which step 2 has just written `exited`, and the active-session
-    /// lookup reads `starting/running/idle/turn_pending` only). Read for
-    /// `provider = 'codex'` only; 4140 on 2026-09-20: 12 of 12 `running`
-    /// codex rows carry one, the 9 claude and 4 terminal rows none.
+    /// Captured with the candidate: the interrupt is addressed by it, never by a lookup through the
+    /// session row, which is already `exited` by then and no longer resolves as active.
     pub thread_id: Option<String>,
 }
 
@@ -276,39 +158,8 @@ async fn completed_track_live_sessions(state: &AppState) -> Result<Vec<Completed
         .collect())
 }
 
-/// End one session of the completed-track set (#1743 §4.2, the four steps
-/// in order — the DELETE-card bottom half, K13, reused):
-///
-/// 1. the same guard as [`cleanup_terminal`] (`lock_for_track_delete` +
-///    `terminal_disposal::require_safe`); unsafe ⇒ `Err`, next tick;
-/// 2. WRITE first: one IMMEDIATE transaction that CLAIMS the session —
-///    the set predicate narrowed to THIS session
-///    ([`COMPLETED_TRACK_LIVE_SESSIONS_SQL`] plus `AND ws.id = ?`), on
-///    the transaction — then `session_complete_tx(Exited)` (`state`,
-///    `completed_at_ms`, `updated_at_ms`; no event). The candidate was
-///    read before the lock, possibly several teardowns earlier, and the
-///    reopen route (`track_update_tx`) takes no operation lock: a track
-///    reopened / unarchived or a task dispatched to the card at any point
-///    up to this BEGIN takes the row out of the set ⇒ the claim returns
-///    nothing, nothing is written, nothing below runs (review r1, codex
-///    P1; review r2, codex P2 / A MINOR-B). IMMEDIATE serializes the two
-///    writes: a reopen that committed first is honoured, a later one
-///    waits behind this transaction;
-/// 3. claimed, codex: interrupt the active turn of the thread CAPTURED
-///    with the candidate (`thread_id`, best-effort, no seal — sealing
-///    belongs to the delete saga). Only after the claim, so a reopen that
-///    defeated it is not interrupted either (review r3, codex P2 / A
-///    MINOR-1); by the captured id, not through the session row, which
-///    step 2 has just written `exited` and which no longer resolves;
-/// 4. then KILL: through the renderer entry, or a lazy reattach after a
-///    restart (`resolve_live_renderer_from_terminal`). `ChildExited` means
-///    no renderer was obtained on THIS call, not that the process is dead:
-///    nothing more is done this tick; the orphan arm (creation grace
-///    already spent) and the boot reconcile own what is left.
-///
-/// Every transaction here is short and the signals are outside all of them
-/// (§4.4). Public, like [`sweep`], so integration tests can drive it with
-/// a candidate of their own.
+/// End one session of the completed-track set. The claim runs first on an IMMEDIATE transaction: a reopen
+/// or dispatch since the candidate was read takes the row out of the set, and nothing is written or signalled.
 pub async fn end_completed_track_session(
     state: &AppState,
     session: &CompletedTrackSession,
@@ -316,10 +167,8 @@ pub async fn end_completed_track_session(
     end_completed_track_session_impl(state, session, || async {}).await
 }
 
-/// Fixtures-only deterministic seam for the guard/write race (the shape
-/// of `plan_cancel_after_pre_read_for_test`): `before_write` runs after
-/// step 1's guard, immediately before step 2's IMMEDIATE write — the
-/// window a reopen can land in.
+/// Fixtures-only seam: `before_write` runs after the guard, immediately before the claiming
+/// write — the window a reopen can land in.
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub async fn end_completed_track_session_before_write_for_test<F, Fut>(
@@ -356,11 +205,8 @@ where
     let session_id = session.id.clone();
     let claimed = write_in_tx_typed(state.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            // The claim: the same by-id predicate, on this IMMEDIATE
-            // transaction. A reopen (`track_update_tx`, a write) either
-            // committed before this BEGIN — then the row is not returned
-            // and nothing is written — or waits behind it (review r2,
-            // codex P2 / A MINOR-B).
+            // A reopen (`track_update_tx`) either committed before this BEGIN — the row is not returned and
+            // nothing is written — or waits behind this IMMEDIATE transaction.
             if !in_completed_track_set(tx, &session_id).await? {
                 return Ok(false);
             }
@@ -385,8 +231,6 @@ where
         "terminal_sweeper: session left running on a completed track written exited"
     );
 
-    // Step 3: the thread id travelled with the candidate; the session row
-    // is `exited` now and would not resolve it.
     if session.provider == "codex"
         && let Some(thread_id) = session.thread_id.as_deref()
         && let Err(e) = state
@@ -424,10 +268,8 @@ where
     Ok(())
 }
 
-/// Step 2's claim predicate: the set narrowed to one session — the text is
-/// [`COMPLETED_TRACK_LIVE_SESSIONS_SQL`] itself plus `AND ws.id = ?1`, so
-/// the set and the claim cannot drift. Runs on the claiming transaction's
-/// own connection (the `Transaction` derefs to it), never on the pool.
+/// The set narrowed to one session, built from the same text so the set and the claim cannot drift.
+/// Runs on the claiming transaction's own connection, never on the pool.
 async fn in_completed_track_set(
     conn: &mut sqlx::SqliteConnection,
     session_id: &str,
@@ -451,21 +293,10 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         state.daemon.proc_supervisor_sock.as_deref(),
     )
     .await?;
-    // Steps 1-3: daemon + socket housekeeping, shared with the eager-
-    // teardown route handlers via `reap_terminal_artifacts`.
     reap_terminal_artifacts(state, term).await;
 
-    // Step 4: audit-log + row delete in one transaction. This step is
-    // the headline guarantee: regardless of how steps 1-3 went, the row
-    // leaves the kernel cleanly and any subscriber sees the
-    // `terminal.deleted` event.
-    //
-    // Scope (PR2 of #136): try to resolve the card → track → area
-    // chain so per-card subscribers see the reap. If the card has
-    // already been deleted (the common case — the sweeper exists
-    // precisely because card-delete may have left an orphan
-    // terminal), fall back to `EventScope::System`. We don't refuse
-    // the reap for a missing ancestor.
+    // Audit-log + row delete in one transaction. If the card has already been deleted (the common
+    // case), fall back to `EventScope::System`; a missing ancestor never refuses the reap.
     let terminal_id = term.id.clone();
     let card_id = term.card_id.clone();
     let scope = match state.repo.card_get(card_id.as_str()).await? {
@@ -493,12 +324,8 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
                     &crate::operation::terminal_disposal::Scope::Terminal(terminal_id.clone()),
                 )
                 .await?;
-                // The eager-teardown handlers (and a prior sweep tick)
-                // may already have removed the row. Treat NotFound as
-                // "nothing to do, but still emit the audit event" — but
-                // the audit event itself only makes sense when there
-                // *was* something to clean up. We tolerate missing-row
-                // here by translating NotFound to Ok(()).
+                // The eager-teardown handlers (and a prior sweep tick) may already have removed the row:
+                // NotFound is translated to Ok(()).
                 match terminal_delete_tx(tx, &terminal_id)
                     .await
                     .map_err(crate::error::CalmError::from)
@@ -526,20 +353,9 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     Ok(())
 }
 
-/// Daemon + socket housekeeping for a single terminal row, shared between
-/// the sweeper and the eager-teardown route handlers (issue #197).
-///
-/// Idempotent: missing socket, dead pid, and absent `renderer entry` /
-/// `pid` all collapse to a clean return. The caller is responsible for
-/// the *row delete* step (card/area/track eager teardown: inside their short
-/// delete transaction; sweeper: inside its own
-/// `write_with_event` audit transaction).
-///
-/// This is the synchronous bottom-half of the cleanup contract: steps
-/// 1-3 in the module doc above. Bounded by `GRACEFUL_KILL_TIMEOUT` for
-/// the graceful path; SIGTERM is non-blocking. Safe to call inline from
-/// an HTTP handler — the worst-case latency is `GRACEFUL_KILL_TIMEOUT`
-/// (5 s) when the daemon is hung; the common case is single-digit ms.
+/// Daemon + socket housekeeping for a single terminal row, shared between the sweeper and the
+/// eager-teardown route handlers. Idempotent; the caller owns the row-delete step. Worst-case
+/// latency is `GRACEFUL_KILL_TIMEOUT` when the daemon is hung.
 pub async fn reap_terminal_artifacts(state: &AppState, term: &Terminal) {
     reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term).await;
 }
@@ -548,9 +364,8 @@ pub async fn reap_terminal_artifacts_with_renderer(
     renderer: Option<&TerminalRendererRegistry>,
     term: &Terminal,
 ) {
-    // 1. Graceful shutdown through the in-process renderer. The handle
-    // uses a fresh supervisor UDS connection so it bypasses any queued PTY
-    // writes that might be stuck behind backpressure.
+    // 1. Graceful shutdown through the in-process renderer, on a fresh supervisor UDS connection
+    // so it bypasses any queued PTY writes stuck behind backpressure.
     if let Some((renderer, entry)) = renderer.and_then(|r| r.get(&term.id).map(|e| (r, e))) {
         match tokio::time::timeout(
             GRACEFUL_KILL_TIMEOUT,
@@ -575,20 +390,17 @@ pub async fn reap_terminal_artifacts_with_renderer(
             "no live renderer entry while reaping terminal; using pid fallback if available"
         );
     }
-    // #1620 — the generated Planner hook settings file (server-owned path
-    // derived from the card id; never a path read from the row's env).
+    // The generated Planner hook settings file (server-owned path derived from the card id;
+    // never a path read from the row's env).
     if let Some(renderer) = renderer {
         renderer.remove_hook_settings(term.card_id.as_str());
     }
 
-    // 2. SIGTERM fallback. Skipped when no pid persisted (legacy rows or
-    //    spawn-time write_pid failure).
+    // 2. SIGTERM fallback. Skipped when no pid persisted.
     if let Some(pid) = term.pid
         && let Err(e) = send_sigterm(pid)
     {
-        // Common case once the graceful path took: ESRCH (process
-        // already gone). Log at debug so we don't spam in normal
-        // operation.
+        // Common case once the graceful path took: ESRCH (process already gone).
         tracing::debug!(
             terminal_id = %term.id,
             pid,
@@ -606,11 +418,9 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
     supervisor_sock: Option<&std::path::Path>,
     term: &Terminal,
 ) -> crate::error::Result<()> {
-    // A renderer entry gives us a supervisor-owned `proc_id`; its TERM/KILL
-    // sequence targets that registered child rather than trusting a recycled
-    // numeric pid. Without the entry, the legacy terminal row has no persisted
-    // `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
-    // and fail closed instead of signaling an arbitrary live pid.
+    // A renderer entry gives a supervisor-owned `proc_id` to TERM/KILL. Without the entry, the
+    // legacy row has no `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
+    // and fail closed instead of signaling a possibly recycled pid.
     let renderer_outcome = match renderer {
         Some(registry) => {
             registry.require_disposal_safe(&term.id).await?;
@@ -716,31 +526,15 @@ pub enum WaitForPidExit {
     Unsupported,
 }
 
-/// Wait until a previously-signaled daemon has run its shutdown cleanup.
-///
-/// `reap_terminal_artifacts` sends SIGTERM and unlinks the old socket
-/// path, but a stale daemon may still be alive and may later unlink that
-/// same path during its own shutdown. Boot-time revive calls this before
-/// binding a replacement daemon at the deterministic socket path.
+/// Wait until a previously-signaled daemon has run its shutdown cleanup: a stale daemon may
+/// still unlink the socket path during its own shutdown.
 pub async fn wait_for_pid_exit(pid: i64, timeout: Duration) -> WaitForPidExit {
     wait_for_pid_exit_with_poll(pid, timeout, Duration::from_millis(50)).await
 }
 
-/// SIGTERM a known pid for a partial spawn that wrote `pid` to the
-/// terminal row but never reached the `renderer entry` write. The
-/// dispatcher's rollback path uses this when it detects case 1b
-/// (handle = None AND pid = Some): the daemon process is alive (the
-/// `cmd.spawn()` succeeded and we persisted the pid before the
-/// `renderer setup` write that subsequently failed), but the
-/// usual [`reap_terminal_artifacts`] graceful path is a no-op because
-/// it keys off `renderer entry`. Without this direct kill the daemon
-/// would leak once the row is deleted — the sweeper can no longer find
-/// the pid.
-///
-/// Best-effort like the rest of the cleanup contract: a failed `kill`
-/// (most commonly ESRCH — the daemon raced us and is already gone) is
-/// logged at debug and swallowed. The caller proceeds to the row
-/// delete unconditionally.
+/// SIGTERM a known pid for a partial spawn that wrote `pid` to the terminal row but never
+/// reached the renderer entry write; `reap_terminal_artifacts` keys off the entry and would be
+/// a no-op. Best-effort: a failed `kill` (usually ESRCH) is logged and swallowed.
 pub fn reap_terminal_pid_only(terminal_id: &str, pid: i64) {
     if let Err(e) = send_sigterm(pid) {
         tracing::debug!(
@@ -856,10 +650,8 @@ fn proc_stat_state(pid: i32) -> Option<char> {
 fn send_sigterm(pid: i64) -> std::io::Result<()> {
     use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
-    // Stored as i64 in sqlite for INTEGER affinity; on unix `pid_t` is
-    // i32, so a cast is safe within the legal pid range (>0, <2^22 on
-    // Linux). Sentinel values like 0/-1 would target the calling process
-    // group or all processes — guard against persistence corruption.
+    // Sentinel values like 0/-1 would target the calling process group or all processes —
+    // guard against persistence corruption.
     let raw = valid_raw_pid(pid)?;
     kill(Pid::from_raw(raw), Signal::SIGTERM)
         .map_err(|e| std::io::Error::other(format!("kill(SIGTERM, {raw}) failed: {e}")))

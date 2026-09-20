@@ -1,7 +1,4 @@
 //! Persisted event shapes, scopes, metadata, and subscription topics.
-//!
-//! The wire vocabulary is generated into `fe/core/api/generated/wire.ts`;
-//! transport and broadcast behavior live outside this IO-free crate.
 
 use crate::harness::HarnessPhaseTag;
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
@@ -73,10 +70,7 @@ impl std::fmt::Display for ArtifactRef {
     }
 }
 
-/// Payload for `Event::TrackUpdated`.
-///
-/// `track` is flattened to preserve the historical wire shape: the event data
-/// remains the full track row at top level.
+/// Payload for `Event::TrackUpdated`; `track` is flattened to preserve the historical wire shape.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackUpdatedPayload {
@@ -117,30 +111,16 @@ impl AsRef<str> for ArtifactRef {
 pub enum EditAuthor {
     Planner,
     User,
-    /// #1189 — a track-scoped assistant conversation (`CardRole::Assistant`).
-    /// Deliberately a unit variant, like `Plugin`: the bare-lowercase wire
-    /// encoding and `Copy` must survive. Note that
-    /// `track_report_edit_guard::author_name` maps this to `None`, i.e. an
-    /// assistant may not author task declaration blocks.
+    /// A track-scoped assistant conversation (`CardRole::Assistant`).
     Assistant,
     /// Server-internal rewrite — FSM scaffolding, migrations, etc.
-    /// Reserved; no emitter today.
     Kernel,
     /// Historical proposal-channel apply author.
-    /// Reserved; no emitter today.
-    /// Plugin attribution rides in the sibling
-    /// `TrackReportEdited::author_plugin_id` field.
-    /// Deliberately a unit variant — a data-carrying `Plugin(String)`
-    /// would change the bare-lowercase wire encoding and drop `Copy`.
     Plugin,
 }
 
 impl EditAuthor {
-    /// The bare-lowercase spelling this variant takes on the wire, taken
-    /// from the derived `Serialize` impl rather than re-spelled by hand —
-    /// both the planner system prompt and `Observation::ReportEdited`'s turn
-    /// text name the author to the agent, and those two must agree with the
-    /// `track.report_edited` payload the agent can also see.
+    /// The bare-lowercase spelling this variant takes on the wire, taken from the derived `Serialize` impl.
     pub fn wire_str(self) -> String {
         serde_json::to_value(self)
             .expect("EditAuthor serializes")
@@ -151,11 +131,6 @@ impl EditAuthor {
 }
 
 /// Where an event lives in the area → track → card hierarchy.
-///
-/// `EventScope::System` is the catch-all for events that genuinely don't
-/// belong to a single area/track/card (`Event::PluginState`, the
-/// AreaCreated case where the area doesn't exist before the event, and
-/// malformed legacy rows). Prefer the narrowest available scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "id")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -164,9 +139,7 @@ pub enum EventScope {
     System,
     /// Scoped to one area. No track or card context.
     Area { area: AreaId },
-    /// Scoped to one track. Carries the owning area for filter ergonomics
-    /// (`scope_area IS NOT NULL` already narrows the rowset for area-level
-    /// subscribers without a join).
+    /// Scoped to one track. Carries the owning area for filter ergonomics.
     Track { track: TrackId, area: AreaId },
     /// Scoped to one card. Carries track + area for the same reason.
     Card {
@@ -177,9 +150,7 @@ pub enum EventScope {
 }
 
 impl EventScope {
-    /// String discriminator stored in `events.scope_kind`. Stable: changing
-    /// these strings would silently break the replay path. Mirrors the
-    /// `#[serde(tag = "kind")]` variant names lowercased.
+    /// String discriminator stored in `events.scope_kind`; stable, changing it breaks replay.
     pub fn kind(&self) -> &'static str {
         match self {
             EventScope::System => "system",
@@ -244,70 +215,31 @@ impl EventScope {
                 },
                 _ => EventScope::System,
             },
-            // "system" or anything unknown.
             _ => EventScope::System,
         }
     }
 }
 
-/// Sync-engine event envelope version.
-///
-/// Bump this together with a migration default whenever clients must gate on a
-/// new persisted wire shape; otherwise old clients can advance past events they
-/// cannot parse.
+/// Sync-engine event envelope version. Bump together with a migration default whenever clients
+/// must gate on a new persisted wire shape.
 pub const SYNC_EVENT_VERSION: u32 = 20;
 
-/// #1505 PR2 — what happened to one entry in the harness pending queue.
-///
-/// Five values. Two got their emitter in that slice, `dropped` in PR2b,
-/// `steered` in #1625 P3 and `restored` in its first review round; the first
-/// four were declared at once because the wire vocabulary is a versioned
-/// artifact: adding a value to a client-visible enum is the same class of
-/// change as adding the event, and doing it once is cheaper than doing it
-/// three times. Each variant says below what emits it.
+/// What happened to one entry in the harness pending queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum HarnessQueueChange {
-    /// A human rewrote the entry's text through
-    /// `PATCH /api/cards/{id}/planner/input/{entry_id}`. Emitted by this slice.
+    /// A human rewrote the entry's text through `PATCH /api/cards/{id}/planner/input/{entry_id}`.
     Edited,
-    /// A human removed the entry through
-    /// `DELETE /api/cards/{id}/planner/input/{entry_id}`. Emitted by this
-    /// slice.
+    /// A human removed the entry through `DELETE /api/cards/{id}/planner/input/{entry_id}`.
     Deleted,
-    /// The entry left the queue because codex took it into the turn that was
-    /// running, through `POST /api/cards/{id}/planner/input/{entry_id}/steer`
-    /// (`turn/steer`). Emitted by `harness::run_loop::handle_steer` once codex
-    /// has answered yes (#1625 P3). The delivery also adds a transcript row,
-    /// which is why the invalidation plan refetches the transcript on this
-    /// value. A steer codex refused is announced as `Restored`, not as this.
+    /// The entry left the queue because codex took it into the running turn (`turn/steer`); a steer
+    /// codex refused is announced as `Restored`, not as this.
     Steered,
-    /// The entry is back in the queue, at the head, with the id it left
-    /// with. Two emitters, both in `harness::run_loop` (#1625 P3 review
-    /// round 1): `handle_steer` when codex refused or never answered the
-    /// `turn/steer` — the entry had left the queue before codex was asked,
-    /// so a client that read the queue meanwhile saw it gone; it keeps its
-    /// rev — and the `TurnCompleted` arm's sweep when a steered entry's turn
-    /// ended before codex recorded the input (an interrupt clears codex's
-    /// pending input), which also deletes the transcript row the delivery
-    /// had written and hands the entry back one rev up (review round 2): the
-    /// client whose steer answered 200 is hiding the entry, and a higher rev
-    /// on the page that lists it again is what tells that client the kernel
-    /// put it back rather than that its page is stale. The drain's own
-    /// re-buffer after a failed `turn/start` does NOT emit this: that path
-    /// has a phase change to carry the retraction.
+    /// The entry is back in the queue, at the head, with the id it left with.
     Restored,
-    /// The kernel discarded the entry without delivering it: a snapshot loaded
-    /// with more than `MAX_PENDING_QUEUE_LEN` entries drops from the head.
-    /// Emitted by `harness::run_loop`'s load-time truncation (#1505 PR2b).
-    ///
-    /// It is the only announcement such an entry ever gets: the sentence is
-    /// never delivered, so it never reaches the transcript, so a client that
-    /// is still showing it has nothing else to learn from. No frontend reads
-    /// this variant yet — `harness.queue.changed` drives query invalidation
-    /// and nothing per-entry — so the row is an audit record and an input for
-    /// a later slice, not a placeholder fix.
+    /// The kernel discarded the entry without delivering it: a snapshot loaded with more than
+    /// `MAX_PENDING_QUEUE_LEN` entries drops from the head.
     Dropped,
 }
 
@@ -353,17 +285,8 @@ pub enum RatifyDecision {
     Deny,
 }
 
-/// The full set of WS event envelopes the kernel emits on `/api/events`.
-///
-/// `ts-rs` derives a matching TypeScript discriminated union, written to
-/// `fe/core/api/generated/wire.ts` when `cargo test export_bindings_` runs
-/// (driven by `npm run gen:api`). The serde `tag`/`content` attributes are
-/// honored — the emitted TS uses the same `{ ev, data }` envelope.
-///
-/// Note for future variants: ts-rs requires every payload type referenced
-/// here to also derive `TS`. Inline struct variants (e.g. `AreaDeleted { id }`)
-/// are emitted directly; tuple variants over a named struct (e.g.
-/// `AreaUpdated(Area)`) pull in the struct's own export.
+/// The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every
+/// payload type referenced here to also derive `TS`.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "ev", content = "data")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -378,23 +301,7 @@ pub enum Event {
     #[serde(rename = "track.deleted")]
     TrackDeleted { id: TrackId, area_id: AreaId },
 
-    /// Issue #145 — explicit Track lifecycle transition.
-    ///
-    /// Emitted exactly once per (validated) `from → to` change. Carries
-    /// the track id + the typed `from` / `to` so reducers downstream can
-    /// drive UI updates without re-parsing every `TrackUpdated` payload.
-    /// Track-scoped: routes to `track:<id>` and `area:<area>` subscribers.
-    ///
-    /// The state machine that gates which (from, to, actor) triples
-    /// produce this envelope lives in `crate::track_lifecycle`. Illegal
-    /// transitions surface as `CalmError::Forbidden` at the call site
-    /// and **no event is persisted**.
-    ///
-    /// Cleaner than overloading `TrackUpdated`: lifecycle subscribers
-    /// (sidebar pills, Today schedule, the planner agent's own status
-    /// loop) can filter on `kind = track.lifecycle_changed` without
-    /// inspecting every track-row update for a possibly-unchanged
-    /// `lifecycle` field.
+    /// Explicit Track lifecycle transition, emitted exactly once per validated `from → to` change.
     #[serde(rename = "track.lifecycle_changed")]
     TrackLifecycleChanged {
         id: TrackId,
@@ -453,65 +360,26 @@ pub enum Event {
         old_phase: HarnessPhaseTag,
         new_phase: HarnessPhaseTag,
     },
-    /// #1252 S0-2 — the harness transcript reset hard-deletes every
-    /// `harness_items` row for the card, so this event is the *only*
-    /// surviving evidence of what was there. The measurements below are
-    /// taken inside the reset transaction immediately **before** the
-    /// delete; without them a later retrospective is not merely
-    /// incomplete but directionally biased (it would conclude "resets are
-    /// frequent and surviving contexts are short", both artifacts of the
-    /// delete).
-    ///
-    /// **Nullable, not defaulted-to-zero.** The `Option` is what carries the
-    /// contract; `#[serde(default)]` is explicit reinforcement of serde's
-    /// existing "an absent `Option` field is `None`" rule, not the thing
-    /// doing the work (removing it changes nothing — verified by mutation).
-    ///   * Absence must deserialize because rows written before #1252 carry
-    ///     only `{card_id, worker_session_id, track_id}`, and
-    ///     [`Event::from_kind_and_payload`] is how `events_since` /
-    ///     `events_for_track` rebuild stored rows. A required field makes
-    ///     those rows fail to deserialize, and both readers `continue` past
-    ///     the error — the row vanishes from WS replay while its id still
-    ///     advances the client cursor, splicing a client's planner history
-    ///     across a reset it never heard about.
-    ///   * `Option` (rather than a defaulted bare `i64`) is required because a
-    ///     defaulted `0` would be indistinguishable from a genuinely empty
-    ///     transcript. `None` means "this reset predates #1252 and was never
-    ///     measured"; `Some(0)` means "measured, and it really was empty".
-    ///
-    /// The emit path (`planner_harness_start_adapter`) always writes `Some(..)`;
-    /// `None` exists only for historical rows read back off the events table.
+    /// The harness transcript reset hard-deletes every `harness_items` row for the card, so this event
+    /// is the only surviving evidence of what was there. The measurements are `Option` so rows written
+    /// before they existed still replay: `None` means unmeasured, `Some(0)` means measured and empty.
     #[serde(rename = "harness.transcript.cleared")]
     HarnessTranscriptCleared {
         worker_session_id: String,
         card_id: CardId,
         track_id: TrackId,
-        /// Number of `harness_items` rows deleted by this reset.
-        /// `None` on pre-#1252 rows only.
+        /// Number of `harness_items` rows deleted by this reset; `None` on unmeasured historical rows.
         #[serde(default)]
         cleared_item_count: Option<i64>,
-        /// Summed byte length of those rows' `params` payloads — the only
-        /// cumulative-size measure the `harness_items` schema carries
-        /// (there is no token-count column). `None` on pre-#1252 rows only.
+        /// Summed byte length of those rows' `params` payloads; `None` on unmeasured historical rows.
         #[serde(default)]
         cleared_params_bytes: Option<i64>,
-        /// Card age at reset: emit time minus the card row's `created_at`,
-        /// in milliseconds. Lets a retrospective tell "reset an hour in"
-        /// from "reset after a week". `None` on pre-#1252 rows only.
+        /// Card age at reset in milliseconds; `None` on unmeasured historical rows.
         #[serde(default)]
         card_age_ms_at_clear: Option<i64>,
     },
-    /// #615 F1 — emitted when `POST /api/cards/{id}/planner/input` queues
-    /// a user-authored text observation onto the planner harness. Card-scoped
-    /// (the planner card), `track_id` carried so track-timeline subscribers can
-    /// filter without a card→track lookup. Actor is on the envelope
-    /// (`X-Calm-Actor` → `events.actor`), `char_count` lets audit/replay
-    /// surface size without keeping the body text on the event row.
-    ///
-    /// **Body text is intentionally not on the payload** — large free-form
-    /// user input would balloon the events log and the body is already
-    /// observable via the queued `Observation::UserMessage` snapshot +
-    /// the subsequent turn input. We log size only.
+    /// Emitted when `POST /api/cards/{id}/planner/input` queues a user-authored text observation onto
+    /// the planner harness. Body text is intentionally not on the payload; only `char_count` is.
     #[serde(rename = "harness.user_message.enqueued")]
     HarnessUserMessageEnqueued {
         worker_session_id: String,
@@ -520,30 +388,9 @@ pub enum Event {
         char_count: u32,
     },
 
-    /// #1505 PR2 — one addressable entry in the planner harness pending queue
-    /// stopped being what it was: rewritten, removed by its author, delivered
-    /// by a steer, or discarded by the kernel.
-    ///
-    /// Deliberately NOT a reuse of [`Event::HarnessUserMessageEnqueued`]: that
-    /// event's sentence is "a user message entered the queue", and a deletion
-    /// is not an entry and a steer is a departure plus a delivery. Reusing it
-    /// would make the audit log say the opposite of what happened.
-    ///
-    /// `entry_id` is the join key the enqueue event gained in the same slice,
-    /// so "where did my sentence go" is answerable from the `events` table
-    /// alone for everything except delivery (GAP-M: neither a drain nor a
-    /// refusal writes a row).
-    ///
-    /// **`actor` duplicates the envelope's actor column on purpose.** The
-    /// envelope carries it for audit, but the websocket frame handed to the
-    /// browser does not — `WireEvent` is `{ev, data}` — so a UI that wants to
-    /// tell "you deleted this" from "the kernel discarded it" has no other
-    /// source. `change` alone does not answer it either: PR2b's `Dropped` is
-    /// kernel-authored, but a future `Deleted` need not stay human-only.
-    ///
-    /// Body text is off the payload for the same reason as on
-    /// [`Event::HarnessUserMessageEnqueued`]: free-form user input would
-    /// balloon the events log, and the text is observable in the snapshot.
+    /// One addressable entry in the planner harness pending queue stopped being what it was: rewritten,
+    /// removed by its author, delivered by a steer, or discarded by the kernel. `actor` duplicates the
+    /// envelope's actor column on purpose: the `{ev, data}` WS frame does not carry it.
     #[serde(rename = "harness.queue.changed")]
     HarnessQueueChanged {
         worker_session_id: String,
@@ -554,56 +401,14 @@ pub enum Event {
         actor: ActorId,
     },
 
-    /// Issue #247 PR2 — structured track-report edit-log entry. Emitted
-    /// alongside `Event::CardUpdated` from every successful
-    /// `calm_server::track_report::write::persist` call so PR4's UI can
-    /// render an edit timeline and PR5's planner agent can wake on
-    /// user-authored edits. (#1318 §1 fixed the path here: the writer has
-    /// never lived under `mcp_server::tools`, and it is now private to
-    /// `track_report::write`, reachable through that module's three entry
-    /// points.)
-    ///
-    /// `CardUpdated` stays the generic "the row changed, re-fetch" signal
-    /// every existing frontend subscriber already consumes — `TrackReportEdited`
-    /// is the *additional* structured edit-log entry, not a replacement.
-    /// Both events land in the same transaction; the broadcast order
-    /// matches the persisted order so a subscriber that wants edit-log
-    /// semantics can ignore `CardUpdated` for track-report cards without
-    /// missing anything.
-    ///
-    /// `summary_before` / `body_before` are the projected text values
-    /// **before** the `ReportDoc::update` call; `*_after` are the
-    /// projected values **after**. Under single-writer SQLite they
-    /// equal the caller's inputs verbatim; we read from the projection
-    /// so the log entry stays bit-for-bit consistent with whatever the
-    /// JSON cache and CRDT both end up persisting (matches the
-    /// "projection is the truth" contract in `persist_report`).
-    ///
-    /// `author` is hard-coded to [`EditAuthor::Planner`] in PR2 — the
-    /// planner-MCP tools are the only write path. PR3 plumbs an `Actor`
-    /// through `persist_report` and starts emitting
-    /// [`EditAuthor::User`] for REST-driven edits.
-    ///
-    /// `edit_id` is a fresh UUID v4 per call so PR4's UI can collapse
-    /// adjacent retries or correlate timeline entries with the
-    /// REST-side request id (PR3) without parsing the broader
-    /// `BroadcastEnvelope.id`. It's persisted on the event payload —
-    /// changing the format here would silently strand audit-log
-    /// replay.
-    ///
-    /// Card-scoped: the kernel persists this row with
-    /// `scope_track = track_id` and `scope_card = card_id` so the
-    /// dispatcher's push filter can subscribe to a single track's edit
-    /// log without scanning the firehose.
+    /// Structured track-report edit-log entry, emitted alongside `Event::CardUpdated` from every
+    /// successful report persist. `*_before` / `*_after` are the projected text values around the update.
     #[serde(rename = "track.report_edited")]
     TrackReportEdited {
         track_id: TrackId,
         card_id: CardId,
         author: EditAuthor,
-        /// Submitting plugin id when `author == EditAuthor::Plugin`
-        /// (#955 §5.3); `None` for every other author.
-        /// `#[serde(default)]` keeps pre-#955 history rows replayable
-        /// (field absent on old events ⇒ `None`).
+        /// Submitting plugin id when `author == EditAuthor::Plugin`; `None` for every other author.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         author_plugin_id: Option<String>,
@@ -627,12 +432,7 @@ pub enum Event {
         kind: String,
     },
 
-    /// Terminal row removed (today: emitted by the orphan-terminal sweeper
-    /// at `crate::terminal_sweeper`; a future user-initiated delete endpoint
-    /// would emit the same variant). Carries the terminal id plus the
-    /// card_id the row pointed at — useful for audit log lookups even
-    /// though the card itself may have been deleted in an earlier event.
-    /// Topic mapping (see `topics`): `terminal:<id>` plus the firehose.
+    /// Terminal row removed. Carries the terminal id plus the card_id the row pointed at.
     #[serde(rename = "terminal.deleted")]
     TerminalDeleted { id: String, card_id: CardId },
 
@@ -640,17 +440,8 @@ pub enum Event {
     PluginState {
         id: String,
         state: String,
-        /// Crash reason / initialize-rejected message, surfaced to the WS so
-        /// the UI can show it without a separate `/log` fetch. `None` for
-        /// healthy transitions (Spawning → Running, etc.). Wire shape locked
-        /// in design doc §7.
-        ///
-        /// `#[serde(default, skip_serializing_if = "Option::is_none")]`
-        /// combined with `#[ts(optional)]` matches the runtime behavior: the
-        /// field is absent on the wire when the inner `Option` is `None`, and
-        /// the TS type marks it as `last_error?: string`. (Without `optional`,
-        /// ts-rs would emit `last_error: string | null` which would diverge
-        /// from what the server actually serializes.)
+        /// Crash reason / initialize-rejected message, surfaced to the WS so the UI can show it without a
+        /// separate `/log` fetch; `None` for healthy transitions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         last_error: Option<String>,
@@ -661,19 +452,12 @@ pub enum Event {
         tool_name: String,
     },
 
-    /// Codex CLI hook passthrough. The `neige-codex-bridge` subprocess POSTs
-    /// each hook event payload to `/internal/codex/hook`; the route packages
-    /// it into this variant and emits to the bus. The shape is intentionally
-    /// opaque (Value) — codex's hook payload is documented but evolves, and
-    /// the frontend codex card pattern-matches on `kind` (`hook.codex.<event>`)
-    /// rather than typing every field.
+    /// Codex CLI hook passthrough; the payload is intentionally opaque (`Value`).
     #[serde(rename = "codex.hook")]
     CodexHook {
         /// Owning card id — topic key `card:<card_id>`.
         card_id: CardId,
-        /// Snake_case discriminator: `hook.codex.<event_name>` (e.g.
-        /// `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
-        /// the codex payload; defaults to `hook.codex.unknown` if missing.
+        /// Snake_case discriminator: `hook.codex.<event_name>`; defaults to `hook.codex.unknown` if missing.
         kind: String,
         /// Stable hook ingest key used by the server and planner harness to
         /// suppress duplicate lifecycle posts.
@@ -684,9 +468,7 @@ pub enum Event {
         payload: Value,
     },
 
-    /// Claude CLI hook passthrough. Same shape as [`Event::CodexHook`];
-    /// PR-A only introduces the event identity and plumbing. Ingest and
-    /// lifecycle interpretation land in later PRs.
+    /// Claude CLI hook passthrough. Same shape as [`Event::CodexHook`].
     #[serde(rename = "claude.hook")]
     ClaudeHook {
         /// Owning card id — topic key `card:<card_id>`.
@@ -702,22 +484,8 @@ pub enum Event {
         payload: Value,
     },
 
-    /// Deprecated: retired in #644 PR-D; retained for old-log
-    /// deserialization only.
-    ///
-    /// Planner/worker card asked the kernel dispatcher to spawn a codex worker
-    /// card. PR4 of #136 introduced this **schema-only**. PR5's `Dispatcher`
-    /// subscribed to the event bus and reacted by minting a worker card;
-    /// #644 PR-D removed that live dispatch arm. The wire shape remains so
-    /// persisted logs replay.
-    ///
-    /// `idempotency_key` lets the dispatcher dedupe replays — a retried
-    /// MCP call surfaces the same key and the dispatcher short-circuits to
-    /// the existing worker card / pending result.
-    ///
-    /// `context` is opaque payload (working-dir hints, prior turn history,
-    /// model preference). Kernel never inspects it; PR5's dispatcher
-    /// forwards verbatim into the spawned worker's card payload.
+    /// Deprecated: retained for old-log deserialization only. Planner/worker card asked the kernel
+    /// dispatcher to spawn a codex worker card.
     #[serde(rename = "codex.worker_requested", alias = "codex.job_requested")]
     CodexWorkerRequested {
         idempotency_key: String,
@@ -732,15 +500,8 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Deprecated: retired in #644 PR-D; retained for old-log
-    /// deserialization only.
-    ///
-    /// Planner card asked the kernel dispatcher to spawn a terminal worker
-    /// card. PR4 schema-only; PR5's `Dispatcher` was the consumer until
-    /// #644 PR-D removed that live dispatch arm.
-    ///
-    /// `cwd` is `None` when the planner card defers to the track/area default
-    /// working directory.
+    /// Deprecated: retained for old-log deserialization only. Planner card asked the kernel dispatcher
+    /// to spawn a terminal worker card.
     #[serde(rename = "terminal.worker_requested", alias = "terminal.job_requested")]
     TerminalWorkerRequested {
         idempotency_key: String,
@@ -753,16 +514,7 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Worker card reports task completion. PR4 schema-only; the
-    /// dispatcher's push path delivers this to the requesting planner card. The
-    /// `idempotency_key` echoes back the one from the matching
-    /// `*.worker_requested` event so the planner can correlate without parsing
-    /// the worker card's identity.
-    ///
-    /// `result` is opaque agent payload (free-form text, structured
-    /// output, etc.); `artifacts` carries a list of [`ArtifactRef`]s the
-    /// worker produced (file writes, blobs). PR4's `ArtifactRef` is a
-    /// placeholder for #129's Artifact Stream — the full type lands there.
+    /// Worker card reports task completion; `idempotency_key` echoes the matching `*.worker_requested` event.
     #[serde(rename = "task.completed")]
     TaskCompleted {
         idempotency_key: String,
@@ -774,14 +526,7 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Worker card reports task failure. PR4 schema-only; the dispatcher's
-    /// push path delivers this to the requesting planner card.
-    ///
-    /// `reason` is a free-form failure string — the kernel never parses
-    /// it, but persists it on the events table so audit-log replay can
-    /// surface the rationale a worker gave its planner. `details` is optional
-    /// structured evidence; terminal auto-completion records its exit and
-    /// bounded merged PTY output there.
+    /// Worker card reports task failure; `reason` is free-form and never parsed by the kernel.
     #[serde(rename = "task.failed")]
     TaskFailed {
         idempotency_key: String,
@@ -795,8 +540,6 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Kernel-owned execution cleanup settled after an isolated task failure.
-    /// This is a prompt to re-read current recovery capability, not retry authority.
     /// Exact immutable-file publication settled; does not change task business status.
     #[serde(rename = "task.file_publication_settled")]
     TaskFilePublicationSettled {
@@ -816,13 +559,8 @@ pub enum Event {
         operation_id: String,
     },
 
-    /// The task plan changed via an explicit plan tool or report-block
-    /// projection. `changed_keys` is the sorted, deduplicated union of
-    /// inserted, declaration-updated, and deleted rows; unchanged
-    /// declarations are omitted.
-    ///
-    /// Worker-AI actors are excluded by the in-tx role gate; planner and user
-    /// report edits may produce this event.
+    /// The task plan changed via an explicit plan tool or report-block projection; `changed_keys` is
+    /// the sorted, deduplicated union of inserted, updated, and deleted rows.
     #[serde(rename = "plan.updated")]
     PlanUpdated {
         track_id: TrackId,
@@ -832,18 +570,8 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Issue #644 PR-B — the kernel scheduler claimed a plan task
-    /// (`pending → dispatched`). Appended **inside the claim tx** (design
-    /// §5.4/§5.6) so the runs projection stays purely event-sourced: a
-    /// scheduler-dispatched task has no `*.worker_requested` event, and
-    /// this record is the projection's requested-record fallback
-    /// (`requested_at`, `kind`, the `requested`/`running` statuses).
-    ///
-    /// `idempotency_key` is the task id (`"{track_id}:{key}"`); `kind` is
-    /// the worker kind (`"codex"` / `"terminal"`). Track-scoped, actor
-    /// `ActorId::KernelDispatcher`, kernel-only: the in-tx role gate
-    /// refuses it from any card-derived actor (planner included) — only the
-    /// scheduler may claim tasks.
+    /// The kernel scheduler claimed a plan task (`pending → dispatched`); appended inside the claim tx
+    /// so the runs projection stays purely event-sourced.
     #[serde(rename = "task.dispatched")]
     TaskDispatched {
         idempotency_key: String,
@@ -853,10 +581,8 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Issue #985 PR3a-i — the kernel froze the task's resolved report-block
-    /// context in the same transaction as `task.dispatched`. Legacy tasks
-    /// carry an empty `refs` array: empty is an explicit freeze, not missing
-    /// context. Strict Kernel / KernelDispatcher only (plain User is denied).
+    /// The kernel froze the task's resolved report-block context in the same transaction as
+    /// `task.dispatched`; an empty `refs` array is an explicit freeze, not missing context.
     #[serde(rename = "task.context_frozen")]
     TaskContextFrozen {
         #[serde(default)]
@@ -873,10 +599,7 @@ pub enum Event {
         truncated: bool,
     },
 
-    /// Issue #985 PR3a-i — the kernel recorded that a frozen task context
-    /// advanced. This slice only emits the fail-closed `material` verdict;
-    /// later slices may add a second-level adjudicator. Strict Kernel /
-    /// KernelDispatcher only (plain User is denied).
+    /// The kernel recorded that a frozen task context advanced.
     #[serde(rename = "task.context_advanced")]
     TaskContextAdvanced {
         #[serde(default)]
@@ -891,12 +614,7 @@ pub enum Event {
         rationale: String,
     },
 
-    /// Issue #760 slice 1 — the kernel acquired a workflow-agnostic
-    /// isolated workspace lease for a Codex task. The lease is just a
-    /// directory plus a durable row; git/worktree semantics are layered
-    /// by later plugin slices. The event is persisted with card scope,
-    /// and the card/track ids are also carried here so topic filtering can
-    /// route replay/live frames without inspecting the envelope scope.
+    /// The kernel acquired a workflow-agnostic isolated workspace lease for a Codex task.
     #[serde(rename = "workspace.leased")]
     WorkspaceLeased {
         track_id: TrackId,
@@ -905,10 +623,7 @@ pub enum Event {
         path: String,
     },
 
-    /// Issue #760 slice 1 — the kernel released a workspace lease after
-    /// worker completion, compensation, or boot reclaim. The payload
-    /// mirrors [`Event::WorkspaceLeased`] routing fields and carries the
-    /// durable lease id for audit correlation.
+    /// The kernel released a workspace lease after worker completion, compensation, or boot reclaim.
     #[serde(rename = "workspace.released")]
     WorkspaceReleased {
         track_id: TrackId,
@@ -916,10 +631,7 @@ pub enum Event {
         lease_id: String,
     },
 
-    /// Issue #760 slice 6 — a forge adapter merged the authoritative
-    /// phase/slice PR for a track. `track_id` and `subject` identify the
-    /// C6/R4-4 target; `head_sha` and `merge_sha` are the forge output
-    /// values extracted from the action result.
+    /// A forge adapter merged the authoritative phase/slice PR for a track.
     #[serde(rename = "forge.pr.merged")]
     ForgePrMerged {
         track_id: TrackId,
@@ -947,43 +659,26 @@ pub enum Event {
         decision: RatifyDecision,
     },
 
-    /// Issue #955 §5 — a plugin submitted a report-edit proposal
-    /// through the ④ channel. Append-only Tier-A record: the full op
-    /// list + anchors ride on the payload so the pending set (and the
-    /// `proposals` projection table) can be rebuilt from the event log
-    /// alone. Actor is `ActorId::Plugin(plugin_id)` — the in-tx role
-    /// gate refuses every other actor family and any actor/payload
-    /// plugin-id mismatch (design §5.4).
+    /// A plugin submitted a report-edit proposal. Append-only record: the full op list + anchors ride
+    /// on the payload so the pending set can be rebuilt from the event log alone.
     #[serde(rename = "proposal.submitted")]
     ProposalSubmitted {
         track_id: TrackId,
         proposal_id: String,
-        /// Submitting plugin. Injected kernel-side from the callback
-        /// connection (never trusted from plugin input) and
-        /// cross-checked against the envelope actor by `role_gate`.
+        /// Submitting plugin, injected kernel-side from the callback connection (never trusted from plugin input).
         plugin_id: String,
-        /// Proposal subject kind — `"report"` is the only accepted
-        /// value today; this field is the wire's single extension
-        /// point (design D2).
+        /// Proposal subject kind — `"report"` is the only accepted value today.
         subject_kind: String,
-        /// Opaque Automerge canonical-heads token of the snapshot the
-        /// plugin proposed against (`ReportDoc::doc_heads`).
+        /// Opaque Automerge canonical-heads token of the snapshot the plugin proposed against.
         base_doc_heads: String,
         ops: Vec<ProposalOp>,
         /// Human-facing rationale rendered in the adjudication UI.
         note: String,
-        /// Pending-scoped idempotency key: while a `(plugin, track,
-        /// idem_key)` proposal is pending, re-submits return the
-        /// original proposal id; resolution releases the key.
+        /// Pending-scoped idempotency key: re-submits while pending return the original proposal id;
+        /// resolution releases the key.
         idem_key: String,
     },
-    /// Issue #955 §5.6 — a pending proposal reached one of its four
-    /// terminal decisions. `plugin_id` is the SUBMITTER (not the
-    /// resolver): the pure-function role gate only sees
-    /// `(actor, event, scope)`, so the payload must carry the
-    /// submitter id for the withdrawn-ownership check
-    /// (`withdrawn` ⇒ `ActorId::Plugin(plugin_id)` only;
-    /// `accepted`/`rejected`/`stale` ⇒ `ActorId::User` only).
+    /// A pending proposal reached one of its four terminal decisions; `plugin_id` is the SUBMITTER, not the resolver.
     #[serde(rename = "proposal.resolved")]
     ProposalResolved {
         track_id: TrackId,
@@ -1047,24 +742,8 @@ pub enum Event {
         path: String,
     },
 
-    /// Issue #644 PR-C (§6.5) — the kernel `task-verify` runner completed a
-    /// `task-verify` attempt and recorded its verdict. Appended in the
-    /// SAME tx as the `verifying → done|failed` tasks-row flip (the
-    /// gate observer's completion tx, or the scheduler's reconcile
-    /// backstop), track-scoped, actor `ActorId::KernelDispatcher` —
-    /// every kernel-emitted task event uses `KernelDispatcher` so
-    /// `is_planner_verdict_event` never classifies it as a planner verdict
-    /// (design §6.5).
-    ///
-    /// `task_id` and `idempotency_key` both carry the task id
-    /// (`"{track_id}:{key}"`); the duplicate key field keeps the
-    /// task-event correlation convention every other `task.*` kind
-    /// uses. `passed` is the machine verdict (wrapper exit 0);
-    /// `failing_step` is the last `::gate-step` sentinel before a red
-    /// exit; `log_tail` is the trailing ≤8KiB of the gate log;
-    /// `attempt` is the gate attempt number `N` from the operation's
-    /// `#g{N}` idempotency suffix. Kernel-only: the in-tx role gate
-    /// refuses it from any card-derived actor or plugin.
+    /// The kernel `task-verify` runner completed an attempt and recorded its verdict; actor is always
+    /// `ActorId::KernelDispatcher` so it is never classified as a planner verdict.
     #[serde(rename = "task.gate_result")]
     TaskGateResult {
         task_id: String,
@@ -1085,9 +764,7 @@ pub enum Event {
     },
 }
 
-/// Bounded typed result-extraction contract (R4-3). NOT a predicate DSL:
-/// no booleans, no expressions, no array logic — only a target event kind
-/// + named field reads (exit-code | JSON-pointer over the action's --json).
+/// Bounded typed result-extraction contract: only a target event kind + named field reads, not a predicate DSL.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForgeEventSpec {
     pub event_kind: String,
@@ -1110,14 +787,8 @@ pub enum ForgeExtractError {
 }
 
 impl ForgeEventSpec {
-    /// Build the event `data` payload map from the action's exit code and
-    /// optional --json stdout.
-    ///
-    /// STRICT-FAIL: a JsonField whose pointer does not resolve, or
-    /// json_stdout=None while any JsonField is declared, is an Err. Values
-    /// are taken AS-IS from the pointer (no coercion); the final
-    /// typed-deserialize happens later via Event::from_kind_and_payload, so
-    /// a type mismatch surfaces there. ExitCode -> JSON number.
+    /// Build the event `data` payload map from the action's exit code and optional --json stdout;
+    /// strict-fail on an unresolved pointer.
     pub fn extract_payload(
         &self,
         exit_code: i32,
@@ -1153,27 +824,8 @@ impl ForgeEventSpec {
     }
 }
 
-/// Central event-classifier result for the kernel's event surfaces.
-///
-/// This is the single place that combines the dotted event name
-/// (`kind_tag`) with the three plugin-subscription classifier decisions
-/// (`plugin_id`, `entity_kind`, `entity_id`). Keep the producing match in
-/// [`Event::metadata`] exhaustive: PR5 of #136 hazard H1 deliberately avoids
-/// `_ =>` catch-alls so adding an event variant forces an explicit classifier
-/// decision instead of silently inheriting `None`.
-///
-/// `plugin_id` is set only for `Event::OverlaySet`,
-/// `Event::OverlayDeleted`, `Event::PluginState`, and
-/// `Event::PluginToolRegistered`; every other variant has no plugin
-/// attribution. `entity_kind` / `entity_id` are set only for events with a
-/// filterable entity surface. The PR4 dispatcher/task-lifecycle variants
-/// (`Event::CodexWorkerRequested`, `Event::TerminalWorkerRequested`,
-/// `Event::TaskCompleted`, `Event::TaskFailed`) carry no plugin id, entity
-/// kind, or entity id; plugins that want those signals must filter via the
-/// events glob clause and omit the classifier clauses.
-///
-/// Issue #247 PR2 treats `Event::TrackReportEdited` as card-scoped for plugin
-/// filters: `entity_kind = "card"` and `entity_id = card_id`.
+/// Central event-classifier result for the kernel's event surfaces. Keep the producing match in
+/// [`Event::metadata`] exhaustive so adding a variant forces an explicit classifier decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventMetadata {
     pub kind_tag: &'static str,
@@ -1183,13 +835,7 @@ pub struct EventMetadata {
 }
 
 impl Event {
-    /// Centralized event classifier surface used by persistence and plugin
-    /// subscription filters. Keep this exhaustive so adding a variant forces a
-    /// deliberate kind/plugin/entity decision in one place.
-    ///
-    /// `kind_tag` is captured from [`Event::kind_tag`] so the string literals
-    /// live in one zero-allocation hot-path match. Calling `kind_tag()` per
-    /// broadcast must not construct this metadata or clone classifier strings.
+    /// Centralized event classifier surface used by persistence and plugin subscription filters; keep exhaustive.
     pub fn metadata(&self) -> EventMetadata {
         let kind_tag = self.kind_tag();
         match self {
@@ -1342,9 +988,6 @@ impl Event {
                 entity_kind: Some("track".into()),
                 entity_id: Some(track_id.to_string()),
             },
-            // Issue #644 PR-B — like the other task-lifecycle signals:
-            // no plugin / entity classification; consumers filter via the
-            // events kind clause + the envelope's track scope.
             Event::TaskDispatched { .. }
             | Event::TaskExecutionSettled { .. }
             | Event::TaskCandidateVerificationSettled { .. }
@@ -1383,10 +1026,6 @@ impl Event {
                 entity_kind: Some("track".into()),
                 entity_id: Some(track_id.to_string()),
             },
-            // Issue #955 — proposal events carry genuine plugin
-            // attribution (the submitter) with track entity scope, so a
-            // plugin's `neige.event.subscribe` classifier clauses can
-            // narrow its view to its own proposals (design §5.5).
             Event::ProposalSubmitted {
                 track_id,
                 plugin_id,
@@ -1410,9 +1049,6 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
-            // Issue #644 PR-C — like the other task-lifecycle signals:
-            // no plugin / entity classification; consumers filter via
-            // the events kind clause + the envelope's track scope.
             Event::TaskGateResult { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1422,10 +1058,7 @@ impl Event {
         }
     }
 
-    /// String tag for the events-table `kind` column. Matches the
-    /// `#[serde(rename = "...")]` on each variant. Centralized here so the
-    /// `Repo::write_with_event` insert and the `events.kind` index agree
-    /// on spelling without re-parsing the serialized envelope.
+    /// String tag for the events-table `kind` column; matches the `#[serde(rename = "...")]` on each variant.
     pub fn kind_tag(&self) -> &'static str {
         match self {
             Event::AreaUpdated(_) => "area.updated",
@@ -1484,30 +1117,17 @@ impl Event {
         }
     }
 
-    /// Extract just the `data` payload (the inner content the
-    /// `#[serde(tag, content)]` representation puts under `data`). Used by
-    /// the events-table insert so we persist the bare payload, not the full
-    /// `{ev, data}` envelope.
+    /// Extract just the `data` payload, so the events table persists the bare payload, not the `{ev, data}` envelope.
     pub fn payload_value(&self) -> serde_json::Value {
         match serde_json::to_value(self) {
             Ok(serde_json::Value::Object(mut map)) => {
                 map.remove("data").unwrap_or(serde_json::Value::Null)
             }
-            // Non-object serialization is impossible given the
-            // `#[serde(tag, content)]` representation, but be conservative.
             _ => serde_json::Value::Null,
         }
     }
 
-    /// Rebuild a typed `Event` from the `(kind, payload)` pair stored in the
-    /// `events` table. The wrapper splices the row's `kind` into the `ev`
-    /// tag and `payload` JSON into the `data` content slot, then runs the
-    /// derived `Deserialize` impl over the synthesized envelope.
-    ///
-    /// Used by Scope D's WS replay path: rows come back from the events
-    /// table as `(id, kind, payload_text)`, and the WS handler reconstitutes
-    /// each into a real `Event` so `topics(&ev)` can filter against the
-    /// connection's subscription set the same way it does for live frames.
+    /// Rebuild a typed `Event` from the `(kind, payload)` pair stored in the `events` table.
     pub fn from_kind_and_payload(
         kind: &str,
         payload: serde_json::Value,
@@ -1517,16 +1137,8 @@ impl Event {
     }
 }
 
-/// Subscription topics an `Event` matches. The WS handler intersects this with
-/// each client's `sub` filter to decide forward-or-drop.
-///
-/// **Topic grammar** (mirror in frontend):
-///   - `area:<id>`           — events touching a specific area
-///   - `track:<id>`           — events touching a specific track
-///   - `card:<id>`           — events touching a specific card
-///   - `plugin:<id>`         — events emitted by/about a specific plugin
-///   - `plugin:*`            — all plugin events
-///   - `*`                   — firehose (debug only)
+/// Subscription topics an `Event` matches; the WS handler intersects this with each client's `sub` filter.
+/// Grammar (mirrored in the frontend): `area:<id>`, `track:<id>`, `card:<id>`, `plugin:<id>`, `plugin:*`, `*`.
 pub fn topics(ev: &Event) -> Vec<String> {
     match ev {
         Event::AreaUpdated(c) => vec![format!("area:{}", c.id), "*".into()],
@@ -1559,10 +1171,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
             format!("track:{}", track_id),
             "*".into(),
         ],
-        // Runtime payloads intentionally route by card only: the §F payloads do
-        // not carry track_id, and today's web client subscribes with ["*"].
-        // Future track-only subscribers can revisit by threading EventScope into
-        // topics() or adding track_id to these payloads.
+        // Runtime payloads route by card only: they carry no track_id.
         Event::WorkerSessionStarted { card_id, .. }
         | Event::WorkerSessionStatusChanged { card_id, .. }
         | Event::WorkerSessionSuperseded { card_id, .. } => {
@@ -1588,10 +1197,6 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "*".into(),
         ],
 
-        // Issue #247 PR2 — track-report edit log. Card-scoped on the
-        // events row; topic mapping mirrors `Card*` so a subscriber
-        // listening on the report card (or its track) sees the
-        // structured edit alongside the generic `card.updated`.
         Event::TrackReportEdited {
             track_id, card_id, ..
         } => vec![
@@ -1635,11 +1240,6 @@ pub fn topics(ev: &Event) -> Vec<String> {
             vec![format!("card:{}", card_id), "*".into()]
         }
 
-        // PR4 of #136: kernel-internal dispatcher / task-lifecycle signals.
-        // No card/track/area ids on the payload itself (the BroadcastEnvelope
-        // carries the originating `EventScope` instead — see `Dispatcher`).
-        // Subscribers identify these via the firehose plus the dispatcher's
-        // `kinds=` filter (PR5).
         Event::CodexWorkerRequested { .. }
         | Event::TerminalWorkerRequested { .. }
         | Event::TaskCompleted { .. }
@@ -1676,9 +1276,6 @@ pub fn topics(ev: &Event) -> Vec<String> {
             vec![format!("track:{}", track_id), "*".into()]
         }
 
-        // Issue #955 — proposal events fan out to the track timeline AND
-        // the submitting plugin's topic so a plugin can observe its own
-        // resolutions via the existing subscribe surface (design §5.5).
         Event::ProposalSubmitted {
             track_id,
             plugin_id,
@@ -1709,10 +1306,6 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "*".into(),
         ],
 
-        // Issue #644 — plan revisions are track-scoped on the payload, so
-        // track subscribers (future UI task list) can filter without the
-        // firehose. No area id on the payload; the BroadcastEnvelope's
-        // EventScope carries the full ancestor chain.
         Event::PlanUpdated { track_id, .. } => vec![format!("track:{}", track_id), "*".into()],
     }
 }
@@ -1735,8 +1328,7 @@ mod scope_tests {
 
     #[test]
     fn scope_kind_strings_pinned() {
-        // These strings are persisted to `events.scope_kind` — changing
-        // them is a wire break. Pin against accidental rename.
+        // Persisted to `events.scope_kind`; changing them is a wire break.
         assert_eq!(EventScope::System.kind(), "system");
         assert_eq!(
             EventScope::Area {
@@ -1818,10 +1410,6 @@ mod scope_tests {
 
     #[test]
     fn serde_card_shape_pinned() {
-        // Lock the on-wire shape so a future serde attribute change can't
-        // silently break the WS envelope contract. `#[serde(tag = "kind",
-        // content = "id")]` encodes a tuple variant as `{kind, id}` where
-        // `id` carries the struct fields.
         let s = EventScope::Card {
             card: CardId::from("k"),
             track: TrackId::from("w"),
@@ -1833,7 +1421,6 @@ mod scope_tests {
         assert_eq!(v["id"]["track"], "w");
         assert_eq!(v["id"]["area"], "c");
 
-        // `System` unit variant: just the `kind` discriminator, no `id`.
         let v: serde_json::Value = serde_json::to_value(EventScope::System).unwrap();
         assert_eq!(v["kind"], "System");
     }
@@ -1869,18 +1456,14 @@ mod scope_tests {
 
     #[test]
     fn from_row_null_fallback_to_system() {
-        // NULL kind → System.
         assert_eq!(
             EventScope::from_row(None, None, None, None),
             EventScope::System,
         );
-        // Unknown kind → System.
         assert_eq!(
             EventScope::from_row(Some("plugin"), None, None, None),
             EventScope::System,
         );
-        // Declared kind but missing required ancestor → System (replay
-        // never strands a client on malformed scope).
         assert_eq!(
             EventScope::from_row(Some("card"), Some("c"), Some("w"), None),
             EventScope::System,
@@ -1891,16 +1474,8 @@ mod scope_tests {
         );
     }
 
-    // ----- PR4 of #136: new Event variants + ArtifactRef -----------------
-    //
-    // These tests pin the wire shape of the dispatcher / task-lifecycle
-    // variants and the `ArtifactRef` placeholder. The dispatcher (PR5) and
-    // the web zod schemas both rely on a stable wire shape.
-
     #[test]
     fn artifact_ref_transparent_serde() {
-        // `#[serde(transparent)]` keeps the wire shape a bare string —
-        // never `{"0":"foo"}`. Mirrors the typed-id pattern in `ids.rs`.
         let r = ArtifactRef::from("artifact-1");
         assert_eq!(serde_json::to_string(&r).unwrap(), r#""artifact-1""#);
         let back: ArtifactRef = serde_json::from_str(r#""artifact-1""#).unwrap();
@@ -1911,9 +1486,6 @@ mod scope_tests {
 
     #[test]
     fn kind_tag_new_variants_pinned() {
-        // The kind_tag strings are persisted to `events.kind` and surfaced
-        // on the wire as the `ev` discriminator — changing them is a wire
-        // break. Pin each PR4 variant explicitly.
         let codex_req = Event::CodexWorkerRequested {
             idempotency_key: "k".into(),
             goal: "g".into(),
@@ -2151,15 +1723,6 @@ mod scope_tests {
         assert_eq!(queue_changed.kind_tag(), "harness.queue.changed");
     }
 
-    /// #1505 PR2 — the five `change` spellings, pinned one by one.
-    ///
-    /// The golden file for `harness.queue.changed` fixes the payload's field
-    /// names but exercises a single `change` value, and two of the first four
-    /// had no emitter when this test was written, so nothing else in the tree
-    /// would have noticed a renamed variant. Every value has one now
-    /// (`Dropped` since PR2b, `Steered` and `Restored` since #1625 P3), and
-    /// the spellings stay pinned here because a client was parsing this enum
-    /// before those emitters existed.
     #[test]
     fn harness_queue_change_wire_spellings() {
         for (change, wire) in [
@@ -2191,8 +1754,6 @@ mod scope_tests {
 
     #[test]
     fn kind_tag_does_not_allocate_for_string_payload_variants() {
-        // Called per broadcast; pin the API to a static string so variants
-        // with String payloads do not need metadata construction or cloning.
         let ev = Event::OverlaySet(overlay_sample("p1", "card", "c1", "status"));
         let s: &'static str = ev.kind_tag();
         assert_eq!(s, "overlay.set");
@@ -2374,7 +1935,6 @@ mod scope_tests {
             agent_message: Some("dispatch rationale".into()),
         };
         let json = serde_json::to_value(&ev).unwrap();
-        // Pin the exact wire shape: `{ev, data}` envelope, snake_case keys.
         assert_eq!(json["ev"], "codex.worker_requested");
         assert_eq!(json["data"]["idempotency_key"], "idem-1");
         assert_eq!(json["data"]["goal"], "refactor X");
@@ -2382,18 +1942,14 @@ mod scope_tests {
         assert_eq!(json["data"]["acceptance_criteria"], "tests pass");
         assert_eq!(json["data"]["agent_message"], "dispatch rationale");
 
-        // Round-trip via the Event enum.
         let back: Event = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(back.kind_tag(), "codex.worker_requested");
 
-        // Backward compatibility for pre-#581 event-log rows / clients.
         let mut old_json = json;
         old_json["ev"] = serde_json::json!("codex.job_requested");
         let back: Event = serde_json::from_value(old_json).unwrap();
         assert_eq!(back.kind_tag(), "codex.worker_requested");
 
-        // `acceptance_criteria = None` should be absent on the wire via
-        // `skip_serializing_if`.
         let no_ac = Event::CodexWorkerRequested {
             idempotency_key: "k".into(),
             goal: "g".into(),
@@ -2423,7 +1979,6 @@ mod scope_tests {
         assert_eq!(json["data"]["cwd"], "/repo");
         assert_eq!(json["data"]["agent_message"], "terminal rationale");
 
-        // `cwd = None` absent on the wire.
         let no_cwd = Event::TerminalWorkerRequested {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
@@ -2436,11 +1991,9 @@ mod scope_tests {
             "cwd should be omitted when None, got {v}",
         );
 
-        // Round-trip via the Event enum.
         let back: Event = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(back.kind_tag(), "terminal.worker_requested");
 
-        // Backward compatibility for pre-#581 event-log rows / clients.
         let mut old_json = json;
         old_json["ev"] = serde_json::json!("terminal.job_requested");
         let back: Event = serde_json::from_value(old_json).unwrap();
@@ -2460,8 +2013,6 @@ mod scope_tests {
         assert_eq!(json["data"]["idempotency_key"], "idem-3");
         assert_eq!(json["data"]["result"]["summary"], "ok");
         assert_eq!(json["data"]["agent_message"], "accepted rationale");
-        // Artifacts are transparent strings on the wire — assert the array
-        // shape so a future #129 expansion can't silently regress.
         assert_eq!(json["data"]["artifacts"][0], "a-1");
         assert_eq!(json["data"]["artifacts"][1], "a-2");
 
@@ -2492,9 +2043,6 @@ mod scope_tests {
 
     #[test]
     fn task_gate_result_serde_round_trip() {
-        // Issue #644 PR-C — pin the gate-result wire shape: zod's
-        // `taskGateResultSchema` and the SYNC_EVENT_VERSION=4 history
-        // bullet both depend on these exact field names.
         let ev = Event::TaskGateResult {
             task_id: "w-1:impl".into(),
             idempotency_key: "w-1:impl".into(),
@@ -2519,7 +2067,6 @@ mod scope_tests {
         let back: Event = serde_json::from_value(json).unwrap();
         assert_eq!(back.kind_tag(), "task.gate_result");
 
-        // Green verdict: the Option fields stay off the wire.
         let green = Event::TaskGateResult {
             task_id: "w-1:impl".into(),
             idempotency_key: "w-1:impl".into(),
@@ -2718,18 +2265,8 @@ mod scope_tests {
         assert!(payload.is_empty());
     }
 
-    // ----- PR2 of #247: EditAuthor + TrackReportEdited -------------------
-    //
-    // Pin the wire shape of the structured edit-log variant + its
-    // sub-enum. PR4 (web UI) and PR5 (planner agent) both depend on this
-    // shape; the persisted history rows depend on it forever.
-
     #[test]
     fn edit_author_lowercase_wire_shape() {
-        // `#[serde(rename_all = "lowercase")]` — the on-wire
-        // discriminator is the bare lowercase variant name. Pin each
-        // arm so a future serde attribute change can't silently break
-        // the persisted history row format.
         assert_eq!(
             serde_json::to_string(&EditAuthor::Planner).unwrap(),
             r#""planner""#
@@ -2747,7 +2284,6 @@ mod scope_tests {
             r#""plugin""#
         );
 
-        // Round-trip back through Deserialize.
         for variant in [
             EditAuthor::Planner,
             EditAuthor::User,
@@ -2762,8 +2298,6 @@ mod scope_tests {
 
     #[test]
     fn track_report_edited_kind_tag_pinned() {
-        // Persisted in `events.kind` + surfaced on the wire as the `ev`
-        // discriminator. Changing the string is a wire break.
         let ev = track_report_edited_sample();
         assert_eq!(ev.kind_tag(), "track.report_edited");
     }
@@ -2772,8 +2306,6 @@ mod scope_tests {
     fn track_report_edited_serde_round_trip() {
         let ev = track_report_edited_sample();
         let json = serde_json::to_value(&ev).unwrap();
-        // Envelope shape: `{ ev, data }` per the enum's
-        // `#[serde(tag = "ev", content = "data")]`.
         assert_eq!(json["ev"], "track.report_edited");
         assert_eq!(json["data"]["track_id"], "w-1");
         assert_eq!(json["data"]["card_id"], "card-1");
@@ -2784,7 +2316,6 @@ mod scope_tests {
         assert_eq!(json["data"]["body_before"], "old body");
         assert_eq!(json["data"]["body_after"], "new body");
 
-        // Round-trip via the Event enum.
         let back: Event = serde_json::from_value(json).unwrap();
         assert_eq!(back.kind_tag(), "track.report_edited");
         match back {
@@ -2814,10 +2345,6 @@ mod scope_tests {
 
     #[test]
     fn track_report_edited_replay_via_from_kind_and_payload() {
-        // Replay path — pin that `from_kind_and_payload` reconstitutes
-        // the variant the same way the sync-engine replay does for
-        // every other variant. Cover every `EditAuthor` arm so a
-        // future serde tweak that breaks one of them surfaces here.
         for author_str in ["planner", "user", "kernel", "plugin"] {
             let payload = serde_json::json!({
                 "track_id": "w-1",
@@ -2849,9 +2376,6 @@ mod scope_tests {
 
     #[test]
     fn track_report_edited_topics_card_and_track() {
-        // Topic mapping — same shape as `Card*` so a subscriber
-        // listening on the card or its track sees the structured edit
-        // alongside the generic `card.updated`.
         let ev = track_report_edited_sample();
         let t = topics(&ev);
         assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
@@ -3245,10 +2769,6 @@ mod scope_tests {
 
     #[test]
     fn new_variants_round_trip_via_from_kind_and_payload() {
-        // Replay path: `Event::from_kind_and_payload` reconstitutes a
-        // typed Event from the `(kind, payload)` columns. Pin that the
-        // PR4 variants survive this path so the eventual sync-engine
-        // replay doesn't strand them.
         for (kind, expected_kind, payload) in [
             (
                 "claude.hook",

@@ -1,19 +1,5 @@
-//! `POST /api/tracks/:track_id/terminal-cards` — atomic terminal-card creation.
-//!
-//! Collapses what used to be a 3-step recipe (card-add -> terminal-create ->
-//! card-update with `terminal_id` payload) into a single runtime-backed
-//! endpoint, then routes the work through the operation runtime:
-//!
-//! 1. The route derives an operation key and stable payload hash, preserving
-//!    non-idempotent semantics unless the caller supplies `Idempotency-Key`.
-//! 2. `TerminalAdapter` performs the original DB transaction and emits the
-//!    single final-state `card.added` event.
-//! 3. The runtime serializes same-key submissions, spawns the terminal side
-//!    effect once, and compensates the committed transaction on spawn failure.
-//!
-//! See #13 for the motivating problem (terminal-card create twitch caused by
-//! the multi-event race) and PR1 (#107) for the DB helper this endpoint
-//! consumes.
+//! `POST /api/tracks/:track_id/terminal-cards` — atomic terminal-card creation through
+//! the operation runtime; non-idempotent unless the caller supplies `Idempotency-Key`.
 
 use crate::actor::Actor;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -42,13 +28,8 @@ pub fn router() -> Router<AppState> {
     )
 }
 
-/// Body for `POST /api/tracks/:track_id/terminal-cards`.
-///
-/// Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
-/// persists schema payload). Empty `program` falls back to `$SHELL` then
-/// `/bin/sh`; empty `cwd` falls back to
-/// the track's workspace (#1147 S6). `env` is merged into the daemon's environment
-/// as additional vars on top of `TERM` / `COLORTERM` / inherited.
+/// Body for `POST /api/tracks/:track_id/terminal-cards`. Omits `kind` (always
+/// `"terminal"`) and `payload` (the kernel persists the schema payload).
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NewTerminalCardBody {
     #[serde(default)]
@@ -59,17 +40,15 @@ pub struct NewTerminalCardBody {
     /// Empty string or missing → `$SHELL` (then `/bin/sh`).
     #[serde(default)]
     pub program: String,
-    /// Empty string or missing → the track's workspace path (#1147 S6).
+    /// Empty string or missing → the track's workspace path.
     #[serde(default)]
     pub cwd: String,
     /// Extra env on top of the inherited set. JSON object: `{"FOO":"bar"}`.
     #[serde(default)]
     #[schema(value_type = Object)]
     pub env: serde_json::Value,
-    /// Host browser's current theme RGB (#177). Required — the kernel
-    /// writes it onto the terminal row inside the same transaction
-    /// that mints the card, and every spawn for this row reads
-    /// `term.theme_fg/_bg` to stamp `--terminal-fg/-bg` daemon argv.
+    /// Host browser's current theme RGB. Required — written onto the terminal row in the
+    /// same transaction that mints the card; every spawn reads it for `--terminal-fg/-bg`.
     pub theme: crate::routes::theme::RequestTheme,
 }
 
@@ -114,8 +93,7 @@ pub(crate) async fn create_terminal_card(
     let payload = serde_json::to_value(TerminalCreateOperationPayload {
         actor,
         worker_session_id: Some(runtime_id),
-        // Human-created terminals get exactly the env they asked for (#1620)
-        // and no permissions block (#1704).
+        // Human-created terminals get exactly the env they asked for and no permissions block.
         planner_hooks: false,
         claude_permissions: None,
         request,
@@ -189,9 +167,7 @@ pub(crate) fn calm_error_from_operation_failure(
     }
 }
 
-// `pub` (not `pub(crate)`) so the scheduler integration tests can
-// construct idempotency-matched worker operations (issue #644 PR-B
-// review F8 fixtures).
+// `pub` so the scheduler integration tests can construct idempotency-matched operations.
 pub fn stable_payload_hash<T: Serialize>(value: &T) -> Result<String> {
     let value = canonical_json(serde_json::to_value(value)?);
     let bytes = serde_json::to_vec(&value)?;

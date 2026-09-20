@@ -1,26 +1,5 @@
-//! Exhaustive-interleaving model check for the parked-operation fence
-//! protocol (#653, design doc §4.4 orderings A/B/C).
-//!
-//! Each model step mirrors ONE atomic SQL statement in `operation/mod.rs`
-//! (single UPDATEs are atomic; `complete_parked_tx` is atomic because it
-//! runs inside `begin_immediate_tx`). If you change a WHERE predicate or a
-//! SET list on the real queries, update the matching step here — the
-//! mapping is:
-//!
-//! | model step          | real code                              |
-//! |----------------------|----------------------------------------|
-//! | `ClaimUpdateSteady`  | `claim_parked` UPDATE                  |
-//! | `ClaimUpdateBoot`    | `claim_parked_for_boot` UPDATE         |
-//! | `ClaimFetch`         | `fetch_claimed_parked` SELECT          |
-//! | `Complete`           | `complete_parked_tx` (whole tx)        |
-//! | `MarkFailed`         | `mark_failed` UPDATE                   |
-//! | `SetCompensating`    | `set_compensating` UPDATE              |
-//! | `ClearLeaseBoot`     | `clear_parked_lease_for_boot` UPDATE   |
-//!
-//! The mutant tests at the bottom re-run the same explorations with a
-//! deliberately weakened predicate and assert the harness FINDS the
-//! violation — each mutant is the shape of a real bug caught during the
-//! #662 review rounds, so the harness is known-sensitive to this class.
+//! Exhaustive-interleaving model check for the parked-operation fence protocol. Each model step mirrors ONE atomic SQL
+//! statement in `operation/mod.rs`; if you change a WHERE predicate or SET list on the real queries, update the matching step here.
 
 use std::collections::BTreeSet;
 
@@ -28,8 +7,7 @@ const NOW: i64 = 1_000;
 const FUTURE: i64 = NOW + 60_000;
 const PAST: i64 = NOW - 1;
 
-/// Owner ids: actor index stamps its own claims; pre-crash abandoned
-/// leases use `DEAD_OWNER`.
+/// Actor index stamps its own claims; pre-crash abandoned leases use `DEAD_OWNER`.
 const DEAD_OWNER: usize = usize::MAX;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,8 +38,7 @@ impl Row {
         }
     }
 
-    /// Crashed enforcer left a claim whose lease_until is still in the
-    /// future (the round-3/round-4 review findings' precondition).
+    /// Crashed enforcer left a claim whose lease_until is still in the future.
     fn parked_abandoned_future_lease() -> Self {
         Row {
             phase: ModelPhase::Parked,
@@ -69,8 +46,7 @@ impl Row {
         }
     }
 
-    /// Same abandonment, but the lease TTL has already run out — the
-    /// steady claim predicate is allowed to take over this row.
+    /// Same abandonment, but the lease TTL has already run out.
     fn parked_abandoned_expired_lease() -> Self {
         Row {
             phase: ModelPhase::Parked,
@@ -79,18 +55,14 @@ impl Row {
     }
 }
 
-/// Which predicate `ClaimFetch` uses. `LeaseAndPhase` is the shipped code;
-/// `IdOnly` is the round-1 P1 bug (fetch did not validate the new lease /
-/// phase, so a raced completion was returned as a successful claim).
+/// `LeaseAndPhase` is the shipped code; `IdOnly` is the bug where a raced completion was returned as a successful claim.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FetchPredicate {
     LeaseAndPhase,
     IdOnly,
 }
 
-/// Whether `Complete` clears the lease. `true` is the shipped code; `false`
-/// is the design-v1 hole (ordering B: a lease-fenced `mark_failed` would
-/// overwrite a committed completion).
+/// `true` is the shipped code; `false` lets a lease-fenced `mark_failed` overwrite a committed completion.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CompleteClearsLease {
     Yes,
@@ -119,8 +91,7 @@ enum Step {
     ClearLeaseBoot,
 }
 
-/// A terminal write that actually landed (rows_affected == 1 on a write
-/// that sets a terminal/compensating phase).
+/// A terminal write that actually landed (rows_affected == 1).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct TerminalWrite {
     actor: usize,
@@ -157,8 +128,7 @@ fn apply(sem: Semantics, row: &mut Row, actor: usize, step: Step) -> (bool, Opti
                 row.phase == ModelPhase::Parked && row.lease.map(|(o, _)| o) == Some(actor),
                 None,
             ),
-            // round-1 P1 mutant: the row exists, so the fetch "succeeds"
-            // regardless of who owns it or whether it is still parked.
+            // Mutant: the row exists, so the fetch "succeeds" regardless of who owns it or whether it is still parked.
             FetchPredicate::IdOnly => (true, None),
         },
         // begin_immediate_tx { SELECT; UPDATE … WHERE phase='parked' }
@@ -180,7 +150,6 @@ fn apply(sem: Semantics, row: &mut Row, actor: usize, step: Step) -> (bool, Opti
                     }),
                 )
             } else {
-                // AlreadyResolved: the call "succeeds" but writes nothing.
                 (true, None)
             }
         }
@@ -247,8 +216,7 @@ impl Actor {
     }
 }
 
-/// One fully-explored leaf: the final row plus every terminal write that
-/// landed along the way, in landing order.
+/// One fully-explored leaf: the final row plus every terminal write that landed, in landing order.
 struct Leaf {
     row: Row,
     terminal_writes: Vec<TerminalWrite>,
@@ -284,9 +252,7 @@ fn explore_rec(
             // Real callers treat a missed fence as "lost the race" and yield.
             actors2[i].aborted = true;
         }
-        // Global invariant, checked on every reachable state: a settled row
-        // never carries a lease (every settling write clears it). The
-        // design-v1 mutant intentionally violates this.
+        // Global invariant: a settled row never carries a lease (every settling write clears it).
         if sem == SHIPPED && row2.phase.is_terminal_or_compensating() {
             assert!(
                 row2.lease.is_none(),
@@ -361,7 +327,6 @@ fn count_violations(sem: Semantics, row: Row, actors: Vec<Actor>) -> usize {
 
 #[test]
 fn completer_vs_steady_enforcer_single_winner() {
-    // Orderings A, B, C from doc §4.4, exhaustively.
     for ok in [true, false] {
         let leaves = explore(
             SHIPPED,
@@ -369,8 +334,6 @@ fn completer_vs_steady_enforcer_single_winner() {
             vec![Actor::new(completer(ok)), Actor::new(steady_enforcer())],
         );
         assert_single_winner(&leaves);
-        // Both outcomes are reachable: completion wins in some interleaving,
-        // enforcement in another.
         let winners: BTreeSet<usize> = leaves.iter().map(|l| l.terminal_writes[0].actor).collect();
         assert_eq!(winners.len(), 2, "both actors must be able to win");
     }
@@ -385,8 +348,7 @@ fn completer_vs_canceler_single_winner() {
     );
     assert_single_winner(&leaves);
     for leaf in leaves {
-        // Either the completion landed (succeeded) or the cancel did
-        // (compensating) — never a failed/half state.
+        // Never a failed/half state.
         assert!(matches!(
             leaf.row.phase,
             ModelPhase::Succeeded | ModelPhase::Compensating
@@ -441,12 +403,7 @@ fn boot_lease_clear_is_benign_alongside_completion() {
     assert_single_winner(&leaves);
 }
 
-/// Round-3 review finding, pinned in both directions: a boot enforcer must
-/// settle an op whose lease was abandoned by a crashed process; a STEADY
-/// enforcer must NOT get past such a lease (it is how a live enforcer is
-/// protected from being stomped). The second half doubles as the round-3
-/// mutant: a boot arm wrongly using the steady claim is exactly a steady
-/// enforcer here, and it stalls.
+/// A boot enforcer must settle an op whose lease was abandoned by a crashed process; a STEADY enforcer must NOT get past such a lease.
 #[test]
 fn abandoned_lease_boot_vs_steady_liveness() {
     let boot = explore(
@@ -466,8 +423,7 @@ fn abandoned_lease_boot_vs_steady_liveness() {
         assert_eq!(leaf.row.phase, ModelPhase::Parked);
     }
 
-    // Once the abandoned lease's TTL runs out, the steady claim may take
-    // over — the stall above is bounded, not a deadlock.
+    // Once the abandoned lease's TTL runs out, the steady claim may take over — the stall above is bounded, not a deadlock.
     let steady_expired = explore(
         SHIPPED,
         Row::parked_abandoned_expired_lease(),
@@ -476,9 +432,7 @@ fn abandoned_lease_boot_vs_steady_liveness() {
     assert_single_winner(&steady_expired);
 }
 
-/// Round-4 review finding: after the boot LeaveParked clear, a steady
-/// enforcer (or canceler) proceeds immediately instead of waiting out the
-/// abandoned lease.
+/// After the boot LeaveParked clear, a steady enforcer proceeds immediately instead of waiting out the abandoned lease.
 #[test]
 fn boot_clear_unblocks_steady_enforcement() {
     let mut row = Row::parked_abandoned_future_lease();
@@ -488,14 +442,7 @@ fn boot_clear_unblocks_steady_enforcement() {
     assert_single_winner(&leaves);
 }
 
-// ---- mutants: the harness must DETECT the historical bug shapes ----
-
-/// Round-1 P1, pinned as the exact interleaving that bit: claim UPDATE
-/// lands, a completion settles the row, THEN the claim's fetch runs. The
-/// shipped fetch (lease+phase predicate) must report the claim lost; the
-/// id-only mutant reports the settled row as a successful claim — the
-/// caller would then make cancel/kill decisions on an op that is already
-/// terminal. Mirrors the `claim_parked` regression test in mod.rs.
+/// Claim UPDATE lands, a completion settles the row, THEN the claim's fetch runs: the shipped fetch must report the claim lost.
 #[test]
 fn mutant_fetch_id_only_returns_settled_row_as_claimed() {
     for sem in [
@@ -524,10 +471,7 @@ fn mutant_fetch_id_only_returns_settled_row_as_claimed() {
     }
 }
 
-/// Design-v1 hole (doc §11 round-1 finding): if complete_parked_tx does
-/// NOT clear the lease, ordering B (claim → complete → mark_failed)
-/// lets the lease-fenced mark_failed overwrite a committed completion —
-/// two settling writes, final phase contradicts the first write.
+/// If complete_parked_tx does NOT clear the lease, claim → complete → mark_failed lets the fenced mark_failed overwrite a committed completion.
 #[test]
 fn mutant_complete_keeps_lease_is_caught() {
     let sem = Semantics {

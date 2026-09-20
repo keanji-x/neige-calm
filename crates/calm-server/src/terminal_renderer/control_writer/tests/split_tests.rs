@@ -1,14 +1,6 @@
-//! #1725 — the writer's write shapes, under a paused Tokio clock so "the CR
-//! is not sent before `SUBMIT_CR_GAP`" is a fact about the writer and not
-//! about the scheduler: frame 2 stays pending while the clock does not move
-//! and arrives once the test advances it by exactly the gap.
-//!
-//! The paused clock auto-advances to the next timer whenever the runtime
-//! parks, and the writer's 5 s budget is a timer: a test that parked on the
-//! socket would jump the clock past the budget and read a closed writer.
-//! So nothing here parks: every wait on the peer or the ack channel is a
-//! yield-and-poll spin ([`spin`], [`stays_pending`]), and the clock moves
-//! only where the test says `advance`.
+//! The writer's write shapes under a paused Tokio clock. The paused clock auto-advances to
+//! the next timer whenever the runtime parks, and the writer's 5 s budget is a timer, so
+//! nothing here parks: every wait is a yield-and-poll spin and the clock moves only on `advance`.
 use super::*;
 use crate::terminal_renderer::{
     PumpCommand, WriteAuthority, WriteShape, run_client_pump_with_commands,
@@ -39,8 +31,7 @@ async fn spin<F: Future + Unpin>(future: &mut F) -> F::Output {
         tokio::task::yield_now().await;
     }
 }
-/// `n` scheduler turns without parking: the other tasks run as far as the
-/// frozen clock lets them.
+/// `n` scheduler turns without parking.
 async fn turns(n: u32) {
     for _ in 0..n {
         tokio::task::yield_now().await;
@@ -92,11 +83,8 @@ async fn ack(peer: &mut UnixStream, write_seq: u64) {
 async fn next_ack(acks: &mut mpsc::UnboundedReceiver<DaemonMsg>) -> Option<DaemonMsg> {
     spin(&mut pin!(acks.recv())).await
 }
-/// Polls `future` once per scheduler turn for `real_time` of wall-clock time
-/// (at least 256 turns) and asserts it stays pending the whole time. The
-/// paused clock cannot move here: a deferred yield only polls the driver
-/// with a zero timeout, which never auto-advances. The future is kept, not
-/// dropped, so a frame that arrives later is read whole.
+/// Polls `future` once per scheduler turn for `real_time` of wall-clock time and asserts it
+/// stays pending; the future is kept, not dropped, so a frame that arrives later is read whole.
 async fn stays_pending<F: Future + Unpin>(future: &mut F, real_time: Duration) {
     let started = std::time::Instant::now();
     let clock = tokio::time::Instant::now();
@@ -116,10 +104,6 @@ async fn stays_pending<F: Future + Unpin>(future: &mut F, real_time: Duration) {
     assert_eq!(tokio::time::Instant::now(), clock, "the paused clock moved");
 }
 
-/// A `SplitTrailingCr` item is two `WriteStdin` round trips: the text
-/// (seq 1), then — not before the clock advanced by `SUBMIT_CR_GAP` after
-/// `WriteAck{1}` — the CR alone (seq 2); the `InputAck` follows the second
-/// `WriteAck` only.
 #[tokio::test(start_paused = true)]
 async fn split_trailing_cr_sends_the_cr_alone_after_the_gap_and_acks_once() {
     let (control, queue) = mpsc::unbounded_channel();
@@ -184,9 +168,6 @@ async fn split_trailing_cr_sends_the_cr_alone_after_the_gap_and_acks_once() {
     let _ = task.await;
 }
 
-/// `Verbatim` never splits by content: `hello\r` is one frame with every
-/// byte, acknowledged at once, and no second frame follows however far the
-/// clock advances (the browser's paste keeps its bytes as sent).
 #[tokio::test(start_paused = true)]
 async fn verbatim_writes_text_and_cr_in_one_frame() {
     let (control, queue) = mpsc::unbounded_channel();
@@ -228,9 +209,6 @@ impl<S: tracing::Subscriber> Layer<S> for WarnCounter {
     }
 }
 
-/// Payloads a split cannot apply to are written verbatim, never dropped or
-/// padded, each with a warning: the lone CR (nothing before it) and a
-/// payload without a trailing CR are one frame each.
 #[tokio::test(start_paused = true)]
 async fn split_trailing_cr_writes_a_lone_cr_or_a_cr_less_payload_verbatim() {
     let warnings = Arc::new(AtomicUsize::new(0));
@@ -268,10 +246,6 @@ async fn split_trailing_cr_writes_a_lone_cr_or_a_cr_less_payload_verbatim() {
     let _ = task.await;
 }
 
-/// The supervisor going away between the two writes: no `InputAck`, no
-/// refusal (the connection's input stays pending → `unknown`), and the
-/// barrier is uncertain from then on, exactly like a lost acknowledgement
-/// of a single write.
 #[tokio::test(start_paused = true)]
 async fn supervisor_lost_between_the_two_writes_leaves_the_input_unknown() {
     let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
@@ -312,10 +286,6 @@ async fn queued(
     }
 }
 
-/// The pump stamps the shape from the command channel only: a
-/// `PumpCommand::Input { shape: SplitTrailingCr }` queues a split
-/// `PtyWrite`, the same client's wire `ClientMsg::Input` (a browser's
-/// frame) queues `Verbatim` for the same bytes.
 #[tokio::test]
 async fn pump_maps_the_command_shape_and_keeps_wire_input_verbatim() {
     let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());

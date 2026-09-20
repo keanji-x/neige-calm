@@ -1,11 +1,5 @@
-// Query and mutation wiring shared by app/router, app/shell and every feature
-// slice.
-//
-// It lives under app/providers rather than under any one consumer because the
-// router renders the shell and both need the same area/track reads: a queries
-// module owned by either side would close a cycle that the `no-circular`
-// dependency-cruiser rule rejects. Feature slices receive the resulting data
-// and callbacks as props — `features/**` must not import `app/**`.
+// Query and mutation wiring shared by app/router, app/shell and every feature slice. It lives under
+// app/providers because the router renders the shell and both need the same reads (`no-circular`).
 
 import {
   onlineManager, useQueries, useQuery, useQueryClient, type QueryClient,
@@ -104,26 +98,13 @@ function runInteractiveWrite<T>(transport: ApiTransportPort, operation: ApiOpera
   return runOperation(transport, operation, unauthorized);
 }
 
-/**
- * The `ErrorBody.code` a rejected request carried, or `null`.
- *
- * `'code' in failure` is the narrowing: transport and decode failures never
- * carry one, so their absence of a code is reported as `null` rather than
- * guessed at from the message.
- */
+/** The `ErrorBody.code` a rejected request carried, or `null`; transport and decode failures never carry one. */
 export function apiFailureCodeOf(error: unknown): string | null {
   if (!(error instanceof ApiError)) return null;
   return 'code' in error.failure ? error.failure.code : null;
 }
 
-/**
- * The structured folder clash inside a rejected mutation, or `null`.
- *
- * Lives beside `ApiError` because unwrapping it is the only step that needs to
- * know this class exists; the decode and the wording are `core/domain/area.ts`.
- * `'body' in failure` is the narrowing: transport and decode failures never
- * carry one, and reading `.body` off the union without it does not compile.
- */
+/** The structured folder clash inside a rejected mutation, or `null`; the decode and wording are `core/domain/area.ts`. */
 export function folderConflictOf(error: unknown): FolderConflict | null {
   if (!(error instanceof ApiError)) return null;
   return 'body' in error.failure ? asFolderConflict(error.failure.body) : null;
@@ -150,141 +131,47 @@ export const queryKeys = Object.freeze({
   tracksInArea: (areaId: string) => ['tracks', areaId] as const,
   trackDetail: (trackId: string) => ['track', trackId] as const,
   trackBacklinks: (trackId: string) => ['track-backlinks', trackId] as const,
-  /* Exactly the shape `core/events/invalidation-plan` already plans for
-     `track.report_edited` and every `task.*` event, so naming it this way is
-     what makes the TASKS panel live — see `trackReportPrefix` for the half of
-     that the plan cannot key by track. */
+  /* Exactly the shape the invalidation plan emits for `track.report_edited` and every `task.*` event. */
   trackReport: (trackId: string) => ['track-report', trackId] as const,
   /**
-   * The prefix `trackReport` extends, for the events the plan cannot key by
-   * track.
-   *
-   * `task.dispatched` / `task.completed` / `task.failed` / `task.gate_result`
-   * carry no `track_id` and no `card_id` **field**, so `derivedTrackId` — which
-   * reads named fields and nothing else — returns null and the plan emits the
-   * bare key. The track id is not absent from those events: `idempotency_key`
-   * *is* the task id, and a task id is `"{track_id}:{key}"`
-   * (`task_projection.rs`'s `format!("{track_id}:{}", declaration.key)`, echoed
-   * by all four kinds in `calm-types/src/event.rs`). The plan deliberately does
-   * not take it apart — `TrackId` is an opaque newtype with no format contract,
-   * so parsing an id in the pure planning layer would be a guess dressed as a
-   * fact, and a wrong split yields a key matching no cached query, i.e. a panel
-   * that silently stops refreshing.
-   *
-   * Dropping the bare key instead would leave the four events that matter most
-   * to this panel as the four that do not refresh it. A prefix invalidation
-   * reaches whichever track report is cached — at most the open track's — and
-   * costs nothing when none is.
+   * The prefix for the `task.*` events the plan cannot key by track: they carry no `track_id` field
+   * (the id is only inside the opaque task id, which the plan declines to parse). A prefix invalidation
+   * reaches at most the open track's report and costs nothing when none is cached.
    */
   trackReportPrefix: () => ['track-report'] as const,
   /**
-   * #1628 D5 — one `chart.series` block's resolved data, keyed by the block
-   * *revision* it was rendered from.
-   *
-   * `rev` in the key is the whole refresh mechanism, so read this together
-   * with what is deliberately absent: `track.report_edited` invalidates
-   * `['track-report']` and `['track', id]` and does NOT name this prefix
-   * (`core/events/invalidation-plan.ts`; pinned by
-   * `invalidation-plan.contract.test.ts`). The event carries no block id, so a
-   * prefix invalidation would refetch every series block of the track — each a
-   * default `full` read of up to 1 MiB — even when the edit touched prose.
-   * Instead the track detail refetches, a block whose payload changed arrives
-   * with a new `rev`, mounts a new key and fetches; an unchanged block keeps
-   * its key and its cache. A 409 from the route is the same story from the
-   * other end: the key is older than the server's block, and the refetched
-   * document will replace it (`trackReportSeriesQueryOptions`).
-   *
-   * It is not `['track-report', …]`: that prefix IS invalidated by the plan.
+   * One `chart.series` block's resolved data, keyed by the block REVISION. `rev` is the whole refresh
+   * mechanism: `track.report_edited` does not name this prefix (the event carries no block id, and each
+   * block is a `full` read of up to 1 MiB); a changed block arrives with a new `rev` and mounts a new key.
    */
   trackReportSeries: (trackId: string, blockId: string, rev: number) =>
     ['track-report-series', trackId, blockId, rev] as const,
-  /**
-   * #1669 — one captured source with its body, read when its citation is
-   * opened. Not under `['track-report', …]` and not named by any event
-   * policy: the row is immutable (body, metadata) with append-only anchors,
-   * so nothing a report edit says would make it stale, and a prefix
-   * invalidation would refetch up to 256 KiB per open citation because a
-   * paragraph changed. Freshness is the query's own (`trackSourceQueryOptions`).
-   */
+  /** One captured source with its body. Not under `['track-report', …]`: the row is immutable with append-only anchors; freshness is the query's own. */
   trackSource: (trackId: string, sourceId: string) => ['track-source', trackId, sourceId] as const,
   overlaysByKind: (entityKind: 'track' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
-  /* Settings › Plugins. Not reached by any event policy — see
-     `pluginsQueryOptions` for why, and for what stands in for one. */
+  /* Settings › Plugins. Not reached by any event policy; `pluginsQueryOptions` polls instead. */
   plugins: () => ['plugins'] as const,
-  /* #1284 S4 — one plugin's detail, read only by its configuration pane. Keyed
-     by id and not folded into the list: the list carries no manifest by design,
-     and a `config_schema` per row would make opening Settings fetch every
-     plugin's schema to render nothing with them. */
+  /* One plugin's detail, read only by its configuration pane; the list carries no manifest by design. */
   pluginDetail: (id: string) => ['plugin-detail', id] as const,
-  /* #1209 — the New track picker's list. Not invalidated by any event: the
-     kernel's template keys are compile-time constants and the only thing that
-     can move under them is a plugin starting or stopping, which changes an
-     `input_schema` the new-track page reads. */
+  /* The New track picker's list. Not invalidated by any event: template keys are compile-time constants. */
   trackTemplates: () => ['track-templates'] as const,
-  /* #1292 — the user's own recipes. Not invalidated by any event either, for a
-     different reason than `trackTemplates`: recipe writes emit no `Event` at
-     all (`routes/track_recipes.rs` — minting a variant would buy only "the
-     other window refreshes by itself", and the `revision` CAS already stops
-     that window from clobbering). The mutations below invalidate this key
-     directly, which is what keeps the list and the picker current in the
-     window that did the writing. */
+  /* The user's own recipes. Recipe writes emit no `Event`; the mutations below invalidate this key directly. */
   trackRecipes: () => ['track-recipes'] as const,
-  /* #1253 §5.1 — the Today launchpad resolve. One entry, not keyed by track:
-     the kernel's partial unique index makes `purpose = 'launchpad'` a
-     singleton, and the id is what this query is fetching.
-
-     PR2 put it on `track.report_edited`'s invalidation list, together with
-     `['track', id]`. Both are needed and neither is generated: the first
-     carries the empty-state predicate, the second carries the document, and
-     `PolicyMap` is exhaustive over event kinds rather than over query keys, so
-     no golden would have reported their absence. */
+  /* The Today launchpad resolve. One entry, not keyed by track: `purpose = 'launchpad'` is a singleton. */
   todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   plannerRun: (cardId: string) => ['planner-run', cardId] as const,
   /**
-   * `GET /api/models` for one card (#1505 S4-3).
-   *
-   * Keyed by card and not global: the answer includes the default resolved
-   * against *that card's* workspace, and config layers are per-directory, so
-   * one shared entry would serve one conversation's default to another's.
-   *
-   * It is deliberately absent from the invalidation plan. Nothing this kernel
-   * emits changes codex's catalog — it changes when codex's own 300 s cache
-   * turns over or when the person signs in elsewhere — so there is no event to
-   * hang an arm on. It is refetched by the write that can change the *default
-   * this card follows*, which is the only part of it we move.
+   * `GET /api/models` for one card. Keyed by card because the default is resolved against that card's
+   * workspace. Absent from the invalidation plan: nothing this kernel emits changes codex's catalog.
    */
   modelCatalog: (cardId: string | null) => ['model-catalog', cardId] as const,
-  /**
-   * One track's conversation list (#1189 §4.1), keyed by its track.
-   *
-   * `GET /api/tracks/{track_id}/conversations` is per-track, and unlike the area
-   * list the id *is* derivable from the events: the plan emits
-   * `['track-conversations', trackId]` whenever `derivedTrackId` resolves one.
-   *
-   * **The query that registers this key lands in S5; the mapping is here
-   * first, and that is deliberate, not dead code.** Invalidating a key with no
-   * mounted query is a no-op in TanStack Query — it marks nothing and refetches
-   * nothing — so the adapter may know a key before a query claims it. The
-   * reverse order is the one that breaks: a query that mounts against a key no
-   * adapter arm maps is silently never invalidated.
-   */
+  /** One track's conversation list, keyed by its track. */
   trackConversations: (trackId: string) => ['track-conversations', trackId] as const,
   /**
-   * The prefix `trackConversations` extends, for the events that cannot name a
-   * track.
-   *
-   * The three `runtime.*` kinds carry only a `card_id`, and
-   * `findTrackOwningCard` answers from the cached track details — so a card in a
-   * track nobody has open resolves to null and the plan emits the bare key. That
-   * is the honest "some track's list may have changed", and dropping it here
-   * would leave a genuinely open list stale for precisely the transitions that
-   * move a row's `state`.
-   *
-   * It is a fallback and not the house shape: invalidating this prefix on every
-   * runtime tick would refetch the list of every track the user has open, which
-   * is why the plan keys by track whenever it can.
+   * The prefix for events that cannot name a track: the `runtime.*` kinds carry only a `card_id`, and a
+   * card in a track nobody has open resolves to null. A fallback, not the house shape.
    */
   trackConversationsPrefix: () => ['track-conversations'] as const,
 });
@@ -316,13 +203,7 @@ function queueWriteMessage(error: unknown, fallback: string): string {
     : fallback;
 }
 
-/**
- * The model catalog for one conversation.
- *
- * No `staleTime` of its own: codex keeps a 300 s disk cache behind this, so a
- * refetch that arrives inside that window is answered from it, and one that
- * arrives outside it is the fresh read a picker being opened wants.
- */
+/** No `staleTime` of its own: codex keeps a 300 s disk cache behind this. */
 export function modelCatalogQueryOptions(transport: ApiTransportPort, cardId: string | null, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.modelCatalog(cardId),
@@ -333,13 +214,8 @@ export function modelCatalogQueryOptions(transport: ApiTransportPort, cardId: st
 
 export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   const client = useQueryClient();
-  /*
-   * One writer per mounted card, held across renders. A fresh writer each
-   * render would have nothing in flight to serialise against and would restore
-   * exactly the reordering it exists to prevent — see `createSerialWriter`.
-   * Re-created when the card changes, because two cards' selections are
-   * independent and must not queue behind each other.
-   */
+  /* One writer per mounted card, held across renders: a fresh writer each render would have nothing
+   * in flight to serialise against. Re-created when the card changes. */
   const setModelRef = useRef<{ cardId: string; write: (selection: ModelSelection) => Promise<ModelSelectionResult> } | null>(null);
   if (setModelRef.current === null || setModelRef.current.cardId !== cardId) {
     setModelRef.current = {
@@ -356,11 +232,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   }
   const setModelWrite = setModelRef.current.write;
   const refreshAfter = <T,>(result: T): T => {
-    /* A 200 from the write is the acknowledgement. Refetch is reconciliation,
-       and its failure must stay in the owning query's error channel rather
-       than turning an accepted send/interrupt into a failed write that invites
-       a duplicate retry. Do not await it: a hung read must not retain the
-       provider-wide send lease either. */
+    /* A 200 from the write is the acknowledgement; refetch is reconciliation and its failure must not
+           turn an accepted send into a failed write. Not awaited: a hung read must not retain the send lease. */
     void Promise.all([
       client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }),
       client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }),
@@ -370,26 +243,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   return {
     send: (text: string, attachments: readonly string[] = []) => runOperation(transport, sendPlannerInputOperation(cardId, text, attachments), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
-    /*
-     * #1505 PR4 — the queue write.
-     *
-     * One, now: the strip's only control removes the message, and editing a
-     * queued message in place has no front end. The edit route is
-     * `PATCH /api/cards/{id}/planner/input/{entry_id}` — `routes/cards.rs`
-     * mounts `patch(...).delete(...)` on that path, and `put` belongs to
-     * `/planner/model`, which is a different route — and it is still served;
-     * nothing in the browser calls it any more, the way `POST /planner/reset`
-     * was left standing when #1139 removed its last caller.
-     *
-     * It resolves rather than rejects on a refusal, and that is the point: a
-     * lost compare-and-swap and a drained entry are answers the reader has to
-     * be shown, not errors to be swallowed by a generic mutation error
-     * channel. Only the classification happens here; `core/domain` owns which
-     * failure means what.
-     *
-     * The refresh runs on every path including the refusals — a 409 proves the
-     * cached page is behind, and a 404 proves the entry is not there at all.
-     */
+    /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
+     * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
         .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
@@ -398,16 +253,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
           queueWriteMessage(error, 'Could not remove the queued message.'),
         ))
         .then(refreshAfter),
-    /*
-     * #1625 P3 — the second queue write: hand a queued message to the turn
-     * that is running now. Same classification as the delete, plus the
-     * steer's own two 409s (`not_running`: nothing took it, it is still
-     * queued; `unanswered`: codex never replied, it is queued again and may
-     * also have reached the turn).
-     * The refresh runs on every path for the same reason as above, and on a
-     * 200 it is what makes the transcript pick up the row the kernel wrote
-     * before it fetches the queue page that no longer lists the entry.
-     */
+    /* Same classification as the delete, plus the steer's own 409s (`not_running`, `unanswered`); on a
+     * 200 the refresh is what makes the transcript pick up the row the kernel wrote. */
     steerQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, steerPlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
         .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
@@ -416,17 +263,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
           queueWriteMessage(error, 'Could not send the queued message now.'),
         ))
         .then(refreshAfter),
-    /*
-     * The stored selection is read back from `planner-run`, so that query is
-     * what has to be invalidated — `refreshAfter` already does it. The catalog
-     * goes with it because "what does this card follow by default" is part of
-     * that answer and a `null` selection is displayed through it.
-     *
-     * `INTERACTIVE_WRITE_OPTIONS` is not applied here for the same reason the
-     * two above do without it: these are plain promises the caller awaits, not
-     * `useMutation`s, and the retry policy that flag carries belongs to the
-     * ones that are.
-     */
+    /* The stored selection is read back from `planner-run`; the catalog goes with it because the default
+     * this card follows is part of that answer. */
     setModel: (selection: ModelSelection): Promise<ModelSelectionResult> =>
       setModelWrite(selection)
         .then((result) => {
@@ -434,9 +272,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
             .catch(() => undefined);
           return refreshAfter(result);
         }),
-    /* #1505 S6 — no `refreshAfter`: an upload changes nothing any query holds.
-       The attachment becomes part of the card's state only when a message
-       names it, and that is the send above, which does refresh. */
+    /* No `refreshAfter`: an upload changes nothing any query holds until a send names it. */
     uploadAttachment: async (readBytes: () => Promise<Uint8Array>, contentType: string) => {
       const admitted = admitTransport(transport);
       const bytes = await readBytes();
@@ -444,32 +280,17 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
       // Keep admission attached to the value until the feature actually consumes it.
       return () => { admitted.recovery?.checkpoint()(); return uploaded; };
     },
-    /* No `reset` — see the note where `resetPlannerOperation` used to be in
-       `core/domain/conversation.ts`. The endpoint is still served; nothing in
-       the browser calls it. */
   };
 }
 
 export type ConversationMutations = Readonly<{
-  /**
-   * Mint a conversation and deliver its first message.
-   *
-   * The key is supplied by the caller because it identifies the *draft*, not
-   * the attempt: pressing send again after a timeout must reuse it, or the
-   * retry mints a second conversation.
-   */
+  /** The key identifies the DRAFT, not the attempt: a retry after a timeout must reuse it, or it mints a second conversation. */
   create: (text: string, idempotencyKey: string, selection: ModelSelection) => Promise<Conversation>;
   /** Re-read the list and hand back what it now holds. */
   refresh: () => Promise<Conversation[]>;
 }>;
 
-/**
- * One track's assistant conversations (#1189 §4.1).
- *
- * The key it registers is `queryKeys.trackConversations(trackId)`, which the
- * event bridge has mapped since S4 — so the list goes live the moment this
- * query mounts, with no second refresh path of its own.
- */
+/** One track's assistant conversations; the event bridge already maps this key, so the list is live the moment it mounts. */
 export function trackConversationsQueryOptions(
   transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
 ) {
@@ -480,9 +301,7 @@ export function trackConversationsQueryOptions(
   };
 }
 
-/**
- * Creates and refreshes one Track's assistant-conversation list.
- */
+/** Creates and refreshes one Track's assistant-conversation list. */
 export function useTrackConversationMutations(
   transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
 ): ConversationMutations {
@@ -492,9 +311,7 @@ export function useTrackConversationMutations(
     mutationFn: ({ text, idempotencyKey, selection }: { text: string; idempotencyKey: string; selection: ModelSelection }, transport: ApiTransportPort) =>
       runInteractiveWrite(transport, createTrackConversationOperation(trackId, text, idempotencyKey, selection), unauthorized),
     onSuccess: (row) => {
-      /* Written through as well as invalidated: the drawer switches to this row
-         in the same tick and a list that does not hold it yet renders with no
-         active row. */
+      /* Written through as well as invalidated: the drawer switches to this row in the same tick. */
       client.setQueryData<Conversation[]>(queryKeys.trackConversations(trackId), (current) => {
         const rows = current ?? [];
         return rows.some((candidate) => candidate.id === row.id)
@@ -502,9 +319,7 @@ export function useTrackConversationMutations(
           : [...rows, row];
       });
       void client.invalidateQueries({ queryKey: queryKeys.trackConversations(trackId) });
-      /* The card is new on the track, so the track's own detail — which is where
-         the CARDS panel, the grid and the Today open-request all read cards
-         from — is now one card short of the truth. */
+      /* The track detail is where the CARDS panel, the grid and the Today open-request read cards from. */
       void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
     },
   });
@@ -523,7 +338,6 @@ const serverVersionSchema = z.object({
   minWebCompatVersion: z.number(),
   syncEventVersion: z.number(),
   dbInstanceId: z.string(),
-  // #1722 S1b — decoded, not yet read; see `ServerVersionInfo`.
   databaseId: z.string().optional(),
   nowMs: z.number().optional(),
 });
@@ -574,13 +388,7 @@ export function trackDetailQueryOptions(transport: ApiTransportPort, trackId: st
   };
 }
 
-/**
- * Who cites this track (§8.3).
- *
- * Its own cache entry rather than a field on the detail: backlinks are written
- * by *other* tracks, so they go stale on edits this track never sees, and folding
- * them into the detail would tie the document's freshness to theirs.
- */
+/** Who cites this track. Its own cache entry: backlinks are written by OTHER tracks, so they go stale on edits this track never sees. */
 export function trackBacklinksQueryOptions(transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.trackBacklinks(trackId),
@@ -590,106 +398,37 @@ export function trackBacklinksQueryOptions(transport: ApiTransportPort, trackId:
 }
 
 /**
- * The track's task verdicts (§8.3) — what the kernel's task projection says
- * about each declared task: schedulable, status, and the worker card it was
- * dispatched onto.
- *
- * Its own cache entry rather than a field on the detail for the same reason
- * the backlinks are: the track detail is a card read, and these change on every
- * dispatch and every gate result without any card being written. It is also
- * the key the event plan already names, which is what makes the panel live.
- *
- * **Events alone do not keep it live, and the timer below is why.** The write
- * that stamps `worker_card_id` — `scheduler::mark_running` — emits nothing at
- * all, and it lands *after* `task.dispatched` and after every `runtime.*` a
- * worker adapter emits during its spawn. See `hasLiveTaskRun` for the full
- * accounting per worker kind, and for why this is a poll and not a new event.
+ * The track's task verdicts. Its own cache entry: these change on every dispatch and gate result without
+ * any card being written. Events alone do not keep it live — `scheduler::mark_running` stamps
+ * `worker_card_id` without emitting anything — hence the timer.
  */
 export function trackTaskVerdictsQueryOptions(
   transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
-  /* The declarations this report actually has, because the timer below is
-     about the *rows* the panel draws and a verdict is not a row — see
-     `taskVerdictsRefetchInterval`. They arrive with the track detail, which is
-     already in hand when this query is created. */
+  /* The declarations this report has: the timer is about the ROWS the panel draws, and a verdict is not a row. */
   blocks: readonly ReportBlock[] | null,
 ) {
   return {
     queryKey: queryKeys.trackReport(trackId),
     queryFn: ({ signal }: { signal: AbortSignal }): Promise<TaskVerdict[]> =>
       runOperation(transport, { ...trackTaskVerdictsOperation(trackId), signal }, unauthorized),
-    /*
-     * See `taskVerdictsRefetchInterval` for when the timer runs at all.
-     *
-     * 3 seconds is priced off the endpoint, not chosen for roundness. Measured
-     * on `GET /api/tracks/{id}/report` (debug build, in-memory SQLite, this
-     * box): a 3-task / 2-prose report answers in p50 14.8 ms, a 24-task /
-     * 12-prose one in p50 104 ms — the cost is dominated by the per-declaration
-     * projection, as `taskVerdictInvalidatingKinds` describes. At the measured
-     * worst case that is ~3.5% of one core, for one open track, only while
-     * something is running; and it is O(1) in the number of workers, which is
-     * the property the rejected fix (letting `codex.hook` invalidate this key)
-     * did not have — hooks arrive about twice per tool call *per worker*.
-     * Against a run measured in tens of seconds at least, 3 s of staleness on
-     * "which card is this task on" is below the threshold at which a reader
-     * would reach for the refresh button.
-     */
+    /* 3 s is priced off the endpoint (p50 14.8 ms for a small report, 104 ms for a 24-task one): ~3.5% of
+     * one core for one open track, only while something is running, and O(1) in the number of workers. */
     refetchInterval: taskVerdictsRefetchInterval(blocks),
   };
 }
 
 /** The live poll, once the read has landed at least once. */
 const TASK_VERDICT_POLL_MS = 3000;
-/** The recovery poll, while the read has never landed at all. Deliberately far
- *  slower than the live one: nothing is being *tracked* here, the only job is
- *  to notice that the endpoint came back. */
+/** The recovery poll, while the read has never landed at all; far slower, since nothing is being tracked. */
 const TASK_VERDICT_RECOVERY_POLL_MS = 15_000;
 /**
- * How many failed loads the recovery poll will sit through before giving up —
- * about a minute at the interval above, and then silence.
- *
- * Bounded because the two things that make this read fail are not alike. A
- * restarting or briefly unreachable server is transient and a minute of retries
- * clears it. But `GET /api/tracks/{id}/report` also fails *permanently* for a
- * track that no longer exists (`resolve_report_for_track` → `NotFound`) and for a
- * track whose `track-report` card is missing (the same function's invariant
- * violation → 500, `track_report.rs`), and neither of those is going to get
- * better by being asked again. An unconditional poll on "no data" would leave a
- * stale or deleted tab hitting a dead route every few seconds for as long as it
- * stayed open.
+ * Bounded: the report route also fails permanently (deleted track 404s, missing `track-report` card
+ * 500s), and an unconditional poll on "no data" would hit a dead route forever.
  */
 const TASK_VERDICT_RECOVERY_ATTEMPTS = 4;
 
-/**
- * The timer, over both of the states this query can be in.
- *
- * **Data in hand** — poll only while the track holds a task inside the eventless
- * window, and stop the moment none does (`false` is react-query's "no timer").
- * A settled track, a track that never dispatched anything, and a track whose page
- * is closed all cost exactly nothing. This branch also covers a *failed
- * refetch*: react-query keeps the last good data, so a live run stays live
- * across a blip and the timer that will re-fetch it keeps running.
- *
- * **No data at all** — the initial load failed and react-query exhausted its
- * retries, so `data` is `undefined`, `hasLiveTaskRun` is vacuously false, and
- * the query would sit there with no timer forever: nothing in the page ever
- * asks again, and a track that was mid-dispatch when the load failed would show
- * declaration words and no click-through until the tab was reloaded. A bounded
- * recovery poll converges without turning a permanently dead route into a
- * permanent load — see `TASK_VERDICT_RECOVERY_ATTEMPTS`. `errorUpdateCount` is
- * the counter to read rather than `failureCount`, which counts *retries within*
- * one attempt and is reset on success; `errorUpdateCount` counts errors
- * observed and so ticks once per exhausted attempt. It is `0` while the very
- * first fetch is still in flight, which is why that case takes no timer either:
- * a request is already on the wire.
- *
- * **Curried on the declarations** because the live branch is a question about
- * the panel's rows, not about the wire. The kernel emits a verdict for a
- * declaration that has been *deleted* (`blockId: ''`, naming no block here), so
- * an in-flight status can produce no row at all, and a timer keyed on the raw
- * verdicts would keep refetching every 3 s with nothing on screen that could
- * ever change. Joining first costs one pass over the declarations per interval
- * decision and makes "costs nothing outside that window" true as written.
- */
+/** With data: poll only while the panel holds a live row. With no data: a bounded recovery poll read off `errorUpdateCount` (`failureCount` resets on success).
+ * Curried on the declarations because verdicts for deleted declarations (`blockId: ''`) produce no row, so a timer keyed on raw verdicts would refetch with nothing on screen. */
 export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | null) {
   return (query: { state: { data?: TaskVerdict[]; errorUpdateCount: number } }): number | false => {
     const { data, errorUpdateCount } = query.state;
@@ -703,17 +442,8 @@ export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | nul
 }
 
 /**
- * #1253 §5.1 — the Today page load's resolve. A pure read: it never
- * bootstraps, so the first paint of Today does not depend on codex being up.
- *
- * **`null` is data; any failure is an error** (INV-TODAYDOC-002). "There is no
- * launchpad yet" arrives as a 200 with a null body and becomes the empty
- * state; a 500, a timeout or a schema mismatch reaches the reader as an error
- * box. There is no status-code special case left to get wrong — this used to
- * convert a 404 into `null` here, and the endpoint now says `null` itself.
- * Folding the two together — treating any failure as "nothing yet" — would
- * make an unreachable server look exactly like a fresh workspace, which is the
- * silent degradation this invariant exists to forbid.
+ * The Today page load's resolve, a pure read. `null` is data ("no launchpad yet"); any failure is an
+ * error — folding them would make an unreachable server look like a fresh workspace.
  */
 export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
@@ -730,12 +460,7 @@ export type TodayLaunchpadEnsureMutation = Readonly<{
   failure: ApiFailure | null;
 }>;
 
-/**
- * Materialise the launchpad for the Conversations `+` after a reader presses
- * it. The returned track id lets the route open the draft immediately; the
- * resolve is reconciled in the background because it alone owns the report's
- * empty-state predicate.
- */
+/** Materialise the launchpad after the reader presses `+`; the resolve is reconciled in the background because it owns the empty-state predicate. */
 export function useTodayLaunchpadEnsureMutation(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
 ): TodayLaunchpadEnsureMutation {
@@ -757,33 +482,11 @@ export function useTodayLaunchpadEnsureMutation(
 }
 
 /**
- * #1343 — Reset today's report, as one mutation.
- *
- * `failure` is handed back as an `ApiFailure` rather than as a sentence, the
- * same shape the deleted summary mutation used: wording belongs outside React.
- * There is no classifier for it, because there is no refusal that is data —
- * every non-200 here is a malfunction.
- *
- * **`onSuccess` DOES invalidate the document's keys, and the deleted summary
- * trigger's reasoning does not carry over.** That one refused to, because its
- * 200 meant "the message was enqueued" and the write landed later as an event
- * — refetching would have fetched the old report and masked a broken
- * invalidation chain. This 200 means the write already happened, so the cached
- * report and the cached empty-state predicate are both known-stale at that
- * instant. Waiting for `track.report_edited` to arrive over the socket would
- * leave the page showing a document the server no longer has.
- *
- * The conversation lists are deliberately NOT invalidated: a reset creates no
- * conversation and deletes none.
+ * Reset today's report. `failure` is an `ApiFailure`, not a sentence: wording belongs outside React.
+ * `onSuccess` invalidates the document's keys because this 200 means the write already happened.
  */
 export type TodayReportResetMutation = Readonly<{
-  /**
-   * Awaitable, unlike the fire-and-forget `write` the deleted summary trigger
-   * exposed, and that is what lets `useDeleteConfirm` own the outcome: the
-   * confirmation dialog is what reports a failed reset, in the same place a
-   * failed track delete reports one, and it can only do that if the promise
-   * reaches it.
-   */
+  /** Awaitable so `useDeleteConfirm` can own the outcome. */
   reset: () => Promise<void>;
 }>;
 
@@ -812,15 +515,7 @@ export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: 
   };
 }
 
-/**
- * #1209 — templates for the new-track page.
- *
- * `retry: false` makes a failed roster visible instead of leaving either
- * consumer spinning. New Track can continue with an explicit No template when
- * no saved default must be resolved; a saved but unresolved Area default stays
- * blocked until the reader clears or replaces it. The Area editor likewise
- * keeps the missing value visible rather than silently changing the setting.
- */
+/** Templates for the new-track page. `retry: false` makes a failed roster visible instead of leaving either consumer spinning. */
 export function trackTemplatesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.trackTemplates(),
@@ -839,40 +534,20 @@ export type TrackTemplates = Readonly<{
   refetch: () => void;
 }>;
 
-/**
- * Shared template roster for New Track and the Area editor. A hook and not raw
- * `useQuery` at either call site keeps loading/error semantics in one place and
- * lets shell contract tests mock the same provider boundary as the workspace
- * and mutation hooks.
- */
+/** Shared template roster for New Track and the Area editor, so loading/error semantics live in one place. */
 export function useTrackTemplates(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackTemplates {
   const query = useQuery(trackTemplatesQueryOptions(transport, unauthorized));
   return {
     templates: query.data ?? [],
     error: query.isError ? 'Could not load templates.' : null,
-    // `[]` must not be readable as "loaded and empty" — both template pills
-    // render a different affordance for "no templates" than for "not yet".
-    //
-    // A **failed** read is not loaded either. The first cut wrote
-    // `!query.isPending`, which is true once a read has errored — so a dead
-    // server produced `loaded: true` with `templates: []`, i.e. a picker
-    // claiming the server has no templates instead of reporting the failure.
-    //
-    // New Track uses this to fail closed for an unresolved saved default; the
-    // Area editor uses it to label a saved id as pending vs unavailable.
+    // `[]` must not read as "loaded and empty", and a FAILED read is not loaded either: `!isPending` alone
+    // is true once a read has errored, making a dead server look like a server with no templates.
     loaded: !query.isPending && !query.isError,
     refetch: () => { void query.refetch(); },
   };
 }
 
-/**
- * #1292 — the user's own recipes, for the New track picker and the manage
- * route.
- *
- * `retry: false` for the same reason as `trackTemplatesQueryOptions`: this
- * list feeds the app's only track-creation entry point, and a read that fails
- * must degrade that page to "built-ins only" rather than leave it spinning.
- */
+/** The user's own recipes. `retry: false`: a failed read must degrade the picker to "built-ins only" rather than spin. */
 export function trackRecipesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.trackRecipes(),
@@ -882,15 +557,11 @@ export function trackRecipesQueryOptions(transport: ApiTransportPort, unauthoriz
 }
 
 export type TrackRecipes = Readonly<{
-  /** Never `undefined`: for the picker, pending and failed both read as "no
-   *  recipes of mine", which is a fully working state. */
+  /** Never `undefined`: for the picker, pending and failed both read as "no recipes of mine". */
   recipes: TrackRecipe[];
   /** A notice, not a blocker. `null` while pending. */
   error: string | null;
-  /** `false` while the first read is in flight **or** after it failed — the
-   *  manage route's "you have no recipes yet" copy is a claim about the
-   *  server, and a failed read is not entitled to make it. Same rule, and the
-   *  same past defect, as `useTrackTemplates`. */
+  /** `false` while the first read is in flight OR after it failed: "no recipes yet" is a claim about the server. */
   loaded: boolean;
 }>;
 
@@ -906,13 +577,8 @@ export function useTrackRecipes(transport: ApiTransportPort, unauthorized: Unaut
 export type TrackRecipeMutations = Readonly<{
   create: (body: { title: string; body: string }) => Promise<TrackRecipe>;
   /**
-   * Whole-document `PUT` gated on `if_revision`. **Resolves with the stored
-   * row**, which is not always the bytes sent — the write boundary re-renders
-   * every fence, drops tombstones and normalizes the task privilege fields.
-   * Callers render the resolution, never their own draft.
-   *
-   * Rejects with an `ApiError` whose `failure.status` is 409 when the recipe
-   * moved under the writer.
+   * Whole-document `PUT` gated on `if_revision`. Resolves with the STORED row, which may differ from the
+   * bytes sent; rejects with `failure.status` 409 when the recipe moved under the writer.
    */
   save: (recipeId: string, body: { title: string; body: string; if_revision: number }) => Promise<TrackRecipe>;
   remove: (recipeId: string) => Promise<void>;
@@ -935,26 +601,13 @@ export function useTrackRecipeMutations(
     ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: (variables: { recipeId: string; body: { title: string; body: string; if_revision: number } }, transport: ApiTransportPort) =>
       runInteractiveWrite(transport, updateTrackRecipeOperation(variables.recipeId, variables.body), unauthorized),
-    /* Invalidate but do **not** write the response through to the cache here.
-       The response is also the editor's next rendered state, and it reaches
-       the editor as the promise's value; writing it into the list as well
-       would give the same fact two homes with no third party to keep them in
-       step.
-
-       `onSettled`, not `onSuccess`, for the reason `remove` gives below and
-       for one more: a save rejected with a 409 means the list is holding a
-       revision the server has moved past, and the editor's conflict notice
-       tells the reader to close and reopen the recipe to start from the
-       current version — which only produces a current version if something
-       refetched. On success the refetch this queues is what updates the
-       list's row; on a 409 it is what makes that instruction true. */
+    /* Invalidate but do not write the response through: it reaches the editor as the promise's value, and
+           two homes for one fact would drift. `onSettled` so a 409 also refetches the current revision. */
     onSettled: invalidate,
   });
   const remove = useRecoveryMutation(transport, {
     mutationFn: (recipeId: string, transport: ApiTransportPort) => runOperation(transport, deleteTrackRecipeOperation(recipeId), unauthorized),
-    /* `onSettled`, not `onSuccess`: a delete that failed because the row was
-       already gone leaves the list holding a row that does not exist, and
-       refetching is how the reader finds out. */
+    /* `onSettled`: a delete that failed because the row was already gone still needs the list refetched. */
     onSettled: invalidate,
   });
   return {
@@ -980,15 +633,8 @@ export type Workspace = Readonly<{
 }>;
 
 /**
- * INV-APP-084 — the area → tracks fan-out is a page-level `useQueries`, never a
- * route loader await. One slow area must not block the calendar; each area's
- * list also stays its own cache entry, so a track moving between areas
- * invalidates two lists instead of the whole workspace.
- *
- * The workspace-wide track-overlay read is folded in here so every surface —
- * sidebar buckets, Today's counters, area lists — sees the same
- * `anyCardNeedsInput` / progress / eta / now, rather than only the track the
- * user happens to have open.
+ * The area → tracks fan-out is a page-level `useQueries`, never a route loader await: one slow area
+ * must not block the calendar. The workspace-wide overlay read is folded in so every surface sees the same activity.
  */
 export function useWorkspace(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Workspace {
   const areasQuery = useQuery(areaListQueryOptions(transport, unauthorized));
@@ -1028,10 +674,9 @@ export function useWorkspace(transport: ApiTransportPort, unauthorized: Unauthor
   };
 }
 
-/** Route loaders prime only this one list; see INV-APP-084 above. */
+/** Route loaders prime only this one list. */
 export function prefetchAreaList(client: QueryClient, transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Promise<void> {
-  // Prefetch failures belong to the Areas query. The shell and its retry action
-  // must still mount; rejecting a loader here replaces the entire app.
+  // Prefetch failures belong to the Areas query; rejecting a loader here would replace the entire app.
   void client.prefetchQuery(areaListQueryOptions(transport, unauthorized));
   // A paused offline query must not hold the route commit either.
   return Promise.resolve();
@@ -1039,12 +684,8 @@ export function prefetchAreaList(client: QueryClient, transport: ApiTransportPor
 
 // ---------- mutations ----------
 //
-// Every mutation invalidates. A mutation may additionally write its response
-// through to the cache first, but only when that response *is* the new cache
-// value (an id-keyed row the server just returned) and the very next render
-// needs it. The invalidation still follows and reconciles;
-// a write-through that guessed, or that stood in for one, would only widen the
-// window in which the cache and the server disagree.
+// Every mutation invalidates. A write-through may precede it only when the response IS the new cache
+// value (an id-keyed row the server just returned) and the very next render needs it.
 
 export type AreaMutations = Readonly<{
   create: (body: NewAreaBody, idempotencyKey: string) => Promise<Area>;
@@ -1080,8 +721,7 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
         ]);
       });
     },
-    // A lost response can follow a committed creation. Reconcile the sidebar;
-    // the retained creation key independently makes the next POST safe.
+    // A lost response can follow a committed creation; the retained creation key makes the next POST safe.
     onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
   const update = useRecoveryMutation(transport, {
@@ -1090,27 +730,22 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
       runInteractiveWrite(transport, updateAreaOperation(areaId, body), unauthorized),
     onSuccess: (wire) => {
       const updated = toArea(wire);
-      // The Area editor closes as soon as mutateAsync resolves, and its row's
-      // New Track action is immediately usable. Write the authoritative PATCH
-      // response through before that close; otherwise a click in the refetch
-      // window snapshots stale defaults into NewTrackForm's local state.
+      // The Area editor closes as soon as mutateAsync resolves; without the write-through a click in the
+      // refetch window snapshots stale defaults into NewTrackForm's local state.
       client.setQueryData<Area[]>(queryKeys.areas(), (current) => current?.map(
         (area) => area.id === updated.id
           ? newestArea(area, updated)
           : area,
       ));
     },
-    // Success and failure both reconcile with the server. A transport failure
-    // may still follow a committed write, so failure cannot leave cached Area
-    // defaults authoritative.
+    // A transport failure may still follow a committed write, so failure cannot leave cached defaults authoritative.
     onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
   const remove = useRecoveryMutation(transport, {
     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>
       runOperation(transport, { ...deleteAreaOperation(areaId), signal }, unauthorized),
     onSuccess: (_result, { areaId }) => {
-      // The area is gone; its track list can never resolve again, so drop it
-      // instead of leaving a permanently-stale entry behind.
+      // The area is gone; its track list can never resolve again.
       client.removeQueries({ queryKey: queryKeys.tracksInArea(areaId) });
     },
     // Abort only ends the client wait: the server may already have committed.
@@ -1133,12 +768,7 @@ type TrackCreateVariables =
   | Readonly<{ body: NewTrackBodyWithFirstMessage; idempotencyKey: string }>;
 
 export type TrackMutations = Readonly<{
-  /**
-   * `idempotencyKey` is required by the kernel whenever `body.first_message` is
-   * present (#1384). Mint it **once per draft** and pass the same value on a
-   * retry — a fresh key on a retry mints a second track holding the same
-   * sentence, which is precisely what the key exists to stop.
-   */
+  /** `idempotencyKey` is required by the kernel whenever `first_message` is present. Mint it ONCE per draft: a fresh key on a retry mints a second track. */
   create: TrackCreateMutation;
   patch: (trackId: string, areaId: string, body: TrackPatchBody) => Promise<Track>;
   setPinned: (trackId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Track>;
@@ -1162,8 +792,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     ),
     onSuccess: (track, { body }) => {
       void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(track.area_id) });
-      // Explicit `attach_folder` still mints a area_folders row. Drop any
-      // cached list so a later folders read cannot serve a stale empty array.
+      // Explicit `attach_folder` mints an area_folders row; drop any cached list so a later read cannot serve a stale empty array.
       if (body.attach_folder) {
         client.removeQueries({ queryKey: queryKeys.areaFolders(body.area_id) });
       }
@@ -1173,11 +802,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     mutationFn: ({ trackId, body }: { trackId: string; areaId: string; body: TrackPatchBody }, transport: ApiTransportPort) =>
       runOperation(transport, updateTrackOperation(trackId, body), unauthorized),
     onSuccess: (track, variables) => {
-      // The PATCH response is the row the server committed. Write it through
-      // before starting the best-effort invalidation so a failed detail GET
-      // cannot leave the acknowledged transition rendered as stale Done. A
-      // Working row is never resumable; later authoritative reads may make a
-      // newer Blocked/Reviewing state resumable again.
+      // Write the committed row through before the best-effort invalidation so a failed detail GET cannot
+      // leave the acknowledged transition rendered as stale. A Working row is never resumable.
       client.setQueryData(queryKeys.trackDetail(variables.trackId), (previous: TrackDetailWire | undefined) => {
         if (previous === undefined) return previous;
         return {
@@ -1206,13 +832,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('track') });
     },
   });
-  /*
-   * The three card creates answer with the row the kernel just wrote, and the
-   * very next render needs it — the caller navigates to `?card=<id>`, and the
-   * board can only draw a card the detail cache already holds. So each one
-   * writes through and then invalidates, which is the write-through rule at the
-   * top of this section, not an exception to it.
-   */
+  /* The card creates answer with the row the kernel just wrote and the next render needs it: the caller
+   * navigates to `?card=<id>` and the board can only draw a card the detail cache already holds. */
   const addCardToDetail = (card: CardWire): void => {
     client.setQueryData(queryKeys.trackDetail(card.track_id), (previous: TrackDetailWire | undefined) => {
       if (previous === undefined) return previous;
@@ -1239,15 +860,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
       runInteractiveWrite(transport, createCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
-  /*
-   * Delete drops the row from the cached detail before the refetch lands: the
-   * card's surface is unmounted by that write, and leaving it on screen until
-   * the round-trip returns would keep a PTY attached to a card the kernel has
-   * already torn down.
-   *
-   * `onSettled`, not `onSuccess`, for the invalidation — an aborted wait says
-   * nothing about whether the server committed.
-   */
+  /* Delete drops the row from the cached detail before the refetch lands: leaving it on screen would keep
+   * a PTY attached to a card the kernel has torn down. `onSettled`: an aborted wait says nothing about commit. */
   const removeCard = useRecoveryMutation(transport, {
     mutationFn: ({ cardId, signal }: { trackId: string; cardId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>
       runOperation(transport, { ...deleteCardOperation(cardId), signal }, unauthorized),
@@ -1300,26 +914,10 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
 }
 
 /**
- * Settings › Plugins — the installed list.
- *
- * `retry: false` for the same reason the template read has it: this list is a
- * screen the reader is looking at, and a failed read must say so and offer
- * Retry rather than sit spinning through three silent attempts.
- *
- * **`plugin.state` does not refresh this list.** `core/events/invalidation-plan`
- * maps that event to `noop('No plugin list query exists.')` — a reason that was
- * true until this query was added, and `core/events` is a frozen module whose
- * change needs its own issue. Without help, enabling a plugin would leave the
- * row reading `spawning` for as long as the pane stayed open, which is exactly
- * the transition the reader is waiting on.
- *
- * So the query polls *only while some row is in motion*: a `spawning` or
- * `installing` plugin is a state the kernel is actively leaving, and every
- * other state is one nothing will change without a write from this screen. The
- * poll therefore stops on its own, and a settled list costs nothing.
+ * Settings › Plugins — the installed list. `retry: false` so a failed read says so and offers Retry.
+ * `plugin.state` does not refresh this list, so the query polls only while some row is in motion.
  */
-/* Frozen array, not a `Set`: `architecture/no-module-runtime-state` rejects a
-   module-level `new`, and two entries do not need a hash lookup. */
+/* Frozen array, not a `Set`: `no-module-runtime-state` rejects a module-level `new`. */
 const PLUGIN_TRANSIENT_STATES = Object.freeze(['spawning', 'installing'] as const);
 
 export function pluginsQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
@@ -1327,17 +925,8 @@ export function pluginsQueryOptions(transport: ApiTransportPort, unauthorized: U
     queryKey: queryKeys.plugins(),
     queryFn: (): Promise<PluginListItem[]> => runOperation(transport, pluginsOperation(), unauthorized),
     retry: false,
-    /*
-     * Polls **only while a row is in motion**, and only while this pane holds
-     * the query — leaving Settings drops the observer and the interval with it.
-     * That visibility is the bound.
-     *
-     * A counted cap was tried and was worse: `dataUpdateCount` also counts the
-     * invalidation every enable/disable fires, it lives on the cached query
-     * rather than on this visit, and it never resets — so a handful of toggles
-     * exhausted the budget and left the poll permanently off, which is the one
-     * failure mode this exists to prevent.
-     */
+    /* Polls only while a row is in motion and only while this pane holds the query. A counted cap was
+     * worse: `dataUpdateCount` also counts every enable/disable invalidation and never resets. */
     refetchInterval: (query: { state: { data?: PluginListItem[] } }) =>
       (query.state.data ?? []).some((plugin) =>
         (PLUGIN_TRANSIENT_STATES as readonly string[]).includes(plugin.state))
@@ -1353,76 +942,25 @@ export type PluginMutations = Readonly<{
   pendingIds: ReadonlySet<string>;
   /** The last failure per plugin, so one plugin's error cannot label another. */
   errors: ReadonlyMap<string, string>;
-  /**
-   * The plugins whose **last** enable/disable write succeeded, so the row can
-   * state what that write did and did not reach — see #1242 and the note on
-   * `usePluginMutations`. Per plugin and last-write-wins, exactly like
-   * `errors`, and disjoint from it by construction: a new write clears both
-   * before it goes out, and only one of the two arms can set one afterwards.
-   */
+  /** The plugins whose LAST enable/disable succeeded. Per plugin, last-write-wins, disjoint from `errors` by construction. */
   effectBoundaryIds: ReadonlySet<string>;
   setEnabled: (id: string, enabled: boolean) => void;
-  /** #1480 — remove the plugin. The confirmation is the pane's. */
+  /** Remove the plugin. The confirmation is the pane's. */
   uninstall: (id: string) => void;
 }>;
 
 /**
- * Enable / disable.
- *
- * **Per plugin, not per hook.** A single `useMutation` exposes only the latest
- * call's `variables` and `error`, so toggling two plugins in quick succession
- * moved the spinner onto the second one — the first row snapped back to its
- * server value mid-flight — and a failure on the first was attributed to
- * whichever call happened last, or lost entirely. The pending set and the
- * error map are keyed by plugin id, which is the only thing that makes two
- * concurrent writes describable.
- *
- * The response is **not** written through to the cached list: enable answers as
- * soon as the row flips, while the supervisor is still bringing the process up,
- * so its `state` is a snapshot that is already stale by the time it lands. An
- * invalidation asks the kernel what is actually true.
- *
- * ## What a successful write did *not* reach (#1242)
- *
- * A write that succeeds changes the kernel's plugin table; it does not change
- * **what a conversation that is already running can see**, which is the claim
- * the line on the row makes and the only one meant here. Measured against a
- * real codex 0.144.1 client, there is no mechanism today that would: the kernel
- * broadcasting `notifications/tools/list_changed` produced no re-fetch of
- * `tools/list` in 17 s, `config/mcpServer/reload` returned `{}` and produced
- * none either, and `thread/start`'s `dynamicTools` binds at thread start, which
- * is the wrong moment by construction. So that boundary is real and permanent
- * until codex grows a mechanism, and the only honest thing to do is say so.
- *
- * It is **not** a claim that nothing anywhere observes the write. The kernel
- * gates `POST /api/plugins/{id}/tool-call` on the plugin being *running*, so a
- * surface that calls it — a `plugin-iframe` card open in the legacy `web/`
- * app — changes behaviour the moment this write lands, without being told.
- * That is a different app and it does not falsify the sentence on the row (an
- * already-running conversation still sees the tool list it started with), but
- * the unqualified reading of this paragraph would have covered it, and it is
- * registered as a known gap on #1242 rather than left implied here.
- *
- * `effectBoundaryIds` is what says it. It is set on **success only** — a write
- * that failed changed nothing, and telling the operator about the reach of a
- * change that did not happen would be the second false statement on that row,
- * under the first one. It is set for **both directions**: a disable leaves an
- * in-flight conversation holding the old tool list exactly as an enable leaves
- * it holding a list without the new one.
+ * Enable / disable, tracked PER PLUGIN: a single `useMutation` exposes only the latest call's state,
+ * so two quick toggles mislabel each other. The response is not written through — enable answers while
+ * the supervisor is still bringing the process up. `effectBoundaryIds` says a successful write did not
+ * reach an already-running conversation (codex binds `dynamicTools` at thread start); set on success only, both directions.
  */
 export function usePluginMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): PluginMutations {
   const client = useQueryClient();
-  /* A **count** per id, not membership: the switch stays usable while a write
-     is in flight, so one plugin can have two. With a set, the first response
-     cleared the marker while the second write was still out, and the row read
-     idle mid-flight. */
+  /* A COUNT per id, not membership: the switch stays usable while a write is in flight, so one plugin can have two. */
   const [pending, setPending] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [errors, setErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
-  /* Membership, not a count: the flag answers "has this plugin's last write
-     settled successfully", which is a yes/no. It carries no claim about
-     overlapping writes on one plugin — the switch refuses input while its own
-     write is in flight (`isLoading={pendingIds.has(...)}`, and astryx's Switch
-     drops the change), so no route through this pane produces two. */
+  /* Membership, not a count: "has this plugin's last write settled successfully" is a yes/no. */
   const [boundary, setBoundary] = useState<ReadonlySet<string>>(() => new Set());
   const acquirePending = (id: string) => {
     setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
@@ -1444,10 +982,7 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
         next.delete(id);
         return next;
       });
-      /* Withdrawn while the next write is out: the sentence is about a
-         *settled* change, and leaving it up through a write that has not
-         answered yet would attach it to the wrong one — or to none, if that
-         write then fails. */
+      /* Withdrawn while the next write is out: the sentence is about a SETTLED change. */
       setBoundary((current) => {
         if (!current.has(id)) return current;
         const next = new Set(current);
@@ -1466,16 +1001,8 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
       void client.invalidateQueries({ queryKey: queryKeys.plugins() });
     },
   });
-  /*
-   * #1480 — uninstall shares this hook's per-id `pending` and `errors` maps
-   * rather than getting its own pair. Both are keyed by plugin id and both
-   * label the same row: a second pair would let a row show an enable failure
-   * under one name and a remove failure under another, and the row has one
-   * place to put a sentence. The write itself is a different mutation because
-   * it is a different endpoint with a different success state — the row is
-   * gone — and because a removal must not set the effect-boundary line, which
-   * is about a plugin that is still there.
-   */
+  /* Uninstall shares the per-id `pending` and `errors` maps: the row has one place to put a sentence. A
+   * separate mutation because a removal must not set the effect-boundary line. */
   const remove = useRecoveryMutation(transport, {
     acquireLocal: acquirePending,
     mutationFn: (id: string, transport: ApiTransportPort) => runOperation(transport, uninstallPluginOperation(id), unauthorized),
@@ -1505,17 +1032,8 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
 }
 
 /**
- * Settings › Plugins › Add — the two install sources, as one write (#1480).
- *
- * It **resolves** rather than rejecting, with the kernel's message or `null`.
- * The form has to stay on screen and keep the operator's typing when an install
- * is refused — a rejected promise would land as an unhandled rejection in the
- * host and leave the pane guessing whether the fields it holds are still worth
- * anything. Every refusal here is the operator's to correct in place: a taken
- * id, a URL the kernel will not accept, a directory that is not there.
- *
- * The credential never enters this layer's state. It arrives inside the draft,
- * goes into the request body, and the only thing kept afterwards is a message.
+ * The two install sources, as one write. Resolves rather than rejects, with the kernel's message or
+ * `null`: the form must stay on screen with the operator's typing. The credential never enters this layer's state.
  */
 export type PluginInstallMutation = Readonly<{
   pending: boolean;
@@ -1558,17 +1076,8 @@ export function usePluginInstall(
 }
 
 /**
- * Settings › Plugins › one plugin's configuration — the detail read.
- *
- * `retry: false` for the reason the list has it: this is a screen the reader is
- * looking at, and a failed read has to say so and offer Retry rather than sit
- * spinning through three silent attempts.
- *
- * It does not poll and it is not refetched on focus. The pane holds a draft of
- * the operator's edits, and a background refetch that re-seeded it mid-typing
- * would be indistinguishable from the app throwing their work away. Every write
- * from that pane invalidates this key explicitly, which is the only moment the
- * stored document can change under it.
+ * One plugin's configuration — the detail read. No poll and no focus refetch: the pane holds a draft of
+ * the operator's edits, and a background refetch would re-seed it mid-typing.
  */
 export function pluginDetailQueryOptions(
   transport: ApiTransportPort,
@@ -1583,16 +1092,7 @@ export function pluginDetailQueryOptions(
   };
 }
 
-/**
- * The kernel's refusal, reduced to what #1284's tables are keyed on.
- *
- * Transport and decode failures carry no `code` — there is no HTTP body to read
- * one from — so they get one here rather than being handed to the domain as a
- * third shape it would have to special-case. `transport_failure` is not a
- * kernel code and no branch matches it, which is correct: it falls through to
- * "the plugin did not come back and here is what we know", which is exactly
- * what a request that never arrived leaves behind.
- */
+/** The kernel's refusal reduced to a `code`; transport and decode failures get `transport_failure`, which no branch matches and so falls through. */
 function pluginFailureOf(error: unknown): PluginApiFailure {
   if (error instanceof ApiError) {
     const { failure } = error;
@@ -1617,19 +1117,8 @@ export type PluginConfigMutations = Readonly<{
 }>;
 
 /**
- * The two writes the configuration pane offers, and the read #1284 §2.4
- * requires **after** the second one.
- *
- * Both resolve rather than reject. A rejected promise carries a message and
- * nothing else, and every branch of §2.2 and §2.4 turns on the kernel's `code`
- * or on the plugin's state afterwards — so a thrown `Error` would arrive at the
- * pane with the one field that cannot distinguish "nothing was saved, retry"
- * from "saved, and the plugin is now down".
- *
- * This hook classifies nothing. It returns facts — the refusal, and the state
- * and `last_error` read back after a restart — and `core/domain/plugins` owns
- * the tables that read them. That is what keeps the wording in one place
- * instead of one place per caller.
+ * The two configuration writes. Both resolve rather than reject: every branch turns on the kernel's
+ * `code` or the plugin's state afterwards, which a thrown `Error` cannot carry. Classifies nothing.
  */
 export function usePluginConfigMutations(
   transport: ApiTransportPort,
@@ -1648,8 +1137,7 @@ export function usePluginConfigMutations(
   const finishRestart = async (intent: ApiTransportPort, id: string, restart: PluginRestartFacts): Promise<PluginConfigApplyResult> => {
     if (staleFailure(intent) === null) await refresh(id);
     const failure = staleFailure(intent);
-    // A previous acknowledgement does not prove the plugin's current state
-    // after this attempt lost ownership of its readback or reconciliation.
+    // A previous acknowledgement does not prove the plugin's current state once this attempt lost ownership of its readback.
     return { saved: true, restart: failure === null ? restart : { failure, state: 'unknown' } };
   };
 
@@ -1681,10 +1169,7 @@ export function usePluginConfigMutations(
       let intent: ApiTransportPort;
       try { intent = admitTransport(transport); }
       catch (error) { return { saved: false, failure: pluginFailureOf(error) }; }
-      /* An empty patch with no reset asked for is not a write: Apply & restart
-         is also how an operator makes an *earlier* Save take effect, and
-         PATCHing `{}` to do it would take the lifecycle lock for nothing and
-         could 409 the restart it exists to perform. */
+      /* An empty patch with no reset is not a write: PATCHing `{}` would take the lifecycle lock for nothing and could 409 the restart. */
       if (Object.keys(patch).length > 0 || options.reset) {
         const saved = await write(intent, id, patch, options);
         if (!saved.ok) {
@@ -1692,24 +1177,8 @@ export function usePluginConfigMutations(
           return { saved: false, failure: staleFailure(intent) ?? saved.failure };
         }
       }
-      /*
-       * §2.4 wants the plugin's state **read back after the attempt**, and that
-       * is a second request on *both* branches, not only the failing one.
-       *
-       * A 2xx `reload` answers with the detail as of the moment the handler
-       * returned; a connector's bring-up can complete — or fail — after it. So
-       * a 200 saying `running` followed by a detail saying `unavailable` with a
-       * `last_error` is an ordinary sequence, and trusting the POST body alone
-       * would confirm "restarted with it" over the top of the one diagnostic
-       * that exists. Reading back on the success branch too is what makes the
-       * verdict come from the plugin rather than from the response to the
-       * command.
-       *
-       * The read-back is best-effort in the same sense on both branches: if it
-       * cannot be made, the caller falls back to what it already knows, which
-       * is the POST's own detail after a 2xx and nothing at all after a
-       * refusal.
-       */
+      /* Read the plugin's state back after the attempt on BOTH branches: a 2xx `reload` answers as of the
+       * handler's return, and a connector's bring-up can fail after it. Best-effort; falls back to what is known. */
       const readBack = async (fallback: PluginRestartFacts): Promise<PluginRestartFacts> => {
         try {
           const after = await runOperation(intent, pluginDetailOperation(id), unauthorized);
@@ -1729,19 +1198,8 @@ export function usePluginConfigMutations(
         return finishRestart(intent, id, restart);
       } catch (error) {
         const failure = pluginFailureOf(error);
-        /*
-         * §2.4 — the refusal is not the verdict, so read the plugin back.
-         *
-         * A reload stops the plugin before it re-reads anything, so a non-200
-         * covers three different endings: the lock was held and nothing
-         * happened at all; a connector's bring-up failed and it is sitting in
-         * its normal `unavailable` terminal state with the reason in
-         * `last_error`; or an `app` was stopped and did not start. Only the
-         * plugin's own state tells them apart. A detail read that itself fails
-         * leaves `state` unknown, and the outcome table falls back to the
-         * refusal's own message — which is worse than the truth, and better
-         * than a guess.
-         */
+        /* The refusal is not the verdict: a non-200 covers a held lock, a failed bring-up sitting in
+         * `unavailable`, or a stopped `app`, and only the plugin's own state tells them apart. */
         const restart = await readBack({ failure, state: 'unknown' });
         return finishRestart(intent, id, restart);
       }
@@ -1754,38 +1212,17 @@ export function useSettingsMutation(transport: ApiTransportPort, unauthorized: U
   const save = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: (patch: SettingsPatch, transport: ApiTransportPort) => runInteractiveWrite(transport, putSettingsOperation(patch), unauthorized),
-    /*
-     * Invalidate; do **not** write the response through.
-     *
-     * The PUT answers with the whole bag, which used to be written straight
-     * into the cache to avoid a refetch. That is only sound while writes cannot
-     * overlap, and Settings › Network commits per field: change a proxy, leave
-     * the field, change it again, leave again, and the first response can land
-     * last. Written through, its older bag becomes the cache — measured: the
-     * field reverted to the earlier value, under a green tick, while the server
-     * held the newer one, and every other reader of `['settings']` saw the
-     * stale bag until something refetched.
-     *
-     * A refetch cannot invert like that: it asks after the write settled, and
-     * the last answer is the server's own state.
-     */
+    /* Invalidate; do not write the response through. Settings › Network commits per field, so an older
+     * PUT response can land last and would revert the field under a green tick. */
     onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.settings() }); },
   });
   return (patch) => save.mutateAsync(patch);
 }
 
-/**
- * The query's data: the wire, or the 409 turned into a value.
- *
- * `stale-rev` is data and not an error on purpose (#1628 D5, A16b): it means
- * "the document this block was rendered from is older than the server's",
- * which the next `['track', id]` refetch resolves by mounting a new key. An
- * error state would show a failure for a condition that fixes itself, and a
- * retry would ask the same stale question three more times.
- */
+/** The wire, or the 409 turned into a value: `stale-rev` is a condition the next `['track', id]` refetch fixes, not an error. */
 export type SeriesRead = ResolvedSeries | Readonly<{ status: 'stale-rev'; current_rev: number }>;
 
-/** Estimate (S4.3): a resolved row does not move for at least this long. */
+/** A resolved row does not move for at least this long. */
 const SERIES_STALE_MS = 5 * 60 * 1000;
 /** While the row is `pending`: the kernel's lane usually answers within a
  *  few seconds of the first read. */
@@ -1793,9 +1230,7 @@ const SERIES_PENDING_POLL_MS = 3000;
 /** …and after two minutes of that, something is slow (a lane backed up, a
  *  plugin restarting) and the poll backs off. */
 const SERIES_PENDING_SLOW_POLL_MS = 30_000;
-/** Two minutes, counted in polls at the fast interval rather than in wall
- *  time: react-query pauses the timer while the tab is hidden, and what is
- *  being bounded is the number of requests, not the age of the block. */
+/** Two minutes, counted in polls rather than wall time: react-query pauses the timer while the tab is hidden. */
 const SERIES_PENDING_FAST_POLLS = 120_000 / SERIES_PENDING_POLL_MS;
 
 function staleRevOf(error: unknown): SeriesRead | null {
@@ -1806,14 +1241,7 @@ function staleRevOf(error: unknown): SeriesRead | null {
   return body.success ? { status: 'stale-rev', current_rev: body.data.current_rev } : null;
 }
 
-/**
- * The poll, and only while the row is `pending` (S4.3 / G12): row writes emit
- * no event, so a block that has just been read has to ask again to learn its
- * data landed. Every other state stops the timer — `ok` and `unavailable`
- * are rows (a stale one is refreshed server-side and reaches the browser at
- * the next fetch, past `staleTime`), `stale-rev` waits for the document, and
- * an error is an error.
- */
+/** Poll only while the row is `pending`: row writes emit no event. Every other state stops the timer. */
 export function seriesRefetchInterval(
   query: { state: { data?: SeriesRead; dataUpdateCount: number } },
 ): number | false {
@@ -1822,15 +1250,7 @@ export function seriesRefetchInterval(
   return dataUpdateCount > SERIES_PENDING_FAST_POLLS ? SERIES_PENDING_SLOW_POLL_MS : SERIES_PENDING_POLL_MS;
 }
 
-/**
- * The read of a source citation: the row, or the 404 turned into a value.
- *
- * `missing` is data and not an error on purpose (#1669 §2.5): a dangling
- * citation is a state the design admits — the kernel does not refuse the
- * write, recipe-born tracks carry them by definition — and the panel shows
- * it as "来源缺失". An error state would retry a 404 three times and paint a
- * failure for a condition retrying cannot change.
- */
+/** The row, or the 404 turned into a value: a dangling citation is a state the design admits, not an error to retry. */
 export type SourceRead =
   | Readonly<{ status: 'found'; source: TrackSourceDetail }>
   | Readonly<{ status: 'missing' }>;
@@ -1839,15 +1259,7 @@ function isNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.failure.kind === 'http' && error.failure.status === 404;
 }
 
-/**
- * One captured source with its body (#1669).
- *
- * Default `staleTime`: the body never changes, but the anchors are
- * append-only and a citation written a moment ago may name one the cached
- * row predates, so every open re-reads behind the cached copy rather than
- * showing "锚点未命中" for a quote that exists. No focus refetch — the window
- * coming back is not new information about an immutable row.
- */
+/** One captured source. Default `staleTime`: anchors are append-only, so every open re-reads behind the cached copy. No focus refetch. */
 export function trackSourceQueryOptions(
   transport: ApiTransportPort, trackId: string, sourceId: string, unauthorized: UnauthorizedChannel,
 ) {
@@ -1866,13 +1278,7 @@ export function trackSourceQueryOptions(
   };
 }
 
-/**
- * One `chart.series` block's resolved data (#1628 D5).
- *
- * `detail` defaults to `full`: the figure needs the points. The key carries
- * `rev` and not `detail` — see `queryKeys.trackReportSeries` for why the key
- * is shaped the way it is and for what does not invalidate it.
- */
+/** One `chart.series` block's resolved data. `detail` defaults to `full`; the key carries `rev`, not `detail`. */
 export function trackReportSeriesQueryOptions(
   transport: ApiTransportPort, trackId: string, blockId: string, rev: number,
   unauthorized: UnauthorizedChannel, detail: SeriesDetail = 'full',

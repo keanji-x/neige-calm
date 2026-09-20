@@ -574,27 +574,8 @@ pub fn append_transcript(path: &Path, lines: &[Value]) {
     append_rollout(path, lines);
 }
 
-/// Liveness upper bound for `wait_until` and the per-case `wait_for_*` helpers.
-///
-/// These waits are anti-hang guards, not contracts: no worker-flow case claims
-/// that ingest lands within a particular latency, only that it lands at all.
-/// Timing out means "the system never got there", so the budget must be
-/// generous enough that a slow-but-correct run always passes. On the happy path
-/// it costs nothing — `wait_until` returns on the first poll that sees the
-/// condition.
-///
-/// The budgets this replaces were as tight as 120 ms, i.e. six polls at the
-/// 20 ms poll interval below. CI is a 2-core runner with nextest saturating
-/// both cores and `retries = 0`, so a single scheduling stall was enough to
-/// turn a correct run red (the sibling renderer e2e lost exactly that race on
-/// CI twice). 120s is the `slow-timeout` of nextest `profile.ci`; the local
-/// `profile.default` warns at 60s. Both are warn-only — neither profile kills a
-/// slow test — so past this point nextest's slow-test report is the signal
-/// rather than a hand-picked deadline.
-///
-/// Do NOT narrow this to assert that something happens *quickly*, and do not
-/// use it to assert that something does *not* happen — that needs a deliberate
-/// short `sleep` plus a negative check, which is a different mechanism.
+/// Liveness upper bound for `wait_until`: an anti-hang guard, not a latency contract. Do NOT narrow it
+/// to assert that something happens quickly, and do not use it to assert that something does *not* happen.
 pub const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
 pub async fn wait_until<F, Fut>(timeout: Duration, mut condition: F)
@@ -612,14 +593,8 @@ where
     panic!("condition not met within {timeout:?}");
 }
 
-/// Wait until the Codex rollout cursor for `card_id` reaches `record_index`.
-///
-/// Recorded items and the cursor checkpoint are two separate asynchronous
-/// writes, and the checkpoint is the later one. A test that waits on the item
-/// count and then asserts the cursor can therefore observe the checkpoint one
-/// record behind. Wait on the cursor with this helper and assert the item
-/// count afterwards: once the cursor has advanced, the items it accounts for
-/// are already durable.
+/// Wait until the Codex rollout cursor for `card_id` reaches `record_index`; the cursor checkpoint is
+/// written after the recorded items, so wait on the cursor and assert the item count afterwards.
 pub async fn wait_for_codex_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
     wait_until(LIVENESS_BUDGET, || async {
         repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)

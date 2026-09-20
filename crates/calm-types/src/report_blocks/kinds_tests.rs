@@ -16,7 +16,6 @@ fn chart_payload_valid_and_invalid() {
         ),
         Ok(())
     );
-    // Field-level errors, all collected.
     let err = validate_payload(
         KIND_CHART_CANDLES,
         &json!({ "candles": [[1, 2]], "period": "year", "extra": 1 }),
@@ -27,7 +26,6 @@ fn chart_payload_valid_and_invalid() {
     assert!(err.contains("period: must be one of"), "{err}");
     assert!(err.contains("at least 2 candles"), "{err}");
     assert!(err.contains("candles[0]"), "{err}");
-    // Non-object payload.
     assert!(validate_payload(KIND_CHART_CANDLES, &json!([1])).is_err());
 }
 
@@ -90,9 +88,7 @@ fn app_payload_valid_and_invalid() {
         Ok(())
     );
     assert_eq!(validate_payload(KIND_APP, &json!({ "src": "/x" })), Ok(()));
-    // Percent-encoded control chars are harmless (browsers do not
-    // pre-decode before URL parsing) — stay allowed, as do spaces
-    // and non-control UTF-8.
+    // Percent-encoded control chars are harmless: browsers do not pre-decode before URL parsing.
     for ok in ["/%0A/page", "/apps/%5C", "/path with space", "/应用/看板"] {
         assert_eq!(
             validate_payload(KIND_APP, &json!({ "src": ok })),
@@ -105,15 +101,11 @@ fn app_payload_valid_and_invalid() {
         (json!({ "src": "//evil.example/x" }), "src"),
         (json!({ "src": "relative/path" }), "src"),
         (json!({}), "src"),
-        // Backslash bypasses (#960 PR3 review round 1): WHATWG URL
-        // parsing normalizes `\` to `/`, so `/\host` becomes a
-        // protocol-relative URL in the browser.
+        // WHATWG URL parsing normalizes `\` to `/`, so `/\host` becomes a protocol-relative URL.
         (json!({ "src": "/\\evil.example/x" }), "src"),
         (json!({ "src": "/x\\..\\..\\evil" }), "src"),
         (json!({ "src": "/apps\\x" }), "src"),
-        // Control-character bypasses (#960 PR3 review round 2):
-        // WHATWG strips tab/newline/C0 before parsing, so
-        // `/\n/evil` would normalize to `//evil` in the browser.
+        // WHATWG strips tab/newline/C0 before parsing, so `/\n/evil` would normalize to `//evil`.
         (json!({ "src": "/\n/evil.example/x" }), "src"),
         (json!({ "src": "/\t/evil.example/x" }), "src"),
         (json!({ "src": "/\r/evil.example/x" }), "src"),
@@ -131,7 +123,6 @@ fn app_payload_valid_and_invalid() {
 
 #[test]
 fn payload_size_caps_are_enforced_with_the_limit_in_the_error() {
-    // candles > 5000
     let candles: Vec<Value> = (0..(MAX_CHART_CANDLES as i64 + 1))
         .map(|i| json!([i, 1, 2, 0, 1]))
         .collect();
@@ -142,14 +133,12 @@ fn payload_size_caps_are_enforced_with_the_limit_in_the_error() {
     .unwrap_err();
     assert!(err.contains("limit is 5000"), "{err}");
 
-    // columns > 32
     let columns: Vec<Value> = (0..=MAX_TABLE_COLUMNS)
         .map(|i| json!({ "key": format!("k{i}"), "label": "L" }))
         .collect();
     let err = validate_payload(KIND_TABLE, &json!({ "columns": columns, "rows": [] })).unwrap_err();
     assert!(err.contains("limit is 32"), "{err}");
 
-    // rows > 500
     let rows: Vec<Value> = (0..=MAX_TABLE_ROWS).map(|_| json!({ "k": 1 })).collect();
     let err = validate_payload(
         KIND_TABLE,
@@ -158,7 +147,6 @@ fn payload_size_caps_are_enforced_with_the_limit_in_the_error() {
     .unwrap_err();
     assert!(err.contains("limit is 500"), "{err}");
 
-    // any string field > 2048 chars
     let long = "x".repeat(MAX_STRING_CHARS + 1);
     for payload in [
         json!({ "symbol": long, "candles": [[1,1,1,1,1],[2,2,2,2,2]] }),
@@ -183,8 +171,6 @@ fn payload_size_caps_are_enforced_with_the_limit_in_the_error() {
         "{err}"
     );
 
-    // canonical JSON > 256KB (field-valid table: 200 rows of
-    // 2000-char strings ≈ 400KB)
     let cell = "y".repeat(2000);
     let rows: Vec<Value> = (0..200).map(|_| json!({ "k": cell })).collect();
     let err = validate_payload(
@@ -194,7 +180,6 @@ fn payload_size_caps_are_enforced_with_the_limit_in_the_error() {
     .unwrap_err();
     assert!(err.contains("256KB"), "{err}");
 
-    // At-the-limit shapes pass.
     let candles: Vec<Value> = (0..100).map(|i| json!([i, 1, 2, 0, 1])).collect();
     assert_eq!(
         validate_payload(
@@ -414,8 +399,6 @@ fn live_table_accepts_a_source_and_caption() {
 
 #[test]
 fn live_table_rejects_inline_data_alongside_its_source() {
-    // The whole point of the exclusion: a payload that both names a source
-    // and carries rows renders one of them and makes the other a lie.
     for extra in ["columns", "rows", "highlight"] {
         let mut payload = serde_json::Map::new();
         payload.insert(
@@ -434,15 +417,12 @@ fn live_table_rejects_inline_data_alongside_its_source() {
 #[test]
 fn live_table_source_shape_is_enforced() {
     let cases = [
-        // wrong scheme — the report-link scheme is a different vocabulary
         ("neige://track/t1/portfolio.holdings", "must start with"),
         ("https://example.com/x", "must start with"),
-        // one segment, three segments, empty segments
         ("neige://plugin/only-one", "exactly two segments"),
         ("neige://plugin/a/b/c", "exactly two segments"),
         ("neige://plugin//kind", "plugin_id segment is empty"),
         ("neige://plugin/id/", "overlay_kind segment is empty"),
-        // character set
         ("neige://plugin/id x/kind", "may only contain"),
         ("neige://plugin/id/kind:1", "may only contain"),
     ];
@@ -453,8 +433,6 @@ fn live_table_source_shape_is_enforced() {
             "`{source}` should fail with `{needle}`, got: {err}"
         );
     }
-    // A non-string source is a source error, not a missing-columns error:
-    // presence selects the form, validity is reported inside it.
     let err = validate_payload(KIND_TABLE, &json!({ "source": 7 })).unwrap_err();
     assert!(err.contains("source: required string"), "{err}");
     assert!(
@@ -465,8 +443,6 @@ fn live_table_source_shape_is_enforced() {
 
 #[test]
 fn inline_table_still_rejects_an_unknown_field() {
-    // Guards the split itself: adding the live form must not have turned
-    // `additionalProperties: false` off for the inline form.
     let err = validate_payload(
         KIND_TABLE,
         &json!({

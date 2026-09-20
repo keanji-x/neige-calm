@@ -47,10 +47,7 @@ mod support;
 
 use support::git_helpers::attached_repo_fixture;
 
-/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
-/// (or any other process env read by the fake codex shim). Peer test
-/// binaries keep their own `ENV_LOCK` because each test binary is a separate
-/// process.
+/// Serializes tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Boot {
@@ -496,11 +493,8 @@ async fn request_lines_containing(path: &PathBuf, method: &str, count: usize) ->
     request_lines_containing_within(path, method, count, Duration::from_secs(15)).await
 }
 
-/// Poll `path` (an ndjson capture file) until at least `count` lines whose
-/// `method` field equals `method` are present, then return them. Panics on
-/// timeout with a descriptive message — a missing line is a real failure, not
-/// something to swallow. (Flaky-test #845: the old silent partial-return
-/// mis-reported anomalies as `has_interrupt` failures.)
+/// Poll `path` (an ndjson capture file) until at least `count` lines whose `method` field equals
+/// `method` are present. Panics on timeout — a missing line is a real failure, not something to swallow.
 async fn request_lines_containing_within(
     path: &PathBuf,
     method: &str,
@@ -535,8 +529,6 @@ async fn request_lines_containing_within(
 #[tokio::test]
 #[should_panic(expected = "captured 0/2")]
 async fn request_lines_containing_panics_loudly_on_timeout() {
-    // A capture file that never reaches the requested count must panic with a
-    // descriptive message — not silently return a partial vector (#845).
     let tmp = TempDir::new().unwrap();
     let missing = tmp.path().join("never-written.ndjson");
     let _ =
@@ -890,9 +882,7 @@ async fn send_planner_input_reports_backpressure_when_the_persisted_queue_reject
     harness
         .observe_for_test(
             Observation::UserMessage {
-                // Production's fold cap. A one-character route message cannot
-                // merge into this tail, and every queued item is hard-fire, so
-                // the pending queue must reject it rather than evict intent.
+                // Production's fold cap: the route message cannot merge into this tail, so the queue must reject it rather than evict intent.
                 text: "x".repeat(128 * 1024),
             },
             None,
@@ -1073,8 +1063,7 @@ async fn send_planner_input_track_missing_returns_404() {
 #[tokio::test]
 async fn send_planner_input_audit_char_count_counts_chars_not_bytes() {
     let boot = boot().await;
-    // 200 CJK chars = ~600 bytes. If char_count regresses to len(), the
-    // assertion below will catch the byte/char divergence loudly.
+    // 200 CJK chars = ~600 bytes.
     let text: String = "字".repeat(200);
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
@@ -1125,8 +1114,7 @@ async fn send_planner_input_accepts_max_cjk_chars() {
     let boot = boot().await;
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
-    // 32_768 CJK chars is about 98_304 bytes. `text.chars().count()` must
-    // accept it; a regression to `body.text.len()` would reject it.
+    // 32_768 CJK chars is about 98_304 bytes.
     let text: String = "字".repeat(32_768);
     let (status, body) = post_json(
         boot.app.clone(),
@@ -1262,10 +1250,6 @@ async fn send_planner_input_non_planner_card_403() {
     );
 }
 
-/// #649 i2 trigger B — no active runtime row at all (the fire-and-forget
-/// `planner-harness-start` failed at track creation): typed 409 with the
-/// machine-readable `planner_harness_dormant` code, NOT a 404, so the client
-/// can steer the user to Reset.
 #[tokio::test]
 async fn send_planner_input_no_active_runtime_409_dormant() {
     let boot = boot().await;
@@ -1293,9 +1277,8 @@ async fn send_planner_input_no_active_runtime_409_dormant() {
     );
 }
 
-/// Boot variant whose shared codex app-server reports `is_running() == true`
-/// (fixture fake), so the #649 i2 lazy-recovery path is reachable — the
-/// plain `boot()` stub daemon is Idle and would 503 before recovery.
+/// Boot variant whose shared codex app-server reports `is_running() == true`; the plain `boot()` stub
+/// daemon is Idle and would 503 before recovery.
 async fn boot_fake_running() -> Boot {
     let mut boot = boot().await;
     let shared = SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None);
@@ -1308,10 +1291,8 @@ async fn boot_fake_running() -> Boot {
     boot
 }
 
-/// Seed an *active* planner runtime row (status `idle`) with NO live harness
-/// task and NO registry entry — the post-restart shape #649 i2 recovers
-/// from (boot recovery skips done-lifecycle tracks, leaving the row live
-/// and the registry empty).
+/// Seed an *active* planner runtime row (status `idle`) with NO live harness task and NO registry entry
+/// — the post-restart shape.
 async fn seed_active_planner_runtime_row(
     boot: &Boot,
     card: &Card,
@@ -1328,9 +1309,7 @@ async fn seed_active_planner_runtime_row(
     .await
 }
 
-/// Like [`seed_active_planner_runtime_row`] but with an explicit status — used
-/// to model an in-flight `planner-harness-start` (`starting` row, registry
-/// empty until `spawn_side_effect` lands).
+/// Like [`seed_active_planner_runtime_row`] but with an explicit status, to model an in-flight `planner-harness-start`.
 async fn seed_planner_runtime_row_with_status(
     boot: &Boot,
     card: &Card,
@@ -1376,10 +1355,6 @@ fn idle_snapshot_value_without_thread() -> Value {
     serde_json::to_value(&snapshot).unwrap()
 }
 
-/// #649 i2 trigger A — registry miss with a recoverable active runtime row
-/// (durable thread_id + valid snapshot): the route transparently re-spawns
-/// the harness via `spawn_recovered_harness`, registers it, and enqueues
-/// the user message as normal.
 #[tokio::test]
 async fn send_planner_input_registry_miss_recovers_harness_and_enqueues() {
     let boot = boot_fake_running().await;
@@ -1412,9 +1387,8 @@ async fn send_planner_input_registry_miss_recovers_harness_and_enqueues() {
         boot.state.harness.get(&runtime_id).is_some(),
         "registry must hold the lazily recovered harness handle"
     );
-    // The route only emits the audit event after `observe` succeeded, so
-    // this doubles as the "message actually enqueued" assertion without
-    // racing the recovered harness's 250ms debounce-issued turn.
+    // The audit event is emitted only after `observe` succeeded, so this doubles as the "actually enqueued"
+    // assertion without racing the recovered harness's 250ms debounce.
     let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
     let found = events.iter().any(|(_id, _v, _scope, event)| {
         matches!(
@@ -1430,10 +1404,6 @@ async fn send_planner_input_registry_miss_recovers_harness_and_enqueues() {
     }
 }
 
-/// #649 i2 hardening 3 — an active row with NO thread anywhere (NULL row
-/// `thread_id` AND no snapshot `last_thread_id`; half-failed start) must
-/// NOT be recovered into a zombie harness: typed 409 dormant, registry
-/// stays empty.
 #[tokio::test]
 async fn send_planner_input_active_runtime_null_thread_409_dormant() {
     let boot = boot_fake_running().await;
@@ -1465,11 +1435,6 @@ async fn send_planner_input_active_runtime_null_thread_409_dormant() {
     );
 }
 
-/// #649 review round 3 — a `starting` row means `planner-harness-start` is
-/// still in flight (row written before `spawn_side_effect` registers the
-/// harness): lazy recovery must NOT race it by spawning a harness the start
-/// op will shut down (dropping queued input). The route 503s with a retry
-/// hint and leaves the registry empty.
 #[tokio::test]
 async fn send_planner_input_starting_runtime_503_no_recovery() {
     let boot = boot_fake_running().await;
@@ -1498,9 +1463,6 @@ async fn send_planner_input_starting_runtime_503_no_recovery() {
     );
 }
 
-/// #649 review round 1 (finding 2) — a NULL row `thread_id` with a snapshot
-/// carrying `last_thread_id` is recoverable: the route mirrors boot
-/// recovery's snapshot fallback instead of 409ing rows boot would revive.
 #[tokio::test]
 async fn send_planner_input_null_thread_snapshot_fallback_recovers() {
     let boot = boot_fake_running().await;
@@ -1529,10 +1491,6 @@ async fn send_planner_input_null_thread_snapshot_fallback_recovers() {
     }
 }
 
-/// #649 review round 2 — a blank/whitespace row `thread_id` must not defeat
-/// the snapshot `last_thread_id` fallback: `Some("  ")` would win the `.or()`
-/// chain in `spawn_recovered_harness` and the recovered harness would issue
-/// turns against an empty thread. The helper normalizes blanks to `None`.
 #[tokio::test]
 async fn send_planner_input_blank_thread_snapshot_fallback_recovers() {
     let boot = boot_fake_running().await;
@@ -1571,9 +1529,6 @@ async fn send_planner_input_blank_thread_snapshot_fallback_recovers() {
     }
 }
 
-/// #649 review round 1 (finding 3) — row-intrinsic dormancy outranks the
-/// daemon liveness probe: an unrecoverable row 409s (Reset is the answer)
-/// even while the daemon is down, instead of a misleading 503 "retry".
 #[tokio::test]
 async fn send_planner_input_dormant_row_daemon_down_409_not_503() {
     let boot = boot().await; // stub daemon: is_running() == false
@@ -1605,8 +1560,6 @@ async fn send_planner_input_dormant_row_daemon_down_409_not_503() {
     );
 }
 
-/// #649 i2 hardening 2 — a corrupt/unknown snapshot shape degrades to the
-/// typed 409 dormant instead of panicking inside `from_value_strict`.
 #[tokio::test]
 async fn send_planner_input_corrupt_snapshot_409_dormant() {
     let boot = boot_fake_running().await;
@@ -1639,9 +1592,6 @@ async fn send_planner_input_corrupt_snapshot_409_dormant() {
     );
 }
 
-/// #649 i2 — recovery is gated on the shared codex app-server being up:
-/// a registry miss while the daemon is down is a 503 (retryable), not a
-/// silently-wedged recovered harness and not a dormant 409.
 #[tokio::test]
 async fn send_planner_input_registry_miss_daemon_down_503() {
     let boot = boot().await;
@@ -1851,9 +1801,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
         })
         .await
         .unwrap();
-    // #1439: socket 不能挂在 `$TMPDIR` 下的 TempDir 上 —— 自托管 runner 的
-    // TMPDIR 已经 49 字节，再加 TempDir 的 `/.tmpXXXXXX` 和
-    // `terminal-<uuid>.sock` 就越过 sun_path 的 107 字节上限。
+    // socket 不能挂在 `$TMPDIR` 下的 TempDir 上：自托管 runner 的路径会越过 sun_path 的 107 字节上限。
     let socket_dir = calm_test_sockets::socket_dir("t");
     let socket_path =
         calm_test_sockets::socket_path(socket_dir.path(), &format!("terminal-{}.sock", new_id()));
@@ -2112,11 +2060,6 @@ async fn reset_planner_card_restarts_terminal_less_harness_card() {
     }
 }
 
-/// #649 followup (codex-review P2 on #660) — the corrupt-snapshot shape that
-/// degrades `/planner/input` to the typed 409 dormant must NOT panic the
-/// recommended Reset: `planner-harness-start` gates snapshot inheritance on
-/// `is_harness_snapshot_value` and starts a fresh session, discarding the
-/// corrupt row's queued observations.
 #[tokio::test]
 async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
     let _guard = ENV_LOCK.lock().await;
@@ -2199,11 +2142,7 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
             .clone()
             .expect("new runtime snapshot"),
     );
-    // Fresh session: nothing inherited from the corrupt row — watermark is 0
-    // and the queue is empty. #1211 S1 removed the title→goal seeding, so this
-    // asserts `is_empty()` rather than `.all(is TrackGoal)`: the latter is
-    // vacuously true on an empty queue and would pass no matter what reset put
-    // there.
+    // Fresh session: nothing inherited from the corrupt row — watermark is 0 and the queue is empty.
     assert_eq!(
         new_snapshot.push_watermark, 0,
         "corrupt inherited snapshot must be discarded, not carried over"
@@ -2304,22 +2243,8 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     wait_for_harness_watermark(&harness, 3).await;
     harness.persist_snapshot().await.unwrap();
 
-    // #1514 review — add an ADDRESSABLE user entry to the queue the reset will
-    // inherit, so this test covers the half that ids actually matter for.
-    //
-    // The ORDER here is the whole fixture, and each step is forced:
-    //
-    // * the three `TrackGoal`s go first because they do NOT hard-fire, so with
-    //   the 60s debounce above the run loop never tries to issue and never
-    //   reaches the hook — arming it earlier would park the loop before it had
-    //   drained the observation channel and the watermark would stall at 1
-    //   (measured, not guessed);
-    // * the hook is armed next, while the loop is idle;
-    // * the user message goes last. It DOES hard-fire, so the loop wakes,
-    //   enqueues it, reaches `maybe_issue_turn` on the following tick and parks
-    //   at the hook with the queue still whole. That is what makes "undrained"
-    //   a held state rather than a race: without it the queue is empty a few
-    //   milliseconds later and the reset inherits nothing.
+    // Order matters: the `TrackGoal`s do not hard-fire, so arm the hook while the loop is idle, then send the
+    // user message (hard-fires) so the loop parks at the hook with the queue still whole.
     let drain_entered = Arc::new(tokio::sync::Notify::new());
     let drain_release = Arc::new(tokio::sync::Notify::new());
     install_planner_harness_drain_race_hook_for_test(
@@ -2329,10 +2254,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
             release: drain_release.clone(),
         },
     );
-    // `observe_user_message_durable`, not `observe_envelope`: #1505 PR1's
-    // `QueueEntry::system` guard refuses a `UserMessage` on the dispatcher
-    // path, which is the correct fence — user input has exactly one ingress,
-    // and it is the one that mints the id.
+    // `observe_user_message_durable`, not `observe_envelope`: the `QueueEntry::system` guard refuses a `UserMessage` on the dispatcher path.
     harness
         .observe_user_message_durable(SENTENCE_BEFORE_THE_RESET.into(), Vec::new())
         .await
@@ -2361,12 +2283,8 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         .find_map(|entry| entry.id().cloned())
         .expect("premise: and it is addressable on the row the inherit will read");
 
-    // The SUCCESSOR needs the same hold, and for the same reason: it inherits a
-    // hard-firing user entry, so it drains the whole queue — goals included —
-    // within a tick of being spawned, and the read below would then find an
-    // empty snapshot and no ids to compare. The hook entry is one-shot, so
-    // arming it again claims the next runtime to reach a drain, which is the
-    // successor this reset is about to mint.
+    // The successor needs the same hold: it inherits a hard-firing user entry and drains the whole queue within
+    // a tick of spawning. The hook entry is one-shot, so re-arming claims the next runtime to reach a drain.
     let successor_entered = Arc::new(tokio::sync::Notify::new());
     let successor_release = Arc::new(tokio::sync::Notify::new());
     install_planner_harness_drain_race_hook_for_test(
@@ -2405,23 +2323,8 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     drain_release.notify_one();
     successor_release.notify_one();
 
-    // #1514 review — the inherited USER entry keeps the id the client was
-    // already shown.
-    //
-    // This is the assertion an earlier note here said the product made
-    // impossible ("the harness the reset starts drains it inside the same
-    // request"). That reason was false: this arm of `prepare_tx` runs only
-    // under `defer_runtime_start`, which takes the
-    // `session_prepare_deferred_planner_tx` path and starts NO harness in this
-    // request — it writes a placeholder row. The entry therefore sits on the
-    // successor's persisted snapshot until something later spawns the harness,
-    // which is exactly the window read below.
-    //
-    // The mutation this reddens is the inherit copying observations alone
-    // (`set_pending_entries(...pending_observations()...)` instead of
-    // `pending_entries()`): the sentence comes back as a `LegacyUser`, loses
-    // its id, and would be withheld from `GET /planner/run`'s `pending` for
-    // the rest of its life.
+    // This arm of `prepare_tx` runs under `defer_runtime_start` and starts NO harness in this request, so the
+    // inherited entry sits on the successor's persisted snapshot until something later spawns it.
     let inherited = new_snapshot
         .pending_entries()
         .into_iter()
@@ -2711,27 +2614,10 @@ async fn reset_planner_card_failure_keeps_old_runtime_when_shared_daemon_down() 
     assert_eq!(active.thread_id.as_deref(), Some("thread-old"));
 }
 
-// ---------------------------------------------------------------------------
-// Issue #1211 S1 — the track title is no longer seeded as the planner agent's goal
-// ---------------------------------------------------------------------------
-//
-// Before #1211 the single new-track input box was both the track's title and the
-// statement of what the track should do, and three places turned it back into an
-// intent: `routes::tracks::start_planner_harness` (the `planner-harness-start`
-// payload's `goal`), the planner card's `payload.prompt` at create, and
-// `/api/cards/{id}/planner/reset` for the `Planner` profile. #1211 moves the intent
-// out of the title — a track created without one starts unnamed and the planner
-// agent names it once the conversation has established what the work is — so
-// all three must stop seeding.
-//
-// These tests assert on the persisted `planner-harness-start` payload rather than
-// only on the live queue: the payload row is what the route decided, and it
-// cannot be drained out from under the assertion by a harness that consumed the
-// observation before we looked.
+// The track title is not seeded as the planner agent's goal. These tests assert on the persisted
+// `planner-harness-start` payload rather than the live queue, which a harness could drain before we looked.
 
-/// Every `planner-harness-start` operation payload recorded for `card_id`,
-/// oldest first. `payload_json` is the exact `PlannerHarnessStartOperationPayload`
-/// the route submitted.
+/// Every `planner-harness-start` operation payload recorded for `card_id`, oldest first.
 async fn planner_harness_start_payloads(repo: &SqlxRepo, card_id: &str) -> Vec<Value> {
     let rows: Vec<String> = sqlx::query_scalar(
         "SELECT payload_json FROM operations WHERE kind = 'planner-harness-start' ORDER BY rowid",
@@ -2745,9 +2631,7 @@ async fn planner_harness_start_payloads(repo: &SqlxRepo, card_id: &str) -> Vec<V
             payload
                 .get("request")
                 .unwrap_or(payload)
-                // The PERSISTED key, which #1316 S3 froze at the old spelling —
-                // see `PlannerHarnessStartOperationPayload`'s doc comment for
-                // why renaming it would be a permanent 409.
+                // The PERSISTED key is frozen at the old spelling; renaming it would be a permanent 409.
                 .get("spec_card_id")
                 .and_then(Value::as_str)
                 == Some(card_id)
@@ -2810,8 +2694,6 @@ async fn assert_harness_queue_empty(boot: &Boot, card_id: &str, what: &str) {
     );
 }
 
-/// #1211 S1 (1) — a create request may omit `title` entirely, and the harness
-/// that comes up behind it starts with an empty observation queue.
 #[tokio::test]
 async fn track_create_without_title_seeds_no_track_goal() {
     let boot = boot_shared().await;
@@ -2846,11 +2728,6 @@ async fn track_create_without_title_seeds_no_track_goal() {
     assert_harness_queue_empty(&boot, planner_card.id.as_str(), "create without title").await;
 }
 
-/// #1211 S1 (2) — the deletion itself. A create carrying a perfectly good
-/// non-empty title must ALSO produce no `Observation::TrackGoal`: the title is
-/// simply not the track's intent any more. Restore the old
-/// `goal: (!goal.is_empty()).then_some(goal)` in
-/// `routes::tracks::start_planner_harness` and this test is the one that fails.
 #[tokio::test]
 async fn track_create_with_title_seeds_no_track_goal() {
     let boot = boot_shared().await;
@@ -2902,9 +2779,6 @@ async fn track_create_with_title_seeds_no_track_goal() {
     .await;
 }
 
-/// #1211 S1 (3) — `/planner/reset` restarts the `Planner` profile, which was the
-/// second place that re-seeded the title. A restarted planner session must come
-/// up as silent as a fresh one.
 #[tokio::test]
 async fn planner_reset_seeds_no_track_goal() {
     let boot = boot_shared().await;

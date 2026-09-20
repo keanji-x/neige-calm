@@ -1,19 +1,5 @@
-//! `GET /api/terminals/:id` (WebSocket upgrade). **Owned by Track D.**
-//!
-//! ## Protocol
-//!
-//! Frames carry the `calm_session::ClientMsg` / `DaemonMsg` enums encoded as
-//! JSON text. Each WS text frame is exactly one serde-JSON `ClientMsg` (going
-//! up) or `DaemonMsg` (coming down). Binary WS frames are not used in this
-//! bridge today — the track's own xterm.js client handles VT replay on top of
-//! `DaemonMsg::ServerHello.snapshot.data` / subsequent `RenderPatch.data`
-//! byte arrays delivered as JSON byte-arrays. A future PR may introduce a
-//! binary-frame fast path for `Input`; the wire format is reserved.
-//!
-//! This is intentionally a *thin* bridge: history, replay, seq numbering,
-//! reconnect epochs etc. all live in the daemon (`ServerHello.snapshot` +
-//! `RenderPatch` cursors) or are handled at the daemon attach layer.
-//! Calm-server just shuttles frames.
+//! `GET /api/terminals/:id` (WebSocket upgrade): a thin bridge shuttling `ClientMsg` / `DaemonMsg` as JSON
+//! text frames; history, replay and reconnect epochs all live in the daemon.
 
 use crate::error::Result;
 use crate::model::Terminal;
@@ -33,32 +19,18 @@ use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
-// `tokio::time::Instant` (not `std::time::Instant`) so `tokio::time::pause()`
-// in tests virtual-advances `elapsed()` along with `interval` ticks. In
-// production this is a thin wrapper over `std::time::Instant`.
+// `tokio::time::Instant` so `tokio::time::pause()` in tests virtual-advances `elapsed()` with the interval ticks.
 use tokio::time::Instant;
 
-/// Interval between server-sent WebSocket Ping frames. Ten seconds is well
-/// under the typical idle-disconnect window for HTTP intermediaries (60s) and
-/// gives us three Ping attempts before [`PONG_TIMEOUT`] fires.
+/// Well under the typical 60s idle-disconnect window of HTTP intermediaries; three attempts before [`PONG_TIMEOUT`].
 const PING_INTERVAL: Duration = Duration::from_secs(10);
 
-/// If we don't see any frame (pong, text, binary, close) from the client for
-/// this long, treat the connection as dead and close it with a 1011 frame.
-/// Set to 30s so a single ping miss still tolerates a normal interval, but two
-/// in a row trips detection.
+/// No frame of any kind from the client for this long closes the connection with 1011; one missed ping is tolerated.
 const PONG_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Custom close-code description we send when the heartbeat trips. 1011 is the
-/// IANA-registered "server error" code; the reason text is purely advisory and
-/// surfaced in server logs when troubleshooting.
 const PONG_TIMEOUT_REASON: &str = "no pong";
 
-/// Reason text we attach to the 1000 close frame when the terminal emitted
-/// `TerminalExited`. The browser surfaces this via
-/// `CloseEvent.reason`; the JS client matches on this exact string to
-/// distinguish a clean child exit from a network-level disconnect even
-/// if the prior JSON exit frame got dropped on a slow link.
+/// The JS client matches on this exact string to distinguish a clean child exit from a network-level disconnect.
 pub(crate) const CLOSE_REASON_CHILD_EXITED: &str = "child-exited";
 
 pub fn router() -> Router<AppState> {
@@ -81,10 +53,8 @@ async fn upgrade(
     }
 }
 
-/// What [`resolve_live_renderer_from_terminal`] found. `ChildExited` says
-/// only that NO renderer was obtained on this call (the row records an
-/// exit, the lazy reattach failed, the supervisor knows no live PTY, or the
-/// probe errored — #1743 §4.2 step 4); it is not proof the process is dead.
+/// What [`resolve_live_renderer_from_terminal`] found. `ChildExited` says only that NO renderer was
+/// obtained on this call (exit recorded, reattach failed, no live PTY, probe error); it is not proof the process is dead.
 pub(crate) enum LiveRenderer {
     Alive(Arc<RendererEntry>),
     ChildExited { exit_code: Option<i32> },
@@ -125,10 +95,8 @@ async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
     resolve_live_renderer_from_terminal(s, term).await
 }
 
-/// The registry entry for `term`, or a lazy reattach to the PTY the
-/// supervisor still runs (the post-restart shape, K17). `pub(crate)` for the
-/// terminal sweeper's completed-track arm (#1743 §4.2 step 4), which needs
-/// the same reattach before it can reap through a renderer.
+/// The registry entry for `term`, or a lazy reattach to the PTY the supervisor still runs (the
+/// post-restart shape). `pub(crate)` for the terminal sweeper, which needs the same reattach before it can reap.
 pub(crate) async fn resolve_live_renderer_from_terminal(
     s: &AppState,
     term: Terminal,
@@ -137,9 +105,7 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
         return Ok(LiveRenderer::Alive(entry));
     }
 
-    // Lazy reattach bypasses OperationRuntime, so it shares DELETE's direct
-    // per-track fence. Re-read after acquiring it: a delete may have removed
-    // the terminal/card/track while this websocket waited for the guard.
+    // Lazy reattach bypasses OperationRuntime, so it shares DELETE's per-track fence; re-read after acquiring it.
     let initial_card = s
         .repo
         .card_get(term.card_id.as_str())
@@ -178,14 +144,8 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
         });
     }
 
-    // #388 Phase 3b: probe the supervisor before reattaching. If the
-    // supervisor doesn't know about this proc_id, there's no live PTY
-    // child to reattach to — calling spawn_terminal_for would SPAWN a
-    // fresh child (violating the "stale handle does not respawn"
-    // invariant the daemon-binary world enforced). Only call
-    // spawn_terminal_for when the supervisor confirms the proc is
-    // running; EnsureProc's idempotent fast-path then makes it a true
-    // reattach.
+    // Probe the supervisor first: `spawn_terminal_for` on a proc it does not know would SPAWN a fresh child
+    // instead of reattaching.
     match crate::probe_supervisor_for_terminal(s, &term.id).await {
         Ok(true) => {
             tracing::info!(
@@ -342,31 +302,11 @@ fn sanitize_client_msg(parsed: &mut ClientMsg) {
     }
 }
 
-/// Accept the WS upgrade, optionally send a JSON `TerminalExited`
-/// frame carrying the parsed sidecar exit code, then send a single
-/// `Close(1000, "child-exited")` frame and drop the socket.
-///
-/// The JS client (see `web/src/XtermView.tsx` — `'TerminalExited' in
-/// msg`) matches the same JSON shape the pump path uses when the
-/// daemon emits `TerminalExited` mid-session, so the client wiring is
-/// untouched. `pty_seq` and `render_rev` are pinned to `0` because no
-/// live daemon ever attached on this path — there are no cursors to
-/// confirm, and the client only reads `.code` from this frame.
-///
-/// When `exit_code` is `None` we skip the JSON frame entirely. That
-/// covers two cases: the daemon was SIGKILL'd before writing its
-/// `.exit` sidecar (the future "DaemonLost" surface, today
-/// conflated under `child-exited`), and the signal-killed-child case
-/// (sidecar has `code: null, signal_killed: true`). For both the
-/// frontend's REST seed reads the row directly and renders the
-/// correct palette — emitting a JSON frame with `code: null` would
-/// (incorrectly) clobber `signal_killed` back to false on the live
-/// channel.
+/// Accept the upgrade, optionally send a JSON `TerminalExited` with the sidecar exit code, then `Close(1000,
+/// "child-exited")`. `exit_code: None` skips the JSON frame: a `code: null` frame would clobber `signal_killed` on the client.
 async fn send_child_exited_close(mut socket: WebSocket, exit_code: Option<i32>) {
     if let Some(code) = exit_code {
-        // Match the on-the-wire shape produced by the pump path:
-        // serde's default external tagging on `DaemonMsg` yields
-        // `{"TerminalExited":{"code":<i32>,"pty_seq":0,"render_rev":0}}`.
+        // Match the on-the-wire shape produced by the pump path (serde external tagging).
         let msg = DaemonMsg::TerminalExited {
             code: Some(code),
             pty_seq: 0,
@@ -379,14 +319,10 @@ async fn send_child_exited_close(mut socket: WebSocket, exit_code: Option<i32>) 
                         error = %e,
                         "send_child_exited_close: TerminalExited send failed (client may have hung up)",
                     );
-                    // Fall through to the close attempt anyway — best
-                    // effort; the receive side may still be open.
+                    // Fall through to the close attempt anyway — best effort.
                 }
             }
             Err(e) => {
-                // serde_json on a struct with all primitive fields
-                // can't actually fail, but the result type forces us
-                // to handle it; log and continue with just the close.
                 tracing::warn!(
                     error = %e,
                     "send_child_exited_close: serializing TerminalExited failed",
@@ -402,34 +338,17 @@ async fn send_child_exited_close(mut socket: WebSocket, exit_code: Option<i32>) 
         .await;
 }
 
-/// Outcome reported by [`pump`] when it returns. Lets [`handle`] decide
-/// whether to perform stale-renderer cleanup (clear the renderer entry)
-/// the socket) before the connection fully tears down. Keeping the side
-/// effects in `handle` (rather than threading the repo into `pump`) leaves
-/// `pump` purely I/O-bound and easy to test against in-memory transports.
+/// Outcome reported by [`pump`]; side effects stay in the caller so `pump` is purely I/O-bound.
 #[derive(Debug)]
 pub enum PumpOutcome {
-    /// Connection ended cleanly: client closed, terminal process exited,
-    /// `ChildExited`, heartbeat timed out, or one of the WS arms hit EOF.
-    /// No socket-level cleanup is needed — the process either already exited
-    /// or is still healthy (client just walked away).
+    /// Connection ended cleanly; no socket-level cleanup is needed.
     Clean,
-    /// The renderer read-half produced a framing error (bad magic or
-    /// unsupported version). This means the bytes on the kernel↔daemon
-    /// socket aren't from the current terminal renderer protocol, so the
-    /// row's `renderer entry` is stale and must be cleared before the next
-    /// attach.
+    /// The bytes on the kernel↔daemon socket are not the current renderer protocol: the renderer entry is stale
+    /// and must be cleared before the next attach.
     FramingSkew { error: FrameError },
 }
 
-/// Renderer transport abstraction. The WS bridge only needs the
-/// bidirectional `AsyncRead + AsyncWrite` half — in production this is a
-/// `tokio::net::UnixStream`; in tests it's one end of a
-/// `tokio::io::duplex` pair so we can drive the pump in-process without
-/// starting a real terminal renderer.
-///
-/// A blanket impl covers any type with the right combination of bounds;
-/// callers don't need to opt in explicitly.
+/// Renderer transport: a `UnixStream` in production, one end of a `tokio::io::duplex` pair in tests.
 pub trait DaemonTransport:
     tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static
 {
@@ -440,21 +359,7 @@ impl<T> DaemonTransport for T where
 {
 }
 
-/// Core WS↔daemon bridge loop. Splits the `daemon` transport into its
-/// read/write halves, splits the `ws` socket, and drives three concurrent
-/// arms (up: WS Text → daemon bincode frame; down: daemon bincode frame
-/// → WS Text; heartbeat: pings + dead-client detection) inside a single
-/// `tokio::select!`. Exits as soon as any arm completes — closing one
-/// half cancels the rest.
-///
-/// `ping_interval` and `pong_timeout` are parameters so tests can pass
-/// short windows; production values are [`PING_INTERVAL`] and
-/// [`PONG_TIMEOUT`] (10s / 30s) and are wired in by [`handle`].
-///
-/// Generic over `DaemonTransport` so unit tests can substitute
-/// `tokio::io::DuplexStream`. The split-into-halves pattern requires
-/// `AsyncRead + AsyncWrite` on the concrete type, which the trait bound
-/// provides via [`tokio::io::split`].
+/// Core WS↔daemon bridge: up, down and heartbeat arms in one `select!`; exits as soon as any arm completes.
 pub async fn pump<T: DaemonTransport>(
     ws: WebSocket,
     daemon: T,
@@ -465,32 +370,18 @@ pub async fn pump<T: DaemonTransport>(
     let (mut rd, mut wr) = tokio::io::split(daemon);
     let (ws_tx, mut ws_rx) = ws.split();
 
-    // Single-shot channel for the down arm to surface a `FramingSkew`
-    // outcome up to the caller. The `Clean` case is the default — if no
-    // arm sends, `try_recv` after the `select!` falls through to
-    // `PumpOutcome::Clean`. Only the down arm uses the sender (it's the
-    // only place that can observe a `FrameError`).
+    // Only the down arm can observe a `FrameError`; no send means `Clean`.
     let (outcome_tx, mut outcome_rx) = tokio::sync::oneshot::channel::<PumpOutcome>();
 
-    // Share the write half across the three tasks (down-stream, ping, and
-    // the heartbeat close path) behind a mutex. Contention here is trivial:
-    // pings fire every 10s, close fires at most once, and downstream sends
-    // are usually orders of magnitude apart from those.
     let ws_tx = Arc::new(Mutex::new(ws_tx));
 
-    // Most recent moment we received *any* frame from the client. Pong
-    // frames count; so do Text/Binary, since any traffic proves the socket
-    // is alive.
+    // Most recent frame of any kind from the client; any traffic proves the socket is alive.
     let last_seen = Arc::new(Mutex::new(Instant::now()));
 
-    // WS → daemon: parse each text frame as ClientMsg, write to socket.
-    // Also bumps `last_seen` so the heartbeat detector knows the client is
-    // alive without relying on pong frames alone (axum auto-pongs, but
-    // pongs DO come back through the read half).
+    // WS → daemon.
     let last_seen_up = last_seen.clone();
     let up = async move {
         while let Some(Ok(msg)) = ws_rx.next().await {
-            // Any frame counts as liveness — pong, text, binary, ping.
             *last_seen_up.lock().await = Instant::now();
             match msg {
                 Message::Text(text) => {
@@ -501,19 +392,8 @@ pub async fn pump<T: DaemonTransport>(
                             continue;
                         }
                     };
-                    // SECURITY: this WS bridge is the untrusted-network
-                    // ingress for daemon ClientMsg frames.
-                    // `ClientCapabilities.kernel_originated_input` is a
-                    // daemon-side trust flag that relaxes the owner-only
-                    // gate on `ClientMsg::Input`; the only legitimate
-                    // producer is a kernel-private `DaemonClient` speaking
-                    // over a kernel-private unix domain socket. Any value
-                    // arriving across this WS hop is, by definition,
-                    // browser-controlled — strip it unconditionally so a
-                    // forged ClientHello can't write to another user's
-                    // PTY as an Observer. See
-                    // `crates/calm-session/src/lib.rs` `ClientCapabilities`
-                    // doc for the full trust model.
+                    // SECURITY: `kernel_originated_input` relaxes the daemon's owner-only gate on `Input` and is only legitimate
+                    // from a kernel-private socket; anything arriving over this WS hop is browser-controlled, so strip it.
                     if let ClientMsg::ClientHello {
                         ref mut capabilities,
                         ref mut terminal_id,
@@ -521,25 +401,8 @@ pub async fn pump<T: DaemonTransport>(
                     } = parsed
                     {
                         capabilities.kernel_originated_input = false;
-                        // CORRECTNESS: normalize terminal_id to hyphenated
-                        // form so the daemon's byte-level handshake match
-                        // succeeds regardless of which form the client
-                        // sent. `model::new_id` returns the *simple* form
-                        // (32 hex, no dashes) and the API response leaks
-                        // that verbatim to the browser; `daemon.rs` renders
-                        // its own `cli.id` via `Uuid` `Display`, which is
-                        // always hyphenated, then does a string-equality
-                        // check against the incoming `ClientHello.terminal_id`.
-                        // Without this normalization, every browser hello
-                        // would fail with `BadHandshake` — see the e2e test
-                        // `crates/calm-server/tests/ws_terminal_e2e.rs` and
-                        // the `ws_normalizes_terminal_id_to_hyphenated`
-                        // regression test below.
-                        //
-                        // If the id isn't a valid UUID we leave it as-is and
-                        // let the daemon reject it as `BadHandshake` — that
-                        // is the correct fail-loud behavior for malformed
-                        // input.
+                        // Normalize terminal_id to hyphenated form: the API leaks the simple (dashless) form, but the daemon compares
+                        // against its hyphenated `Uuid` Display. A non-UUID is left as-is for the daemon to reject as `BadHandshake`.
                         if let Ok(uuid) = uuid::Uuid::parse_str(terminal_id) {
                             *terminal_id = uuid.to_string();
                         }
@@ -548,48 +411,29 @@ pub async fn pump<T: DaemonTransport>(
                         break;
                     }
                 }
-                // Binary WS frames are reserved for a future Input fast
-                // path (PR-3). Today the pump drops them silently.
+                // Binary WS frames are reserved; dropped silently.
                 Message::Binary(_) => {}
                 Message::Close(_) => break,
-                // Ping/Pong: axum auto-responds to client Ping; client Pong
-                // is what we want to observe — `last_seen` already bumped
-                // above.
+                // axum auto-responds to client Ping; `last_seen` is already bumped above.
                 _ => {}
             }
         }
     };
 
-    // Daemon → WS: read framed bincode DaemonMsg, ship as JSON text.
+    // Daemon → WS.
     let ws_tx_down = ws_tx.clone();
     let terminal_id_down = terminal_id.clone();
     let down = async move {
         let mut outcome_tx = Some(outcome_tx);
-        // Only a true protocol violation on the kernel↔daemon socket
-        // (BadMagic / UnsupportedFrameVersion) sends `Close(None)`; the
-        // socket is unusable and the daemon row will be torn down by
-        // `handle`. Every other exit from this loop — TerminalExited /
-        // ChildExited frame, daemon socket EOF, or transient IO — is
-        // attributable to a child that has gone away, so we emit
-        // `Close(1000, CLOSE_REASON_CHILD_EXITED)`. Without this, the
-        // browser sees 1005 (Close with no code) on EOF and can't
-        // distinguish a clean child exit from a network cut.
+        // Only a true protocol violation sends `Close(None)`; every other exit is attributable to a child that has
+        // gone away and sends `Close(1000, CLOSE_REASON_CHILD_EXITED)`, or the browser sees 1005 on EOF.
         let mut framing_skew = false;
         loop {
             let msg: DaemonMsg = match read_frame(&mut rd).await {
                 Ok(m) => m,
                 Err(e) => {
-                    // Version-skew on the kernel↔daemon Unix socket: this
-                    // means a daemon binary was started against a stale
-                    // `calm-session` schema. Log loudly with the daemon
-                    // identity (terminal id + socket path) so an operator
-                    // can correlate to the deploy that introduced the skew,
-                    // then surface the skew up to `handle` (via
-                    // `PumpOutcome::FramingSkew`) so it can clear the
-                    // row's `renderer entry` + unlink the socket file. The
-                    // next attach to this terminal will then go through
-                    // `resolve_live_renderer`'s spawn path and start a fresh
-                    // daemon binary.
+                    // Version skew means a daemon binary was started against a stale `calm-session` schema; surface it to `handle`
+                    // so it clears the renderer entry and the next attach spawns a fresh daemon.
                     framing_skew = matches!(
                         &e,
                         FrameError::BadMagic { .. } | FrameError::UnsupportedFrameVersion { .. }
@@ -611,9 +455,7 @@ pub async fn pump<T: DaemonTransport>(
                                 "daemon framing version mismatch — closing WS"
                             );
                         }
-                        // Oversize / decode / io are the existing failure
-                        // modes; debug-log to avoid spamming on normal
-                        // peer-close paths (EOF shows up as Io here).
+                        // Debug-log only: EOF shows up as Io on normal peer-close paths.
                         other => {
                             tracing::debug!(
                                 terminal_id = %terminal_id_down,
@@ -623,11 +465,7 @@ pub async fn pump<T: DaemonTransport>(
                         }
                     }
                     if framing_skew && let Some(tx) = outcome_tx.take() {
-                        // Receiver lives in the outer `pump` body and is
-                        // always polled after `select!` returns, so a
-                        // send error here would mean the receiver was
-                        // dropped — not possible without a programming
-                        // bug. Discard the error for forward-compat.
+                        // The receiver is always polled after `select!`, so a send error would be a programming bug.
                         let _ = tx.send(PumpOutcome::FramingSkew { error: e });
                     }
                     break;
@@ -669,12 +507,7 @@ pub async fn pump<T: DaemonTransport>(
             .await;
     };
 
-    // Heartbeat: ping every `ping_interval`; if `last_seen` is older than
-    // `pong_timeout`, log + close with 1011. Browsers don't expose pongs to
-    // JS, but our `last_seen` is bumped on *any* frame, and clients ack
-    // pings with pongs at the protocol layer — that's all we need for
-    // server-side death detection. Exits when the socket gets closed (a
-    // send error trips us out and the `select!` cancels the other arms).
+    // Browsers don't expose pongs to JS, but `last_seen` is bumped on any frame and clients pong at the protocol layer.
     let ws_tx_hb = ws_tx.clone();
     let last_seen_hb = last_seen.clone();
     let heartbeat = run_heartbeat(ws_tx_hb, last_seen_hb, ping_interval, pong_timeout);
@@ -685,29 +518,19 @@ pub async fn pump<T: DaemonTransport>(
         _ = heartbeat => {}
     }
 
-    // Down arm is the only sender; everything else (up, heartbeat, EOF)
-    // leaves the channel empty and `try_recv` yields
-    // `Err(Empty)` → `Clean`. `Closed` (sender dropped without sending)
-    // also maps to `Clean` for the same reason.
+    // Down arm is the only sender; `Empty` and `Closed` both mean `Clean`.
     match outcome_rx.try_recv() {
         Ok(outcome) => outcome,
         Err(_) => PumpOutcome::Clean,
     }
 }
 
-// ---- Heartbeat (testable in isolation) ---------------------------------
-
-/// Sink abstraction for the heartbeat task. Behind a trait so tests can
-/// substitute an in-memory `Vec<Message>` for the real
-/// `SplitSink<WebSocket, Message>`. Production code only ever sends Ping
-/// and (one) Close. Method is named `hb_send` to avoid name clashing with
-/// `futures::SinkExt::send` on the same concrete type.
+/// Sink abstraction for the heartbeat task; `hb_send` avoids clashing with `futures::SinkExt::send`.
 #[async_trait::async_trait]
 pub(crate) trait HeartbeatSink: Send + 'static {
     async fn hb_send(&mut self, msg: Message) -> std::result::Result<(), ()>;
 }
 
-/// Production blanket impl: the axum WebSocket SplitSink.
 #[async_trait::async_trait]
 impl HeartbeatSink for futures::stream::SplitSink<WebSocket, Message> {
     async fn hb_send(&mut self, msg: Message) -> std::result::Result<(), ()> {
@@ -717,10 +540,7 @@ impl HeartbeatSink for futures::stream::SplitSink<WebSocket, Message> {
     }
 }
 
-/// Pings at `ping_interval`; if `last_seen.elapsed() > pong_timeout`, sends
-/// `Close(1011 "no pong")` and exits. Pulled out of `handle()` so the timing
-/// behavior can be unit-tested without standing up a real WebSocket /
-/// daemon socket pair.
+/// Pings at `ping_interval`; sends `Close(1011 "no pong")` and exits once `last_seen` is older than `pong_timeout`.
 pub(crate) async fn run_heartbeat<S>(
     sink: Arc<Mutex<S>>,
     last_seen: Arc<Mutex<Instant>>,
@@ -730,8 +550,7 @@ pub(crate) async fn run_heartbeat<S>(
     S: HeartbeatSink,
 {
     let mut tick = tokio::time::interval(ping_interval);
-    // First tick fires immediately by default — skip it; we don't need a
-    // ping in the first interval of a fresh connection.
+    // First tick fires immediately by default — skip it.
     tick.tick().await;
     loop {
         tick.tick().await;
@@ -750,8 +569,7 @@ pub(crate) async fn run_heartbeat<S>(
                 .await;
             break;
         }
-        // axum::extract::ws::Message::Ping wraps `Bytes`. An empty payload
-        // is the smallest valid ping.
+        // An empty payload is the smallest valid ping.
         if sink
             .lock()
             .await
@@ -768,7 +586,6 @@ pub(crate) async fn run_heartbeat<S>(
 mod heartbeat_tests {
     use super::*;
 
-    /// Capturing sink — records every message sent and never fails.
     struct VecSink(Vec<Message>);
 
     #[async_trait::async_trait]
@@ -787,10 +604,6 @@ mod heartbeat_tests {
         matches!(msg, Message::Ping(_))
     }
 
-    /// With pongs never arriving (`last_seen` frozen), `run_heartbeat` should
-    /// send Pings until `pong_timeout` elapses, then issue a Close(1011) and
-    /// exit. Uses 100ms/300ms windows to keep wall-clock cost negligible; the
-    /// production constants (10s / 30s) share the same timing logic.
     #[tokio::test]
     async fn closes_when_no_pong_within_timeout() {
         let sink = Arc::new(Mutex::new(VecSink(Vec::new())));
@@ -802,8 +615,6 @@ mod heartbeat_tests {
         let ls_clone = last_seen.clone();
         let h = tokio::spawn(async move { run_heartbeat(sink_clone, ls_clone, ping, pong).await });
 
-        // Wait long enough for the heartbeat to send a few pings and trip
-        // the timeout. 600ms ≫ 300ms so the close branch must have fired.
         let _ = tokio::time::timeout(Duration::from_millis(800), h).await;
 
         let log = &sink.lock().await.0;
@@ -814,8 +625,6 @@ mod heartbeat_tests {
         );
     }
 
-    /// If the client keeps the connection live by bumping `last_seen`, the
-    /// heartbeat should keep pinging and never issue a Close.
     #[tokio::test]
     async fn pings_continue_when_pongs_keep_coming() {
         let sink = Arc::new(Mutex::new(VecSink(Vec::new())));
@@ -827,8 +636,6 @@ mod heartbeat_tests {
         let ls_clone = last_seen.clone();
         let h = tokio::spawn(async move { run_heartbeat(sink_clone, ls_clone, ping, pong).await });
 
-        // Simulate a healthy client: bump `last_seen` every 25ms for 300ms.
-        // Pong-window is 200ms so the heartbeat must NOT see a timeout.
         for _ in 0..12 {
             tokio::time::sleep(Duration::from_millis(25)).await;
             *last_seen.lock().await = Instant::now();
@@ -852,19 +659,8 @@ mod heartbeat_tests {
 
 #[cfg(test)]
 mod pump_tests {
-    //! In-process tests for the WS↔renderer bridge that don't start a real
-    //! terminal renderer. We mount [`pump`] under a tiny `axum::Router`
-    //! with a single WS route, drive it with a `tokio_tungstenite` client
-    //! over a local TCP listener (the same pattern used in
-    //! `tests/ws_events.rs`), and on the daemon side substitute a
-    //! `tokio::io::duplex` pair for `UnixStream`. Net result: the only thing
-    //! we're skipping vs. production is the kernel socket — every byte of
-    //! the JSON↔bincode bridge is exercised.
-    //!
-    //! Timing: ping/pong values are kept very large (10s / 60s) so the
-    //! heartbeat arm never fires inside test wall-clock; the cases we
-    //! actually want to assert are about up/down translation and graceful
-    //! shutdown, not heartbeat behavior (covered by `heartbeat_tests`).
+    //! In-process bridge tests: [`pump`] under a one-route axum app driven by a `tokio_tungstenite` client, with a
+    //! `tokio::io::duplex` pair standing in for the daemon socket. Heartbeat windows are kept huge so that arm never fires.
     use super::*;
     use axum::Router;
     use axum::extract::ws::WebSocketUpgrade;
@@ -878,16 +674,7 @@ mod pump_tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::Message as TMessage;
 
-    /// Bring up a one-route axum app whose WS handler invokes [`pump`] with
-    /// the supplied `daemon_side` of a duplex pair. Returns the bound
-    /// address paired with a oneshot receiver that resolves to the
-    /// [`PumpOutcome`] once `pump` returns; existing tests ignore the
-    /// receiver, the framing-skew tests await it to assert on the outcome
-    /// variant directly.
-    ///
-    /// Each call creates a fresh listener on `127.0.0.1:0` so concurrent
-    /// tests don't share state. The server task is spawned and lives until
-    /// the test ends; no cleanup needed because the runtime tears it down.
+    /// Boot a one-route app whose WS handler runs [`pump`] on `daemon_side`; the receiver resolves to the [`PumpOutcome`].
     pub(crate) async fn boot_pump(
         daemon_side: DuplexStream,
         ping: Duration,
@@ -896,27 +683,15 @@ mod pump_tests {
         boot_pump_with_terminal_id(daemon_side, "test-terminal-1", ping, pong).await
     }
 
-    /// Variant of [`boot_pump`] that pins the terminal id used by the WS
-    /// route. Required for the v2 ClientHello round-trip test, which
-    /// needs the daemon to validate the handshake against a known id.
-    /// Returns the same `(addr, outcome_rx)` tuple as [`boot_pump`] so
-    /// callers that care about framing-skew outcomes have the receiver
-    /// available regardless of which variant they used to boot.
+    /// Variant of [`boot_pump`] that pins the terminal id used by the WS route.
     pub(crate) async fn boot_pump_with_terminal_id(
         daemon_side: DuplexStream,
         terminal_id: &str,
         ping: Duration,
         pong: Duration,
     ) -> (SocketAddr, tokio::sync::oneshot::Receiver<PumpOutcome>) {
-        // Wrap the DuplexStream in a Mutex<Option<…>> so the closure given
-        // to `Router::route` can `take` it the first time the route is
-        // hit. `on_upgrade` consumes the value by move; the option dance
-        // is just to satisfy `Fn` (not `FnOnce`) while only firing once.
+        // `Mutex<Option<_>>` so the `Fn` route closure can move these out on its first (only) hit.
         let slot = Arc::new(Mutex::new(Some(daemon_side)));
-        // Likewise for the outcome sender — `on_upgrade` is `FnOnce`-shaped
-        // (consumes its captures) but `Router::route` needs `Fn`, so we
-        // gate the move behind a `Mutex<Option<_>>` and `take` it the
-        // first time the route fires.
         let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
         let outcome_slot = Arc::new(Mutex::new(Some(outcome_tx)));
         let terminal_id_str = terminal_id.to_string();
@@ -939,8 +714,7 @@ mod pump_tests {
                         .expect("pump route called more than once");
                     upgrade.on_upgrade(move |socket| async move {
                         let outcome = pump(socket, daemon, tid, ping, pong).await;
-                        // Receiver may have been dropped if the test exited
-                        // before the pump did — that's fine, just discard.
+                        // Receiver may have been dropped if the test exited before the pump did.
                         let _ = outcome_tx.send(outcome);
                     })
                 }
@@ -956,13 +730,10 @@ mod pump_tests {
             .await
             .unwrap();
         });
-        // Tiny breathing room — same idiom as tests/ws_events.rs.
         tokio::time::sleep(Duration::from_millis(50)).await;
         (addr, outcome_rx)
     }
 
-    /// Build a minimal v2 RenderPatch from raw bytes for the down-arm
-    /// translation test.
     fn render_patch(bytes: &[u8]) -> DaemonMsg {
         DaemonMsg::RenderPatch(RenderPatch {
             render_rev: 1,
@@ -973,10 +744,7 @@ mod pump_tests {
         })
     }
 
-    /// Build a minimal v2 ClientMsg::Input frame for the up-arm test.
-    /// `input_seq` defaults to 0 — the browser-path "no ack requested"
-    /// posture; the WS bridge does not synthesize seqs, so this matches
-    /// what real browser traffic looks like on the daemon socket.
+    /// `input_seq: 0` is the browser-path "no ack requested" posture; the WS bridge does not synthesize seqs.
     fn client_input(bytes: &[u8]) -> ClientMsg {
         ClientMsg::Input {
             data: bytes.to_vec(),
@@ -984,15 +752,11 @@ mod pump_tests {
         }
     }
 
-    /// Big enough to never wake during a test. We don't want the heartbeat
-    /// arm racing the assertions for up/down behavior.
+    /// Big enough that the heartbeat arm never wakes during a test.
     fn long_window() -> (Duration, Duration) {
         (Duration::from_secs(10), Duration::from_secs(60))
     }
 
-    /// daemon → WS: write a `DaemonMsg::RenderPatch` on the duplex; the WS
-    /// client must receive a JSON Text frame that round-trips back to the
-    /// same `DaemonMsg`.
     #[tokio::test]
     async fn down_translates_daemon_frame_to_ws_text() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
@@ -1002,12 +766,10 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Push one bincode frame from the "daemon" side.
         write_frame(&mut daemon_side, &render_patch(b"world"))
             .await
             .unwrap();
 
-        // WS client should receive a single Text frame.
         let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv timed out")
@@ -1024,9 +786,6 @@ mod pump_tests {
         }
     }
 
-    /// WS → daemon: client pushes a Text frame containing
-    /// `ClientMsg::Input`; the daemon side must observe one bincode-framed
-    /// `ClientMsg` matching it.
     #[tokio::test]
     async fn up_translates_ws_text_to_daemon_frame() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
@@ -1056,10 +815,7 @@ mod pump_tests {
         }
     }
 
-    /// When the daemon emits `TerminalExited`, the pump must (a) forward the
-    /// frame as JSON, (b) send a WS Close, and (c) return. Asserting on
-    /// the stream draining to `None` is the test's proxy for "pump
-    /// returned".
+    /// The stream draining to `None` is the proxy for "pump returned".
     #[tokio::test]
     async fn child_exited_closes_ws_and_pump_returns() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
@@ -1079,11 +835,8 @@ mod pump_tests {
         )
         .await
         .unwrap();
-        // Drop our daemon-side writer so the down arm's read_frame would
-        // hit EOF if the TerminalExited break didn't already trigger.
         drop(daemon_side);
 
-        // 1) Text frame carrying the JSON TerminalExited.
         let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv timed out")
@@ -1100,11 +853,6 @@ mod pump_tests {
             parsed
         );
 
-        // 2) Close frame — must carry code 1000 + `child-exited` reason
-        //    so the JS client distinguishes a clean child exit from a
-        //    network drop (1006) even if the JSON frame above got
-        //    dropped on a slow link. The browser surfaces the reason
-        //    via `CloseEvent.reason`.
         let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv (close) timed out")
@@ -1124,7 +872,6 @@ mod pump_tests {
             }
         }
 
-        // 3) Stream drains to None — pump has dropped the WS sink.
         let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("stream did not end after Close");
@@ -1135,15 +882,8 @@ mod pump_tests {
         );
     }
 
-    /// Daemon socket EOFs *before* emitting any `TerminalExited` /
-    /// `ChildExited` frame — the common case when the renderer's attach
-    /// reader observes the supervisor `Exited` frame and shuts down without
-    /// getting to write the JSON exit frame (server logs show
-    /// `error=io: early eof`). The pump must
-    /// still close with `Close(1000, "child-exited")`, not `Close(None)`
-    /// (which the browser surfaces as code 1005 and would conflate with a
-    /// generic abnormal close). Regression test for the 1005 close-code
-    /// bug.
+    /// Daemon EOF before any exit frame (the common case) must still close with `Close(1000, "child-exited")`,
+    /// not `Close(None)`, which the browser surfaces as 1005.
     #[tokio::test]
     async fn eof_before_exit_frame_closes_with_child_exited() {
         let (daemon_side, server_side) = tokio::io::duplex(8192);
@@ -1153,8 +893,6 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Drop daemon side without writing anything → next read_frame on
-        // the server's down arm hits FrameError::Io (early EOF).
         drop(daemon_side);
 
         let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
@@ -1186,9 +924,6 @@ mod pump_tests {
         );
     }
 
-    /// Bad JSON on the WS up path is logged + dropped. The pump itself
-    /// must keep running: a following valid frame should arrive on the
-    /// daemon side as if the garbage was never there.
     #[tokio::test]
     async fn bad_json_does_not_kill_pump() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
@@ -1198,15 +933,11 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // 1) Garbage. Must be dropped silently — no bincode frame appears
-        //    on `daemon_side`.
         ws.send(TMessage::Text("not valid json".into()))
             .await
             .unwrap();
 
-        // Probe: a short read on the daemon side must time out. If a
-        // bincode frame had been emitted, `read_frame` would return Ok
-        // immediately.
+        // Probe: a short read on the daemon side must time out.
         let probe = tokio::time::timeout(
             Duration::from_millis(150),
             read_frame::<ClientMsg, _>(&mut daemon_side),
@@ -1218,8 +949,6 @@ mod pump_tests {
             probe
         );
 
-        // 2) Subsequent valid frame must arrive — proves pump is still
-        //    pumping.
         let input = client_input(b"after-bad");
         ws.send(TMessage::Text(serde_json::to_string(&input).unwrap()))
             .await
@@ -1240,10 +969,6 @@ mod pump_tests {
         }
     }
 
-    /// Daemon writes bytes whose first 4 don't match `NEIG` framing magic.
-    /// The down arm's `read_frame` must return `FrameError::BadMagic`, which
-    /// the pump translates to an error-log + Close + return. We assert the
-    /// WS client sees the Close and the stream drains to None.
     #[tokio::test]
     async fn bad_magic_breaks_pump_cleanly() {
         use tokio::io::AsyncWriteExt;
@@ -1255,19 +980,11 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Garbage magic: anything that isn't `NEIG`. Four bytes is the
-        // exact width `read_frame` consumes before checking magic, so the
-        // BadMagic branch fires deterministically without us having to
-        // worry about partial-read interleaving.
+        // Four bytes is exactly the width `read_frame` consumes before checking magic, so BadMagic fires deterministically.
         daemon_side.write_all(b"XXXX").await.unwrap();
         daemon_side.flush().await.unwrap();
 
-        // Down arm should hit BadMagic, error-log, break, then send
-        // `Close(None)` — framing skew is the *only* path that emits a
-        // bodyless close. Every other exit (TerminalExited, EOF, IO)
-        // sends `Close(1000, "child-exited")` because the socket is
-        // unusable and the daemon row is about to be torn down by
-        // `handle`'s framing-skew cleanup.
+        // Framing skew is the only path that emits a bodyless `Close(None)`.
         let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv (close) timed out")
@@ -1279,7 +996,6 @@ mod pump_tests {
             close
         );
 
-        // Stream drains — pump returned.
         let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("stream did not end after Close");
@@ -1290,10 +1006,6 @@ mod pump_tests {
         );
     }
 
-    /// Daemon writes a syntactically well-formed framing prefix but with
-    /// a version the kernel doesn't support (FRAME_VERSION+1). The down
-    /// arm's `read_frame` must return `FrameError::UnsupportedFrameVersion`,
-    /// which the pump translates to an error-log + Close + return.
     #[tokio::test]
     async fn unsupported_frame_version_breaks_pump_cleanly() {
         use tokio::io::AsyncWriteExt;
@@ -1305,10 +1017,7 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Magic `NEIG` (valid) + version=FRAME_VERSION+1 (big-endian,
-        // unsupported) + length=0. read_frame validates magic first, then
-        // version, so this drives the UnsupportedFrameVersion path before
-        // ever touching the length / payload.
+        // Valid magic + unsupported version + length=0; magic is validated before version.
         let bogus_version = calm_session::FRAME_VERSION + 1;
         let mut wire = Vec::with_capacity(10);
         wire.extend_from_slice(b"NEIG");
@@ -1317,9 +1026,6 @@ mod pump_tests {
         daemon_side.write_all(&wire).await.unwrap();
         daemon_side.flush().await.unwrap();
 
-        // Down arm should hit UnsupportedFrameVersion, error-log, break,
-        // then send `Close(None)` — framing skew is the only bodyless-close
-        // path (see `bad_magic_breaks_pump_cleanly` for the contract).
         let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv (close) timed out")
@@ -1331,7 +1037,6 @@ mod pump_tests {
             close
         );
 
-        // Stream drains — pump returned.
         let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("stream did not end after Close");
@@ -1342,12 +1047,6 @@ mod pump_tests {
         );
     }
 
-    /// Bad magic on the daemon side: `pump` must return
-    /// `PumpOutcome::FramingSkew { error: FrameError::BadMagic { .. } }`
-    /// so the caller (`handle`) can clear the stale `renderer entry` and
-    /// unlink the socket. We assert on the variant + the wrapped
-    /// `FrameError` shape; `bad_magic_breaks_pump_cleanly` above asserts
-    /// the WS-side semantics (Close frame + stream end).
     #[tokio::test]
     async fn pump_returns_framing_skew_on_bad_magic() {
         use tokio::io::AsyncWriteExt;
@@ -1359,14 +1058,10 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Push 4 bytes that aren't `NEIG`. `read_frame` consumes magic
-        // first, so this drives BadMagic deterministically.
         daemon_side.write_all(b"XXXX").await.unwrap();
         daemon_side.flush().await.unwrap();
 
-        // Drop the client so the up arm sees `None` from `ws_rx.next()`
-        // and exits — otherwise `pump`'s `select!` could linger waiting on
-        // the up arm even after the down arm broke out on BadMagic.
+        // Drop the client so the up arm sees `None` and exits; otherwise `select!` could linger on it.
         drop(ws);
 
         let got = tokio::time::timeout(Duration::from_secs(2), outcome)
@@ -1391,13 +1086,7 @@ mod pump_tests {
         }
     }
 
-    /// Unsupported framing version: `pump` must return
-    /// `PumpOutcome::FramingSkew { error: FrameError::UnsupportedFrameVersion { got: 1, supported: FRAME_VERSION } }`.
-    /// Pushing the legacy v1 framing prefix exercises the skew path
-    /// (older daemon binary still bound to a row whose kernel has since
-    /// upgraded). Asserts against the current `FRAME_VERSION` so the
-    /// test stays correct across version bumps (#177 raised it from 2
-    /// → 3).
+    /// Asserts against the current `FRAME_VERSION` so the test stays correct across version bumps.
     #[tokio::test]
     async fn pump_returns_framing_skew_on_unsupported_version() {
         use tokio::io::AsyncWriteExt;
@@ -1409,9 +1098,7 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Valid magic + version=1 (legacy, no longer supported) + length=0.
-        // Magic check passes, version check fails. We never touch the
-        // (empty) payload region.
+        // Valid magic + version=1 (legacy) + length=0.
         let mut wire = Vec::with_capacity(10);
         wire.extend_from_slice(b"NEIG");
         wire.extend_from_slice(&1u16.to_be_bytes());
@@ -1441,9 +1128,7 @@ mod pump_tests {
         }
     }
 
-    /// Normal close path (renderer sends `TerminalExited`): `pump` must
-    /// return `PumpOutcome::Clean`. The kernel must not force cleanup on
-    /// every healthy exit.
+    /// The kernel must not force cleanup on every healthy exit.
     #[tokio::test]
     async fn pump_returns_clean_on_terminal_exited() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
@@ -1465,8 +1150,6 @@ mod pump_tests {
         .unwrap();
         drop(daemon_side);
 
-        // Drain WS to let the up arm exit (drop the client → up sees None).
-        // Read both frames so the close handshake completes.
         let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
         let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
         drop(ws);
@@ -1482,11 +1165,6 @@ mod pump_tests {
         );
     }
 
-    /// `send_child_exited_close` (the upgrade-time race fix), called
-    /// with `exit_code: None`, must emit a single
-    /// `Close(1000, "child-exited")` frame and then drop the socket.
-    /// The browser keys its "process exited" overlay off that exact code +
-    /// reason — same wire shape as the in-pump non-framing-skew path.
     #[tokio::test]
     async fn upgrade_time_child_exited_no_code_emits_close_1000_only() {
         let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1544,14 +1222,7 @@ mod pump_tests {
             .expect("send_child_exited_close did not return");
     }
 
-    /// `send_child_exited_close` with `exit_code: Some(_)` must first
-    /// emit a JSON `TerminalExited` text frame carrying that code, then
-    /// the same `Close(1000, "child-exited")` frame. This is the
-    /// upgrade-time fast path's contract with the JS client (see
-    /// `web/src/XtermView.tsx` — `'TerminalExited' in msg` branch).
-    /// Without the JSON frame, the client falls back to the close-
-    /// frame backstop which fires `exit_code: null` and renders the
-    /// badge as "exit" neutral instead of "exit 0" success.
+    /// Without the JSON frame the client falls back to the close-frame backstop and renders a neutral "exit" badge instead of "exit 0".
     #[tokio::test]
     async fn upgrade_time_child_exited_with_code_emits_terminal_exited_then_close() {
         let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1588,7 +1259,6 @@ mod pump_tests {
         let url = format!("ws://{}/exit", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // 1) Text frame: JSON `DaemonMsg::TerminalExited { code: Some(0), .. }`.
         let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv (text) timed out")
@@ -1606,7 +1276,6 @@ mod pump_tests {
             other => panic!("expected Text(TerminalExited), got {other:?}"),
         }
 
-        // 2) Close frame: same shape as the no-code path.
         let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv (close) timed out")

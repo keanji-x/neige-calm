@@ -26,14 +26,9 @@ describe('ReportAppBlock', () => {
     expect(container.querySelector('iframe')?.style.blockSize).toBe('2000px');
   });
 
-  // The schema already refuses a foreign origin; this is the second check, on
-  // the resolved URL, because a regex and a URL parser disagree about exactly
-  // the inputs worth attacking.
+  // The schema already refuses a foreign origin; a regex and a URL parser disagree about exactly the inputs worth attacking.
   it('loads nothing when the resolved src leaves this origin', () => {
-    // `/\evil.example/x` is also what the schema catches, and it is here as
-    // well because the browser turns the backslash into a slash *while
-    // resolving*: a prefix check on the raw string sees `/…`, the resolver sees
-    // `//evil.example`.
+    // The browser turns the backslash into a slash while resolving: a prefix check sees `/…`, the resolver sees `//evil.example`.
     const { container } = render(<ReportAppBlock payload={{ src: '/\\evil.example/x' }} />);
     expect(container.querySelector('iframe')).toBeNull();
     expect(container.textContent).toContain('not a same-origin path');

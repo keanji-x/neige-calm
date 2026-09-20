@@ -83,13 +83,6 @@ it('lets Tab move away after blur commits a changed title', async () => {
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Next' }));
 });
 
-/*
- * #1211 — the display carrier and the edit carrier are two props.
- *
- * Red when `placeholder` is folded back into `value`: the box would open
- * holding the stand-in text, which is the state the reader had to delete before
- * typing.
- */
 it('shows the placeholder for a blank name and still opens an empty box', async () => {
   render(<EditableTitle
     value=""
@@ -104,11 +97,6 @@ it('shows the placeholder for a blank name and still opens an empty box', async 
   expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Track title' }).value).toBe('');
 });
 
-/*
- * #1211 — the two answers to "what does an empty commit mean", pinned as a
- * pair. `'cancel'` is the default and the area's; `'clear'` is the track's,
- * where the planner agent can take the name back once the title is empty.
- */
 it('swallows an empty commit by default, and sends it under emptyCommit=clear', async () => {
   const cancels = vi.fn();
   render(<EditableTitle value="Old" editLabel="Rename area" inputLabel="Area name" onCommit={cancels} />);
@@ -135,11 +123,6 @@ it('swallows an empty commit by default, and sends it under emptyCommit=clear', 
   expect(clears).toHaveBeenCalledWith('');
 });
 
-/*
- * The arithmetic no-op survives `'clear'`: a title that is already blank has no
- * state change to request, so the empty commit is still write-free. Red when
- * `'clear'` is implemented as "always send when empty".
- */
 it('writes nothing when an already-blank title is committed blank', async () => {
   const onCommit = vi.fn();
   render(<EditableTitle

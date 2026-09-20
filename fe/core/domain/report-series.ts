@@ -1,15 +1,6 @@
 /*
- * The resolved data behind a `chart.series` block (#1628 D4 / D5).
- *
- * A series block names its data; the kernel fetches it on the read path and
- * hands it out as one flattened `resolved` object, the same bytes to the
- * agent (`calm.report.read`) and to the browser
- * (`GET /api/tracks/{id}/report/series/{block_id}?rev=…&detail=…`). This
- * module is the browser's reading of that object: the decoder, the request,
- * and the arithmetic a chart does before it draws — rebasing to 100, the
- * "source data through" date — kept here because it is platform-free and
- * because the mutation that would silently draw the wrong picture (divide by
- * the last value, not the first) is one a unit test can pin.
+ * The resolved data behind a `chart.series` block: the decoder, the request, and the arithmetic
+ * a chart does before it draws (rebasing to 100, the "source data through" date).
  */
 
 import { z } from 'zod';
@@ -26,16 +17,13 @@ export type SeriesView = (typeof SERIES_VIEWS)[number];
 const dateValueSchema = z.tuple([z.string(), z.number()]);
 
 /**
- * A point row: `[ts_ms, value]` for one field, `[ts_ms, open, high, low,
- * close, volume]` for `candles`. `ts_ms` is UTC midnight of the bar's day.
+ * A point row: `[ts_ms, value]`, or `[ts_ms, open, high, low, close, volume]` for `candles`.
+ * `ts_ms` is UTC midnight.
  */
 export const seriesPointSchema = z.array(z.number()).min(2);
 export type SeriesPoint = z.infer<typeof seriesPointSchema>;
 
-/**
- * One asset that resolved. The numbers are the stored summary, computed once
- * when the row was written; `points` arrive only on a `full` read.
- */
+/** One asset that resolved; the numbers are the stored summary, and `points` arrive only on a `full` read. */
 export const okSeriesEntrySchema = z.object({
   asset: z.string(),
   status: z.literal('ok'),
@@ -64,9 +52,7 @@ export type OkSeriesEntry = z.infer<typeof okSeriesEntrySchema>;
 export type FailedSeriesEntry = z.infer<typeof failedSeriesEntrySchema>;
 export type SeriesEntry = z.infer<typeof seriesEntrySchema>;
 
-/* The block's presentation fields ride along so a renderer needs nothing but
-   this object to draw. `view` is an enum because the renderer switches on it;
-   the other three are labels. */
+/* The block's presentation fields ride along so a renderer needs nothing but this object to draw. */
 const presentationSchema = z.object({
   view: z.enum(SERIES_VIEWS),
   field: z.string(),
@@ -75,10 +61,8 @@ const presentationSchema = z.object({
 });
 
 /**
- * The three states a row can be in, flattened on `status` the way the wire
- * is. `pending` is the absence of a row (the read just queued a job, or could
- * not — then `reason` says why); `unavailable` is a row that records a
- * failed resolution; `ok` is data.
+ * `pending` is the absence of a row (`reason` says why when the read could not queue);
+ * `unavailable` records a failed resolution.
  */
 export const resolvedSeriesSchema = z.discriminatedUnion('status', [
   presentationSchema.extend({ status: z.literal('pending'), reason: z.string().nullish() }),
@@ -98,11 +82,7 @@ export type OkResolvedSeries = Extract<ResolvedSeries, { status: 'ok' }>;
 /** The 409 body: the block moved on since this document was read. */
 export const staleRevBodySchema = z.object({ current_rev: z.number().int().nonnegative() });
 
-/**
- * What a block sees when it asks for its data. The first three are the
- * query's own states; `stale-rev` is the 409 turned into a value (D5: it is a
- * wait for the report to refresh, not an error); the rest is the wire.
- */
+/** What a block sees when it asks for its data; `stale-rev` is the 409 turned into a wait, not an error. */
 export type SeriesResolution =
   | Readonly<{ status: 'loading' }>
   | Readonly<{ status: 'error'; message: string }>
@@ -124,12 +104,7 @@ export function isOkSeriesEntry(entry: SeriesEntry): entry is OkSeriesEntry {
   return entry.status === 'ok';
 }
 
-/**
- * `normalized`: every series rebased so its first point reads 100. A series
- * whose first value is not positive has no meaningful base — dividing by zero
- * or flipping sign would draw a line that means nothing — so it is reported
- * rather than drawn (D5: "cannot normalize (first value ≤ 0)").
- */
+/** Every series rebased so its first point reads 100; a first value that is not positive has no meaningful base. */
 export type RebasedSeries =
   | Readonly<{ ok: true; points: readonly (readonly [number, number])[] }>
   | Readonly<{ ok: false; reason: 'first value ≤ 0' }>;
@@ -143,11 +118,7 @@ export function rebaseToFirst(points: readonly SeriesPoint[], valueIndex = 1): R
   };
 }
 
-/**
- * The earliest `complete_through` across the resolved assets — the date the
- * figure can honestly claim its source data runs through. `null` when no
- * asset resolved.
- */
+/** The earliest `complete_through` across the resolved assets, or `null` when no asset resolved. */
 export function minCompleteThrough(series: readonly SeriesEntry[]): string | null {
   let min: string | null = null;
   for (const entry of series) {

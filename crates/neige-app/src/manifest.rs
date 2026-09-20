@@ -149,19 +149,12 @@ pub(crate) struct Compatibility {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum UnitName {
-    /// The neige-app host process.
     NeigeApp,
-    /// The calm-server kernel binary.
     CalmServer,
-    /// The PTY/process supervisor binary.
     CalmProcSupervisor,
-    /// The web frontend bundle.
     Web,
-    /// Codex helper bridge binary.
     NeigeCodexBridge,
-    /// MCP stdio shim binary.
     NeigeMcpStdioShim,
-    /// CLI binary.
     NeigeCli,
     /// App-only private Tailnet HTTPS service.
     NeigeTailnet,

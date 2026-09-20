@@ -1,21 +1,5 @@
-//! #1628 S2/S4 — resolved `chart.series` data: the background resolver, the
-//! `report_series` rows, and the `resolved` projection `calm.report.read`
-//! and `GET /api/tracks/{id}/report/series/{block_id}` hand out.
-//!
-//! The model in one paragraph (design §2.8): a `chart.series` block names its
-//! data; nothing happens when it is written. The first *read* of the block
-//! finds no row and enqueues a job; the job calls the plugin on the plugin's
-//! own serial lane, checks the reply at the kernel boundary, and writes one
-//! row. Readers only ever read rows — a read never calls a plugin and never
-//! writes the database. A frozen block (`as_of` present) is pinned by its
-//! first complete resolution and is immutable from then on; a live block is
-//! re-resolved when its row is older than the row's TTL and a reader comes
-//! by.
-//!
-//! Modules: `request` (payload → request + fingerprint), `store` (rows),
-//! `validate` (the reply checklist), `summary` (what the row keeps for the
-//! default read, and the row TTL), `resolver` (in-flight keys, lanes, the
-//! job itself), `hydrate` (the read-side step both readers share).
+//! Resolved `chart.series` data: the background resolver, the `report_series` rows, and the `resolved` projection.
+//! Nothing happens when a block is written; the first read enqueues a job, and readers only ever read rows. A frozen block (`as_of` present) is pinned by its first complete resolution; a live block is re-resolved when its row is older than its TTL.
 
 mod admission;
 pub(crate) mod hydrate;
@@ -36,24 +20,19 @@ pub use resolver::{Enqueue, InflightGuard, Job, ResolveOutcome, SeriesResolver};
 pub use store::{Detail, NewRow, SeriesRow};
 pub use summary::{Summary, row_is_fresh, row_ttl, summarize};
 
-// Estimates (S2.15) — reviewable numbers, not structure.
-/// Upper bound on one plugin call; a lane's delay, never a reader's.
 pub const SERIES_RESOLVE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Freshness of an `ok` row whose every series is `ok`.
 pub const SERIES_TTL_MS: i64 = 6 * 60 * 60 * 1000;
 /// Freshness of an `unavailable` row or an `ok` row with any non-`ok` series.
 pub const SERIES_UNAVAILABLE_TTL_MS: i64 = 2 * 60 * 1000;
-/// Largest `CallToolResult` the kernel accepts (a checklist item, not a
-/// transport bound — that is #1634).
+/// Largest `CallToolResult` the kernel accepts (a checklist item, not a transport bound).
 pub const MAX_SERIES_REPLY_BYTES: usize = 2 * 1024 * 1024;
 /// Largest serialized `data` column.
 pub const MAX_SERIES_ROW_BYTES: usize = 1024 * 1024;
 /// `reason` is truncated to this many characters before it is stored.
 pub const MAX_REASON_CHARS: usize = 256;
 
-/// The `resolved` projection of one block (D4). `Pending` is the absence of
-/// a row (with the reason the read's own pre-check produced, if any); the
-/// other two are rows.
+/// The `resolved` projection of one block. `Pending` is the absence of a row; the other two are rows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Resolved {
     Pending {

@@ -1,10 +1,4 @@
-//! #1505 — one live planner card with a registered harness, for the queue
-//! slices.
-//!
-//! PR1's read-path cases and PR2's mutation cases both need the same six-object
-//! setup (area, track, planner card, worker-session row, app state, harness),
-//! and a second copy of it would be a second thing to keep in step with the
-//! production boot path. It lives here so both drive the same one.
+//! One live planner card with a registered harness, for the queue slices.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,22 +49,14 @@ pub struct Boot {
     pub worker_session_id: String,
     pub daemon: Arc<SharedCodexAppServer>,
     pub repo: Arc<SqlxRepo>,
-    /// The card's managed workspace on disk.
-    ///
-    /// #1505 S6 — the fixture builds a real one, through the production
-    /// `ManagedUnder` plan and the production materializer, rather than the
-    /// `cwd: "/tmp"` attached shape it used before. Attachments are refused on
-    /// an attached workspace, so a fixture that produced one would make every
-    /// attachment case in this suite pass for the wrong reason: a 400 that
-    /// says "attached workspace", read as a 400 that says whatever the test
-    /// was actually about.
+    /// The card's managed workspace on disk — a real one through the production materializer,
+    /// because attachments are refused on an attached workspace.
     pub workspace: PathBuf,
     _tmp: tempfile::TempDir,
 }
 
 impl Boot {
-    /// `<workspace>/.neige/attachments` — the root both attachment endpoints
-    /// derive for themselves.
+    /// `<workspace>/.neige/attachments` — the root both attachment endpoints derive for themselves.
     pub fn attachment_root(&self) -> PathBuf {
         self.workspace.join(".neige").join("attachments")
     }
@@ -89,11 +75,8 @@ impl Boot {
 }
 
 impl Boot {
-    /// The persisted payloads of every event of one kind, oldest first.
-    ///
-    /// Read from the `events` table rather than from a bus subscription: the
-    /// row is what an audit, a replay and the websocket fan-out all read, and
-    /// it is committed before the handler answers.
+    /// The persisted payloads of every event of one kind, oldest first, read from the `events` table
+    /// rather than a bus subscription: the row is committed before the handler answers.
     pub async fn event_payloads(&self, kind: &str) -> Vec<Value> {
         let rows: Vec<(String,)> =
             sqlx::query_as("SELECT payload FROM events WHERE kind = ?1 ORDER BY id ASC")
@@ -107,12 +90,8 @@ impl Boot {
     }
 }
 
-/// A planner card with a live, registered harness seeded from `snapshot`.
-///
-/// The debounce windows are pushed out to a minute so the run loop cannot
-/// drain the queue out from under an assertion — every test here is about
-/// what is IN the queue.
-/// The default: issuance paused, so the queue is whatever the test put in it.
+/// A planner card with a live, registered harness seeded from `snapshot`; debounce windows pushed out
+/// to a minute and issuance paused, so the queue is whatever the test put in it.
 pub async fn boot_with(snapshot: HarnessSnapshot) -> Boot {
     boot_with_issuance(snapshot, Issuance::Paused).await
 }
@@ -120,20 +99,13 @@ pub async fn boot_with(snapshot: HarnessSnapshot) -> Boot {
 /// Whether the harness is allowed to drain the queue into `turn/start`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Issuance {
-    /// The run loop's 50ms tick will pick a hard-fire entry up and issue it.
-    /// Only for the tests whose subject IS that race.
+    /// The run loop's 50ms tick will pick a hard-fire entry up and issue it. Only for tests whose subject IS that race.
     Live,
     Paused,
 }
 
-/// Boot with the `events` table renamed away just before the harness starts,
-/// so every event insert it attempts fails.
-///
-/// Fault injection, not a knob that omits an invariant: the production write
-/// path is the one under test, and what changes is only whether the database
-/// accepts it. Renaming BEFORE `PlannerHarness::run` is the point — doing it
-/// afterwards races the run loop's own early flush, which under load wins and
-/// leaves nothing outstanding for the assertion to observe.
+/// Boot with the `events` table renamed away just before the harness starts, so every event insert fails.
+/// Renaming BEFORE `PlannerHarness::run` matters: afterwards races the run loop's own early flush.
 pub async fn boot_with_broken_event_writes(snapshot: HarnessSnapshot) -> Boot {
     boot_inner(snapshot, Issuance::Paused, EventWrites::Broken).await
 }
@@ -282,25 +254,15 @@ async fn boot_inner(
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
-            // #1505 S4 review — the production budget is thirty seconds,
-            // which no test may wait out. Shortened rather than stubbed so the
-            // tests drive the real clock and the real branch.
-            //
-            // It must stay LONGER than `TRANSIENT_RETRY_DELAY` (2 s) or it can
-            // never be the binding constraint: the notice is computed on a
-            // refusal, so with a budget below the pace it appears at the second
-            // refusal for any budget in `(0, 2 s]` and the constant stops being
-            // load bearing. At 300 ms the mutation "ignore the budget, notify
-            // from the second refusal" survived every test.
+            // Shortened from the production thirty seconds; must stay LONGER than `TRANSIENT_RETRY_DELAY` (2 s)
+            // or the notice appears at the second refusal regardless and the budget stops being load bearing.
             transient_silence_budget: Duration::from_secs(5),
             ..HarnessConfig::default()
         },
         snapshot,
     });
-    // Every test in this file asserts on what is IN the queue, and a user
-    // message hard-fires: it bypasses the debounce windows above entirely and
-    // would be drained by the first 50ms tick. Pausing issuance is what makes
-    // these assertions deterministic rather than a race against that tick.
+    // A user message hard-fires past the debounce windows and would be drained by the first 50ms tick;
+    // pausing issuance makes the in-queue assertions deterministic.
     if issuance == Issuance::Paused {
         harness.pause_issuance_for_dev();
     }
@@ -312,12 +274,8 @@ async fn boot_inner(
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        // Stand-in for `auth::require_session`, which is layered over the whole
-        // protected REST subtree in `application_router` and is what puts a
-        // `Principal` in the extensions. Inserting one directly is the same
-        // post-condition without a cookie jar; a handler that takes the
-        // `Principal` extractor answers 401 without it, which is how this
-        // arrived in the fixture.
+        // Stand-in for `auth::require_session`, which is what puts a `Principal` in the extensions;
+        // a handler that takes the `Principal` extractor answers 401 without it.
         .layer(axum::middleware::from_fn(insert_owner_principal))
         .with_state(state);
 

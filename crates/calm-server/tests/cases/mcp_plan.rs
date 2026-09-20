@@ -1,15 +1,5 @@
-//! Issue #644 PR-A — `mcp_server::tools::plan` integration coverage.
-//!
-//! Boots an in-memory `SqlxRepo` + `EventBus` + pre-seeded role caches,
-//! constructs an `AppContext` directly (no live MCP listener — the
-//! tools' contract is "given a `ToolCallIdentity` + `Value` args, do
-//! the right thing"), and drives the hidden `calm.plan.upsert` shim plus
-//! retained `calm.plan.cancel` / `calm.plan.list` end-to-end.
-//!
-//! Field-level validation details (key regex, kind vocabulary, gate
-//! shape, cycle paths, …) are pinned by the unit tests inside
-//! `tools/plan.rs`; this file covers shim zero-write behavior, cancel
-//! semantics, role gating, list projection, and the #644 `TrackPatch` fields.
+//! `mcp_server::tools::plan` integration coverage: an `AppContext` built directly (no live MCP
+//! listener) driving `calm.plan.upsert` / `calm.plan.cancel` / `calm.plan.list` end-to-end.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -106,10 +96,8 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
-    // PR-C activated rule 6 and new tracks default `require_task_gates
-    // = 1` (migration 0041 DB DEFAULT) — most of this suite plans
-    // ungated codex tasks, so the boot track opts out. The complete
-    // report-block admission matrix lives in task_projection_acceptance.
+    // New tracks default `require_task_gates = 1`; most of this suite plans ungated codex tasks,
+    // so the boot track opts out.
     repo.track_update(
         track.id.as_str(),
         TrackPatch {
@@ -123,9 +111,8 @@ async fn boot() -> Boot {
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
-    // #1189 §3.6 — the recorder gate resolves session → card → {role, track}
-    // with a live `cards` read, so the planner card must be persisted as Planner
-    // and not merely cached that way (`Repo::card_create` mints Worker).
+    // The recorder gate resolves session → card with a live `cards` read, so the planner card must
+    // be persisted as Planner, not merely cached (`Repo::card_create` mints Worker).
     crate::support::mcp::set_persisted_card_role(
         repo.as_ref(),
         planner_card.id.as_str(),
@@ -273,9 +260,7 @@ async fn set_track_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
         .expect("set test track lifecycle");
 }
 
-/// Direct SQL escape hatch for states the PR-A tool surface cannot
-/// produce (in-flight statuses, gate_json rows — both PR-B/PR-C
-/// territory).
+/// Direct SQL escape hatch for states the tool surface cannot produce.
 async fn exec_sql(boot: &Boot, sql: &str) {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     sqlx::query(sql).execute(&pool).await.expect("exec sql");
@@ -305,9 +290,8 @@ async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
     .expect("task block write")
 }
 
-/// Count surviving `tasks` rows for the boot track directly — after a
-/// track/area delete the repo read path would trivially return empty, so
-/// orphan detection must go to the table.
+/// Count surviving `tasks` rows directly: after a track/area delete the repo read path would
+/// trivially return empty.
 async fn task_row_count(boot: &Boot) -> i64 {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE track_id = ?1")
@@ -331,9 +315,7 @@ async fn drain_events(
     seen
 }
 
-/// Snapshot every SQLite table, including CRDT/VCS/operational tables and
-/// sqlite_sequence. Values are losslessly represented with SQLite `quote()`;
-/// table and row order are deterministic for exact before/after comparison.
+/// Snapshot every SQLite table with `quote()`d values in deterministic order for exact before/after comparison.
 async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let tables: Vec<String> =
@@ -365,15 +347,10 @@ async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
     snapshot
 }
 
-// ---------------------------------------------------------------------------
-// migration 0041 + TrackPatch fields
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn migration_0041_new_track_defaults_gates_on_and_budget_null() {
     let boot = boot().await;
-    // The boot track opts out of rule 6 for the rest of the suite —
-    // assert the DB DEFAULT on a FRESH track instead.
+    // The boot track opts out; assert the DB DEFAULT on a FRESH track instead.
     let fresh = boot
         .repo
         .track_create(calm_server::model::NewTrack {
@@ -453,10 +430,6 @@ async fn track_patch_persists_task_budget_and_require_task_gates() {
     assert_eq!(require_gates, 0, "untouched by the second patch");
 }
 
-// ---------------------------------------------------------------------------
-// calm.plan.upsert hidden shim
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
     let boot = boot().await;
@@ -494,10 +467,6 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
         "planner shim broadcast an EventBus envelope"
     );
 }
-
-// ---------------------------------------------------------------------------
-// calm.plan.cancel
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
@@ -549,12 +518,8 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     assert!(no_event.is_err(), "idempotent cancel emitted: {no_event:?}");
 }
 
-/// Review F2/F3 (#656): an already-`canceled` task + a `lifecycle` arg
-/// must not short-circuit before the lifecycle applies. This also pins
-/// the in-tx re-read: the guarded UPDATE flips 0 rows (the row is
-/// already `canceled` — same branch a lost cancel/cancel race lands
-/// in), the re-read classifies it as idempotent success, and no
-/// `plan.updated` is emitted.
+/// An already-`canceled` task + a `lifecycle` arg must not short-circuit before the lifecycle
+/// applies; the guarded UPDATE flips 0 rows and the in-tx re-read classifies it as idempotent.
 #[tokio::test]
 async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_updated() {
     let boot = boot().await;
@@ -596,8 +561,7 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
         .unwrap();
     assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
 
-    // Lifecycle events land; `plan.updated` is suppressed (nothing in
-    // the plan changed, a retry must not re-trigger the scheduler).
+    // `plan.updated` is suppressed: a retry must not re-trigger the scheduler.
     let events = drain_events(&mut rx).await;
     assert!(
         events
@@ -613,12 +577,8 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
     );
 }
 
-/// Review round 3 (#656 F2): re-cancel of an already-`canceled` task
-/// with a `lifecycle` equal to the track's current state is a fully
-/// idempotent retry — success, zero events — instead of falling into
-/// the tx where the 0-row flip plus the same-state lifecycle would
-/// produce an empty event batch (rejected by `write_with_actor_events`
-/// as an internal error).
+/// A same-state lifecycle on a re-cancel would otherwise produce an empty event batch, which
+/// `write_with_actor_events` rejects as an internal error.
 #[tokio::test]
 async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success() {
     let boot = boot().await;
@@ -635,8 +595,7 @@ async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success
     .await
     .expect("first cancel with lifecycle ok");
 
-    // Retry the exact same call: row already `canceled`, track already
-    // `dispatching`.
+    // Retry the exact same call.
     let mut rx = boot.ctx.events.subscribe();
     let out = call_tool(&boot, TOOL_PLAN_CANCEL, planner_identity(&boot), args)
         .await
@@ -779,9 +738,7 @@ async fn cancel_terminal_or_unknown_task_rejected() {
     assert!(err.message.contains("unknown task `ghost`"), "{err:?}");
 }
 
-// ---------------------------------------------------------------------------
-// delete cleanup — `tasks` has no FK to `tracks` (review F1, #656)
-// ---------------------------------------------------------------------------
+// `tasks` has no FK to `tracks`
 
 #[tokio::test]
 async fn track_delete_removes_plan_rows() {
@@ -823,10 +780,6 @@ async fn area_delete_removes_plan_rows() {
         "area delete must not orphan plan rows"
     );
 }
-
-// ---------------------------------------------------------------------------
-// calm.plan.list
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_returns_plan_shape_without_gate_commands() {
@@ -874,10 +827,6 @@ async fn list_returns_plan_shape_without_gate_commands() {
     assert_eq!(b["depends_on"], json!(["a"]));
     assert_eq!(b["worker_card_id"], Value::Null);
 }
-
-// ---------------------------------------------------------------------------
-// role gating
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn plan_tools_refuse_worker_callers_at_mcp_entry() {

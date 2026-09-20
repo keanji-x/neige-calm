@@ -1,4 +1,4 @@
-//! Issue #1370 — Area-scoped New Track defaults through the real REST routes.
+//! Area-scoped New Track defaults through the real REST routes.
 
 #![cfg(unix)]
 

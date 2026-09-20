@@ -1,11 +1,4 @@
-//! #1209 — `GET /api/track-templates`, the New track picker's read side.
-//!
-//! The endpoint is an aggregate: `id`/`title` from the Rust template
-//! constants, `input_schema` from the *bound plugin's* manifest. The two
-//! tests below pin exactly that join — the same registry, once with the
-//! trusted plugin running and once without it — because a read that copied
-//! the schema into its own constant would pass the bound case and still be
-//! wrong.
+//! `GET /api/track-templates`, the New track picker's read side.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -52,9 +45,7 @@ fn trusted_plugin_id() -> String {
         .unwrap_or_else(|| "dev.neige.git-forge".to_string())
 }
 
-/// The manifest fact the endpoint must surface verbatim. Deliberately NOT the
-/// shipped git-forge manifest: a stub value that no other file spells proves
-/// the response came from the registry rather than from a constant.
+/// A stub value no other file spells, so the response provably came from the registry rather than a constant.
 fn stub_input_schema() -> Value {
     json!({
         "type": "object",
@@ -72,9 +63,7 @@ struct Boot {
     _tmp: TempDir,
 }
 
-/// `running`: whether the trusted plugin that declares `issue-development` is
-/// spawned. It is registered either way, so the only difference between the
-/// two cases is the thing `resolve_template_binding` actually gates on.
+/// `running`: whether the trusted plugin is spawned; it is registered either way.
 async fn boot(running: bool) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo: Arc<dyn Repo> = Arc::new(
@@ -231,7 +220,6 @@ async fn lists_every_template_with_its_kernel_title() {
         ],
         "the read must expose exactly the kernel's template keys, in order"
     );
-    // Titles come from the roster's files, not from this test's wishes.
     assert_eq!(row(&body, ISSUE_DEVELOPMENT)["title"], "Issue development");
     assert_eq!(row(&body, SMALL_CHANGE)["title"], "Small change");
     assert_eq!(row(&body, INVESTIGATION)["title"], "Investigation");
@@ -239,8 +227,6 @@ async fn lists_every_template_with_its_kernel_title() {
         row(&body, INVESTMENT_RESEARCH)["title"],
         "Investment research"
     );
-    // No `description` field anywhere — #1209: the kernel has no such fact and
-    // this endpoint does not invent one.
     for entry in body.as_array().expect("array body") {
         assert!(
             entry.get("description").is_none(),
@@ -259,16 +245,13 @@ async fn bound_template_carries_the_plugin_input_schema() {
         stub_input_schema(),
         "a bound template must carry its owning plugin's manifest schema verbatim"
     );
-    // The three unbound templates are the same request, same registry: the
-    // only reason they differ is the binding.
     for key in [SMALL_CHANGE, INVESTIGATION, INVESTMENT_RESEARCH] {
         assert!(
             row(&body, key).get("input_schema").is_none(),
             "unbound template `{key}` must not advertise an input schema: {body}"
         );
     }
-    // Same binding gate as create: stop the plugin and the schema goes away,
-    // so the picker can never offer input the create path would then reject.
+    // Same binding gate as create: stop the plugin and the schema goes away.
     boot.plugin_host
         .stop(&boot.plugin_id)
         .await
@@ -281,10 +264,6 @@ async fn bound_template_carries_the_plugin_input_schema() {
     );
 }
 
-/// #1209 — the picker's tooltip lists what a template will pre-set, and the
-/// only honest source for that is the template's own plan. These assertions
-/// are on the *content*, not the count: a read that returned three empty
-/// objects, or the wrong template's tasks, would pass a length check.
 #[tokio::test]
 async fn every_template_lists_the_tasks_its_report_pre_sets() {
     let boot = boot(false).await;
@@ -315,32 +294,24 @@ async fn every_template_lists_the_tasks_its_report_pre_sets() {
     );
     assert_eq!(keys(SMALL_CHANGE), vec!["inspect", "implement", "verify"]);
     assert_eq!(keys(INVESTIGATION), vec!["gather-facts", "write-findings"]);
-    // #1571 — a report-only template advertises an empty (present) tasks array:
-    // the picker's tooltip has nothing to list, and the key must still carry
-    // the array rather than omit it.
+    // A report-only template advertises an empty (present) tasks array.
     assert_eq!(
         keys(INVESTMENT_RESEARCH),
         Vec::<String>::new(),
         "investment-research pre-sets no tasks"
     );
 
-    // Every task carries a non-empty goal: the key alone is a slug, and the
-    // tooltip's whole value is saying what the step is for.
     for entry in body.as_array().expect("array body") {
         for task in entry["tasks"].as_array().expect("tasks array") {
             let goal = task["goal"].as_str().expect("goal string");
             assert!(!goal.trim().is_empty(), "empty goal in {entry}");
         }
     }
-    // Verbatim from `templates.rs`, not a paraphrase minted here.
     assert_eq!(
         row(&body, INVESTIGATION)["tasks"][1]["goal"],
         "Write findings, remaining unknowns, and recommended next steps into this track report. Do not open a PR or merge."
     );
 
-    // Listing tasks must stay a read. The template *tracks* are created by the
-    // create path, in an area; if listing ever reached for a stored report
-    // instead of the constants, that seed would show up right here.
     assert!(
         boot.repo.areas_list().await.expect("areas list").is_empty(),
         "listing track templates must not write anything"
@@ -365,41 +336,10 @@ async fn unbound_templates_carry_no_input_schema() {
     }
 }
 
-/// #1300 S1 — the template **write** endpoint is gone, and this is the
-/// assertion that says so.
-///
-/// `PUT /api/track-templates/{id}` and the Settings › Templates editor existed
-/// between #1230 and #1300. They were built on the seeded template track, which
-/// #1300 removes because it is the last production path on which the kernel
-/// writes a report as `EditAuthor::User`.
-///
-/// ## Why a deleted route needs a test at all
-///
-/// Deleting a handler and deleting nothing else both look like "the editor is
-/// gone" in a diff. The difference is observable only from outside: a route
-/// that is still registered but reaches dead code, a router that falls through
-/// to some catch-all, or a re-added handler in a later change all pass a
-/// review that only reads the deletion. So this asserts the two things a
-/// caller can see, and both halves matter:
-///
-///  * the method is **not routed** — `405` (the path exists for `GET`) or
-///    `404`, never a 2xx and never a 5xx from a handler that ran;
-///  * **nothing was written**. A rejection that still committed something on
-///    its way to the rejection would satisfy the status check alone.
-///
-/// The body is a well-formed `TrackTemplateUpdate` as the deleted endpoint
-/// accepted it, so this fails if the route comes back *and works*, not merely
-/// if the wire shape drifts.
 #[tokio::test]
 async fn put_is_not_routed_and_writes_nothing() {
     let boot = boot(false).await;
 
-    // Every roster key, not just one. A residual route could easily be
-    // reintroduced for a subset — a `match id` that handles one template and
-    // falls through for the rest is a perfectly ordinary shape — and a
-    // single-key check would call that gone. The roster itself is iterated,
-    // not a hand-kept list of its keys, so a new entry is covered the moment
-    // it lands and cannot be left out of this check.
     for template in calm_server::templates::TemplateRoster::builtin()
         .entries()
         .iter()
@@ -431,17 +371,7 @@ async fn put_is_not_routed_and_writes_nothing() {
         let status = resp.status();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
 
-        // 404 **with an empty body**, which is the discriminator that makes
-        // this an assertion about routing rather than about a status code.
-        //
-        // The path `/api/track-templates/{id}` is not registered for any method,
-        // so axum's own fallback answers — and its 404 carries no body. A
-        // *handler* that ran and chose to refuse cannot produce that: every
-        // refusal in this kernel goes through `CalmError`, which renders a JSON
-        // `ErrorBody`. Accepting any 404 would have let a restored handler that
-        // writes on its way to answering `NotFound` pass — the exact
-        // construction a reviewer proposed against the first version of this
-        // test, and it would have been green.
+        // 404 with an empty body: axum's fallback carries no body, while every handler refusal renders a JSON `ErrorBody`.
         assert_eq!(
             status,
             StatusCode::NOT_FOUND,
@@ -463,20 +393,9 @@ async fn put_is_not_routed_and_writes_nothing() {
 }
 
 /// Whole-database content digest: every table, every row, in a stable order.
-///
-/// Deliberately not "count the tracks" — a write the removal was supposed to
-/// prevent could land in `cards`, `overlays` or `events` and leave the track
-/// count alone. Comparing the whole database is the only shape that does not
-/// require guessing which table a resurrected handler would touch.
 async fn db_digest(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     let pool = repo.sqlite_pool().expect("sqlite pool");
-    // `sqlite_sequence` is deliberately NOT excluded. It is an ordinary
-    // writable table holding the AUTOINCREMENT high-water mark, so an insert
-    // that is rolled back — or inserted and deleted — still advances it. That
-    // is precisely the "wrote something on its way to refusing" shape this
-    // digest exists to catch, and a blanket `name NOT LIKE 'sqlite_%'` would
-    // have hidden it. The other `sqlite_*` objects are internal indices with no
-    // rows of their own; `type = 'table'` already excludes them.
+    // `sqlite_sequence` is deliberately included: a rolled-back insert still advances the AUTOINCREMENT high-water mark.
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master \
          WHERE type = 'table' AND name <> '_sqlx_migrations' \

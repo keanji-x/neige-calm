@@ -1,6 +1,5 @@
-// Track: the unit of work the whole product is organised around. Wire decode,
-// the lifecycle vocabulary, and the pure predicates that several surfaces must
-// agree on (sidebar buckets, Today's counters, Today's agenda).
+// Track: the unit of work the product is organised around — wire decode, the
+// lifecycle vocabulary, and the pure predicates several surfaces must agree on.
 
 import { z } from 'zod';
 
@@ -18,10 +17,8 @@ export const trackLifecycleSchema = z.enum([
 export type TrackLifecycle = z.infer<typeof trackLifecycleSchema>;
 
 /**
- * `lifecycle` / `cwd` / the `*_at` columns carry `#[serde(default)]` on the
- * kernel side for event-log replay, so they are absent from the OpenAPI
- * `required` set. The decoder supplies the documented DB defaults and the
- * decoded `Track` keeps every field required.
+ * `lifecycle` / `cwd` / the `*_at` columns are `#[serde(default)]` on the kernel side and so
+ * absent from the OpenAPI `required` set; the decoder supplies the DB defaults.
  */
 export const trackWireSchema = z.object({
   id: z.string(),
@@ -38,24 +35,14 @@ export const trackWireSchema = z.object({
 });
 export type TrackWire = z.infer<typeof trackWireSchema>;
 
-/**
- * Plugin-written activity a track carries on top of its kernel row. The kernel
- * stores these as overlays, so a track read without overlays still has to be a
- * complete `Track` — the neutral values below are what "no plugin has posted
- * anything" means, not "unknown".
- */
+/** Plugin-written activity on top of the kernel row; the neutral values mean "nothing posted", not "unknown". */
 export type TrackActivity = Readonly<{
   progress: number;
   eta: string;
   now: string;
-  /**
-   * #254's `any_card_needs_input` overlay, still decoded so the field keeps
-   * its value, but **no predicate reads it any more** (#1722 §5.1): the
-   * kernel's `activity` overlay below is the one source of attention. The
-   * field and its writer go together in S4.
-   */
+  /** Still decoded, but no predicate reads it: the kernel `activity` overlay is the one source of attention. */
   anyCardNeedsInput: boolean;
-  /** `kernel/track/activity` (#1722 §4.1): something dispatched is still running. */
+  /** From the kernel `activity` overlay: something dispatched is still running. */
   working: boolean;
   /** Same overlay: the fold of `attentionItems` — any failed → failed, else any input → input. */
   attention: AttentionKind;
@@ -67,12 +54,8 @@ export type TrackActivity = Readonly<{
   cards: Readonly<Record<string, CardActivity>>;
 }>;
 
-/*
- * Every nested container is frozen on its own: `architecture/no-module-runtime-state`
- * only credits a module-level `Object.freeze({...})` as static data when the
- * `[]` / `{}` inside it are frozen too, and a `new Map()` here would be
- * rejected outright — which is why `cards` is a `Record`, not a `ReadonlyMap`.
- */
+/* Nested containers are frozen too: `no-module-runtime-state` only credits a fully frozen literal,
+ * and a `new Map()` here would be rejected — hence `cards` is a `Record`. */
 export const NEUTRAL_ACTIVITY: TrackActivity = Object.freeze({
   progress: 0, eta: '', now: '', anyCardNeedsInput: false,
   working: false, attention: 'none', activityAt: null,
@@ -122,17 +105,8 @@ export const overlayWireSchema = z.object({
 export type OverlayWire = z.infer<typeof overlayWireSchema>;
 
 /**
- * Resolves a live `table` block's `source` against a track's overlays.
- *
- * `neige://plugin/<plugin_id>/<overlay_kind>` addresses exactly one overlay
- * row: overlays are keyed by (plugin, entity, kind), so at most one can match.
- * The payload comes back unvalidated on purpose — the renderer decodes it with
- * the inline-table schema, and "a plugin pushed junk" must read as an empty
- * table there rather than as a decode failure of the report itself.
- *
- * Returns `undefined` when the source names a plugin or kind that has written
- * nothing to this track yet, which is the ordinary state before a plugin's
- * first push and after it is uninstalled.
+ * Resolves a live table's `neige://plugin/<plugin_id>/<kind>` source to at most one overlay's
+ * payload, unvalidated (the renderer decodes it); `undefined` when nothing matches.
  */
 export function liveTableOverlayPayload(
   trackId: string,
@@ -179,12 +153,6 @@ const activityCardWireSchema = z.object({
   state: z.enum(['working', 'input', 'failed']),
 });
 
-/**
- * `kernel/track/activity` (#1722 §4.1). `items` and `cards` are parsed row by
- * row on purpose: one malformed row is dropped, the rest of the payload still
- * lands. A whole-array `z.array(schema)` would turn one bad row into a track
- * with no activity at all, which is the failure the loose decoders above avoid.
- */
 /** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */
 const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';
 const activityOverlayWireSchema = z.object({
@@ -208,8 +176,6 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
       atMs: item.data.at_ms, kind: item.data.kind,
     });
   }
-  // Folded into a Record inside the call: a per-track object built per decode,
-  // never a module-level container.
   const cards: Record<string, CardActivity> = {};
   for (const row of parsed.data.cards) {
     const card = activityCardWireSchema.safeParse(row);
@@ -225,16 +191,8 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
 }
 
 /**
- * Folds a track's overlays into its activity fields. Unknown overlay kinds and
- * mistyped payloads are ignored rather than rejected: a plugin writing junk
- * must not blank out a track the sidebar is trying to render.
- *
- * The `activity` verdict is kernel-owned: the projector writes it as
- * `plugin_id = 'kernel'` (`KERNEL_OVERLAY_PLUGIN_ID`), while the public overlay
- * endpoint lets any plugin write a row of any `kind` under its *own* id. A
- * plugin-owned `activity` row is therefore not the verdict and is skipped. The
- * older kinds (`progress` / `eta` / `now` / `any_card_needs_input`) are
- * plugin-written by design and stay ungated.
+ * Folds a track's overlays into its activity fields; junk payloads are ignored, not rejected.
+ * Only the kernel-written `activity` row is the verdict — any plugin may write a row of any kind under its own id.
  */
 export function trackActivityFrom(trackId: string, overlays: readonly OverlayWire[]): TrackActivity {
   let activity = NEUTRAL_ACTIVITY;
@@ -277,34 +235,12 @@ export const trackDetailSchema = z.object({
 });
 export type TrackDetailWire = z.infer<typeof trackDetailSchema>;
 
-/** `{ fg, bg }` RGB the kernel stamps onto a spawning daemon's argv (#177). */
+/** `{ fg, bg }` RGB the kernel stamps onto a spawning daemon's argv. */
 export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: readonly [number, number, number] }>;
 
 /**
- * "The kernel will read this text as blank" — the one place that question is
- * answered in the frontend (#1299).
- *
- * The kernel's blank check is `str::trim().is_empty()`
- * (`crates/calm-server/src/routes/conversations_shared.rs`,
- * `validate_first_message`), and Rust's `char::is_whitespace` is the Unicode
- * `White_Space` property. JavaScript's `String.prototype.trim` is not: its
- * `WhiteSpace` production is the `Zs` category plus a fixed list, and
- * **`U+0085 NEXT LINE` is in neither**. A string of nothing but `U+0085` is
- * therefore non-blank to JS and blank to the kernel — and a caller that gated
- * on `trim()` would enable the send, post that string, and collect a 400
- * nobody asked for.
- *
- * `\p{White_Space}` (with the `u` flag) *is* that Unicode property, so this
- * predicate and the kernel's agree by construction rather than by a hand-kept
- * code-point table, which would be wrong the next time Unicode adds one.
- *
- * It answers only "is this blank". It never returns a *value*: the text the
- * kernel enqueues for the agent is the reader's own string, indentation and
- * trailing spaces included — the operation payload carries those bytes
- * verbatim, and `first_message_digest` hashes them verbatim too (no trim) into
- * the create's idempotency binding row — so trimming on the way to the wire
- * would silently rewrite what they typed, and would change what identifies the
- * request.
+ * Matches the kernel's `str::trim().is_empty()`: Rust whitespace is Unicode `White_Space`, which
+ * JS `trim()` is not (`U+0085`). Answers only "is this blank" — the value itself is never trimmed.
  */
 export function isBlankForKernel(text: string): boolean {
   return /^\p{White_Space}*$/u.test(text);
@@ -315,130 +251,28 @@ export type NewTrackBody = Readonly<{
   /** Planner overrides applied before the first message; omitted follows installation defaults. */
   model?: string;
   reasoning_effort?: string;
-  /**
-   * Issue #1211 — optional. The title is no longer the track's intent: omit it
-   * and the kernel stores the **empty string** — it has no default name of its
-   * own; `UNTITLED_TRACK_LABEL` below is this layer's display fallback for a
-   * blank title. What this field decides is only what THIS request stores;
-   * who names the track afterwards is not its business — the planner agent via
-   * `calm.track.rename` is the usual namer, but the user can name it first.
-   * Present values (including `""`) are accepted verbatim.
-   */
+  /** Optional; omitted stores the empty string (the kernel has no default name). Present values, including `""`, are stored verbatim. */
   title?: string;
-  /**
-   * Issue #1131 / #1147 — optional. The new FE omits it for a managed
-   * workspace, which the server allocates beneath its workspace root. An Area
-   * default or an explicit folder supplies the attached path instead; present
-   * values keep the absolute-path + claim rules. `null` matches OpenAPI
-   * (`string | null`) and is the same omitted branch.
-   */
+  /** Omitted (or `null`) means a managed workspace the server allocates beneath its workspace root. */
   cwd?: string | null;
   theme: ThemeRgb;
   /**
-   * `false` requires `cwd` to already sit under a folder claimed by some area;
-   * the route answers 409 `conflict` naming the area to claim it for. `true`
-   * claims it in the same transaction. Omitting `cwd` forces this to `false`
-   * on the kernel regardless of the field. When `cwd` is present, omitting
-   * `attach_folder` is `false`.
+   * `false` requires `cwd` to already sit under a claimed folder (409 naming the area otherwise);
+   * `true` claims it in the same transaction. Omitting `cwd` forces `false`.
    */
   attach_folder?: boolean;
   /** Single-use consent for the exact foreign folder claim returned by a
    * create 409. The kernel revalidates both ids transactionally. */
   allow_cross_area_cwd?: Readonly<{ folder_id: number; area_id: string }>;
-  /**
-   * The chosen template's key (#1209). Read as `template.id` from
-   * `GET /api/track-templates`; the write side still spells it `template_id`
-   * because on this field that name is accurate — it is what the kernel's
-   * plugin-binding path resolves. #1209 records the seam and the decision not
-   * to add a `template_id` alias.
-   *
-   * **Blank omits the key entirely.** Not `null`, not `''`: the kernel rejects
-   * a whitespace-only id with a 400 and the body is
-   * `deny_unknown_fields`-strict, so the only spelling of "no template" is
-   * absence.
-   */
+  /** The chosen template's key (`template.id` from `GET /api/track-templates`). Blank omits the key entirely: the kernel 400s a whitespace-only id. */
   template_id?: string;
-  /**
-   * Only accepted when the chosen template is bound to a running trusted
-   * plugin — i.e. exactly when `GET /api/track-templates` returned an
-   * `input_schema` for it. Sending it otherwise is a 400.
-   */
+  /** Only accepted when `GET /api/track-templates` returned an `input_schema` for the template; otherwise a 400. */
   template_input?: Readonly<Record<string, unknown>>;
-  /**
-   * The chosen user recipe's id (#1292) — a `track_recipes` row, read as
-   * `recipe.id` from `GET /api/track-recipes`.
-   *
-   * **Mutually exclusive with `template_id` — and, since #1321 S2, with the
-   * kernel's third starting point `fork_report_from` as well. Naming any two
-   * is a 400 that names both**:
-   *
-   * ```
-   * track create: `template_id` and `recipe_id` each name a starting point
-   * for the new track's report; give at most one
-   * ```
-   *
-   * (`NamedSource::from_request` in `routes/tracks.rs`.) *At most* one: naming
-   * none is the ordinary blank create this type sends by default. Before
-   * #1321 S2 only this one pair was refused — `fork_report_from` silently
-   * outranked whichever other field was sent — and the quote here was the
-   * older `"give `template_id` or `recipe_id`, not both"`, a string the kernel
-   * no longer produces.
-   *
-   * `fork_report_from` is not a field of this type: no frontend creates a
-   * track by forking, so the exclusivity above is stated for the caller
-   * reading the wire contract, not for a shape this type can build.
-   *
-   * They are not two spellings of one field: a
-   * `template_id` lands on `tracks.template_id`, which the start path later
-   * resolves against running plugins' manifests, and a recipe id has no
-   * manifest to resolve against — putting one there would make every
-   * recipe-created track log a resolution failure for an entirely normal
-   * situation. That exclusivity is why the picker's selection is a tagged
-   * union rather than a bare id string: two id spaces in one `string` cannot
-   * say which endpoint the value came from.
-   *
-   * Absent, never `''`: same rule as `template_id`.
-   */
+  /** The chosen user recipe's id. Mutually exclusive with `template_id` (400 naming both). Absent, never `''`. */
   recipe_id?: string;
   /**
-   * Issue #1299 — the sentence the reader typed on the new-track page,
-   * delivered to the track's planner agent **by this create** instead of
-   * having to be retyped after landing on the track.
-   *
-   * The kernel seeds it as an `Observation::UserMessage` inside the same
-   * `planner-harness-start` transaction, so it is delivered exactly once and
-   * attributed to the human. It is **not** the track's `title` and not a
-   * `TrackGoal`: those are different slots, and this one is "what the user
-   * said first".
-   *
-   * **Blank omits the key entirely**, and blank is `isBlankForKernel` above —
-   * the kernel's own criterion, not JS `trim()`. It validates this field
-   * exactly like `POST /api/cards/{id}/planner/input` — non-blank after trim,
-   * at most 32768 **characters** — and rejects the create with a 400 before
-   * anything is minted, so posting a string it reads as blank would turn an
-   * ordinary empty composer into a failed create. Absence is the only spelling
-   * of "no first message" this layer uses.
-   *
-   * A value that *is* sent goes **verbatim**: the kernel forwards it to the
-   * agent untrimmed and hashes it untrimmed, so whatever whitespace the reader
-   * typed around their sentence is part of what they said.
-   *
-   * Typed `string` rather than `string | null` even though OpenAPI says
-   * `string | null`: `null` is the wire's *second* spelling of the same
-   * omitted branch (`#[serde(default)] Option<String>`), and offering it here
-   * would let a caller send a key that means exactly what sending no key
-   * means.
-   *
-   * Supplying it also changes what a failed harness start means: without it
-   * that failure is still a 201 (an inert planner agent is recoverable), with
-   * it the create answers 500 because the delivery it promised may or may not
-   * have happened.
-   *
-   * Since #1384 sending it also makes `Idempotency-Key` **required** — see
-   * `createTrackOperation`. Under that key the create IS retryable: the retry
-   * lands on the track the first attempt already made and delivers no second
-   * copy. What it still does not tell you is whether the first attempt's
-   * delivery happened; the server cannot know that.
+   * The reader's first sentence, seeded to the planner by this create. Blank per `isBlankForKernel`
+   * omits the key; a sent value goes verbatim, untrimmed. Present ⇒ `Idempotency-Key` is required.
    */
   first_message?: string;
 }>;
@@ -451,31 +285,12 @@ export type NewTrackBodyWithFirstMessage = Omit<NewTrackBody, 'first_message'> &
   first_message: string;
 }>;
 
-/**
- * A selectable starting point for a new track (#1209).
- *
- * `input_schema` is present only when a running trusted plugin is bound to the
- * template; its presence — not the template's id — is what says "this one takes
- * input". Kept as `unknown`: the picker branches on presence, and nothing in
- * the FE evaluates JSON Schema.
- *
- * There is no `description`, on purpose. The kernel has no such fact (#1209
- * §"权威源散在三处"), so a description here would be a fourth authority for
- * what a template is. What the picker shows instead is `tasks` — the plan the
- * template *already* contains, surfaced rather than re-described.
- */
+/** A selectable starting point for a new track. `input_schema` is present exactly when a running trusted plugin is bound and the template takes input. */
 export const trackTemplateSchema = z.object({
   id: z.string(),
   title: z.string(),
   input_schema: z.unknown().optional(),
-  /**
-   * The tasks the template pre-sets, in plan order — the same `task` blocks
-   * the created track's report is seeded with.
-   *
-   * Required, not `.default([])`: the server sends it for every template, and
-   * a default would let a genuinely broken read render as "this template
-   * pre-sets nothing", which is a lie the user cannot tell from the truth.
-   */
+  /** Required, not `.default([])`: a default would let a broken read render as "pre-sets nothing". */
   tasks: z.array(z.object({ key: z.string(), goal: z.string() })),
 });
 export type TrackTemplate = z.infer<typeof trackTemplateSchema>;
@@ -484,29 +299,7 @@ export function trackTemplatesOperation(): ApiOperation<TrackTemplate[]> {
   return { method: 'GET', path: '/api/track-templates', responseSchema: z.array(trackTemplateSchema) };
 }
 
-/**
- * A user-defined starting point for a new track (#1292) — a `track_recipes`
- * row.
- *
- * ## Why this is not `TrackTemplate` with a flag
- *
- * There is no combined endpoint and **no `builtin` / `read_only`
- * discriminator on either payload**; the kernel states that as intentional
- * (`routes/track_recipes.rs`): built-in and mine "differ only in where the
- * payload came from", and where it came from is *which endpoint answered*.
- * So the kind is tagged on merge, in the one place that merges them
- * (`features/area/new-track`), and neither wire type grows a field the server
- * does not have.
- *
- * The two are also shaped differently in the way that matters to a reader.
- * A template exposes `tasks[]` — structured, renderable as a hover card, and
- * never a `body`. A recipe exposes `body` — the Markdown whose `neige-block`
- * fences *are* its tasks — and no `tasks[]`. That asymmetry is why "duplicate
- * this built-in as my recipe" is not offered: producing a recipe body from a
- * template would mean re-implementing the kernel's `render_fence` in
- * TypeScript, i.e. a second fence writer, which is the duplication #1300 spent
- * a slice removing.
- */
+/** A user-defined starting point for a new track — a `track_recipes` row. */
 export const trackRecipeSchema = z.object({
   id: z.string(),
   /** Picker label *and* the instantiated report's summary — one field on the
@@ -514,10 +307,7 @@ export const trackRecipeSchema = z.object({
   title: z.string(),
   /** The report body. Its `neige-block` fences are the recipe's tasks. */
   body: z.string(),
-  /**
-   * The optimistic-lock anchor a `PUT` must echo as `if_revision`. Not
-   * `updated_at`: a wall clock is not a version.
-   */
+  /** Optimistic-lock anchor a `PUT` must echo as `if_revision`. */
   revision: z.number(),
   created_at: z.number(),
   updated_at: z.number(),
@@ -535,18 +325,8 @@ export function createTrackRecipeOperation(
 }
 
 /**
- * Whole-document replace, gated on the `revision` the caller read.
- *
- * Whole-body and not per-block CAS, deliberately: a recipe's only writer is
- * its owner, possibly from two windows, and the correct answer to a stale
- * write there is showing the second writer a conflict — not a merge engine.
- * A track's report needs block-level CAS because three parties write it
- * concurrently; a recipe has no such third party, and there is no partially
- * synced state in between.
- *
- * The response is the *stored* row, which is not always the bytes sent: the
- * write boundary re-renders every fence, drops tombstones and normalizes the
- * task privilege fields. Callers must render what comes back.
+ * Whole-document replace gated on `revision`. The response is the stored row, which may differ
+ * from the bytes sent (fences re-rendered, tombstones dropped): render what comes back.
  */
 export function updateTrackRecipeOperation(
   recipeId: string,
@@ -589,28 +369,8 @@ export function trackDetailOperation(trackId: string): ApiOperation<TrackDetailW
 }
 
 /**
- * `POST /api/tracks`.
- *
- * `idempotencyKey` is **required by the kernel whenever `body.first_message` is
- * present** (#1384). The overloads make that relationship structural: the body
- * variant with a message requires the separate header value, while the
- * message-less variant accepts no key.
- *
- * What the key buys, and it is the reason it must be minted **per draft and not
- * per call**: the kernel binds it to the track it creates, inside the same
- * transaction that mints the track id. A retry under the same key returns that
- * track and does not deliver the sentence a second time. A key minted per call
- * is a different key on the retry, and a different key mints a second track
- * holding the same message — the exact failure the header exists to stop.
- *
- * Not sent when `first_message` is absent. That is now a **client** choice, not
- * a kernel limitation: since #1426 the kernel honours the key on a message-less
- * create too (binding the track, so a retry returns it instead of minting a
- * second), it merely does not require one. This overload keeps the pre-#1426
- * behaviour — a message-less create here is not idempotent — because the
- * message-less branch has no per-draft key to mint one from. Opting in means
- * giving that branch a key with the same per-draft lifetime `mintIdempotencyKey`
- * gives the message-carrying one; it is deliberately not done here.
+ * `POST /api/tracks`. The kernel requires `Idempotency-Key` whenever `first_message` is present;
+ * mint it per draft, not per call, or a retry mints a second track holding the same message.
  */
 export function createTrackOperation(body: NewTrackBodyWithoutFirstMessage): ApiOperation<TrackWire>;
 export function createTrackOperation(
@@ -635,13 +395,8 @@ export function createTrackOperation(body: NewTrackBody, idempotencyKey?: string
 export type TrackCreateKeyAction = 'preserve' | 'replace' | 'offer-explicit-replace';
 
 /**
- * Whether the next explicit submit of this draft must use a fresh key.
- *
- * Only the structured exhausted code earns replacement. Transport errors and
- * 5xx may have committed, so replacing their key could mint a second track;
- * payload conflicts and legacy keys whose payload cannot be proved stay on the
- * original key but expose an explicit new-create choice; they must never rotate
- * silently.
+ * Only `idempotency_key_exhausted` earns a fresh key: transport errors and 5xx may have committed,
+ * so rotating their key could mint a second track. Payload conflicts expose an explicit choice.
  */
 export function trackCreateKeyAction(failure: ApiFailure): TrackCreateKeyAction {
   if (failure.kind !== 'http') return 'preserve';
@@ -684,12 +439,7 @@ export function createTerminalCardOperation(
   };
 }
 
-/**
- * `POST /api/tracks/:id/codex-cards` — the atomic codex spawn. `theme` is
- * required by the kernel (422 without it): the daemon answers codex's OSC 10/11
- * probe with these colours, so a card minted from a light host must not come up
- * painted for a dark one.
- */
+/** `theme` is required by the kernel (422 without it): the daemon answers codex's OSC 10/11 probe with these colours. */
 export type NewCodexCardBody = Readonly<{
   theme: ThemeRgb;
   title?: string | null;
@@ -710,13 +460,7 @@ export function createCodexCardOperation(
   };
 }
 
-/**
- * `POST /api/tracks/:id/cards` — the kernel's direct-create path: the row is
- * written verbatim from `kind` + `payload`. Only kinds that own no runtime may
- * take this door; a worker kind (terminal / codex / claude) has an atomic
- * endpoint of its own because the kernel has a daemon to spawn as well as a row
- * to write.
- */
+/** `POST /api/tracks/:id/cards` — direct create for kinds that own no runtime; worker kinds have atomic endpoints of their own. */
 export type NewCardBody = Readonly<{
   kind: string;
   payload?: unknown;
@@ -733,11 +477,7 @@ export function createCardOperation(trackId: string, body: NewCardBody): ApiOper
   };
 }
 
-/**
- * `DELETE /api/cards/:id`. The kernel refuses this for a card it owns
- * (`deletable === false`), which is why every surface that offers the gesture
- * reads that bit first rather than discovering the refusal in an error toast.
- */
+/** The kernel refuses this for a card it owns (`deletable === false`). */
 export function deleteCardOperation(cardId: string): ApiOperation<undefined> {
   return {
     method: 'DELETE',
@@ -759,21 +499,8 @@ export function isWaitingForUser(lifecycle: TrackLifecycle): boolean {
   return lifecycle === 'blocked' || lifecycle === 'reviewing' || lifecycle === 'failed';
 }
 
-/*
- * #1722 §5.1 — the three activity predicates read the kernel's
- * `kernel/track/activity` overlay and nothing else. There is deliberately no
- * lifecycle OR and no `anyCardNeedsInput` OR: the kernel computes attention
- * from every persisted row it can see (session state, FSM overlays gated by a
- * live session, task attempts, lifecycle), so a second derivation here would
- * only ever disagree with it — and "planner sitting idle on a `planning`
- * track" was exactly such a disagreement. A track the kernel has said nothing
- * about is quiet, not guessed at.
- *
- * `isWaitingForUser` / `isRunning` stay as *phase* predicates: the lifecycle
- * badge's phrase, `lifecycleRank`'s middle bucket and Today's "In progress"
- * grouping are about which phase a track is in, not about whether anything
- * is moving right now.
- */
+/* The three activity predicates read only the kernel's `activity` overlay — no lifecycle OR, no
+ * `anyCardNeedsInput` OR — so they cannot disagree with it. */
 
 /** The kernel says something dispatched is still running. */
 export function isWorking(track: Track): boolean {
@@ -790,11 +517,7 @@ export function hasFailed(track: Track): boolean {
   return track.attention === 'failed';
 }
 
-/**
- * The one indicator state for a track, on every surface (rail, Today, the
- * page head, the mobile list). `unread` is the reader's, from the read
- * receipt; the rest is the overlay's.
- */
+/** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */
 export function trackActivityState(track: Track, unread: boolean): ActivityState {
   return activityStateOf({ working: isWorking(track), attention: track.attention, unread });
 }
@@ -815,18 +538,7 @@ export function visibleTracks(tracks: readonly Track[]): Track[] {
   return tracks.filter((track) => track.archivedAt === null);
 }
 
-/**
- * The tracks a person may see: not archived, and hosted by an area they may see.
- *
- * This is **not** a fix for a live leak — `areaListQueryOptions` already applies
- * `visibleAreas` in the query layer, and the workspace only fans out over what
- * that returned. It is the *second* layer of defence `visibleAreas` announces
- * (E2E-INV-SHELL-003), and it existed on exactly one of the two list surfaces:
- * the sidebar intersected areas and tracks by hand while mobile Pages filtered
- * tracks alone. One function, used by both, is what makes the stated intent true
- * at the component boundary rather than only in the query that happens to feed
- * it today (#1191 §3.1).
- */
+/** Not archived and hosted by an area the person may see — the second layer of defence behind `visibleAreas`. */
 export function userVisibleTracks(tracks: readonly Track[], areas: readonly Area[]): Track[] {
   const userAreaIds = new Set(visibleAreas(areas).map((area) => area.id));
   return visibleTracks(tracks).filter((track) => userAreaIds.has(track.areaId));
@@ -843,7 +555,7 @@ export function isTerminal(lifecycle: TrackLifecycle): boolean {
 
 export const UNTITLED_TRACK_LABEL = 'Untitled track';
 
-/** #409 — one display fallback for tracks created without a title. */
+/** One display fallback for tracks created without a title. */
 export function trackDisplayTitle(title: string): string {
   return title.trim() || UNTITLED_TRACK_LABEL;
 }
@@ -877,13 +589,8 @@ function endOfDay(day: Date): number {
 }
 
 /**
- * #250 PR 5 — every track whose `[createdAt, terminalAt ?? nowMs]` interval
- * overlaps the local day owning `day`.
- *
- * Endpoints are inclusive (`createdAt <= endOfDay AND end >= startOfDay`) so a
- * track created at 23:59 still surfaces on that day even if its first card
- * lands a millisecond later. Sorted by `createdAt`, ties broken by id, so dot
- * ordering matches creation order (oldest leftmost — how the eye scans).
+ * Every track whose `[createdAt, terminalAt ?? nowMs]` interval overlaps the local day owning `day`;
+ * endpoints inclusive, sorted by `createdAt` then id.
  */
 export function activeTracksOn(tracks: readonly Track[], day: Date, nowMs: number): Track[] {
   const dayStart = startOfDay(day);

@@ -1,15 +1,5 @@
-//! Worker-flow read-model sink (#695 PR3).
-//!
-//! [`WorkerFlowSink`] is calm-truth's implementation of
-//! [`calm_exec::flow::WorkerFlowItemSink`]: it stamps row-context onto each
-//! normalized [`WorkerFlowItem`] and appends it to the `worker_flow_items`
-//! capture table.
-//!
-//! Like `run_loop`'s direct `harness_item_insert`, the sink writes via
-//! [`RepoOutOfDomain::worker_flow_item_insert`] **directly** — these
-//! out-of-domain writes deliberately emit no [`Event`](crate::event::Event)
-//! and pass through no [`DecisionGate`](crate::decision_gate). The capture
-//! stream is a passive read-model feed, not a domain mutation.
+//! Worker-flow read-model sink: appends captured worker-flow items to `worker_flow_items`.
+//! Writes go through the out-of-domain repo directly — no Event, no decision gate.
 
 use std::sync::Arc;
 
@@ -21,14 +11,12 @@ use calm_types::worker_flow::WorkerFlowItem;
 use crate::db::RepoOutOfDomain;
 use crate::model::now_ms;
 
-/// Read-model writer that appends captured worker-flow items to the
-/// `worker_flow_items` table.
+/// Read-model writer that appends captured worker-flow items to `worker_flow_items`.
 pub struct WorkerFlowSink {
     repo: Arc<dyn RepoOutOfDomain>,
 }
 
 impl WorkerFlowSink {
-    /// Wrap the out-of-domain repo handle the sink writes through.
     pub fn new(repo: Arc<dyn RepoOutOfDomain>) -> Self {
         Self { repo }
     }
@@ -37,8 +25,6 @@ impl WorkerFlowSink {
 #[async_trait]
 impl WorkerFlowItemSink for WorkerFlowSink {
     async fn record(&self, ctx: &FlowRowCtx, item: WorkerFlowItem) -> Result<(), CoreError> {
-        // `kind` is the serde `"type"` tag of the variant; `payload` is the
-        // item's full JSON form (flattened envelope + payload).
         let value = serde_json::to_value(&item)?;
         let kind = value
             .get("type")
@@ -46,12 +32,8 @@ impl WorkerFlowItemSink for WorkerFlowSink {
             .unwrap_or("unknown");
         let payload = serde_json::to_string(&item)?;
 
-        // Direct out-of-domain insert — no Event, no gate (db/mod.rs trait
-        // doc), exactly like run_loop's `harness_item_insert`.
-        // The same id goes to both columns on every current insert. They are
-        // still two columns: `worker_session_id` is the FK and goes NULL when
-        // the session is deleted, `captured_session_id` is what was observed
-        // here and survives that (#1316 S4a).
+        // Same id in both columns: `worker_session_id` is the FK and goes NULL when the session is
+        // deleted, `captured_session_id` is what was observed and survives that.
         self.repo
             .worker_flow_item_insert(
                 ctx.card_id.as_deref(),
@@ -232,7 +214,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows.len(), 3);
-        // Stored in append order.
         assert_eq!(rows[0].kind, "userMessage");
         assert_eq!(rows[1].kind, "commandExecution");
         assert_eq!(rows[2].kind, "fileChange");
@@ -241,7 +222,6 @@ mod tests {
         assert_eq!(rows[0].worker_session_id.as_deref(), Some(SESSION_ID));
         assert_eq!(rows[0].track_id.as_deref(), Some("track-x"));
 
-        // Payload deserializes back to the original item.
         for (row, item) in rows.iter().zip(items.iter()) {
             let back: WorkerFlowItem = serde_json::from_str(&row.payload).unwrap();
             assert_eq!(&back, item);

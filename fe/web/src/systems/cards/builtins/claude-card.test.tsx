@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 //
-// Renders the entry's `component` for real. Both review channels flagged that
-// nothing did: `claude.test.ts` covers resolution, registration and the
-// partition, and `register.contract.test.ts` states outright that it never
-// executes a component — so replacing Claude's `component` with `() => null`,
-// or dropping the `fallbackTitle` that stops the card announcing itself as a
-// terminal, was a green mutation. The board would open onto a blank card and
-// every existing test would still pass.
+// Renders the entry's `component` for real: no other suite executes a component.
 
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -40,12 +34,8 @@ describe('claude card component', () => {
     );
 
     expect(screen.getByText('claude')).toBeTruthy();
-    // `LetterAvatar` derives the provider avatar from that same head string;
-    // its own module test owns the colour, this owns the string reaching it.
     expect(screen.getByText('C')).toBeTruthy();
-    // A resolved terminal id is what makes the card live, which is the whole
-    // point of opening it. `data-nc-terminal-id` is the locator for that state
-    // (`no-class-dom-query` forbids reaching for `.term.live`).
+    // `data-nc-terminal-id` is the locator for the live state (`no-class-dom-query` forbids `.term.live`).
     expect(document.querySelector('[data-nc-terminal-id="t1"]')).not.toBeNull();
   });
 
@@ -63,8 +53,6 @@ describe('claude card component', () => {
   });
 
   it('says the agent is starting, not "terminal", before the id is projected', () => {
-    // `fromKernel` explicitly models this window (the kernel projects
-    // `terminal_id` on read), so it is a state users really see.
     const Component = CLAUDE_CARD_ENTRY.component;
     render(
       <Component
@@ -74,14 +62,11 @@ describe('claude card component', () => {
       />,
     );
     expect(screen.getByText('Starting claude…')).toBeTruthy();
-    // Empty locator, not a missing one: the card is mounted but not live.
     expect(document.querySelector('[data-nc-terminal-id=""]')).not.toBeNull();
     expect(document.querySelector('[data-nc-terminal-id="t1"]')).toBeNull();
   });
 
   it('leaves the terminal card wearing its own name', () => {
-    // The shared renderer gained a parameter; the existing card must not have
-    // moved. This is the mutation guard on `fallbackTitle`'s default.
     const Component = TERMINAL_CARD_ENTRY.component;
     render(
       <Component

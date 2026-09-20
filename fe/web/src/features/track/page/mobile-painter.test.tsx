@@ -1,17 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1234 S1b-4a / S1b-4b — the mobile painter, against `checkProjection`'s
-// synthetic mount.
-//
-// **This file checks the painter, not the page.** It paints with the painter it
-// checks, which is the one thing `checkProjection` guarantees and
-// `checkProjectionIn` cannot. Whether `public.tsx` renders through this painter
-// at all is `mobile-entry.test.tsx`'s claim, with `mobile-projection.test.tsx`
-// checking the resulting real DOM against the view model.
-//
-// The capability cases are here because support is a *painter* fact, and on this
-// surface it is the deliberate inconsistency itself (D1 / D7): the two card
-// actions are not offered, and each says why.
+// The mobile painter against `checkProjection`'s synthetic mount: this file checks the painter, not the page.
 
 import { render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -21,8 +10,7 @@ import { checkProjection } from '../../../../../tools/projection/public.ts';
 import type { ProjectionNode } from '../../../../../tools/projection/public.ts';
 import { makeMobilePainter, paintMobileModule, type MobileLeaf } from './mobile-painter.tsx';
 
-/** The one mount every case here uses: it unwraps each module leaf and renders
- *  exactly what the painter painted, nothing fabricated. */
+/** The one mount every case uses: it renders exactly what the painter painted. */
 const mount = (painted: readonly MobileLeaf[]): ProjectionNode =>
   render(<>{painted.map((leaf) => {
     if (leaf.slot !== 'module') throw new Error(`checkProjection handed back a ${leaf.slot} leaf`);
@@ -47,8 +35,7 @@ const titled: PanelRow = {
   ],
 };
 
-/** Untitled and kernel-owned: the derived name *is* the kind, so there is no
- *  separate `kind` carrier — the row that used to print the word twice. */
+/** Untitled and kernel-owned: the derived name *is* the kind, so there is no separate `kind` carrier. */
 const untitled: PanelRow = {
   id: 'card-2',
   title: 'harness',
@@ -64,18 +51,9 @@ const cardsModule: RowModuleView = {
 };
 const emptyCards: RowModuleView = { ...cardsModule, rows: [] };
 
-/* ── Task rows (S1b-4b) ─────────────────────────────────────────────────────
- *
- * Shapes written the way `core/view/track-page.ts` derives them, so the fixture
- * cannot offer a combination the derivation never produces: `declaration` is
- * null once there is a `status`, and `open-card` exists only when
- * `kind !== null && workerCardId !== null`. `mobile-projection.test.tsx` runs
- * the real derivation over real task rows; this file is the painter in
- * isolation, so it spells the view model out.
- */
+/* Task rows, shaped the way `core/view/track-page.ts` derives them: `declaration` is null once there is a `status`, and `open-card` exists only when `kind !== null && workerCardId !== null`. */
 
-/** Ready and undispatched: no declaration word, no run — the row `ready` used
- *  to print `Ready` for on this surface and nowhere else (D8). */
+/** Ready and undispatched: no declaration word, no run. */
 const ready: PanelRow = {
   id: 'block-1',
   title: 'alpha-impl',
@@ -88,8 +66,7 @@ const ready: PanelRow = {
   }],
 };
 
-/** Dispatched, with a reason: a status supersedes the readiness word, and the
- *  worker card offers an `open-card` this surface refuses. */
+/** Dispatched, with a reason: a status supersedes the readiness word; the worker card offers an `open-card` this surface refuses. */
 const dispatched: PanelRow = {
   id: 'block-2',
   title: 'beta-gate',
@@ -110,8 +87,7 @@ const dispatched: PanelRow = {
   ],
 };
 
-/** Withdrawn: the struck declaration, and no kind — `deriveReportTasks` makes
- *  `kind` and `workerCardId` null together for exactly these rows. */
+/** Withdrawn: the struck declaration, and no kind — `deriveReportTasks` nulls `kind` and `workerCardId` together for these rows. */
 const withdrawn: PanelRow = {
   id: 'block-3',
   title: 'gamma-planner',
@@ -137,11 +113,7 @@ const unreadable: PanelRow = {
   }],
 };
 
-/** Declared but not ready, and never dispatched: **the one row that carries a
- *  declaration badge and a kind at once**, which is what makes "each is its own
- *  leaf carrier" a claim with a witness rather than a rule about a shape no
- *  fixture reaches. Its readiness word survives D8 — the word stands down for a
- *  run, and there is none. */
+/** Declared but not ready, never dispatched: the one row carrying a declaration badge and a kind at once. */
 const notReady: PanelRow = {
   id: 'block-5',
   title: 'epsilon-fix',
@@ -154,17 +126,7 @@ const notReady: PanelRow = {
   }],
 };
 
-/**
- * A `reveal-block` that **names itself**, and a synthetic row on purpose.
- *
- * `deriveTrackPageView` words this action with `label: null` on every Task row it
- * produces today, so a painter that never read `RowAction.label` is green
- * against every derived fixture in this file — green by an invariant of
- * `core/view/track-page.ts` rather than by consuming the channel it is handed.
- * `RowAction` declares `label` as a channel of its own and the projection checks
- * it on both sides, so the painter owes it a case. `hint` is null here so the
- * two channels cannot cover for one another.
- */
+/** A `reveal-block` that names itself — synthetic on purpose: the derivation words this action with `label: null` on every Task row today. `hint` is null so the two channels cannot cover for one another. */
 const namedReveal: PanelRow = {
   id: 'block-6',
   title: 'zeta-audit',
@@ -197,21 +159,9 @@ const tasksModule: RowModuleView = {
 };
 const emptyTasks: RowModuleView = { ...tasksModule, rows: [] };
 
-/* ── Three boundaries of `PanelRow` the fixtures above cannot reach ──────────
- *
- * **Written at the painter level, and deliberately not as `deriveReportTasks`
- * output.** This file checks the painter against `PanelRow`, and `PanelRow` is
- * the contract it is handed — a fixture set that only ever contains shapes
- * today's derivation happens to emit makes the painter correct by an upstream
- * invariant rather than by consuming its input (the same defect `reveal()`'s
- * missing `label` was). Each row below is one boundary, and each has a mutation
- * that only it can see.
- */
+/* Three boundaries of `PanelRow` the derived fixtures cannot reach, written at the painter level. */
 
-/** **`phrase === token`** — a run the kernel gave no reason for. Every derived
- *  fixture above with a status has a `statusDetail`, so a painter that stopped
- *  writing `title` whenever the phrase added nothing would be green across all
- *  of them, and the row would lose its tooltip on the majority case. */
+/** `phrase === token` — a run the kernel gave no reason for. */
 const bareStatus: PanelRow = {
   id: 'block-7',
   title: 'eta-run',
@@ -225,11 +175,7 @@ const bareStatus: PanelRow = {
   }],
 };
 
-/** **A badge and a status at once.** `deriveTrackPageView` reads `declaration`
- *  and `status` independently and says so, so the combination is inside the
- *  contract even though D8's wording rule keeps it out of today's derived rows.
- *  Without it, a painter that dropped the badges of any row carrying a run is
- *  green: every other fixture has at most one of the two. */
+/** A badge and a status at once: inside the `PanelRow` contract even though today's derivation never produces it. */
 const declaredAndRunning: PanelRow = {
   id: 'block-8',
   title: 'theta-check',
@@ -244,13 +190,7 @@ const declaredAndRunning: PanelRow = {
   }],
 };
 
-/** **An empty token.** `deriveReportTasks` folds `''` into `null` today, but
- *  `RowStatus` permits it and the projection's own generic checker exercises it
- *  (`desktop-projection.test.tsx` carries the same row), so the painter's
- *  contract fixture owes it one: an emptiness test in front of the status
- *  carrier would drop the element and nothing here would notice. The `phrase` is
- *  kept non-empty on purpose — it keeps `status-token` and `status-phrase`
- *  separable on this row rather than letting one empty string satisfy both. */
+/** An empty token: `RowStatus` permits it. The `phrase` is kept non-empty so `status-token` and `status-phrase` stay separable. */
 const emptyToken: PanelRow = {
   id: 'block-9',
   title: 'iota-probe',
@@ -321,21 +261,7 @@ describe('the mobile painter’s capability table', () => {
   });
 });
 
-/*
- * The unknown-module guard, which nothing reached.
- *
- * `const unknown: never = moduleKey` is an **exhaustiveness check and nothing
- * more**: it fires when `RowModuleView['key']` gains a member and is erased
- * entirely at runtime. The `throw` beside it is the runtime half — and mutating
- * it into `return cardRow(row)` leaves `tsc` green and every legal fixture in
- * this file green with it, because no legal fixture can carry a third key.
- *
- * So the case is built with a forced cast, which is the only thing that can
- * produce the input the guard exists for: a module whose key is not in the
- * union, arriving from a derivation that has changed underneath this painter.
- * Painting it as a Cards row would report the fault far from its cause, which is
- * exactly what the throw prevents.
- */
+/* `const unknown: never = moduleKey` is erased at runtime; the `throw` is the runtime half, and only a forced cast can produce the input it exists for. */
 describe('the mobile painter’s unknown-module guard', () => {
   it('throws on a module key it has no row for, rather than falling back', () => {
     const future = { ...tasksModule, key: 'future' } as unknown as RowModuleView;
@@ -343,8 +269,6 @@ describe('the mobile painter’s unknown-module guard', () => {
       .toThrowError('the mobile painter has no future row');
   });
 
-  /* Not vacuous: the same module with a legal key paints. Without this the case
-     above would also pass for a painter that threw on everything. */
   it('and paints the very same module once its key is legal again', () => {
     expect(() => paintMobileModule(painter(), tasksModule)).not.toThrow();
   });
@@ -364,10 +288,7 @@ describe('what the painted Cards module puts on screen', () => {
   const paint = (module: RowModuleView) =>
     render(<>{paintMobileModule(painter(), module)}</>).container;
 
-  /* The row is not a control: both of its actions were filtered away, so no
-     `onSelect` was passed and Astryx generated no invisible button. The whole
-     mobile Cards list therefore contains exactly one button — the header's
-     Back. */
+  /* Both actions were filtered away, so Astryx generated no invisible button: the only button is the header's Back. */
   it('renders no per-row control', () => {
     const container = paint(cardsModule);
     const buttons = Array.from(container.querySelectorAll('button'));
@@ -375,9 +296,6 @@ describe('what the painted Cards module puts on screen', () => {
     expect(buttons[0].getAttribute('aria-label')).toBe('Back to Report');
   });
 
-  /* The regression this slice exists to remove: an untitled card's name *is*
-     its kind, and the old mobile list printed it a second time in the meta
-     lane. */
   it('prints an untitled card’s kind once, not twice', () => {
     const container = paint({ ...cardsModule, rows: [untitled] });
     const occurrences = (container.textContent ?? '').split('harness').length - 1;
@@ -407,21 +325,13 @@ describe('the mobile painter is a faithful projection of a Tasks module', () => 
     expect(checkProjection(painter(), [boundaryTasks], mount)).toEqual([]);
   });
 
-  /* The label channel, which no derived fixture reaches: `action-label` is
-     checked on both sides, so a painter that dropped `RowAction.label` fails
-     here and only here. */
+  /* The label channel, which no derived fixture reaches. */
   it('with a reveal that carries a label of its own', () => {
     expect(checkProjection(painter(), [{ ...tasksModule, rows: [namedReveal] }], mount)).toEqual([]);
   });
 });
 
-/*
- * The three boundaries, each read off the DOM as well as through the projection.
- *
- * The projection case above would catch all three, but it reports one list of
- * violation codes for the whole module — these say which row is which, so a
- * mutation names the boundary it broke.
- */
+/* The three boundaries, each read off the DOM as well: the projection reports one list for the whole module, these say which row is which. */
 describe('what the painted Tasks module does at PanelRow’s boundaries', () => {
   const paint = (module: RowModuleView) =>
     render(<>{paintMobileModule(painter(), module)}</>).container;
@@ -429,8 +339,6 @@ describe('what the painted Tasks module does at PanelRow’s boundaries', () => 
   it('still writes the title when the phrase adds nothing to the token', () => {
     const status = paint(boundaryTasks).querySelector('[data-nc-row="block-7"] [data-nc-status]');
     expect(status?.getAttribute('data-nc-status')).toBe('running');
-    /* Equal to the token, and still present: the tooltip is the phrase, not the
-       part of the phrase the token did not already say. */
     expect(status?.getAttribute('title')).toBe('running');
   });
 
@@ -475,21 +383,7 @@ describe('what the painted Tasks module does at PanelRow’s boundaries', () => 
   });
 });
 
-/*
- * `RowAction.label`, in both directions.
- *
- * The projection case above is the mechanical half; these two say *where* the
- * name goes — the action host, which on this surface is the row's own `<li>` —
- * and that a null label leaves **no attribute at all** rather than an empty or
- * fabricated one.
- *
- * Neither case carries the pair alone, which is why there are two. A painter
- * that hard-codes `ariaLabel: undefined` — the shape this channel had before
- * the label was consumed at all — fails the first and passes the second; one
- * that names every row unconditionally fails the second and passes the first.
- * They are written against the same host element so that a painter which put
- * the name somewhere else could not satisfy both.
- */
+/* `RowAction.label` in both directions, on the same host element: a null label leaves no attribute at all. */
 describe('the mobile Task row’s action label', () => {
   const paint = (module: RowModuleView) =>
     render(<>{paintMobileModule(painter(), module)}</>).container;
@@ -513,14 +407,7 @@ describe('what the painted Tasks module puts on screen', () => {
   const paint = (module: RowModuleView) =>
     render(<>{paintMobileModule(painter(), module)}</>).container;
 
-  /*
-   * **`struck` has no carrier in the projection at all** — `checkBadges` reads a
-   * badge's id, order and text and nothing else, so a painter that ignored or
-   * inverted `struck` is green under every violation code. This is its only
-   * carrier on this surface, and it is the same shape the desktop's lives in
-   * (`public.test.tsx`'s `taskWithdrawn` assertion): both directions, because a
-   * class applied unconditionally would satisfy the positive half alone.
-   */
+  /* `struck` has no carrier in the projection (`checkBadges` reads id, order and text), so this is its only carrier on this surface. */
   it('strikes through a withdrawn declaration but not an ordinary one', () => {
     const container = paint(tasksModule);
     const struck = Array.from(container.querySelectorAll('[data-nc-badge="declaration"]'));
@@ -531,9 +418,6 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(struck[2].className).not.toContain('mobileRowStruck');
   });
 
-  /* The row root is the action host, and the two markers share it. This is the
-     first production shape to take `owned()`'s self-inclusion path (S1b-2), so
-     it is asserted rather than left implied by the green run above. */
   it('hosts reveal-block on the row root, beside the row marker', () => {
     const container = paint(tasksModule);
     const rows = Array.from(container.querySelectorAll('[data-nc-row]'));
@@ -543,9 +427,7 @@ describe('what the painted Tasks module puts on screen', () => {
     }
   });
 
-  /* Two channels, both exact: the hint is the pointer text on the row root, and
-     `label` is null so no accessible name may be fabricated over the visible
-     one (WCAG 2.5.3). */
+  /* `label` is null, so no accessible name may be fabricated over the visible one (WCAG 2.5.3). */
   it('puts the action hint on the row root and emits no aria-label', () => {
     const container = paint({ ...tasksModule, rows: [hintedReveal] });
     const row = container.querySelector('[data-nc-row="block-6-hint"]');
@@ -553,14 +435,7 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(row?.hasAttribute('aria-label')).toBe(false);
   });
 
-  /*
-   * D8, from the other side, and **scoped to the two rows it is about**: a
-   * `ready` row carries no declaration at all (so the word this surface used to
-   * print for it is simply gone), and a dispatched row's readiness word stood
-   * down for the run. Asserting it over the whole module would be wrong rather
-   * than merely weak: `notReady` legitimately prints its word, because nothing
-   * has run.
-   */
+  /* Scoped to the two rows it is about: `notReady` legitimately prints its word, because nothing has run. */
   it('prints no readiness word for a ready row or a dispatched one', () => {
     const text = paint({ ...tasksModule, rows: [ready, dispatched] }).textContent ?? '';
     expect(text).not.toContain('Ready');
@@ -568,7 +443,6 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(text).toContain('failed');
   });
 
-  /* And the words the derivation *does* produce all arrive. */
   it('prints every declaration the derivation kept', () => {
     const text = paint(tasksModule).textContent ?? '';
     expect(text).toContain('Withdrawn');
@@ -576,11 +450,6 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(text).toContain('Not ready');
   });
 
-  /* The ordinary status carriers the projection reads, spelled out: the
-     attribute holds the bare token, so the projection can compare it by exact
-     equality, and `title` holds the phrase, which is strictly more — the
-     kernel's reason is appended, never substituted. Pending reasons are tested
-     separately above because their row root owns the single title. */
   it('writes the bare token into the marker and the whole phrase into the title', () => {
     const container = paint(tasksModule);
     const status = container.querySelector('[data-nc-status]');
@@ -589,15 +458,7 @@ describe('what the painted Tasks module puts on screen', () => {
       .toBe('failed — track /tmp/alpha is not a git repository');
   });
 
-  /*
-   * And the same phrase reaches the **control**, which the two carriers above do
-   * not manage on their own: `data-nc-status` and `title` sit on a span in the
-   * meta lane, and Astryx lays that lane out as a *sibling* of the invisible
-   * button — so a reader on the button hears `beta-gate` and no reason at all.
-   * The desktop's reveal button encloses its dot and therefore names the whole
-   * phrase; this is that information, delivered as a description so the visible
-   * key stays the name.
-   */
+  /* Astryx lays the meta lane out as a sibling of the invisible button, so the phrase reaches the control as a description; the visible key stays the name. */
   it('describes the row’s control with the whole status phrase', () => {
     const container = paint(tasksModule);
     const row = container.querySelector('[data-nc-row="block-2"]');
@@ -606,9 +467,7 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(control?.textContent).toBe('beta-gate');
     const described = control?.getAttribute('aria-describedby') ?? null;
     expect(described).not.toBeNull();
-    /* Looked up by id the way a user agent resolves the reference, rather than
-       by selector: `useId` spells ids with characters a CSS selector would have
-       to escape. */
+    /* Looked up by id, not selector: `useId` spells ids with characters a CSS selector would have to escape. */
     expect(container.ownerDocument.getElementById(described!)?.textContent)
       .toBe('failed — track /tmp/alpha is not a git repository');
   });
@@ -620,9 +479,6 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(container.querySelector('[aria-describedby]')).toBeNull();
   });
 
-  /* The kind is printed; what is not offered is the *action* on it (§3.6). The
-     dispatched fixture's `open-card` was filtered away by the capability table,
-     so the row carries exactly one action marker. */
   it('prints a worker task’s kind while offering no card action for it', () => {
     const container = paint(tasksModule);
     const row = container.querySelector('[data-nc-row="block-2"]');

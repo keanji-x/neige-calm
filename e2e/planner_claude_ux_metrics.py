@@ -27,8 +27,7 @@ def metadata(call):
         raise EvidenceError("terminal call has no structured result")
     value = result.get("structuredContent")
     if value is None:
-        # Terminal tools keep the state only in structuredContent; the text
-        # block is a one-line summary (#1618), so there is nothing to parse.
+        # Terminal tools keep the state only in structuredContent; the text block is a one-line summary, so there is nothing to parse.
         raise EvidenceError("terminal result lacks structuredContent; content is a summary")
     if not isinstance(value, dict):
         raise EvidenceError("terminal metadata is not an object")
@@ -57,7 +56,7 @@ HISTORY_SEARCH_METRIC_KEYS = ("history_search_requests", "history_search_found")
 SUMMARY_METRIC_KEYS = (WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS + ROUND_TRIP_METRIC_KEYS
                        + OPEN_REPLACE_SUMMARY_METRIC_KEYS + TEXT_CONDITION_METRIC_KEYS
                        + HISTORY_SEARCH_METRIC_KEYS)
-# The observe wait arguments every wait carrier accepts (#1677: open included; r16: wait_text_absent).
+# The observe wait arguments every wait carrier accepts.
 WAIT_ARGUMENT_KEYS = ("wait_for", "wait_ms", "settle_ms", "signal_events", "repaint_ms", "wait_text",
                       "wait_text_absent")
 TEXT_CONDITION_KEYS = ("wait_text", "wait_text_absent")

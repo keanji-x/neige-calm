@@ -66,7 +66,6 @@ describe('area wire decode', () => {
 });
 
 describe('visibleAreas', () => {
-  // E2E-INV-SHELL-003: this is the client-side half of the #175 filter.
   it('drops the kernel system area and keeps user areas', () => {
     const system = area({ id: 'sys', kind: 'system' });
     const user = area({ id: 'u', kind: 'user' });
@@ -114,7 +113,6 @@ describe('area folders', () => {
     expect(areaFoldersOperation('c/1')).toMatchObject({ method: 'GET', path: '/api/areas/c%2F1/folders' });
   });
 
-  /* Path ascending, ties broken by id — insertion order is not a display order. */
   it('orders by path and breaks ties by id without mutating the input', () => {
     const list = [folder({ id: 3, path: '/srv/b' }), folder({ id: 2, path: '/srv/a' }), folder({ id: 1, path: '/srv/a' })];
     expect(sortedAreaFolders(list).map((f) => f.id)).toEqual([1, 2, 3]);
@@ -122,11 +120,7 @@ describe('area folders', () => {
   });
 });
 
-/*
- * #1147 S3 — `POST /api/tracks` answers a folder clash with a structured body
- * that has no `error` key, so `core/api/client.ts` normalises it to the bare
- * status text ("Conflict"). These are what turns that into a sentence.
- */
+/* A folder clash body has no `error` key, so the client normalises it to the bare status text. */
 describe('folder conflict decode', () => {
   const conflict = {
     folder_id: 4, area_id: 'c2', conflict_path: '/srv/app', conflict_kind: 'descendant',
@@ -140,7 +134,6 @@ describe('folder conflict decode', () => {
     expect(asFolderConflict({ error: 'Conflict' })).toBeNull();
     expect(asFolderConflict(null)).toBeNull();
     expect(asFolderConflict('Conflict')).toBeNull();
-    // An unknown kind is not a fourth message; it is a body we cannot read.
     expect(asFolderConflict({ ...conflict, conflict_kind: 'sibling' })).toBeNull();
     expect(asFolderConflict({ ...conflict, area_id: 7 })).toBeNull();
     expect(asFolderConflict({ ...conflict, folder_id: 1.5 })).toBeNull();
@@ -164,8 +157,6 @@ describe('folder conflict decode', () => {
     expect(equal).not.toBe(ancestor);
   });
 
-  /* The area may have been made in another tab, or deleted between the
-     conflict and this render. A uuid on screen would be worse than a phrase. */
   it('degrades to "another area" rather than printing an id', () => {
     const message = folderConflictMessage(conflict, null);
     expect(message).toContain('another area');

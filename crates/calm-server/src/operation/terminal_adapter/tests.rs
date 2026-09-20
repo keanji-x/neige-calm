@@ -9,10 +9,6 @@ struct TerminalWorkerHarness {
     track_id: String,
 }
 
-/// #1147 S6 — a track's workspace is where its terminals land, so the harness
-/// track carries one. An empty `workspace_path` is not a state any creation
-/// route produces; `terminal_worker_refuses_to_default_to_an_empty_workspace`
-/// builds that one deliberately.
 const HARNESS_WORKSPACE: &str = "/neige-fixture-workspace";
 
 async fn terminal_worker_harness() -> TerminalWorkerHarness {
@@ -122,7 +118,6 @@ async fn prepare_terminal_worker_with_cwd(
     output
 }
 
-/// #1149 — the terminal worker card is titled after its task's plan key.
 #[tokio::test]
 async fn terminal_worker_prepare_titles_card_with_task_key() {
     let harness = terminal_worker_harness().await;
@@ -138,7 +133,6 @@ async fn terminal_worker_prepare_titles_card_with_task_key() {
 
     let wire: crate::model::Card = serde_json::from_value(output.result.clone()).unwrap();
     assert_eq!(wire.title, Some("slice-d".to_string()));
-    // The pre-existing payload merge must survive untouched.
     assert_eq!(
         wire.payload.get("idempotency_key").and_then(Value::as_str),
         Some(format!("{}:slice-d", harness.track_id).as_str())
@@ -149,15 +143,7 @@ async fn terminal_worker_prepare_titles_card_with_task_key() {
     );
 }
 
-/// #1147 S6 — a terminal worker whose task row names no cwd lands in the
-/// **track's workspace**. It used to land in `$HOME` (`default_cwd()`), which is
-/// how "each track is a repository" stopped being true the moment a worker
-/// actually opened a shell.
-///
-/// The task row deliberately carries `cwd: None`: the dispatcher keeps it that
-/// way on purpose (`scheduler::build_worker_payload` — materializing a default
-/// into the payload would put the server's environment into
-/// `stable_payload_hash`), so `None` is the shape production actually sends.
+/// The task row carries `cwd: None` because that is the shape production sends.
 #[tokio::test]
 async fn terminal_worker_without_cwd_lands_in_the_track_workspace() {
     let harness = terminal_worker_harness().await;
@@ -180,18 +166,9 @@ async fn terminal_worker_without_cwd_lands_in_the_track_workspace() {
         "the card payload's cwd is what the FE shows; it must agree with the row"
     );
 
-    // No freeze assertion here, deliberately: this harness's track is
-    // `attached`, and attached tracks are frozen the moment they are created
-    // (design §数据模型), so asserting `frozen_at.is_some()` would pass with the
-    // freeze deleted. Freeze point 2 is asserted where it can actually fail —
-    // `track_workspace_repoint::a_terminal_card_lands_in_the_workspace_and_freezes_it`
-    // (unfrozen managed track, user route) and
-    // `claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`
-    // (the call site that reaches `terminal_create_tx` directly).
+    // No freeze assertion here: this harness's track is `attached`, which is frozen at creation, so `frozen_at.is_some()` would pass with the freeze deleted.
 }
 
-/// A task row that names a cwd keeps it. The workspace is the *default*, not an
-/// override — plan authors can still pin a worker to a directory.
 #[tokio::test]
 async fn terminal_worker_with_an_explicit_cwd_keeps_it() {
     let harness = terminal_worker_harness().await;
@@ -205,12 +182,6 @@ async fn terminal_worker_with_an_explicit_cwd_keeps_it() {
     assert_eq!(stored, "/tmp");
 }
 
-/// Fail closed rather than inheriting the server's cwd.
-///
-/// A track with an empty `workspace_path` is not a state S2 can produce; if one
-/// exists the row is broken. Writing `""` into `terminals.cwd` would make the
-/// worker inherit whatever directory the kernel happens to be running in — the
-/// unreadable-failure shape #1147 was opened on.
 #[tokio::test]
 async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
     let harness = terminal_worker_harness_with_workspace("").await;

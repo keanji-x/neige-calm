@@ -1,19 +1,6 @@
-//! #1321 S1 — owner-binding drift: reproduction + acceptance.
-//!
-//! Every track in this file is minted by the **real create route**
-//! (`POST /api/tracks`), not by `Repo::track_create`. That is the whole point
-//! of the file: the pre-existing unit test
-//! `planner_harness_start_adapter::tests::bound_template_descriptor_filters_running_trusted_template_binding`
-//! hand-built a row with `template_id = Some(_) ∧ template_input = Some(_) ∧
-//! plugin_scope = None`, a combination the create route cannot produce
-//! (`routes::tracks::create_track` writes `plugin_scope =
-//! bound_plugin.map(|m| m.id)` and `validate_template_input_binding` refuses
-//! `template_input` without a bound plugin), so it never exercised the
-//! divergence between the two owner readers.
-//!
-//! The trusted set is process-env (`NEIGE_TRUSTED_FORGE_PLUGINS`); nextest
-//! runs one process per test, and every test here takes a guard that restores
-//! the previous value on drop.
+//! Owner-binding drift. Every track here is minted by the real create route (`POST /api/tracks`),
+//! the only writer of `tracks.{template_id, template_input, plugin_scope}`. The trusted set is
+//! process-env; every test takes a guard that restores the previous value on drop.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,9 +30,7 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::{AppState, CodexClient, DaemonClient, RouteState, WriteContext};
 use crate::track_area_cache::TrackAreaCache;
 
-/// `CARGO_BIN_EXE_*` is only set for integration-test targets, so the lib's
-/// own unit tests locate the stub the same way
-/// `planner_harness_start_adapter::tests` does.
+/// `CARGO_BIN_EXE_*` is only set for integration-test targets, so the lib's unit tests locate the stub by hand.
 fn stub_echo_bin() -> PathBuf {
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_plugin-host-stub-echo") {
         return path.into();
@@ -65,17 +50,13 @@ fn stub_echo_bin() -> PathBuf {
     candidate
 }
 
-/// Both owners declare **this** roster id — `POST /api/tracks` only admits ids
-/// on the roster (`templates::TemplateRoster`), so the shared id has to be a
-/// real one.
+/// `POST /api/tracks` only admits ids on the roster, so the shared id has to be a real one.
 const SHARED_TEMPLATE_ID: &str = crate::templates::SMALL_CHANGE;
 
 const OWNER_A: &str = "dev.trusted-owner-a";
 const OWNER_B: &str = "dev.trusted-owner-b";
 
-/// One registry entry: plugin id, the template ids it declares, and the
-/// plugin-level `input_schema` (`Manifest::input_schema`, the thing
-/// `template_input` is validated against).
+/// One registry entry: plugin id, the template ids it declares, and the plugin-level `input_schema`.
 #[derive(Clone)]
 struct OwnerFixture {
     id: &'static str,
@@ -95,9 +76,8 @@ fn owner(
     }
 }
 
-/// A's contract: `issue_url` required. B's: `plan_url` required, with
-/// `additionalProperties: false`, so an A-validated input is *invalid* under
-/// B. `owner_schemas_actually_disagree` pins that this fixture is not vacuous.
+/// A's contract: `issue_url` required. B's: `plan_url` required with `additionalProperties:
+/// false`, so an A-validated input is invalid under B.
 fn owner_a_input_schema() -> Value {
     json!({
         "type": "object",
@@ -127,16 +107,8 @@ fn both_owners() -> Vec<OwnerFixture> {
     ]
 }
 
-/// The trusted set is a process-global env var, so these tests are mutually
-/// exclusive within a process.
-///
-/// 第一轮评审 MINOR-4 — this lock used to be module-private, which made the
-/// comment above false under `cargo test`: `operation::child_track_adapter`'s
-/// own trust guard mutates the same variable in the same lib-test process and
-/// could not see a lock that lived here. Both writers now take the crate-wide
-/// [`crate::forge_trust::trusted_forge_plugins_env_lock`]. (Modules that only
-/// *read* the ambient value still rely on nextest's process isolation; the
-/// lock does not claim otherwise.)
+/// The trusted set is a process-global env var; every writer takes the crate-wide
+/// [`crate::forge_trust::trusted_forge_plugins_env_lock`].
 struct TrustGuard {
     previous: Option<String>,
     expected: Vec<String>,
@@ -159,22 +131,15 @@ impl TrustGuard {
         }
     }
 
-    /// Revoke trust for everything, without releasing the lock or losing the
-    /// restore-on-drop. Models "the operator dropped this plugin out of
-    /// `NEIGE_TRUSTED_FORGE_PLUGINS`" — running, registered, still the
-    /// recorded owner, no longer trusted.
+    /// Revoke trust for everything, without releasing the lock or losing the restore-on-drop.
     fn revoke_all(&mut self) {
         // SAFETY: same lock, same process discipline as `trust`.
         unsafe { std::env::set_var("NEIGE_TRUSTED_FORGE_PLUGINS", "dev.nobody.at.all") };
         self.expected.clear();
     }
 
-    /// Re-assert the load-bearing property — *every* plugin this test needs
-    /// trusted is still trusted — immediately before each decisive assertion.
-    ///
-    /// Without it the failure mode of a clobbered env var is a **vacuous
-    /// pass**: with the successor plugin no longer trusted, "the planner must
-    /// not adopt it" holds for entirely the wrong reason.
+    /// Re-assert that every plugin this test needs trusted is still trusted, immediately before each
+    /// decisive assertion: a clobbered env var would otherwise make "must not adopt" pass vacuously.
     fn check(&self) {
         for id in &self.expected {
             assert!(
@@ -227,8 +192,7 @@ fn manifest_json_for(entry: &OwnerFixture, version: &str) -> Value {
     manifest_json
 }
 
-/// Registration is not spawning — every test drives `spawn` / `stop` itself,
-/// because "who is running" is the fact the binding turns on.
+/// Registration is not spawning — every test drives `spawn` / `stop` itself.
 fn build_host(
     repo: Arc<dyn Repo>,
     plugins_dir: &Path,
@@ -337,8 +301,7 @@ async fn boot(owners: &[OwnerFixture]) -> Boot {
 }
 
 impl Boot {
-    /// `POST /api/tracks` — the only production writer of
-    /// `tracks.{template_id, template_input, plugin_scope}`.
+    /// `POST /api/tracks` — the only production writer of `tracks.{template_id, template_input, plugin_scope}`.
     async fn create_track(&self, body: Value) -> (StatusCode, Value) {
         let request = Request::builder()
             .method("POST")
@@ -384,10 +347,7 @@ impl Boot {
             .expect("select plugin_scope")
     }
 
-    /// Model a plugin **upgrade**: same id, same install dir, a new manifest.
-    /// A fresh `PluginHost` over the new registry is how a test reaches that
-    /// state without a `pub(in crate::plugin_host)` registry mutator; the
-    /// readers only ever consult the host they are handed.
+    /// Model a plugin upgrade: same id, same install dir, a new manifest, via a fresh `PluginHost`.
     fn upgraded_host(&self, owners: &[OwnerFixture]) -> Arc<PluginHost> {
         build_host(
             self.repo.clone() as Arc<dyn Repo>,
@@ -459,13 +419,8 @@ async fn spawn_on(host: &Arc<PluginHost>, plugin_id: &str) {
     }
 }
 
-/// What the two readers must say, stated separately per reader.
-///
-/// 第一轮评审 MAJOR-2 — this used to be `Option<&str>`, i.e. one verdict for
-/// both readers, which is what forced a broken *template contract* to also
-/// withdraw the *tool scope*. Owner identity and contract validity are two
-/// facts; acceptance ② is about the first one only, so the expectation type
-/// has to be able to say "owner agreed on, contract not honored".
+/// What the two readers must say, stated separately per reader: owner identity and contract
+/// validity are two facts.
 #[derive(Debug)]
 enum Expected<'a> {
     /// Owner known and the contract holds: the planner binds *this* descriptor
@@ -481,11 +436,7 @@ enum Expected<'a> {
     NoUsableOwner,
 }
 
-/// The joint assertion, over one host.
-///
-/// 第一轮评审 MINOR-2 — the positive branch used to assert only
-/// `bound.is_some()`, so an `Owned` that carried the *wrong* descriptor or the
-/// wrong input was invisible to every test in this file. It now pins both.
+/// The joint assertion, over one host; pins both the descriptor and the input.
 async fn assert_owner_agreement(
     boot: &Boot,
     host: &Arc<PluginHost>,
@@ -564,10 +515,8 @@ fn owned_by(owner: &str) -> Expected<'_> {
     }
 }
 
-/// The fixture is only meaningful if A's accepted input is genuinely rejected
-/// by B's schema. Pinned separately so a later schema edit that quietly makes
-/// the two compatible turns this file red here instead of turning the drift
-/// tests vacuously green.
+/// Pinned separately so a schema edit that quietly makes the two compatible turns this file red
+/// here instead of making the drift tests vacuously green.
 #[test]
 fn owner_schemas_actually_disagree() {
     use crate::plugin_host::template_input::validate_template_input;
@@ -581,15 +530,8 @@ fn owner_schemas_actually_disagree() {
     );
 }
 
-/// #1321 S1 reproduction — and acceptance ① + ②.
-///
-/// A binds the track at create time; A stops; B takes over the same template
-/// id (`plugin_template_uniqueness`: a stopped trusted holder does not squat).
-/// Before the fix, `bound_template` scanned *all* running trusted plugins for
-/// `track.template_id` and therefore adopted **B**, injecting the input that
-/// only A ever validated, while `plugin_scope_for_track` — reading
-/// `track.plugin_scope` — stayed locked on the stopped **A** and failed
-/// closed. Two readers, two owners.
+/// A binds the track at create time; A stops; B takes over the same template id. Neither reader
+/// may adopt B.
 #[tokio::test]
 async fn planner_must_not_adopt_a_successor_owner_after_the_original_stops() {
     let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
@@ -634,13 +576,8 @@ async fn planner_must_not_adopt_a_successor_owner_after_the_original_stops() {
     boot.host.stop(OWNER_B).await.expect("stop B");
 }
 
-/// Acceptance ① with the schema check taken **out of play**: A and B declare
-/// the *same* `input_schema`, so the persisted input is perfectly valid under
-/// the successor. Nothing but "the owner column is the owner" can reject B
-/// here — which is exactly why this test exists next to the differing-schema
-/// one. A mutation that reverts the owner lookup to a `template_id` scan
-/// leaves the differing-schema repro green (the re-validation catches it) and
-/// turns this one red.
+/// The schema check taken out of play: A and B declare the same `input_schema`, so nothing but
+/// "the owner column is the owner" can reject B here.
 #[tokio::test]
 async fn planner_must_not_adopt_a_successor_owner_that_shares_the_original_schema() {
     let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
@@ -661,8 +598,7 @@ async fn planner_must_not_adopt_a_successor_owner_that_shares_the_original_schem
     spawn_on(&boot.host, OWNER_B).await;
     _trust.check();
 
-    // The input would sail through B's schema — the *only* reason to refuse
-    // is that B does not own this track.
+    // The input would sail through B's schema — the only reason to refuse is that B does not own this track.
     assert!(
         crate::plugin_host::template_input::validate_template_input(
             &owner_a_input_schema(),
@@ -682,9 +618,8 @@ async fn planner_must_not_adopt_a_successor_owner_that_shares_the_original_schem
     boot.host.stop(OWNER_B).await.expect("stop B");
 }
 
-/// Acceptance ② stated as the invariant rather than as two separate values:
-/// the two readers must never disagree about whether the track has a usable
-/// owner. Runs the whole A→stop→B lifecycle and cross-checks at every step.
+/// The two readers must never disagree about whether the track has a usable owner, at every
+/// step of the A→stop→B lifecycle.
 #[tokio::test]
 async fn planner_and_tool_scope_agree_at_every_step_of_a_takeover() {
     let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
@@ -692,8 +627,7 @@ async fn planner_and_tool_scope_agree_at_every_step_of_a_takeover() {
     spawn_on(&boot.host, OWNER_A).await;
     let track_id = boot.create_bound_track(Some(owner_a_input())).await;
 
-    // ① A running: both readers say "owned by A", and the planner binds A's
-    //    own template with the row's own input.
+    // ① A running: both readers say "owned by A".
     assert_owner_agreement(&boot, &boot.host, &track_id, owned_by(OWNER_A), &_trust).await;
 
     // ② A stopped, nobody else running: both say "no usable owner".
@@ -707,8 +641,7 @@ async fn planner_and_tool_scope_agree_at_every_step_of_a_takeover() {
     )
     .await;
 
-    // ③ B took the id over: still "no usable owner" — B is not this track's
-    //    owner, and neither reader may promote it.
+    // ③ B took the id over: still "no usable owner" — B is not this track's owner.
     spawn_on(&boot.host, OWNER_B).await;
     assert_owner_agreement(
         &boot,
@@ -726,15 +659,8 @@ async fn planner_and_tool_scope_agree_at_every_step_of_a_takeover() {
     boot.host.stop(OWNER_A).await.expect("stop A");
 }
 
-/// 第一轮评审 MINOR-1 — the `trusted` half of `plugin_is_eligible_owner` had
-/// no carrier in this file: deleting `&& trusted_forge_plugin(plugin_id)` left
-/// all 8 tests here green. Every other test reaches "not an eligible owner" by
-/// *stopping* the plugin, which the `running` half alone already rejects.
-///
-/// Here the owner keeps running and keeps its registry entry; only the
-/// operator's `NEIGE_TRUSTED_FORGE_PLUGINS` changes. Both readers must treat
-/// it as no owner at all — this is the fail-closed row that survives the
-/// MAJOR-2 split, and the one case where the tool scope really does go to zero.
+/// The owner keeps running and keeps its registry entry; only the operator's trust changes.
+/// The one case where the tool scope really does go to zero.
 #[tokio::test]
 async fn a_running_owner_whose_trust_is_revoked_is_not_an_owner() {
     let mut trust = TrustGuard::trust(OWNER_A).await;
@@ -774,17 +700,14 @@ async fn a_running_owner_whose_trust_is_revoked_is_not_an_owner() {
     boot.host.stop(OWNER_A).await.expect("stop A");
 }
 
-/// Acceptance ③ — a track with `plugin_scope = NULL` stays unbound forever,
-/// even once a trusted plugin declaring its `template_id` starts. The row is
-/// produced the only way production can produce it: create the track while no
-/// owner is running (so admission binds nothing), then start the plugin.
+/// A `plugin_scope = NULL` track stays unbound even once a trusted plugin declaring its
+/// `template_id` starts.
 #[tokio::test]
 async fn an_unbound_track_stays_unbound_when_a_declaring_plugin_starts_later() {
     let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
     let boot = boot(&both_owners()).await;
 
-    // Nobody running → the create route admits the roster id but binds no
-    // plugin, so `plugin_scope` is NULL and `template_input` is refused.
+    // Nobody running → the create route admits the roster id but binds no plugin.
     let track_id = boot.create_bound_track(None).await;
     assert_eq!(
         boot.stored_plugin_scope(&track_id).await,
@@ -817,7 +740,7 @@ async fn an_unbound_track_stays_unbound_when_a_declaring_plugin_starts_later() {
          plugin declaring its template id starts; got {:?}",
         bound.as_ref().map(|b| b.descriptor.id.clone())
     );
-    // Unbound tracks keep the historical union of plugin tools (#1110 S4).
+    // Unbound tracks keep the historical union of plugin tools.
     assert_eq!(
         plugin_scope_for_track(&boot.mcp_ctx_on(&boot.host), Some(track_id.as_str())).await,
         TrackPluginScope::All,
@@ -826,14 +749,8 @@ async fn an_unbound_track_stays_unbound_when_a_declaring_plugin_starts_later() {
     boot.host.stop(OWNER_A).await.expect("stop A");
 }
 
-/// Acceptance ④ — the owner is unchanged and still running ∧ trusted, but its
-/// Manifest no longer declares the track's `template_id` (a plugin upgrade
-/// that dropped the template).
-///
-/// 第一轮评审 MAJOR-2 — this used to assert `TrackPluginScope::None` too, i.e.
-/// the template contract decided the tool scope. It must not: A is
-/// demonstrably still the owner, and the three columns that would have to
-/// change for that to stop being true are not writable by any API.
+/// The owner is unchanged and still running ∧ trusted, but its Manifest no longer declares the
+/// track's `template_id`. The template contract must not decide the tool scope.
 #[tokio::test]
 async fn owner_that_stopped_declaring_the_template_id_keeps_its_tools_but_loses_the_prompt() {
     let _trust = TrustGuard::trust(OWNER_A).await;
@@ -851,8 +768,7 @@ async fn owner_that_stopped_declaring_the_template_id_keeps_its_tools_but_loses_
     );
     boot.host.stop(OWNER_A).await.expect("stop A");
 
-    // Upgrade A: same id, still trusted, still running — but it declares
-    // `investigation` now instead of the track's template id.
+    // Upgrade A: same id, still trusted, still running — but it declares `investigation` now.
     let upgraded = boot.upgraded_host(&[owner(
         OWNER_A,
         &[crate::templates::INVESTIGATION],
@@ -864,8 +780,7 @@ async fn owner_that_stopped_declaring_the_template_id_keeps_its_tools_but_loses_
         "the owner is still trusted; only its template list changed"
     );
 
-    // acceptance ④: no descriptor reaches the prompt; the owner keeps its
-    // tools because it is still the owner.
+    // No descriptor reaches the prompt; the owner keeps its tools because it is still the owner.
     assert_owner_agreement(
         &boot,
         &upgraded,
@@ -877,24 +792,12 @@ async fn owner_that_stopped_declaring_the_template_id_keeps_its_tools_but_loses_
     upgraded.stop(OWNER_A).await.expect("stop upgraded A");
 }
 
-/// 第一轮评审 MAJOR-1 — the run-time contract check used to be
-/// `if let Some(input) = track.template_input { validate_template_input(..) }`,
-/// which is one corner of the create-time matrix. This drives the corner it
-/// could not see: **absent** input meeting a schema that has since grown a
-/// `required` list.
-///
-/// The row is minted by the real create route while A declares *no*
-/// `input_schema` at all — a legal create that stores `template_input = NULL`.
-/// A then upgrades to A's usual schema (`required: ["issue_url"]`). The same
-/// (plugin, template, input) triple would now be a 400 at create
-/// (`validate_template_input_binding`'s `(Some(schema), None)` arm), so
-/// run-time must not call the contract honored — a vanilla prompt is the
-/// point, not a `template_input` that no schema ever accepted.
+/// Absent input meeting a schema that has since grown a `required` list: the same triple would
+/// now be a 400 at create, so run-time must not call the contract honored.
 #[tokio::test]
 async fn absent_input_under_a_newly_required_schema_breaks_the_contract() {
     let _trust = TrustGuard::trust(OWNER_A).await;
-    // A declares no input_schema yet — so `template_input` is refused at
-    // create and the row stores NULL.
+    // A declares no input_schema yet — so `template_input` is refused at create and the row stores NULL.
     let boot = boot(&[owner(OWNER_A, &[SHARED_TEMPLATE_ID], None)]).await;
     spawn_on(&boot.host, OWNER_A).await;
     let track_id = boot.create_bound_track(None).await;
@@ -916,8 +819,7 @@ async fn absent_input_under_a_newly_required_schema_breaks_the_contract() {
          the branch the old run-time check skipped"
     );
 
-    // Control: while A still declares no schema, the contract holds and the
-    // planner binds the descriptor with no input.
+    // Control: while A still declares no schema, the contract holds.
     assert_owner_agreement(
         &boot,
         &boot.host,
@@ -940,8 +842,7 @@ async fn absent_input_under_a_newly_required_schema_breaks_the_contract() {
     )]);
     spawn_on(&upgraded, OWNER_A).await;
 
-    // The create route's verdict on this exact triple, read from the create
-    // route's own function rather than restated here.
+    // The create route's verdict on this exact triple, read from its own function.
     let upgraded_manifest = upgraded
         .registry()
         .get(OWNER_A)
@@ -966,15 +867,9 @@ async fn absent_input_under_a_newly_required_schema_breaks_the_contract() {
     upgraded.stop(OWNER_A).await.expect("stop upgraded A");
 }
 
-/// Acceptance ⑤ — same owner, same template id, but the owner's
-/// `input_schema` changed and the persisted `template_input` no longer
-/// satisfies it. The stale blob must not reach the planner prompt.
-///
-/// 第一轮评审 MINOR-3 — the MCP projection of this state had no carrier: the
-/// test asserted only that the planner got `None`, so mutating the stale-input
-/// return point to `Unbound` left it green while the tool scope silently
-/// widened to `All`. Both readers are pinned now, and (MAJOR-2) the tool scope
-/// stays `Only(A)` rather than going to zero.
+/// Same owner, same template id, but the persisted `template_input` no longer satisfies the
+/// owner's changed `input_schema`. The stale blob must not reach the prompt; the tool scope
+/// stays `Only(A)`.
 #[tokio::test]
 async fn stale_template_input_is_rechecked_against_the_current_owner_schema() {
     let _trust = TrustGuard::trust(OWNER_A).await;
@@ -987,8 +882,7 @@ async fn stale_template_input_is_rechecked_against_the_current_owner_schema() {
     spawn_on(&boot.host, OWNER_A).await;
     let track_id = boot.create_bound_track(Some(owner_a_input())).await;
 
-    // The binding is live and carries the input while the schema still
-    // accepts it — the control half of this test.
+    // Control half: the binding is live and carries the input while the schema still accepts it.
     assert_owner_agreement(&boot, &boot.host, &track_id, owned_by(OWNER_A), &_trust).await;
     boot.host.stop(OWNER_A).await.expect("stop A");
 
@@ -1000,8 +894,7 @@ async fn stale_template_input_is_rechecked_against_the_current_owner_schema() {
     )]);
     spawn_on(&upgraded, OWNER_A).await;
 
-    // acceptance ⑤: the blob validated under the old schema must not be
-    // injected under the new one; A keeps its tools.
+    // The blob validated under the old schema must not be injected under the new one; A keeps its tools.
     assert_owner_agreement(
         &boot,
         &upgraded,
@@ -1013,9 +906,7 @@ async fn stale_template_input_is_rechecked_against_the_current_owner_schema() {
     upgraded.stop(OWNER_A).await.expect("stop upgraded A");
 }
 
-/// Create-time and run-time must answer the same question the same way: a
-/// create issued *after* the owner stopped binds nothing
-/// (`resolve_template_binding`), and the run-time readers agree.
+/// A create issued after the owner stopped binds nothing, and the run-time readers agree.
 #[tokio::test]
 async fn create_time_and_run_time_binding_agree_for_a_stopped_owner() {
     let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
@@ -1039,12 +930,8 @@ async fn create_time_and_run_time_binding_agree_for_a_stopped_owner() {
         StatusCode::BAD_REQUEST,
         "create must refuse template_input with no bound owner: {body}"
     );
-    // 第二轮评审 NIT-3 — this is the *reachable* end of the `NoBoundPlugin`
-    // cell: the caller did send a `template_id`, and the roster does admit it;
-    // only the owner is stopped. The body used to read "`template_input`
-    // requires `template_id`", telling the caller to supply what they had
-    // already supplied. Pinned here at the HTTP boundary, not just at the
-    // function, because the body is what a user sees.
+    // The reachable end of the `NoBoundPlugin` cell: the caller did send an admitted `template_id`;
+    // only the owner is stopped. Pinned at the HTTP boundary because the body is what a user sees.
     let rendered = body.to_string();
     assert!(
         rendered.contains("track create: "),
@@ -1054,10 +941,8 @@ async fn create_time_and_run_time_binding_agree_for_a_stopped_owner() {
         rendered.contains("running and trusted"),
         "the 400 must name the stopped owner as the cause: {rendered}"
     );
-    // 第三轮评审 MINOR — `OWNER_A` is stopped, not unregistered: its Manifest
-    // is still in the registry and still declares `SHARED_TEMPLATE_ID`. So the
-    // cause clause must be scoped to running ∧ trusted; "no plugin declares
-    // this template" would be a false statement about this very state.
+    // `OWNER_A` is stopped, not unregistered: its Manifest still declares the template, so the
+    // cause clause must be scoped to running ∧ trusted.
     assert!(
         rendered.contains("no running and trusted plugin declares this template"),
         "the 400's cause clause must be scoped to running ∧ trusted — the stopped \

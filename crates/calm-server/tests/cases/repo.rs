@@ -1,9 +1,4 @@
 //! Integration tests for `SqlxRepo` against an in-memory SQLite.
-//!
-//! These tests exercise the observable contract of the `Repo` trait against
-//! the real sqlx-backed implementation: CRUD round-trips, cascade deletes,
-//! sort defaulting, `track_detail` composition, overlay upsert idempotency,
-//! and terminal-per-card uniqueness.
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
@@ -117,8 +112,6 @@ async fn make_overlay(
     .expect("upsert overlay")
 }
 
-// ---------------------------------------------------------------- CRUD ----
-
 #[tokio::test]
 async fn area_crud_round_trip() {
     let repo = fresh_repo().await;
@@ -206,7 +199,6 @@ async fn track_crud_round_trip() {
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "first").await;
     assert!(w.archived_at.is_none());
-    // Issue #145 — every newly minted track seeds at Draft.
     assert_eq!(
         w.lifecycle,
         TrackLifecycle::Draft,
@@ -265,13 +257,6 @@ async fn track_crud_round_trip() {
 
 #[tokio::test]
 async fn track_lifecycle_round_trips_through_patch() {
-    // Issue #145 — `TrackPatch.lifecycle` writes the column and the
-    // next read reflects the new value. The validator (whose job is
-    // to refuse illegal transitions) lives one layer up in the
-    // routes / MCP tool; the DB layer accepts any value and is the
-    // mechanical actuator. This test pins the read/write round-trip
-    // so a future refactor that drops the column from the UPDATE
-    // statement surfaces here.
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "lifecycle-test").await;
@@ -296,7 +281,6 @@ async fn track_lifecycle_round_trips_through_patch() {
     let re_read = repo.track_get(w.id.as_str()).await.unwrap().unwrap();
     assert_eq!(re_read.lifecycle, TrackLifecycle::Planning);
 
-    // Patch with `lifecycle: None` leaves the column alone.
     let no_change = repo
         .track_update(
             w.id.as_str(),
@@ -451,8 +435,6 @@ async fn card_crud_round_trip() {
     assert!(matches!(err, CalmError::NotFound(_)));
 }
 
-// ----------------------------------------------------------- Cascades ----
-
 #[tokio::test]
 async fn area_delete_cascades_to_tracks_and_cards() {
     let repo = fresh_repo().await;
@@ -511,7 +493,6 @@ async fn track_delete_cascades_to_cards() {
 
     assert!(repo.track_get(w.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
-    // unrelated track and card untouched
     assert!(
         repo.track_get(other_track.id.as_str())
             .await
@@ -704,21 +685,7 @@ async fn overlay_sweep_is_idempotent_no_rows() {
     assert_eq!(rows, 0);
 }
 
-// --- Terminal FK contract regression tests (issues #4, #197) ---------------
-//
-// Originally these three tests documented the `ON DELETE CASCADE` FK on
-// `terminals.card_id`: deleting a card / track / area silently nuked the
-// terminal row beneath it. Issue #197 inverted that contract: the FK is now
-// `ON DELETE RESTRICT` (migration 0011) so the schema **refuses** to nuke
-// the terminal row implicitly — eager teardown in the route handlers
-// (`routes/cards.rs::delete_card`, `routes/tracks.rs::delete_track`,
-// `routes/areas.rs::delete_area`) owns the kill-daemon-unlink-socket
-// sequence and explicitly drops the terminal row before the parent.
-//
-// The tests below now verify the RESTRICT semantics at the bare
-// `Repo::card_delete` / `track_delete` / `area_delete` surface: a card/
-// track/area that has a live terminal underneath cannot be deleted; once
-// the terminal row is removed, the parent delete proceeds.
+// `terminals.card_id` is `ON DELETE RESTRICT`: a parent with a live terminal cannot be deleted until the terminal row is removed.
 
 async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
     repo.terminal_create(NewTerminal {
@@ -740,18 +707,14 @@ async fn fk_restrict_card_delete_blocked_by_terminal() {
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
-    // RESTRICT bites: the terminal row's `card_id` still points at the
-    // card, so the schema refuses the parent delete.
     let err = repo.card_delete(card.id.as_str()).await.unwrap_err();
     assert!(
         matches!(err, CalmError::Db(_)),
         "expected an FK constraint error from sqlx, got: {err:?}"
     );
-    // Terminal + card both intact.
     assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_some());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_some());
 
-    // Eager-teardown shape: drop the terminal first, then the card.
     repo.terminal_delete(term.id.as_str()).await.unwrap();
     repo.card_delete(card.id.as_str()).await.unwrap();
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
@@ -766,15 +729,10 @@ async fn fk_restrict_track_delete_blocked_by_terminal_under_card() {
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
-    // Unrelated track/card/terminal that must NOT be touched on either
-    // attempt (the second attempt succeeds, but only on `w`'s subtree).
     let other_track = make_track(&repo, c.id.as_str(), "other").await;
     let other_card = make_card(&repo, other_track.id.as_str(), "terminal").await;
     let other_term = make_terminal(&repo, other_card.id.as_str()).await;
 
-    // RESTRICT bites: the track-delete cascade through `cards.track_id`
-    // would try to delete `card`, which still has `term` pointing at
-    // it — schema refuses.
     let err = repo.track_delete(w.id.as_str()).await.unwrap_err();
     assert!(
         matches!(err, CalmError::Db(_)),
@@ -784,14 +742,11 @@ async fn fk_restrict_track_delete_blocked_by_terminal_under_card() {
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_some());
     assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_some());
 
-    // Drain the terminal first (the eager-teardown shape), then the
-    // track delete clears the rest via CASCADE on `cards.track_id`.
     repo.terminal_delete(term.id.as_str()).await.unwrap();
     repo.track_delete(w.id.as_str()).await.unwrap();
     assert!(repo.track_get(w.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
 
-    // Sibling subtree intact across both attempts.
     assert!(
         repo.track_get(other_track.id.as_str())
             .await
@@ -837,8 +792,6 @@ async fn fk_restrict_area_delete_blocked_by_terminal_under_subtree() {
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
 }
 
-// ----------------------------------------------------- Sort defaulting ----
-
 #[tokio::test]
 async fn sort_defaulting_assigns_1_2_3_for_areas() {
     let repo = fresh_repo().await;
@@ -860,7 +813,6 @@ async fn sort_defaulting_is_scoped_per_area_for_tracks() {
     let w2a = make_track(&repo, c2.id.as_str(), "w2a").await;
     assert_eq!(w1a.sort, 1.0);
     assert_eq!(w1b.sort, 2.0);
-    // w2a is the first track in c2 so it should also start at 1.0.
     assert_eq!(w2a.sort, 1.0);
 }
 
@@ -880,8 +832,6 @@ async fn sort_defaulting_is_scoped_per_track_for_cards() {
     assert_eq!(c2a.sort, 1.0);
 }
 
-// ------------------------------------------------------- track_detail ----
-
 #[tokio::test]
 async fn track_detail_includes_sorted_cards_and_scoped_overlays() {
     let repo = fresh_repo().await;
@@ -889,14 +839,11 @@ async fn track_detail_includes_sorted_cards_and_scoped_overlays() {
     let w = make_track(&repo, c.id.as_str(), "W").await;
     let other_w = make_track(&repo, c.id.as_str(), "other").await;
 
-    // Create cards in an out-of-order manner; expect sort = 1,2,3 sequential.
     let card_a = make_card(&repo, w.id.as_str(), "a").await;
     let card_b = make_card(&repo, w.id.as_str(), "b").await;
     let card_c = make_card(&repo, w.id.as_str(), "c").await;
     let other_card = make_card(&repo, other_w.id.as_str(), "other").await;
 
-    // Overlays: one track-scoped, one card-scoped (on card_b), and one on a
-    // card in an unrelated track (must be excluded).
     let track_overlay = repo
         .overlay_upsert(NewOverlay {
             plugin_id: "p".into(),
@@ -953,8 +900,6 @@ async fn track_detail_returns_none_for_missing_track() {
     assert!(repo.track_detail("nonexistent").await.unwrap().is_none());
 }
 
-// --------------------------------------------------------- overlays ----
-
 #[tokio::test]
 async fn overlay_upsert_is_idempotent_on_unique_key() {
     let repo = fresh_repo().await;
@@ -974,7 +919,6 @@ async fn overlay_upsert_is_idempotent_on_unique_key() {
     p2.payload = json!({"v": 2});
     let second = repo.overlay_upsert(p2).await.unwrap();
 
-    // Same row (same id), updated payload.
     assert_eq!(first.id, second.id);
     assert_eq!(second.payload, json!({"v": 2}));
 
@@ -1001,7 +945,6 @@ async fn overlays_by_kind_returns_all_track_overlays_across_areas() {
     let w2 = make_track(&repo, c2.id.as_str(), "W2").await;
     let card = make_card(&repo, w1.id.as_str(), "terminal").await;
 
-    // Two track overlays in different areas + one card overlay.
     repo.overlay_upsert(NewOverlay {
         plugin_id: "p".into(),
         entity_kind: "track".into(),
@@ -1043,8 +986,6 @@ async fn overlays_by_kind_returns_all_track_overlays_across_areas() {
     assert_eq!(cards[0].entity_id, card.id.as_str());
 }
 
-// --------------------------------------------------------- terminals ----
-
 #[tokio::test]
 async fn terminal_create_rejects_duplicate_card_id() {
     let repo = fresh_repo().await;
@@ -1081,9 +1022,6 @@ async fn terminal_create_rejects_duplicate_card_id() {
         .unwrap();
     assert_eq!(by_card.id, t.id);
 
-    // Issue #197 — `terminals.card_id` is `ON DELETE RESTRICT` so the
-    // schema refuses a card delete that would orphan the terminal row.
-    // Eager-teardown shape: drop the terminal first.
     let err = repo.card_delete(card.id.as_str()).await.unwrap_err();
     assert!(
         matches!(err, CalmError::Db(_)),
@@ -1093,13 +1031,6 @@ async fn terminal_create_rejects_duplicate_card_id() {
     repo.card_delete(card.id.as_str()).await.unwrap();
     assert!(repo.terminal_get(&t.id).await.unwrap().is_none());
 }
-
-// ------------------------------------------- atomic terminal-card helpers ----
-//
-// Coverage for `terminal_create_tx` and `card_with_terminal_create_tx`, the
-// new transactional helpers added for #13 PR1. These tests open transactions
-// directly off the pool (like `write_with_event`'s closure does) to exercise
-// the `_tx` surface without going through the pool-wrapping wrappers.
 
 #[tokio::test]
 async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() {
@@ -1129,8 +1060,6 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
     .expect("atomic create");
     tx.commit().await.unwrap();
 
-    // Card persisted with kind=terminal and schema payload only; identity
-    // lives in runtimes and is projected at read time.
     let got_card = repo
         .card_get(card.id.as_str())
         .await
@@ -1160,7 +1089,6 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
         "projected card activity must use the authoritative session clock"
     );
 
-    // Terminal persisted and parented to the card.
     let got_term = repo
         .terminal_get_by_card(card.id.as_str())
         .await
@@ -1178,7 +1106,6 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_track() {
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
-    // Sanity: track has no cards yet, and no orphan terminals exist.
     assert!(repo.cards_by_track(w.id.as_str()).await.unwrap().is_empty());
 
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1201,14 +1128,10 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_track() {
     )
     .await
     .expect_err("unknown track must error");
-    // Explicit rollback so the txn doesn't linger; would be implicit on drop
-    // but we make the intent visible.
     tx.rollback().await.unwrap();
 
     assert!(matches!(err, CalmError::NotFound(_)));
 
-    // No card was left behind in the valid track (it never had any), and no
-    // terminal row exists at all — direct sqlx count against the table.
     let cards_in_w = repo.cards_by_track(w.id.as_str()).await.unwrap();
     assert!(
         cards_in_w.is_empty(),
@@ -1260,8 +1183,6 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
-    // Pre-seed two cards so the next sort default lands at 3.0 — same
-    // assertion shape as `sort_defaulting_is_scoped_per_track_for_cards`.
     let _c1 = make_card(&repo, w.id.as_str(), "terminal").await;
     let _c2 = make_card(&repo, w.id.as_str(), "terminal").await;
 
@@ -1338,15 +1259,6 @@ async fn terminal_create_tx_rejects_unknown_card_id() {
     assert!(matches!(err, CalmError::NotFound(_)));
 }
 
-// -------------------------------------------- atomic codex-card helpers ----
-//
-// Coverage for `card_with_codex_create_tx`, the transactional helper added
-// for #117. Mirrors the `card_with_terminal_create_tx` tests above — same
-// pool().begin() pattern, same commit-before-assert / explicit-rollback
-// shape. The codex helper takes a caller-supplied `card_id` (option C in
-// the design doc), so the success-path tests pass `new_id()` from the
-// public model module to keep id-collision realistic.
-
 #[tokio::test]
 async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     let repo = fresh_repo().await;
@@ -1355,8 +1267,6 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    // PR7a (#136) — third tuple slot is the raw per-card MCP token;
-    // Worker codex cards mint one so user-facing agents can call MCP.
     let (card, term, mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
@@ -1398,8 +1308,6 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     assert_eq!(got_card.payload["schemaVersion"], json!(1));
     assert_eq!(got_card.payload["icon_bg"], json!("#111111"));
     assert_eq!(got_card.payload["icon_fg"], json!("#ffffff"));
-    // cwd is non-empty here — payload must carry it for the frontend's
-    // status hint.
     assert_eq!(got_card.payload["cwd"], json!("/workspace"));
     let runtime = repo
         .session_projection_active_for_card(&card.id.to_string())
@@ -1478,8 +1386,6 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    // PR7a (#136) — third tuple slot is the raw per-card MCP token;
-    // unused here.
     let (card, _term, _mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id,
@@ -1506,8 +1412,6 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
     let got = repo.card_get(card.id.as_str()).await.unwrap().unwrap();
     assert_eq!(got.sort, 7.0);
 }
-
-// ---------------------------------------------------------------- plugins ----
 
 fn sample_new_plugin(id: &str, enabled: bool) -> NewPlugin {
     NewPlugin {
@@ -1544,7 +1448,6 @@ async fn plugin_install_get_list_round_trip() {
         .expect("plugin exists");
     assert_eq!(got.version, "0.1.0");
 
-    // Upsert keeps `installed_at`, bumps `updated_at`.
     let mut np = sample_new_plugin("p.one", true);
     np.version = "0.2.0".into();
     let p2 = repo.plugin_install(np).await.unwrap();
@@ -1574,16 +1477,7 @@ async fn plugin_install_get_list_round_trip() {
     assert!(matches!(err, CalmError::NotFound(_)));
 }
 
-/// #1284 S1 review round 3 (P2-3). `PATCH /api/plugins/{id}/config` documents
-/// itself as the only writer of an installed plugin's `user_config`, and the
-/// 409-plus-`?reset=true` design for a corrupt row rests entirely on that
-/// sentence. It used to be true only because `PluginHost::install` refuses a
-/// duplicate id before reaching the upsert — a statement propped up by a check
-/// in another crate, which is not where it can be relied on.
-///
-/// So the SQL carries it: `plugin_install`'s `ON CONFLICT DO UPDATE` set
-/// leaves `user_config` alone. Everything else in that set still updates,
-/// which is the half that must not regress.
+/// `plugin_install`'s `ON CONFLICT DO UPDATE` set leaves `user_config` alone; everything else in that set still updates.
 #[tokio::test]
 async fn plugin_install_upsert_never_resets_operator_config() {
     let repo = fresh_repo().await;
@@ -1594,8 +1488,6 @@ async fn plugin_install_upsert_never_resets_operator_config() {
         .await
         .unwrap();
 
-    // A second install of the same id — what the upsert branch is for — passes
-    // the `{}` every fresh install passes.
     let mut np = sample_new_plugin("p.cfg", true);
     np.version = "0.2.0".into();
     let after = repo.plugin_install(np).await.unwrap();
@@ -1628,7 +1520,6 @@ async fn plugin_token_round_trip() {
     assert_eq!(h, "hashed-v1");
     assert_eq!(exp, 1_000);
 
-    // Rotate: overwrite via the same set call.
     repo.plugin_token_set("p.tok", "hashed-v2", 2_000)
         .await
         .unwrap();
@@ -1636,7 +1527,6 @@ async fn plugin_token_round_trip() {
     assert_eq!(h, "hashed-v2");
     assert_eq!(exp, 2_000);
 
-    // Delete is idempotent.
     repo.plugin_token_delete("p.tok").await.unwrap();
     repo.plugin_token_delete("p.tok").await.unwrap();
     assert!(repo.plugin_token_get("p.tok").await.unwrap().is_none());
@@ -1677,11 +1567,9 @@ async fn plugin_kv_round_trip() {
     assert_eq!(keys, vec!["run/1", "run/2"]);
     assert_eq!(listed[1].1, json!(42));
 
-    // Empty prefix lists everything for this plugin.
     let all = repo.plugin_kv_list("p.kv", "").await.unwrap();
     assert_eq!(all.len(), 3);
 
-    // Other plugin's keys are not visible.
     repo.plugin_install(sample_new_plugin("p.other", false))
         .await
         .unwrap();
@@ -1693,10 +1581,8 @@ async fn plugin_kv_round_trip() {
 
     repo.plugin_kv_delete("p.kv", "run/1").await.unwrap();
     assert!(repo.plugin_kv_get("p.kv", "run/1").await.unwrap().is_none());
-    // Idempotent.
     repo.plugin_kv_delete("p.kv", "run/1").await.unwrap();
 
-    // Cascade on plugin_delete.
     repo.plugin_delete("p.kv").await.unwrap();
     assert!(repo.plugin_kv_list("p.kv", "").await.unwrap().is_empty());
 }
@@ -1719,34 +1605,15 @@ async fn plugin_kv_prefix_escapes_glob_chars() {
     assert_eq!(keys, vec!["100%/a"]);
 }
 
-// ----- Upgrade stability: refuse-to-boot on unknown future migration --------
-//
-// `docs/upgrade-stability.md` (Tier A, DB schema): "old binary reading new
-// DB → refuses boot with: 'database has migration X applied that this
-// binary doesn't know about — refusing to boot; downgrade is not
-// supported'". `SqlxRepo::open` enforces this before the embedded migrator
-// gets to apply anything.
-
-/// Simulate an "older binary reading newer DB": open a fresh repo (which
-/// migrates the schema to the binary's current set), inject a synthetic
-/// future-version row into `_sqlx_migrations`, then reopen and assert the
-/// open is rejected.
-///
-/// Uses an on-disk tempfile so the second `SqlxRepo::open` actually
-/// observes the row we wrote — `sqlite::memory:` would give us a fresh DB
-/// the second time around.
+/// Uses an on-disk tempfile so the second `SqlxRepo::open` actually observes the row we wrote.
 #[tokio::test]
 async fn open_refuses_unknown_future_migration() {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
 
-    // First open: runs migrations to current; `_sqlx_migrations` now exists
-    // and contains rows 0001..=0005 (all known versions).
     {
         let repo = SqlxRepo::open(&url).await.expect("initial open");
-        // Inject a synthetic future migration row. sqlx's expected schema:
-        // (version, description, installed_on, success, checksum, execution_time).
-        // The values are arbitrary — only `version` matters for the guard.
+        // Only `version` matters for the guard; the other columns are arbitrary.
         sqlx::query(
             r#"INSERT INTO _sqlx_migrations
                    (version, description, installed_on, success, checksum, execution_time)
@@ -1761,8 +1628,7 @@ async fn open_refuses_unknown_future_migration() {
         // Drop `repo` so its pool releases the file lock before reopen.
     }
 
-    // Second open: must refuse with the typed error + agreed wording.
-    // `SqlxRepo` isn't `Debug`, so `expect_err` is unavailable — match.
+    // `SqlxRepo` isn't `Debug`, so `expect_err` is unavailable.
     let err: CalmError = match SqlxRepo::open(&url).await {
         Ok(_) => panic!("reopen must refuse on unknown future migration"),
         Err(e) => e.into(),
@@ -1790,20 +1656,13 @@ async fn open_refuses_unknown_future_migration() {
     );
 }
 
-/// Brand-new DB (no `_sqlx_migrations` row yet) and "current binary on
-/// current DB" both open cleanly. Belt-and-braces against a regression
-/// where the guard would mis-flag a known applied version, or fail when
-/// the table doesn't exist yet.
 #[tokio::test]
 async fn open_succeeds_on_fresh_and_current_db() {
-    // Fresh in-memory DB: `_sqlx_migrations` doesn't exist before the
-    // migrator's first `run()`. The guard must tolerate that.
+    // `_sqlx_migrations` doesn't exist before the migrator's first `run()`; the guard must tolerate that.
     let _ = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("fresh in-memory open succeeds");
 
-    // Tempfile DB, opened twice: the second open sees all known versions
-    // already applied and must still succeed.
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
     let _ = SqlxRepo::open(&url).await.expect("first open");
@@ -1812,20 +1671,6 @@ async fn open_succeeds_on_fresh_and_current_db() {
         .expect("reopen with current binary");
 }
 
-// ---------------------------------------------- #306 terminal_set_exit ----
-
-/// Round-trip every branch of `terminal_set_exit` so the SQL writes both
-/// columns coherently and the read path surfaces them via
-/// `Terminal.exit_code` + `signal_killed` + durable PTY output evidence. The
-/// four states correspond to
-/// the four shapes the daemon can write to `<sock>.exit`:
-///
-///   - clean exit (`exit_code = Some(0)`)
-///   - non-zero exit (`exit_code = Some(137)`)
-///   - signal-killed (`exit_code = None`, `signal_killed = true`)
-///   - back to unset (`exit_code = None`, `signal_killed = false`) —
-///     not a real daemon write path, but exercised here so a future
-///     "clear exit on respawn" caller has a known-good shape.
 #[tokio::test]
 async fn terminal_set_exit_round_trip_all_branches() {
     let repo = fresh_repo().await;
@@ -1842,14 +1687,11 @@ async fn terminal_set_exit_round_trip_all_branches() {
         })
         .await
         .unwrap();
-    // Fresh row → both fields default per the 0020 migration:
-    //   exit_code IS NULL, signal_killed = 0.
     assert_eq!(t.exit_code, None);
     assert!(!t.signal_killed);
     assert_eq!(t.pty_output, "");
     assert!(!t.pty_output_truncated);
 
-    // (a) clean exit
     repo.terminal_set_exit_with_output(&t.id, Some(0), false, "ok\n", true)
         .await
         .unwrap();
@@ -1859,7 +1701,6 @@ async fn terminal_set_exit_round_trip_all_branches() {
     assert_eq!(r.pty_output, "ok\n");
     assert!(r.pty_output_truncated);
 
-    // (b) non-zero exit
     repo.terminal_set_exit(&t.id, Some(137), false)
         .await
         .unwrap();
@@ -1869,14 +1710,12 @@ async fn terminal_set_exit_round_trip_all_branches() {
     assert_eq!(r.pty_output, "");
     assert!(r.pty_output_truncated, "caller supplied no output evidence");
 
-    // (c) signal-killed (mutually exclusive: exit_code = None)
     repo.terminal_set_exit(&t.id, None, true).await.unwrap();
     let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
     assert_eq!(r.exit_code, None);
     assert!(r.signal_killed);
     assert!(r.pty_output_truncated, "caller supplied no output evidence");
 
-    // (d) clear back to unset
     repo.terminal_set_exit(&t.id, None, false).await.unwrap();
     let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
     assert_eq!(r.exit_code, None);
@@ -1886,7 +1725,6 @@ async fn terminal_set_exit_round_trip_all_branches() {
         "unset means no output is missing yet"
     );
 
-    // Missing id → NotFound, mirroring `terminal_set_pid`.
     let err = repo
         .terminal_set_exit("no-such-id", Some(0), false)
         .await
@@ -1964,9 +1802,6 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_planners() {
     )
     .await
     .expect("create deferred placeholder shared planner card");
-    // INV-CHAT-015 has two independent production fences: c.role = 'planner'
-    // and ws.contract = 'planner'. This counterexample pins the role fence;
-    // the contract fence is pinned separately by INV-CHAT-009's counterexample.
     let chat = calm_server::db::sqlite::card_create_with_id_tx(
         &mut tx,
         calm_server::model::new_id(),
@@ -1989,8 +1824,6 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_planners() {
     .expect("create plain-chat card");
     tx.commit().await.unwrap();
 
-    // Shared takeover now keys off an active shared-spec runtime pointing
-    // at a live terminal, not payload identity stamps.
     let mapped_term = make_terminal(&repo, mapped.id.as_str()).await;
     let term = make_terminal(&repo, pending.id.as_str()).await;
     let chat_term = make_terminal(&repo, chat.id.as_str()).await;
@@ -2094,8 +1927,6 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_planners() {
         )]
     );
 
-    // Marking the terminal exited removes the card from the takeover set
-    // (R7 P2 #1) — dead-TUI cards must not be re-registered into the FIFO.
     repo.terminal_set_exit(term.id.as_str(), Some(0), false)
         .await
         .unwrap();

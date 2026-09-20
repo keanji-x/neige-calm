@@ -1,11 +1,6 @@
 //! `neige` — terminal CLI for read-only track file MCP tools.
-//!
-//! The CLI is intentionally tiny. It inherits the per-card MCP socket and raw
-//! token from the terminal environment, initializes the existing kernel MCP
-//! server with the token under `params._meta["dev.neige/auth"].token`, then
-//! performs one `tools/call` for track reads or worker task reports.
-//! `NEIGE_MCP_DAEMON_TOKEN` is for the stdio shim only; the CLI requires
-//! `NEIGE_MCP_TOKEN` because its tool calls do not carry thread metadata.
+//! Requires `NEIGE_MCP_TOKEN` (not `NEIGE_MCP_DAEMON_TOKEN`) because its tool calls
+//! carry no thread metadata.
 
 mod help;
 
@@ -873,9 +868,7 @@ impl Cli {
                                     json,
                                 )
                             })?;
-                            // Try JSON first; fall back to a JSON string for
-                            // plain text so the worker prompt's
-                            // `<json-or-text>` contract matches the CLI.
+                            // Try JSON first; plain text falls back to a JSON string.
                             let parsed = serde_json::from_str(&value)
                                 .unwrap_or_else(|_| Value::String(value.clone()));
                             if result.replace(parsed).is_some() {

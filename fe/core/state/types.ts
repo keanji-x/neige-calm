@@ -44,10 +44,6 @@ export type OverlayPersistResult =
   | Readonly<{ status: 'persisted' }>
   | Readonly<{ status: 'failed'; error: Readonly<{ kind: 'write'; message: string; cause?: unknown }> }>;
 
-/**
- * End-side assembly implements optimistic ordering. updateSynchronously must cancel an in-flight
- * read before replacing cached data and return the per-call snapshot used by persist/rollback.
- */
 export function createOverlayKey<
   PluginId extends string,
   EntityKind extends string,
@@ -87,10 +83,7 @@ export type StorageRemoveResult =
   | Readonly<{ status: 'removed' }>
   | Readonly<{ status: 'failed'; error: StorageWriteFailure }>;
 
-/**
- * End-side assembly implements optimistic ordering. updateSynchronously must cancel an in-flight
- * read before replacing cached data and return the per-call snapshot used by persist/rollback.
- */
+/** `updateSynchronously` must cancel an in-flight read before replacing cached data and return the snapshot persist/rollback use. */
 export interface OverlayStatePort<T> {
   read(key: OverlayKey): Promise<StorageReadResult<Persistent<T>>>;
   updateSynchronously(key: OverlayKey, update: StateUpdate<T>): OverlayMutation<T>;

@@ -75,10 +75,7 @@ describe('production app mount', () => {
 
     mountProductionApp(root, { storage, reload: vi.fn(), deleteDatabase: vi.fn() });
 
-    // One mount, one boot. There is no module-level registry and no module-level
-    // "already registered" guard to fall back on (`INV-CARD-224` is retired), so
-    // a second boot call here would mean a second, differently-populated
-    // registry somewhere in the app.
+    // One mount, one boot: there is no module-level registry or "already registered" guard to fall back on.
     expect(bootCards).toHaveBeenCalledOnce();
     const cards = vi.mocked(createAppRouter).mock.calls[0]?.[0]?.cards;
     expect(cards).toBeDefined();

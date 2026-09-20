@@ -1,52 +1,4 @@
-//! Issue #236 — end-to-end verification with a **real codex binary**.
-//!
-//! This test is feature-gated behind `codex-e2e` because CI doesn't
-//! ship a `codex` binary. Run locally with:
-//!
-//! ```sh
-//! cargo test --features codex-e2e --test codex_e2e_planner_card -- --nocapture
-//! ```
-//!
-//! ## What it proves
-//!
-//! After `POST /api/tracks`:
-//!   1. The planner card's codex daemon is running.
-//!   2. The codex process inherits `NEIGE_MCP_SOCKET` and
-//!      `NEIGE_MCP_TOKEN` in its `/proc/<pid>/environ` — hard
-//!      assertion (no soft-skip).
-//!   3. The planner card's `$CODEX_HOME/config.toml` carries a
-//!      `[mcp_servers.calm.env]` table containing both
-//!      `NEIGE_MCP_SOCKET` and `NEIGE_MCP_TOKEN` with non-empty
-//!      string values (#236 followup — codex CLI 0.132 doesn't
-//!      forward the daemon env to MCP server subprocesses, so the
-//!      env must live in the config.toml itself).
-//!
-//! Pre-fix (#236), the route returned 201 before the daemon was
-//! spawned; if a WS attach raced the background `tokio::spawn`, the
-//! respawn used the baked terminal-row env (no MCP vars). The
-//! post-fix path is synchronous and the MCP env always lands.
-//!
-//! ## #236 followup — real `mcp_server` wired into the test fixture
-//!
-//! The initial cut of this test built `AppState::from_parts` (which
-//! always sets `mcp_server: None`) and soft-skipped the env-presence
-//! assertions when `state.mcp_server.is_none()`. That left a regression
-//! window: the very bug the test was supposed to catch (codex env
-//! missing the MCP vars after #236's sync-spawn change) couldn't be
-//! caught here because the augmentation branch in
-//! `routes::tracks::create_track` (lines 315-326) is gated on
-//! `s.mcp_server.is_some()`. We now boot a real `McpServer` against a
-//! tempdir-scoped UDS, assign it onto the `AppState` after
-//! `from_parts`, and hard-assert both env vars are present. (Field is
-//! `pub`; this is the documented test-fixture mutation seam — see the
-//! `mcp_server` doc on `AppState`.)
-//!
-//! ## Self-skip
-//!
-//! If `NEIGE_CODEX_BIN` is unset or the resolved path is not
-//! executable, the test `eprintln!`s an explicit skip marker and
-//! returns success. We don't panic — the feature is opt-in but
-//! must self-skip if the local environment is missing the binary.
+//! End-to-end verification with a real codex binary; feature-gated behind `codex-e2e` and self-skips when `NEIGE_CODEX_BIN` is unset.
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
@@ -70,18 +22,12 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-// #868: codex binary resolution goes through the shared no-fallback
-// resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒ self-skip. Tests must
-// never fall back to a PATH/home codex binary.
+// Env `NEIGE_CODEX_BIN` only, `None` ⇒ self-skip; tests must never fall back to a PATH/home codex binary.
 use support::codex_fixture::resolve_codex_bin;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-/// Issue #236 followup — locate the `neige-mcp-stdio-shim` binary the
-/// codex daemon will spawn for the planner card. Same sibling-of-test-bin
-/// resolver as the daemon helper above; depends on `cargo test
-/// --workspace` (or an explicit `-p neige-mcp-stdio-shim --bin
-/// neige-mcp-stdio-shim`) having built it.
+/// Locate the `neige-mcp-stdio-shim` binary next to the test binary; requires `cargo test --workspace` to have built it.
 fn locate_shim_bin() -> PathBuf {
     let mut p = std::env::current_exe().expect("current_exe");
     p.pop();
@@ -96,13 +42,7 @@ fn locate_shim_bin() -> PathBuf {
     p
 }
 
-/// Walk `/proc` looking for processes that are the codex binary the
-/// test resolved. Matches by either:
-///   * `/proc/<pid>/exe` resolving to `codex_bin` directly (Rust /
-///     native shape), or
-///   * `/proc/<pid>/cmdline` containing the resolved path as any
-///     argv entry (node-script shape: `~/.nvm/.../codex` is a
-///     symlink to `codex.js`, which runs under `node`).
+/// Walk `/proc` for processes running `codex_bin`, by `exe` link or by any `cmdline` argv entry (node-script shape).
 fn find_codex_pids(codex_bin: &Path) -> Vec<u32> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -147,9 +87,7 @@ fn find_codex_pids(codex_bin: &Path) -> Vec<u32> {
     out
 }
 
-/// Read `/proc/<pid>/environ` and return it as a list of (name, value)
-/// pairs. Returns `None` if the file is unreadable (e.g., the process
-/// exited between the `find` and the read).
+/// Read `/proc/<pid>/environ` as (name, value) pairs; `None` if the process exited in between.
 fn read_proc_environ(pid: u32) -> Option<Vec<(String, String)>> {
     let bytes = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
     let mut out = Vec::new();
@@ -192,11 +130,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
     };
     eprintln!("[codex-e2e] using codex binary at {codex_bin:?}");
 
-    // Note: `seed_and_spawn_planner_daemon` hard-codes `program = "codex"`,
-    // so the daemon child runs `/bin/sh -c codex`. We need the resolved
-    // `codex` to be on PATH for the shell to find it. Prepend the
-    // codex bin's parent dir to PATH for this process; the daemon
-    // inherits the parent process env when no override is set.
+    // `seed_and_spawn_planner_daemon` hard-codes `program = "codex"`, so the resolved binary's dir must be on PATH for `/bin/sh -c codex`.
     if let Some(parent) = codex_bin.parent() {
         let existing = std::env::var("PATH").unwrap_or_default();
         unsafe {
@@ -226,16 +160,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
 
-    // Issue #236 followup — boot a real `McpServer` against a
-    // tempdir-scoped UDS so `routes::tracks::create_track`'s env-
-    // augmentation branch (lines 315-326) folds `NEIGE_MCP_SOCKET` +
-    // `NEIGE_MCP_TOKEN` into the codex daemon's spawn env. With
-    // `mcp_server = None` (the default `from_parts` shape), the
-    // augmentation is gated out and the codex process inherits no MCP
-    // vars — which is exactly the failure mode this test must guard
-    // against. We mutate `state.mcp_server` after `from_parts` because
-    // the field is `pub` and the doc on `AppState::mcp_server`
-    // explicitly calls out test-fixture mutation as the documented seam.
+    // A real `McpServer` on a tempdir UDS: with `mcp_server = None` the env-augmentation branch is gated out and no MCP vars reach codex.
     let mcp_socket_path = tmp.path().join("mcp").join("kernel.sock");
     let track_area_cache = TrackAreaCache::new();
     let mcp_server = McpServer::spawn(
@@ -295,9 +220,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         baseline_pids.len(),
     );
 
-    // 1. POST /api/tracks — synchronous spawn (#236). 201 means the
-    //    daemon socket is up; codex is on its way up or already
-    //    running inside the daemon.
+    // 1. POST /api/tracks — 201 means the daemon socket is up.
     let (status, body) = post(
         app.clone(),
         "/api/tracks",
@@ -310,15 +233,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         "track create returned non-201; body={body}",
     );
 
-    // 1a. #236 followup — find the planner card the route just minted
-    //     and assert its per-card `$CODEX_HOME/config.toml` carries
-    //     the `[mcp_servers.calm.env]` block with both MCP vars baked
-    //     into it. This is the minimum-cost surface for the codex →
-    //     shim env boundary: the pre-followup code relied on codex
-    //     forwarding the daemon's env to MCP subprocesses, which
-    //     codex CLI 0.132 doesn't do — the shim exited with
-    //     `missing NEIGE_MCP_SOCKET` and the planner agent had no way
-    //     to reach the kernel.
+    // 1a. The planner card's `$CODEX_HOME/config.toml` must carry `[mcp_servers.calm.env]`: codex CLI does not forward the daemon env to MCP subprocesses.
     let track_id = body
         .get("id")
         .and_then(Value::as_str)
@@ -338,12 +253,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null)
     };
-    // The planner card is the only kernel-owned (`deletable = false`) card
-    // minted on a fresh track (`model::Card::deletable` flips to `false`
-    // for planner cards per #229 PR A — see `create_track` in
-    // `routes::tracks`). `Card` doesn't expose the `role` field on the
-    // wire (that lives in `card_roles`); deletable is the next-best
-    // stable discriminator here.
+    // The planner card is the only kernel-owned (`deletable = false`) card on a fresh track; `role` is not on the wire.
     let planner_card_id = planner_cards_body
         .as_array()
         .and_then(|cards| {
@@ -376,11 +286,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         cfg_text.contains("[mcp_servers.calm.env]"),
         "planner card config.toml missing `[mcp_servers.calm.env]` block — codex won't pass MCP vars to the shim subprocess (#236 followup); got:\n{cfg_text}",
     );
-    // Hard-assert both env keys are present with non-empty string
-    // values. We don't compare to the exact token (it's minted
-    // per-card and not surfaced through any read API), but we can
-    // verify the line shape and that the value isn't an empty
-    // string.
+    // The token is minted per-card and not surfaced by any read API, so only the line shape and non-emptiness are checked.
     let env_socket_line = cfg_text
         .lines()
         .find(|l| l.trim_start().starts_with("NEIGE_MCP_SOCKET ="))
@@ -411,8 +317,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         token_in_toml.len(),
     );
 
-    // 2. Wait for a *new* codex process to appear. The shell -c
-    //    codex hop can take a moment; we allow up to 10 s.
+    // 2. Wait for a *new* codex process; the `sh -c codex` hop can take a moment.
     let deadline = Instant::now() + Duration::from_secs(10);
     let new_pid = loop {
         let now = find_codex_pids(&codex_bin);
@@ -447,15 +352,6 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         token.len(),
     );
 
-    // Issue #236 followup — hard assertions. With the real `McpServer`
-    // wired into the test fixture (see the boot block above), the
-    // create-track handler's env-augmentation branch must have folded
-    // both vars into the codex daemon's env. A soft-skip here would
-    // re-open the exact regression window that landed the followup
-    // fixes (shim token injection + docker mount): the bug is
-    // "codex starts but the MCP handshake never authenticates";
-    // checking env presence is the cheap surface, the handshake
-    // attempt below is the deep one.
     assert!(
         state.mcp_server.is_some(),
         "[codex-e2e] test must wire a real mcp_server (see #236 followup); got None"
@@ -472,19 +368,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
          didn't mint a per-card token or didn't fold it into the spawn env",
     );
 
-    // Bonus: drive a real MCP `initialize` through the shim using the
-    // same token + socket the codex daemon would. Proves end-to-end
-    // that the post-#236-followup shim:
-    //   * accepts the env vars,
-    //   * opens the UDS,
-    //   * injects the token into `params._meta["dev.neige/auth"]`,
-    //   * the kernel's `handle_initialize` accepts that token,
-    //   * a success-shaped response makes it back through stdout.
-    //
-    // We re-use the token+socket the codex daemon received (read
-    // from `/proc/<pid>/environ` above) — that's the same per-card
-    // identity binding the codex daemon would present, so a success
-    // here exactly matches what codex's MCP client sees.
+    // Drive a real MCP `initialize` through the shim with the token + socket the codex daemon received, the same per-card identity codex's MCP client would present.
     let shim_bin = locate_shim_bin();
     eprintln!("[codex-e2e] driving MCP handshake through shim at {shim_bin:?}");
     let mut shim_child = tokio::process::Command::new(&shim_bin)
@@ -544,10 +428,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
     drop(shim_stdin);
     let _ = tokio::time::timeout(Duration::from_secs(2), shim_child.wait()).await;
 
-    // Cleanup: best-effort kill the codex child so we don't leak it
-    // between test runs. The daemon's wait loop will also reap it,
-    // but tempdir drops first. Shell out to /bin/kill to avoid
-    // pulling `libc` / `nix` into dev-deps for this one signal.
+    // Best-effort kill of the codex child via /bin/kill, avoiding a `libc`/`nix` dev-dep for one signal.
     let _ = std::process::Command::new("/bin/kill")
         .arg("-TERM")
         .arg(new_pid.to_string())

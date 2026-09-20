@@ -1,17 +1,4 @@
-//! #891 slice ④ — registration-time template-id uniqueness at
-//! `PluginHost::spawn`.
-//!
-//! Two trusted plugins declaring the same template id must not run at the
-//! same time: the second spawn is refused with `HostError::TemplateConflict`
-//! (per-plugin failure — the autospawn loop logs and continues). The
-//! uniqueness set is "running ∧ trusted": an untrusted duplicate is not
-//! blocked (it never enters template resolution), and a STOPPED trusted
-//! holder does not squat on the id.
-//!
-//! The trusted set is env-configured (`NEIGE_TRUSTED_FORGE_PLUGINS`), so this
-//! lives in its own integration-test binary (own process) and every test
-//! takes the shared `FORGE_ENV_LOCK` before mutating env — no cross-test
-//! env races.
+//! Template-id uniqueness at `PluginHost::spawn`. Every test takes `FORGE_ENV_LOCK` before mutating env.
 
 #![cfg(unix)]
 
@@ -65,10 +52,7 @@ async fn duplicate_template_id_is_rejected_at_spawn_for_trusted_plugins_only() {
     host.spawn(TRUSTED_A).await.expect("spawn first trusted");
     wait_for_running(&host, TRUSTED_A).await;
 
-    // Second trusted plugin, same template id → refused before any spawn.
-    // Subscribe first: the refusal must surface a failed `PluginState`
-    // event (#891 review fix, design §4.4 "该插件进 Failed") so the plugin
-    // doesn't silently look stopped.
+    // Subscribe before the refused spawn: the refusal must surface a failed `PluginState` event.
     let mut state_events = events.subscribe();
     let err = host
         .spawn(TRUSTED_B)
@@ -115,14 +99,11 @@ async fn duplicate_template_id_is_rejected_at_spawn_for_trusted_plugins_only() {
         "failed-state event should carry the conflicting template id"
     );
 
-    // Untrusted duplicate is NOT blocked: it never enters the template
-    // resolution set, so its duplicate id is unreachable anyway.
     host.spawn(UNTRUSTED_C)
         .await
         .expect("untrusted duplicate spawns");
     wait_for_running(&host, UNTRUSTED_C).await;
 
-    // A stopped trusted holder does not squat on the template id.
     host.stop(TRUSTED_A).await.expect("stop first trusted");
     host.spawn(TRUSTED_B)
         .await
@@ -133,15 +114,6 @@ async fn duplicate_template_id_is_rejected_at_spawn_for_trusted_plugins_only() {
     host.stop(UNTRUSTED_C).await.expect("stop untrusted");
 }
 
-/// #891 review fix (spawn TOCTOU) — two barrier-synchronized concurrent
-/// spawns of trusted plugins declaring the same template id must admit
-/// exactly one. Pre-fix, both passed the (unlocked, Running-only) conflict
-/// check before either inserted its processes-map entry, yielding duplicate
-/// running owners and a nondeterministic `plugin_scope_for_track` winner.
-/// Also proves the loser's admission reservation is released: a third
-/// same-template spawn conflicts against the REAL winner (a leaked
-/// reservation would name the loser), and once the winner stops, the loser
-/// spawns cleanly.
 #[tokio::test]
 async fn concurrent_duplicate_template_spawns_admit_exactly_one() {
     let _env_lock = FORGE_ENV_LOCK
@@ -214,9 +186,6 @@ async fn concurrent_duplicate_template_spawns_admit_exactly_one() {
         "loser must leave neither a runtime entry nor a leaked reservation"
     );
 
-    // Third trusted plugin, same template id → still refused, and the holder
-    // must be the real winner. A leaked loser reservation would surface as
-    // `held_by == loser` here.
     let err = host
         .spawn(TRUSTED_D)
         .await
@@ -231,8 +200,6 @@ async fn concurrent_duplicate_template_spawns_admit_exactly_one() {
         other => panic!("expected TemplateConflict for the third spawn, got {other:?}"),
     }
 
-    // Once the winner stops, the template id is free: the loser now spawns —
-    // proving its failed admission left no residue.
     host.stop(winner).await.expect("stop winner");
     host.spawn(loser)
         .await
@@ -241,14 +208,6 @@ async fn concurrent_duplicate_template_spawns_admit_exactly_one() {
     host.stop(loser).await.expect("stop loser");
 }
 
-/// #891 r2 review fix — the admission reservation must be cancellation-safe.
-/// A spawn whose future is aborted mid-flight (here: parked inside the MCP
-/// handshake against an entrypoint that never answers `initialize`) must
-/// release its `Spawning` reservation via the RAII guard's `Drop`; otherwise
-/// the id squats as `Spawning` forever (same-id spawns get `AlreadyRunning`,
-/// the template id stays held). Asserts all three recoveries: no status
-/// squat, same-template spawn by ANOTHER plugin succeeds, and a same-id
-/// respawn succeeds once the entrypoint is fixed.
 #[tokio::test]
 async fn aborted_spawn_releases_admission_reservation() {
     let _env_lock = FORGE_ENV_LOCK
@@ -268,9 +227,7 @@ async fn aborted_spawn_releases_admission_reservation() {
     );
     let host = boot_host(&repo, tmp.path(), EventBus::new()).await;
 
-    // Repoint A's entrypoint at `cat`: it holds stdin open and never writes
-    // an `initialize` response, so `spawn` parks inside the handshake await
-    // (10s client timeout — far beyond the abort below).
+    // `cat` holds stdin open and never answers `initialize`, so `spawn` parks inside the handshake.
     let stub = tmp.path().join("plugins").join(TRUSTED_A).join("bin/stub");
     std::fs::remove_file(&stub).expect("remove echo stub symlink");
     std::os::unix::fs::symlink("/bin/cat", &stub).expect("symlink cat stub");
@@ -279,8 +236,7 @@ async fn aborted_spawn_releases_admission_reservation() {
         let host = Arc::clone(&host);
         async move { host.spawn(TRUSTED_A).await }
     });
-    // Admission is observable as a synthesized `Spawning` status; wait for it
-    // so the abort lands strictly after the reservation was inserted.
+    // Wait for the synthesized `Spawning` status so the abort lands after the reservation was inserted.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(s) = host.status(TRUSTED_A).await
@@ -301,22 +257,17 @@ async fn aborted_spawn_releases_admission_reservation() {
         "hanging spawn must not have completed successfully: {join:?}"
     );
 
-    // Guard Drop must have released the reservation: no `Spawning` squat.
     assert!(
         host.status(TRUSTED_A).await.is_none(),
         "aborted spawn must not leave a Spawning reservation behind"
     );
 
-    // The template id is free again: another trusted plugin declaring the
-    // same id spawns.
     host.spawn(TRUSTED_B)
         .await
         .expect("template id must be free after the aborted spawn");
     wait_for_running(&host, TRUSTED_B).await;
     host.stop(TRUSTED_B).await.expect("stop second trusted");
 
-    // And the same id is spawnable again once its entrypoint behaves —
-    // i.e. no leaked reservation answering `AlreadyRunning`.
     std::fs::remove_file(&stub).expect("remove cat stub symlink");
     std::os::unix::fs::symlink(Path::new(ECHO_BIN), &stub).expect("restore echo stub");
     host.spawn(TRUSTED_A)
@@ -331,7 +282,6 @@ async fn boot_host(repo: &Arc<SqlxRepo>, root: &Path, events: EventBus) -> Arc<P
     let plugins_data_dir = root.join("plugins-data");
     std::fs::create_dir_all(&plugins_data_dir).expect("create plugins data dir");
 
-    // #1196 S0a — build-time seeding accumulates in the builder.
     let mut registry_builder = PluginRegistry::builder();
     for plugin_id in [TRUSTED_A, TRUSTED_B, UNTRUSTED_C, TRUSTED_D] {
         let install_dir = plugins_dir.join(plugin_id);

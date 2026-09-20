@@ -20,8 +20,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.report.blocks.kinds",
         "calm.report.blocks.move",
         "calm.report.blocks.upsert",
-        // Planner feedback #1 — the batched report write (blocks + summary +
-        // lifecycle); carries lifecycle, hence planner-only.
         "calm.report.commit",
         "calm.report.edit",
         "calm.report.links.backlinks",
@@ -29,9 +27,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.report.write",
         "calm.report.write_markdown",
         "calm.review.round",
-        // #1669 S1 — capturing a plugin result as a citable source and
-        // listing the track's sources; planner-only in v1 (design §7.4), so
-        // neither the worker nor the assistant enumeration gains them.
         "calm.source.capture",
         "calm.source.list",
         "calm.task.dispatch",
@@ -42,11 +37,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.terminal.observe",
         "calm.terminal.open",
         "calm.terminal.resolve",
-        // #1211 S3 — the planner agent's naming write. Added as an entry, not by
-        // loosening the assertion: the exact set is the contract.
         "calm.track.rename",
-        // #1667 D3 — the planner's one way to speak from a background sync
-        // turn. Planner-only: an assistant has no background turns.
         "calm.user.notify",
     ]
 }
@@ -123,10 +114,6 @@ async fn retired_update_track_state_shadow_is_not_registered() {
     );
 }
 
-/// #838 Move 2 — a worker's `tools/list` now advertises exactly the two
-/// native completion tools (`calm.task.complete` / `calm.task.fail`), which
-/// were flipped from `visible_to_roles: &[]` to `&[CardRole::Worker]` so a
-/// codex worker can report completion via MCP instead of the `neige` CLI.
 #[tokio::test]
 async fn tools_list_for_worker_role_returns_completion_tools() {
     let names = tools_list_names_for_role(CardRole::Worker).await;
@@ -137,17 +124,7 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
     );
 }
 
-/// #1189 F6 — the `visible_to_roles` widening on the block channel had no
-/// test of its own (Planner / Worker / ReportCard each have an exact-set
-/// assertion; Assistant did not). Exact set, not `contains`: a future
-/// descriptor that quietly adds `CardRole::Assistant` — say
-/// `calm.report.write`, whose whole point is that it can carry lifecycle —
-/// must turn this red rather than slip in under a subset check.
-///
-/// `calm.report.read` is deliberately NOT here: it is callable by an
-/// assistant (see `mcp_assistant_tool_gate`) but its descriptor is visible
-/// only to Planner, so an assistant still receives the report read contract
-/// through its agent brief rather than `tools/list`.
+/// `calm.report.read` is deliberately absent: an assistant can call it, but its descriptor is visible only to Planner.
 #[tokio::test]
 async fn tools_list_for_assistant_role_returns_block_channel_only() {
     let names = tools_list_names_for_role(CardRole::Assistant).await;

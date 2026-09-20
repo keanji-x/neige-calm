@@ -23,7 +23,7 @@ pub struct Cell {
 }
 
 impl Cell {
-    /// What rmux renders for a cell nothing was written to (#1696).
+    /// What rmux renders for a cell nothing was written to.
     fn blank() -> Self {
         Self {
             text: " ".into(),
@@ -57,8 +57,7 @@ pub struct Frame {
     pub background: [u8; 3],
 }
 
-/// Only the facts needed to encode an action; cached observations need not
-/// retain rendered cells or terminal text after the image response is sent.
+/// Only the facts needed to encode an action; cached observations need not retain rendered cells or text.
 #[derive(Clone, Copy, Debug)]
 pub struct InputSurface {
     pub cols: u16,
@@ -69,9 +68,7 @@ pub struct InputSurface {
     pub alternate: bool,
     pub scroll_offset: usize,
 }
-/// Which matching row `TerminalView::find_text` returns (#1710). Serialised
-/// as `latest` / `earliest` (the wire vocabulary); the MCP layer maps the
-/// argument string itself.
+/// Which matching row `TerminalView::find_text` returns; serialised as `latest` / `earliest` (the wire vocabulary).
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Occurrence {
@@ -81,9 +78,7 @@ pub enum Occurrence {
     Earliest,
 }
 
-/// The plain text of one row exactly as `Frame::text` carries it: padding
-/// cells (the tail of a wide glyph) skipped, a cell rmux never stored
-/// (#1696) blank, trailing blanks trimmed.
+/// The plain text of one row exactly as `Frame::text` carries it: padding cells skipped, unstored cells blank, trailing blanks trimmed.
 fn row_text(line: &ScreenLineView, cols: u16) -> String {
     let mut plain = String::new();
     for column in 0..u32::from(cols) {
@@ -155,20 +150,13 @@ impl TerminalView {
         self.terminal.take_terminal_passthrough();
     }
 
-    /// The scrollback depth in rows: the absolute index of the live
-    /// viewport's first row (#1710).
+    /// The scrollback depth in rows: the absolute index of the live viewport's first row.
     pub fn history_rows(&self) -> usize {
         self.terminal.screen().history_size()
     }
 
-    /// #1710 — the absolute row index (the index `absolute_line_view` takes,
-    /// `0..history + rows`) of the latest (bottom-most) or earliest
-    /// (top-most) row whose plain text — built like `Frame::text`, trailing
-    /// blanks trimmed — contains `pattern` (a case-sensitive substring; no
-    /// wrapping reassembly). Rows are read one at a time, never the whole
-    /// history at once. In the alternate screen only the live rows
-    /// (`history..history + rows`) are searched, mirroring `frame`, which
-    /// shows no scrollback there.
+    /// The absolute row index (`0..history + rows`) of the latest or earliest row whose plain text contains `pattern`
+    /// (case-sensitive substring, no wrapping reassembly). In the alternate screen only the live rows are searched, mirroring `frame`.
     pub fn find_text(&self, pattern: &str, occurrence: Occurrence) -> Option<usize> {
         let screen = self.terminal.screen();
         let size = screen.size();
@@ -204,10 +192,8 @@ impl TerminalView {
                 .ok_or_else(|| anyhow::anyhow!("missing terminal row"))?;
             text.push(row_text(&line, size.cols));
             for column in 0..usize::from(size.cols) {
-                // #1696: rmux stores an attributed line (any SGR) to its
-                // written extent and pads only plain lines, so a history row
-                // can be narrower than the viewport. Its missing cells are
-                // blank cells, not a failed frame.
+                // rmux stores an attributed line (any SGR) to its written extent and pads only plain lines, so a history
+                // row can be narrower than the viewport; its missing cells are blank cells, not a failed frame.
                 let cell = match line.cell(column as u32) {
                     Some(cell) => Cell {
                         text: cell.text().into(),

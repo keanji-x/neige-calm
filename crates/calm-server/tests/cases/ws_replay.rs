@@ -1,29 +1,4 @@
-//! Sync engine phase 2 (Scope D) WS replay protocol — end-to-end tests.
-//!
-//! These exercise the cursor/since side of `ws::events::handle`:
-//!
-//!   1. `subscribe_with_since_zero_replays_all` — seeded history is fully
-//!      streamed when the client opens with `since = 0`.
-//!   2. `subscribe_with_since_mid_replays_only_newer` — only events with
-//!      `id > since` arrive (the regular cursor-resume case).
-//!   3. `subscribe_without_since_only_live` — backward-compat: omit
-//!      `since`, get pre-Scope-D behavior (live only, no replay).
-//!   4. `replay_complete_terminator_is_sent` — confirms the
-//!      `_replay_complete` synthetic frame lands after the historical
-//!      window, even when zero rows match.
-//!   5. `replay_then_live_no_drop_no_dupe` — crown jewel: open with `since
-//!      = mid`, the in-memory bus fires a *new* write during the replay
-//!      window, both replay tail and live event arrive exactly once in
-//!      strict id order.
-//!   6. `client_at_cursor_too_old_gets_snapshot_required` — simulate
-//!      retention by deleting early rows and assert the
-//!      `_snapshot_required` frame.
-//!
-//! The integration harness mirrors `tests/ws_events.rs` (boot AppState,
-//! spawn axum, drive `tokio_tungstenite`). The seed path runs writes
-//! through `write_with_event_typed` so each row hits both the events
-//! table (for the replay query to find) and the broadcast bus (which is
-//! a no-op until the WS handler subscribes, but harmless).
+//! WS replay protocol (the `since` cursor side of `ws::events::handle`) — end-to-end tests.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,18 +18,12 @@ use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message as TMessage;
 
-/// Boot a minimal axum app with the WS events router + a fresh in-memory
-/// SqlxRepo, and return the bound address plus the concrete SqlxRepo /
-/// EventBus so tests can seed events directly.
+/// Boot a minimal axum app with the WS events router and return the address plus the repo and bus for seeding.
 async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
     boot_with_cap(None).await
 }
 
-/// `boot` variant that pins the WS replay cap (#854 slice 1) on this
-/// test's own `AppState` via `with_ws_replay_cap`. Deliberately NOT an
-/// env-var override: `NEIGE_WS_REPLAY_MAX_EVENTS` is process-global, so
-/// mutating it here would race the sibling tests in this binary that boot
-/// their own servers concurrently (PR #867 review finding).
+/// Pins the WS replay cap on this test's own `AppState`; `NEIGE_WS_REPLAY_MAX_EVENTS` is process-global and would race sibling tests.
 async fn boot_with_cap(cap: Option<i64>) -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
     let events = EventBus::new();
     let repo = Arc::new(
@@ -102,13 +71,7 @@ async fn boot_with_cap(cap: Option<i64>) -> (std::net::SocketAddr, Arc<SqlxRepo>
     (addr, repo, events)
 }
 
-/// Seed a small linear history (3 area.updated rows). Returns the assigned
-/// `events.id`s in append order, plus the assigned area IDs (since
-/// `area_create_tx` generates ids server-side, we don't get to choose
-/// them — the tests just compare to whatever came back).
-///
-/// The events table is what the WS replay path actually consumes; bus
-/// emissions during seed are harmless (no subscriber yet).
+/// Seed a linear history of 3 area.updated rows; returns the assigned `events.id`s and area ids in append order.
 async fn seed_three(repo: &SqlxRepo, bus: &EventBus, names: [&str; 3]) -> Vec<(i64, String)> {
     let mut out = Vec::new();
     for name in names {
@@ -161,10 +124,6 @@ where
     serde_json::from_str(&t).expect("non-JSON frame")
 }
 
-// ---------------------------------------------------------------------------
-// 1. since=0 replays all
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn subscribe_with_since_zero_replays_all() {
     let (addr, repo, bus) = boot().await;
@@ -173,12 +132,10 @@ async fn subscribe_with_since_zero_replays_all() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Firehose subscription with since=0 — replay everything in the log.
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
         .unwrap();
 
-    // Three replay frames in id order, then `_replay_complete`.
     for (event_id, area_id) in seeded.iter() {
         let v = recv_json(&mut ws).await;
         assert_eq!(v["_id"], *event_id, "frame ids in order");
@@ -189,10 +146,6 @@ async fn subscribe_with_since_zero_replays_all() {
     assert_eq!(done["ev"], "_replay_complete");
     assert_eq!(done["_id"], seeded.last().unwrap().0);
 }
-
-// ---------------------------------------------------------------------------
-// 2. since=mid replays only newer
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn subscribe_with_since_mid_replays_only_newer() {
@@ -209,8 +162,6 @@ async fn subscribe_with_since_mid_replays_only_newer() {
     .await
     .unwrap();
 
-    // Expect the 2nd and 3rd seeded areas then `_replay_complete`. The
-    // first area must not appear — its id is at-or-below `since`.
     let v = recv_json(&mut ws).await;
     assert_eq!(v["data"]["id"], seeded[1].1);
     let v = recv_json(&mut ws).await;
@@ -220,31 +171,20 @@ async fn subscribe_with_since_mid_replays_only_newer() {
     assert_eq!(done["_id"], seeded[2].0);
 }
 
-// ---------------------------------------------------------------------------
-// 3. omit `since` — backward compat (live only, no replay)
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn subscribe_without_since_only_live() {
     let (addr, repo, bus) = boot().await;
-    // Seed pre-connection history that a live-only sub must NOT see.
     let _ = seed_three(&repo, &bus, ["before-1", "before-2", "before-3"]).await;
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Pre-Scope-D message shape (no `since` field).
     ws.send(TMessage::Text(r#"{"sub":["*"]}"#.to_string()))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // No `_replay_complete`, no historical frames. Confirm by emitting a
-    // brand-new live event and asserting that's the first thing the client
-    // sees. (`bus.emit` is the synthetic test-only emit that produces
-    // `id = 0`; the assertion below intentionally accepts that as a
-    // canary — the client never advances its cursor off these frames,
-    // which is the right behavior for unpersisted broadcasts.)
+    // `bus.emit` is the synthetic test-only emit that produces `id = 0`; the client never advances its cursor off these frames.
     bus.emit(
         ActorId::User,
         Event::AreaUpdated(calm_server::model::Area {
@@ -266,32 +206,19 @@ async fn subscribe_without_since_only_live() {
     assert_eq!(v["_id"], 0);
 }
 
-// ---------------------------------------------------------------------------
-// 4. _replay_complete terminator always fires
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn replay_complete_terminator_is_sent_even_when_zero_rows() {
     let (addr, _repo, _bus) = boot().await;
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    // Empty events table + since=0 → zero replay rows, but the terminator
-    // still arrives. This is the cue the client uses to drop its
-    // "reconnecting" banner and run a defensive batch invalidate.
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
         .unwrap();
 
     let done = recv_json(&mut ws).await;
     assert_eq!(done["ev"], "_replay_complete");
-    // No rows → cursor stays at `since` (=0). The client will keep its
-    // own `lastEventId` and advance it from live frames.
     assert_eq!(done["_id"], 0);
 }
-
-// ---------------------------------------------------------------------------
-// 5. Crown jewel: replay-then-live with no drop / no dupe
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn replay_then_live_no_drop_no_dupe() {
@@ -301,30 +228,18 @@ async fn replay_then_live_no_drop_no_dupe() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Resume after the first seeded event. The handler subscribes to the
-    // live bus BEFORE running the events_since query (design §2.2); we
-    // race a live write against the replay to confirm dedupe + no drop.
+    // The handler subscribes to the live bus BEFORE running the events_since query; race a live write against the replay.
     let since = seeded[0].0;
 
-    // Fire `{sub, since}` — kicks off the replay path inside the handler.
     ws.send(TMessage::Text(format!(
         r#"{{"sub":["*"], "since": {}}}"#,
         since
     )))
     .await
     .unwrap();
-    // Small breath so the handler enters the replay branch and registers
-    // its bus subscription. Without this, the live emit below can land
-    // before the handler called `state.events.subscribe()`, which is a
-    // separate problem the connect handshake guards against (the handler
-    // grabs `state.events.subscribe()` *before* it reads any client frame
-    // — see `handle()` in src/ws/events.rs — so this sleep is paranoia
-    // rather than correctness-critical).
+    // The handler subscribes before reading any client frame, so this sleep is paranoia rather than correctness-critical.
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    // While the replay path is mid-stream (or has just finished), fire a
-    // brand-new write through the write_with_event path so it's both
-    // persisted (in the events table) and broadcast (on the bus).
     let new_area = NewArea {
         name: "live-during-replay".into(),
         color: "#000".into(),
@@ -354,15 +269,7 @@ async fn replay_then_live_no_drop_no_dupe() {
         "live event must come after seeded ids"
     );
 
-    // Drain everything until we've seen `_replay_complete` AND the live
-    // frame. Either of two orderings is acceptable:
-    //   - the live event lands during the replay SQL window — then
-    //     events_since returns it as part of the replay tail and the
-    //     broadcast-dedup drops the duplicate when it arrives over the
-    //     bus.
-    //   - the live event lands after the SELECT — then it arrives via
-    //     the live forward branch after `_replay_complete`.
-    // Either way: every id appears exactly once, no gaps, monotonic.
+    // Either ordering is acceptable (live event inside the replay SQL window and deduped, or after it via live forward); every id appears exactly once.
     let mut seen: Vec<i64> = Vec::new();
     let mut got_complete = false;
     let mut got_live = false;
@@ -401,8 +308,6 @@ async fn replay_then_live_no_drop_no_dupe() {
         seen.len(),
         "each event must be delivered exactly once"
     );
-    // The full content set is exactly { seeded[1], seeded[2], live }; the
-    // first seeded id must NOT appear (cursor was past it).
     assert!(
         !seen.contains(&seeded[0].0),
         "first seed already past cursor"
@@ -411,10 +316,6 @@ async fn replay_then_live_no_drop_no_dupe() {
     assert!(seen.contains(&seeded[2].0));
     assert!(seen.contains(&live_id));
 }
-
-// ---------------------------------------------------------------------------
-// 6. Snapshot required when cursor predates retention horizon
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn client_at_cursor_too_old_gets_snapshot_required() {
@@ -429,10 +330,7 @@ async fn client_at_cursor_too_old_gets_snapshot_required() {
         .await
         .unwrap();
 
-    // Client resumes from a cursor below the surviving earliest_id. They
-    // can't be backfilled contiguously — they need a snapshot.
-    // earliest_id is now seeded[2].0; `since = 1` is well below that and
-    // the gap check (`since < earliest - 1`) triggers the control frame.
+    // `since = 1` is well below the surviving earliest_id, so the gap check (`since < earliest - 1`) triggers the control frame.
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 1}"#.to_string()))
@@ -449,20 +347,7 @@ async fn client_at_cursor_too_old_gets_snapshot_required() {
     let _ = timeout(Duration::from_millis(500), ws.next()).await;
 }
 
-// ---------------------------------------------------------------------------
-// 7. Tier A read-side guard, REPLAY surface (issue #198 concern 4, PR #214
-//    follow-up). The events table can hold an `Event::OverlaySet` row whose
-//    `schemaVersion` was written by a newer kernel binary against the same DB
-//    (downgrade or split-deploy scenario). PR #214 filtered such rows out of
-//    `/api/overlays` and `GET /api/tracks/{id}`; this assertion locks the
-//    invariant on the replay leg of `/api/events` too.
-// ---------------------------------------------------------------------------
-
-/// Seed two `Event::OverlaySet` rows directly through `write_with_event_typed`
-/// (bypass route-layer `validate_overlay_payload` so the future-version row
-/// actually lands — same `raw_repo()`-equivalent bypass pattern PR #214 used
-/// for its HTTP read-side test). Returns the assigned event ids in seed
-/// order: `[supported_event_id, future_event_id]`.
+/// Seed two `Event::OverlaySet` rows directly through `write_with_event_typed`, bypassing route-layer validation so the future-version row lands; returns `[supported_event_id, future_event_id]`.
 async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> (i64, i64) {
     // Supported: status overlay at the current schemaVersion.
     let supported = NewOverlay {
@@ -492,9 +377,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
     .await
     .unwrap();
 
-    // Future: same kind, schemaVersion above the current max. Inserted via
-    // the same code path so both the overlay row and its event row land in
-    // the same transactional unit the replay path will read.
+    // Future: same kind, schemaVersion above the current max.
     let future = NewOverlay {
         plugin_id: "p1".into(),
         entity_kind: "track".into(),
@@ -533,18 +416,12 @@ async fn replay_skips_future_schema_version_overlay_set() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // since=0 + firehose: every persisted event is in scope of the replay.
-    // The future-version row must NOT make it onto the wire, but `last_id`
-    // (carried in `_replay_complete._id`) must still advance to the future
-    // row's id — the read-side guard drops the frame but advances the
-    // cursor so the client never re-polls it.
+    // The read-side guard drops the future-version frame but still advances the cursor so the client never re-polls it.
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
         .unwrap();
 
-    // First frame: the supported overlay (older id). The overlay's own
-    // `data.id` is a server-side nanoid we can't predict, so we assert on
-    // the kernel-stamped fields instead.
+    // The overlay's own `data.id` is a server-side nanoid, so assert on the kernel-stamped fields.
     let v = recv_json(&mut ws).await;
     assert_eq!(v["_id"], supported_id);
     assert_eq!(v["ev"], "overlay.set");
@@ -552,10 +429,6 @@ async fn replay_skips_future_schema_version_overlay_set() {
     assert_eq!(v["data"]["payload"]["state"], "running");
     assert_eq!(v["data"]["payload"]["schemaVersion"], 1);
 
-    // Next frame: `_replay_complete`. The future-version overlay must
-    // NOT appear between the supported row and the terminator. The
-    // terminator's `_id` advances to the future row's id even though
-    // its payload was dropped — confirms the cursor invariant.
     let done = recv_json(&mut ws).await;
     assert_eq!(done["ev"], "_replay_complete");
     assert_eq!(
@@ -564,30 +437,11 @@ async fn replay_skips_future_schema_version_overlay_set() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 8. Issue #290 — after a `/dev/reset` reseed (events wiped + `sqlite_sequence`
-//    wiped → reseeded events restart at id=1), a fresh WS subscription's
-//    `_replay_complete._id` reflects the SERVER'S NEW LOG TIP, not 0 and not
-//    the pre-reset high-water mark. This is the server-side invariant the
-//    client-side reset detection in `web/src/api/events.ts` relies on:
-//    without it, a stale client cursor (e.g. id=3 from a pre-reset session)
-//    would see the post-reset terminator carry `_id = 3` (the in-window
-//    high-water from the empty `since=3` SELECT) and never trigger the
-//    "server regressed" branch.
-//
-// Pre-PR-303 behavior: `_replay_complete._id` was the in-window high-water
-// (= `since` when no rows matched). This test would have failed there with
-// `_id = since = 0` instead of the post-reset `MAX(id) = 1`.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn replay_complete_id_reflects_server_tip_after_reset() {
     let (addr, repo, bus) = boot().await;
 
-    // Pre-reset: seed three events, then drop in two more so the tip is
-    // id=5. We need pre-reset tip strictly greater than post-reset tip so
-    // the regression check below ("post-reset tip below pre-reset tip")
-    // is meaningful — the post-reset reseed only writes two rows.
+    // The pre-reset tip must be strictly greater than the post-reset tip for the regression check to be meaningful.
     let seeded = seed_three(&repo, &bus, ["pre-1", "pre-2", "pre-3"]).await;
     let extra1 = repo
         .log_pure_event(
@@ -642,7 +496,6 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
         ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
             .await
             .unwrap();
-        // Drain replay frames until we hit the terminator.
         loop {
             let v = recv_json(&mut ws).await;
             if v["ev"] == "_replay_complete" {
@@ -653,17 +506,9 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
                 break;
             }
         }
-        // Drop the socket; the next subscription is FRESH and will see
-        // the post-reset state.
     }
 
-    // Simulate `replay::reset_from_fixture`'s structural wipe: drop every
-    // domain row + the event log + `sqlite_sequence` so AUTOINCREMENT
-    // restarts at 1. We bypass the high-level helper because this test
-    // doesn't have a fixture wired up — the invariant under test is on
-    // the `events_latest_id()` + WS terminator path, not on fixture
-    // reseed semantics (which `replay_fixtures::reset_from_fixture_wipes_and_reseeds`
-    // already covers).
+    // Simulate the reset's structural wipe: every domain row, the event log, and `sqlite_sequence` so AUTOINCREMENT restarts at 1.
     {
         let pool = repo.pool();
         let mut tx = pool.begin().await.unwrap();
@@ -688,11 +533,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
         tx.commit().await.unwrap();
     }
 
-    // Reseed two events through the normal eventized write path. Because
-    // `sqlite_sequence` was wiped, the first row lands at id=1 — the
-    // fresh log tip a post-reset cold-boot client would see. We use only
-    // two events (not five) so the post-reset tip is well below the
-    // pre-reset tip and the regression invariant is observable.
+    // Only two events, so the post-reset tip is well below the pre-reset tip.
     let post1 = repo
         .log_pure_event(
             calm_server::ids::ActorId::User,
@@ -751,17 +592,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
         "post-reset tip ({post_reset_tip}) must be below pre-reset tip ({pre_reset_tip}) — this is the regression the client detects"
     );
 
-    // Crown jewel: FRESH WS subscription with `since = pre_reset_tip`. This
-    // simulates a client whose persisted cursor predates the reset — exactly
-    // the case the client-side reset detection in `web/src/api/events.ts`
-    // needs to fire on. The `events_since(pre_reset_tip, _)` query returns
-    // ZERO rows because every reseeded event has `id <= post_reset_tip <
-    // pre_reset_tip`. Pre-PR-303, the terminator stamped `last_id` (which
-    // remained at `since` when zero rows matched), so the client saw
-    // `_replay_complete._id = pre_reset_tip` and couldn't tell anything
-    // had changed. Post-PR-303, the terminator stamps `events_latest_id()`
-    // = `post_reset_tip`, which the client compares against its persisted
-    // cursor (`pre_reset_tip`) and triggers the reset re-bootstrap.
+    // A fresh subscription with `since = pre_reset_tip` matches zero rows; the terminator must stamp `events_latest_id()`, not `since`.
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     ws.send(TMessage::Text(format!(
@@ -785,9 +616,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
         "terminator id must be below the client's stale cursor — this is the regression signal"
     );
 
-    // Belt-and-suspenders: also confirm a cold-boot `since=0` client sees
-    // the same tip (catches a regression where the two `events_latest_id()`
-    // call sites diverge).
+    // A cold-boot `since=0` client sees the same tip (the two `events_latest_id()` call sites must not diverge).
     let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     ws2.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
@@ -806,12 +635,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
 
 #[tokio::test]
 async fn replay_skips_future_schema_version_overlay_set_assertion_strict() {
-    // Belt-and-suspenders form of the previous test that asserts on the
-    // exact frame contents (not on overlay-id substring matching) so a
-    // regression where the future row leaks would fail loudly even if
-    // the supported row coincidentally shared a prefix. Reads frames
-    // until `_replay_complete` and checks no frame carries
-    // `schemaVersion: 999`.
+    // Asserts on exact frame contents so a leaked future row fails even if it shared a prefix with the supported row.
     let (addr, repo, bus) = boot().await;
     let (_, future_id) = seed_supported_and_future_overlays(&repo, &bus).await;
 
@@ -843,26 +667,10 @@ async fn replay_skips_future_schema_version_overlay_set_assertion_strict() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 8. Replay cap (#854 slice 1). The events table is unbounded in prod
-//    (214k rows / 1.7 GB observed), so a single replay must never stream
-//    the whole log. `NEIGE_WS_REPLAY_MAX_EVENTS` bounds the window:
-//
-//      * `since == 0` (cold client, empty cache) — skip the backlog and
-//        jump straight to `_replay_complete` at the server tip. The
-//        client's terminator handler runs a defensive full invalidate,
-//        and its REST reads are fresh, so no state is lost. We must NOT
-//        send `_snapshot_required` here: the client's response to that
-//        frame is "clear cursor, reconnect cold at since=0", which would
-//        loop forever.
-//      * `since > 0` (stale cursor, cached state) — send
-//        `_snapshot_required` so the client throws its cache away and
-//        reconnects cold (landing on the bounded path above).
-// ---------------------------------------------------------------------------
+// Replay cap: `since == 0` over-cap skips the backlog straight to `_replay_complete` at the tip (never `_snapshot_required`,
+// whose handler reconnects cold at since=0 and would loop forever); `since > 0` over-cap gets `_snapshot_required`.
 
-/// Seed `n` `area.updated` rows via `log_pure_event` (cheaper than the
-/// full `area_create_tx` write path when only the event log matters).
-/// Returns the assigned `events.id`s in append order.
+/// Seed `n` `area.updated` rows via `log_pure_event`; returns the assigned `events.id`s in append order.
 async fn seed_n_area_updates(repo: &SqlxRepo, bus: &EventBus, n: usize) -> Vec<i64> {
     let mut ids = Vec::with_capacity(n);
     for i in 0..n {
@@ -914,26 +722,14 @@ async fn cold_replay_over_cap_skips_to_tip() {
     );
     assert_eq!(first["_id"], tip, "terminator carries the server tip");
 
-    // The connection stays live-forward: a fresh write past the tip must
-    // still arrive (the skip must not poison the dedup cursor).
+    // Live-forward still works: the skip must not poison the dedup cursor.
     let live_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let live = recv_json(&mut ws).await;
     assert_eq!(live["ev"], "area.updated");
     assert_eq!(live["_id"], live_id);
 }
 
-// PR #867 rounds 3–6 (delivery invariant, see ws/events.rs module doc):
-// the over-cap cold skip promotes its replay anchor to the log tip read
-// AT PROMOTION TIME (request-time snapshot, round 6). A row that was
-// already delivered live under an earlier subscription is covered by
-// that ack — the skip must NOT re-stream it (no duplicate) and must not
-// park the cursor below it.
-//
-// This test pins the "already-delivered-live" kind of the acked set: the
-// row provably postdates the subscription (its live delivery under a
-// live-only sub proves it), then a cold `since=0` re-anchor over-caps.
-// The request-time promotion covers the row, so the terminator arrives
-// directly at its id — exactly-once delivery overall.
+// The over-cap cold skip promotes its anchor to the tip read at request time, so a row already delivered live must not be re-streamed.
 #[tokio::test]
 async fn cold_skip_acks_live_delivered_row_without_duplicate() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
@@ -944,9 +740,6 @@ async fn cold_skip_acks_live_delivered_row_without_duplicate() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Live-only subscription first (no `since` → no replay), then give the
-    // handler a beat to process it (same pattern as
-    // `subscribe_without_since_only_live`).
     ws.send(TMessage::Text(r#"{"sub":["*"]}"#.to_string()))
         .await
         .unwrap();
@@ -960,10 +753,7 @@ async fn cold_skip_acks_live_delivered_row_without_duplicate() {
     assert_eq!(live["ev"], "area.updated");
     assert_eq!(live["_id"], live_row);
 
-    // Cold re-anchor: 11 pending rows > cap → promote to the request-time
-    // tip (= live_row). Everything at/below it is acked — the already
-    // -delivered row is NOT re-streamed; the terminator is the first and
-    // only frame.
+    // Cold re-anchor: 11 pending rows > cap → promote to the request-time tip; the terminator is the first and only frame.
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
         .unwrap();
@@ -979,25 +769,13 @@ async fn cold_skip_acks_live_delivered_row_without_duplicate() {
          was already delivered live"
     );
 
-    // Live-forward keeps working past the cursor: a fresh write arrives
-    // exactly once.
     let next_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let next = recv_json(&mut ws).await;
     assert_eq!(next["ev"], "area.updated");
     assert_eq!(next["_id"], next_id);
 }
 
-// The "never-deliverable" kind of the acked set (rounds 4→6 evolution):
-// a row committed after the connection opened but BEFORE the client's
-// first (and only) sub frame. The topic set is empty until that frame is
-// processed, so the live path could never have delivered the row — no
-// server design could have; only a replay frame might, and the cold
-// skip's contract replaces exactly those frames with the defensive
-// invalidate. The request-time promotion therefore FOLDS the row into
-// the acked backlog: the terminator covers it and no frame carries it.
-// (Round 4's accept-time snapshot happened to drain it as a bonus; the
-// round-6 request-time snapshot trades that never-deliverable drain for
-// zero DB work on the live-only path — see the module-doc decomposition.)
+// A row committed after connect but before the first sub frame was never deliverable live (empty topic set); the request-time promotion folds it into the acked backlog.
 #[tokio::test]
 async fn cold_skip_folds_pre_sub_frame_commit_into_the_acked_backlog() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
@@ -1006,16 +784,11 @@ async fn cold_skip_folds_pre_sub_frame_commit_into_the_acked_backlog() {
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    // Let the handler reach its select loop, then commit the row while
-    // the client has not yet sent ANY sub frame (topic set empty →
-    // never deliverable live).
+    // Commit the row while the client has not yet sent ANY sub frame.
     tokio::time::sleep(Duration::from_millis(50)).await;
     let folded_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     assert_eq!(folded_id, backlog_tip + 1);
 
-    // First and only sub: cold, over-cap. The request-time promotion
-    // covers the folded row; the terminator is the first frame and acks
-    // it.
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
         .unwrap();
@@ -1026,47 +799,25 @@ async fn cold_skip_folds_pre_sub_frame_commit_into_the_acked_backlog() {
     );
     assert_eq!(done["_id"], folded_id);
 
-    // The cursor is consistent: the next frame is the NEXT live write —
-    // nothing below the ack leaks, nothing above it is missed.
     let next_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let next = recv_json(&mut ws).await;
     assert_eq!(next["ev"], "area.updated");
     assert_eq!(next["_id"], next_id);
 }
 
-// Rounds 5–6 cell (live-only column of the delivery-invariant matrix): a
-// documented live-only client (no `since`, no replay, no cursor) whose
-// event commits right after the subscription is provably active. The
-// handler must establish the broadcast receiver synchronously at accept
-// with NO awaited DB work anywhere before its frames are processed — a
-// pre-subscribe awaited read (round 5) opened an unbuffered window whose
-// events a live-only client can never recover, and any accept-time read
-// (round 6) stalls its subscription behind SQLite, risking broadcast
-// `Lagged` for a snapshot only the replay path consumes. The tip read
-// now lives solely inside `run_replay`'s promotion arm, which this
-// client never enters. Deterministic shape mirrors
-// `subscribe_without_since_only_live`, but the committed row is a
-// PERSISTED write (real `events.id` on the wire), and it must be the
-// FIRST frame the client ever receives — no terminator, no replay
-// frames precede it.
+// The handler must establish the broadcast receiver at accept with no awaited DB work before it, so a persisted commit right after subscribe is the client's FIRST frame.
 #[tokio::test]
 async fn live_only_client_receives_first_post_connect_commit() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
-    // Pre-history the live-only client must NOT see (also proves the
-    // handler does not sneak in a replay).
     let _ = seed_n_area_updates(&repo, &bus, 3).await;
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    // Live-only sub (no `since`), then give the handler a beat to process
-    // it — the same establishment pattern the other tests use.
     ws.send(TMessage::Text(r#"{"sub":["*"]}"#.to_string()))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // The subscription is provably active from here on; this persisted
-    // commit must reach the client as its very first frame.
     let live_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let first = recv_json(&mut ws).await;
     assert_eq!(
@@ -1076,26 +827,13 @@ async fn live_only_client_receives_first_post_connect_commit() {
     assert_eq!(first["_id"], live_id, "persisted id rides the wire");
 }
 
-// Post-connect flood cell (round 6): the log is EMPTY at accept and an
-// over-cap flood commits before the client's first sub frame. The
-// request-time promotion reads the tip AT the replay request, so it
-// covers the whole flood — the skip absorbs it in one pass (terminator
-// at the flood tip) instead of bouncing the client through
-// `_snapshot_required` the way the accept-time snapshot (whose stale
-// `conn_tip == 0` could not help) had to. Every flood row was
-// never-deliverable live (empty topic set), so the wholesale ack is
-// within the contract. The true escalation (rows STILL flooding between
-// the promotion read and the re-probe, or a failed promotion read) has
-// no deterministic integration seam; it is pinned by the pure
-// `replay_cap_route` rows in the decision matrix.
+// The log is empty at accept and an over-cap flood commits before the first sub frame; the request-time promotion absorbs it in one pass instead of bouncing through `_snapshot_required`.
 #[tokio::test]
 async fn cold_over_cap_flood_after_connect_is_absorbed_by_promotion() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    // The log is empty at accept; the flood lands afterwards, before any
-    // sub frame (never-deliverable live: the topic set is still empty).
     tokio::time::sleep(Duration::from_millis(50)).await;
     let flood = seed_n_area_updates(&repo, &bus, 7).await;
     let flood_tip = *flood.last().unwrap();
@@ -1110,7 +848,6 @@ async fn cold_over_cap_flood_after_connect_is_absorbed_by_promotion() {
     );
     assert_eq!(done["_id"], flood_tip, "terminator acks the flood tip");
 
-    // Live-forward continues past the absorbed flood.
     let next_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let next = recv_json(&mut ws).await;
     assert_eq!(next["ev"], "area.updated");
@@ -1140,29 +877,9 @@ async fn stale_cursor_over_cap_gets_snapshot_required() {
     let _ = timeout(Duration::from_millis(500), ws.next()).await;
 }
 
-// ---------------------------------------------------------------------------
-// 9. Cap edges (#854 slice 1, PR #867 review round).
-//
-//    * `replay_exactly_at_cap_streams_full_window` — a window of exactly
-//      `cap` rows is NOT over-cap: the whole backlog streams, terminator
-//      at the tip. Pins the `>` (not `>=`) in the over-cap comparison.
-//    * `over_cap_decision_counts_raw_rows_not_deserialized` — the over-cap
-//      decision must run on the RAW row count. `events_since` silently
-//      drops unknown-kind rows during deserialization, so a window whose
-//      raw size exceeds the cap can deserialize to exactly `cap` events;
-//      deciding on the filtered length would stream that page and stamp
-//      `_replay_complete` at the tip, permanently advancing the client
-//      past rows that were never sent.
-//    * `unknown_kind_row_in_under_cap_window_skips_only_that_row` — an
-//      unknown-kind row inside an under-cap window must not cost the
-//      client any OTHER event: every deserializable row still streams and
-//      the terminator advances past the dropped row to the true tip.
-// ---------------------------------------------------------------------------
+// Cap edges: a window of exactly `cap` rows is not over-cap, and the over-cap decision counts RAW rows because `events_since` drops unknown-kind rows at deserialization.
 
-/// Insert a raw `events` row whose `kind` matches no `Event` variant —
-/// simulates history written by a different (newer/older) kernel binary.
-/// `events_since` drops it at deserialization time; the raw-count probe
-/// must still see it. Returns the assigned `events.id`.
+/// Insert a raw `events` row whose `kind` matches no `Event` variant; `events_since` drops it at deserialization, the raw-count probe must still see it.
 async fn seed_unknown_kind_row(repo: &SqlxRepo) -> i64 {
     let row: (i64,) = sqlx::query_as(
         r#"INSERT INTO events (kind, payload, actor, at, event_version)
@@ -1187,8 +904,6 @@ async fn replay_exactly_at_cap_streams_full_window() {
         .await
         .unwrap();
 
-    // Exactly cap rows pending: full replay, in id order, then the
-    // terminator — no skip, no snapshot.
     for id in &seeded {
         let v = recv_json(&mut ws).await;
         assert_eq!(
@@ -1242,8 +957,6 @@ async fn unknown_kind_row_in_under_cap_window_skips_only_that_row() {
         .await
         .unwrap();
 
-    // Every deserializable event arrives, in id order, straddling the
-    // dropped row; the terminator advances past it to the true tip.
     let mut expected: Vec<i64> = head.clone();
     expected.extend(&tail);
     for id in &expected {
@@ -1263,15 +976,7 @@ async fn unknown_kind_row_in_under_cap_window_skips_only_that_row() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot required when the retention pruner deleted an INTERIOR row
-//    (#854 slice 2). Structural events are permanent, so `MIN(id)` never
-//    advances past the first structural row — the earliest-id check alone
-//    can't see holes the events pruner punches mid-stream. The durable
-//    retention watermark (highest id ever pruned) closes that gap: any
-//    cursor below it gets `_snapshot_required`; any cursor at or above it
-//    still gets a normal contiguous replay.
-// ---------------------------------------------------------------------------
+// Structural events are permanent, so `MIN(id)` never advances past the first structural row; the durable retention watermark is what sees interior holes.
 
 #[tokio::test]
 async fn client_below_prune_watermark_gets_snapshot_required() {
@@ -1297,9 +1002,7 @@ async fn client_below_prune_watermark_gets_snapshot_required() {
     .expect("log claude.hook");
     let tail = seed_three(&repo, &bus, ["c-4", "c-5", "c-6"]).await;
 
-    // Age the seeded rows past a millisecond horizon, then run the real
-    // pruner: it deletes exactly the interior `claude.hook` row (structural
-    // area.updated rows are not allowlisted).
+    // Age the rows past a millisecond horizon, then run the real pruner: it deletes exactly the interior `claude.hook` row.
     tokio::time::sleep(Duration::from_millis(50)).await;
     let policy = EventsRetentionPolicy {
         horizon: Duration::from_millis(1),
@@ -1317,9 +1020,7 @@ async fn client_below_prune_watermark_gets_snapshot_required() {
         "structural head survives — MIN(id) cannot signal the interior hole"
     );
 
-    // Cursor BELOW the watermark: the pruned row sits inside the replay
-    // window (since < hook_id <= watermark) — must snapshot, not stream a
-    // gappy window.
+    // Cursor BELOW the watermark: the pruned row sits inside the replay window.
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     ws.send(TMessage::Text(format!(
@@ -1357,17 +1058,7 @@ async fn client_below_prune_watermark_gets_snapshot_required() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Tail prune must not strand the client in a re-snapshot loop (#854 slice 2,
-// review round 2). When the pruner deletes the log's TAIL, the durable
-// watermark sits above the live MAX(id). The cold replay's terminator must
-// ack up to the watermark (`replay_complete_stamp` floor): stamping the
-// (lower) live tip would park the reconnect cursor below the watermark,
-// where the retention guard bounces it to `_snapshot_required`, whose
-// handler reconnects cold, which re-stamps below the watermark — forever.
-// The same floor also keeps a warm cursor AT the watermark from reading a
-// tail-pruned tip as a false #290 log-regression signal.
-// ---------------------------------------------------------------------------
+// A tail prune leaves the watermark above the live MAX(id); the terminator must ack up to the watermark or the reconnect cursor bounces to `_snapshot_required` forever.
 
 #[tokio::test]
 async fn tail_prune_does_not_strand_client_in_snapshot_loop() {
@@ -1433,9 +1124,7 @@ async fn tail_prune_does_not_strand_client_in_snapshot_loop() {
         "terminator floors at the prune watermark (dead tail ids are acked)"
     );
 
-    // Reconnect with the stamped cursor: the loop must terminate — a
-    // normal (empty) replay, no `_snapshot_required`, and no false #290
-    // regression (`_id` must not dip back below the cursor).
+    // Reconnect with the stamped cursor: a normal empty replay, no `_snapshot_required`, and `_id` must not dip below the cursor.
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     ws.send(TMessage::Text(format!(
         r#"{{"sub":["*"], "since": {cursor}}}"#

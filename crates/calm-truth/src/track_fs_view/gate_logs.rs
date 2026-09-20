@@ -43,7 +43,6 @@ impl TrackFsView<'_> {
         attempt_id: &str,
         gate_file: &str,
     ) -> Result<TrackFsContent, TrackFsError> {
-        // Enforce the same narrow role boundary before resolving a private run.
         self.gate_logs_directory(path)?;
         let gate_attempt = gate_file
             .strip_suffix(".log")

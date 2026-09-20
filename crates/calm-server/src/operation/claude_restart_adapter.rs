@@ -92,13 +92,8 @@ impl ClaudeRestartAdapter {
 pub struct ClaudeRestartOperationPayload {
     pub actor: ActorId,
     #[serde(default)]
-    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
-    /// but leaves `operations.payload_json` alone — see that migration's §4.
-    /// The `rename` is the load-bearing half: an operation parked across a
-    /// restart is resumed by re-reading its stored payload, and without the
-    /// rename a row that stores a real id under the frozen key would
-    /// deserialize to `None`, so the `unwrap_or_else(new_id)` below would mint
-    /// a FRESH session id for a row that already had one.
+    /// Wire key frozen as `runtime_id`: stored payloads keep the old key, and without the `rename` a parked row with a real id
+    /// would deserialize to `None` and `unwrap_or_else(new_id)` below would mint a FRESH session id for it.
     #[serde(rename = "runtime_id")]
     pub worker_session_id: Option<String>,
     pub card_id: String,
@@ -155,8 +150,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .map(ToOwned::to_owned)
             .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
         if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
-            // Claude runtimes only reach Starting/Running here today;
-            // Idle/TurnPending are not part of the Claude state machine.
+            // Claude runtimes only reach Starting/Running here; Idle/TurnPending are not part of the Claude state machine.
             if matches!(
                 active.status,
                 WorkerSessionState::Starting | WorkerSessionState::Running
@@ -178,24 +172,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let term = match terminal_get_by_card_tx(tx, &card_id).await? {
             Some(term) => term,
             None => {
-                // #1147 S6 — the fallback used to be `default_cwd()`, i.e.
-                // `$HOME`. After S6 this was the *only* remaining path that
-                // could persist the server's environment into a `terminals.cwd`
-                // — and it persists it into a row that freezes the track's
-                // workspace in the same transaction, so the wrong directory
-                // becomes permanent.
-                //
-                // Reachability today is near zero (a claude card's payload
-                // always carries a `cwd`, filled by `ClaudeAdapter`), which is
-                // exactly why it is worth closing rather than arguing about:
-                // "nobody hits it" is a property of today's callers, and the
-                // shape — an empty/absent value silently becoming the kernel
-                // process's own directory — is the one #1147 was opened on.
-                //
-                // The claude card's cwd SEMANTICS are unchanged: a payload cwd
-                // still wins. Only the fallback moves, from `$HOME` to the
-                // track's workspace, and an empty workspace is a hard error
-                // rather than a third fallback.
+                // A payload cwd still wins; the fallback is the track's workspace, never the kernel process's own directory, and an empty workspace is a hard error.
                 let cwd = crate::operation::terminal_adapter::terminal_cwd_or_track_workspace(
                     tx,
                     card.track_id.as_str(),
@@ -240,11 +217,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         )
         .await?;
 
-        // #1147 S6 — `card_scope_tx`, NOT `card_scope`. This transaction may
-        // have just created the terminal row above, which freezes the track's
-        // workspace and therefore holds the write lock on `tracks`; resolving the
-        // scope through the pool would deadlock the task against itself. See
-        // `card_scope_tx`'s doc comment for the measurement.
+        // `card_scope_tx`, NOT `card_scope`: this transaction may hold the write lock on `tracks` (the terminal row above froze the workspace), so resolving through the pool would deadlock the task against itself.
         let scope = card_scope_tx(tx, CardId::from(card_id.clone()), card.track_id.clone()).await?;
         let runtime_event = Event::WorkerSessionStarted {
             worker_session_id: runtime_id.clone(),
@@ -256,8 +229,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let runtime_event_id =
             append_decision_event_in_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
 
-        // Preserve the previous exit row so compensation can restore the
-        // Restart affordance if the replacement spawn fails.
+        // Preserve the previous exit row so compensation can restore the Restart affordance if the replacement spawn fails.
         let prev_exit_code = term.exit_code;
         let prev_signal_killed = term.signal_killed;
         let prev_pty_output = term.pty_output.clone();
@@ -487,9 +459,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             return Ok(());
         }
         match step.op.as_str() {
-            // Back-compat: operations that entered `compensating` under a pre-PR10-d
-            // release persisted the legacy op string; accept it during recovery so
-            // in-flight compensation states still drain. New states write the new name.
+            // Back-compat: accept the legacy op string during recovery so in-flight compensation states still drain.
             "session_projection_set_status_failed_for_card"
             | "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;

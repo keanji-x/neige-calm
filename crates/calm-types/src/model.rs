@@ -1,8 +1,5 @@
-//! Entity types — the core kernel vocabulary.
-//!
-//! These are the **only** business-shaped objects the kernel knows about.
-//! Everything else (task, calendar, plan, git, doc...) lives in plugins and
-//! reaches the kernel through opaque JSON in `Card.payload` or `Overlay.payload`.
+//! Entity types — the core kernel vocabulary. Everything else lives in plugins and reaches the
+//! kernel as opaque JSON in `Card.payload` or `Overlay.payload`.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -13,8 +10,6 @@ pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::planner_attachment::PlannerAttachment;
 use crate::runtime::{AgentProvider, WorkerSessionKind};
 use crate::worker::WorkerSessionState;
-
-// ---------------- CardRole ----------------
 
 /// Authorization role persisted on each card and enforced by `role_gate`.
 #[derive(
@@ -27,10 +22,7 @@ pub enum CardRole {
     Worker,
     Planner,
     ReportCard,
-    /// #1189 — a track-scoped assistant conversation. Reads/writes the
-    /// track report through the block channel, runs shell in the track
-    /// workspace, and has **no** lifecycle / plan / review / admin
-    /// authority. See `role_gate::enforce_assistant_scope`.
+    /// A track-scoped assistant conversation with no lifecycle / plan / review / admin authority.
     Assistant,
 }
 
@@ -58,8 +50,6 @@ impl TryFrom<String> for CardRole {
         }
     }
 }
-
-// ---------------- AreaKind ----------------
 
 /// Whether an area is user-visible or kernel-owned storage scaffolding.
 #[derive(
@@ -94,8 +84,6 @@ impl TryFrom<String> for AreaKind {
     }
 }
 
-// ---------------- Area ----------------
-
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct Area {
@@ -106,13 +94,11 @@ pub struct Area {
     pub sort: f64,
     #[serde(default)]
     pub kind: AreaKind,
-    /// Built-in Track template preselected by the official New Track surface.
-    /// `None` keeps "No template" as the Area's creation default.
+    /// Built-in Track template preselected by the official New Track surface; `None` keeps "No template".
     #[serde(default)]
     #[schema(nullable = true, required = true)]
     pub default_template_id: Option<String>,
-    /// Exact attached Git working directory preselected for a new Track.
-    /// `None` keeps the server-managed Neige workspace default.
+    /// Exact attached Git working directory preselected for a new Track; `None` keeps the server-managed default.
     #[serde(default)]
     #[schema(nullable = true, required = true)]
     pub default_cwd: Option<String>,
@@ -120,14 +106,8 @@ pub struct Area {
     pub updated_at: i64,
 }
 
-// ---------------- AreaFolder ----------------
-
-/// One row per claimed directory; `path` is absolute and globally
-/// unique across the table. A folder transparently covers every
-/// descendant path — the kernel resolves a `cwd` to its owning area by
-/// finding the claim that covers it (see `GET /api/areas/resolve`).
-/// The create endpoint rejects ancestor/descendant overlap with a 409,
-/// so at most one claim can cover any given path.
+/// One row per claimed directory; `path` is absolute and globally unique across the table. A folder
+/// covers every descendant path, and overlapping claims are rejected.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct AreaFolder {
@@ -138,29 +118,20 @@ pub struct AreaFolder {
     pub created_at: i64,
 }
 
-/// Issue #250 PR 1 — kind of overlap detected by the
-/// `POST /api/areas/:area_id/folders` conflict check. Surfaces in the
-/// 409 response body so the frontend can render a precise message
-/// without re-parsing strings.
+/// Kind of overlap detected by the `POST /api/areas/:area_id/folders` conflict check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum FolderConflictKind {
     /// Proposed path equals an existing folder's path exactly.
     Equal,
-    /// Proposed path is an ancestor of an existing folder (claiming
-    /// `/a` while `/a/b` already exists). Forbidden — would silently
-    /// widen the existing claim.
+    /// Proposed path is an ancestor of an existing folder.
     Ancestor,
-    /// Proposed path is a descendant of an existing folder (claiming
-    /// `/a/b` while `/a` already exists). Forbidden — the existing
-    /// claim already covers it.
+    /// Proposed path is a descendant of an existing folder.
     Descendant,
 }
 
-/// Issue #250 PR 1 — 409 body for the folder-create conflict case.
-/// Hand-written DTO so the frontend gets a structured shape rather
-/// than the generic `{error, code}` envelope.
+/// 409 body for the folder-create conflict case.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct FolderConflict {
@@ -171,9 +142,7 @@ pub struct FolderConflict {
     pub conflict_kind: FolderConflictKind,
 }
 
-/// Issue #250 PR 1 — 200 body for `GET /api/areas/resolve`. The
-/// resolve endpoint returns `null` (not 404) on miss; this struct is
-/// the `Some(_)` payload.
+/// 200 body for `GET /api/areas/resolve`; the endpoint returns `null` (not 404) on miss.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct AreaResolve {
@@ -183,35 +152,15 @@ pub struct AreaResolve {
     pub folder_path: String,
 }
 
-// ---------------- TrackLifecycle ----------------
-
-/// Issue #145 — Track lifecycle state machine.
-///
-/// One explicit state per track, advanced through a typed state machine
-/// (see `crate::track_lifecycle`). The Planner Agent drives the happy path
-/// (`draft → planning → dispatching → working → reviewing → done`);
-/// the user can cancel any non-terminal state and reopen terminals;
-/// worker cards have no authority to touch this field at all.
-///
-/// **`archived` is intentionally NOT a lifecycle state.** Archive is
-/// visibility / history management, orthogonal to execution semantics —
-/// a `done`/`failed`/`canceled` track can also be archived without
-/// destroying the lifecycle truth. Archival continues to live on the
-/// existing `archived_at: Option<i64>` field.
-///
-/// Persisted as a lowercase string in `tracks.lifecycle` (migration
-/// 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
-/// and storage shape stable; ts-rs exports the matching TS union into
-/// `fe/core/api/generated/wire.ts` so the frontend can render the
-/// badge against the same vocabulary.
+/// Track lifecycle state machine. `archived` is intentionally NOT a lifecycle state: archival lives
+/// on `archived_at`, orthogonal to execution semantics.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS,
 )]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum TrackLifecycle {
-    /// New track; user is editing goal/context and hasn't handed off to
-    /// the Planner Agent yet. **Default for every newly minted track.**
+    /// New track; user is editing goal/context and hasn't handed off to the Planner Agent yet.
     #[default]
     Draft,
     /// Planner Agent is reading the goal + code context and producing a plan.
@@ -237,9 +186,7 @@ pub enum TrackLifecycle {
 }
 
 impl TrackLifecycle {
-    /// Convenience: is this a terminal state? Terminal states (`done`,
-    /// `canceled`, `failed`) cannot transition to anything except via
-    /// a user-driven reopen (per `crate::track_lifecycle`).
+    /// Is this a terminal state? Terminal states cannot transition except via a user-driven reopen.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -247,9 +194,7 @@ impl TrackLifecycle {
         )
     }
 
-    /// The lowercase string persisted in `tracks.lifecycle` (migration
-    /// 0012). See [`CardRole::as_db_str`] for the sqlx-replacement
-    /// rationale.
+    /// The lowercase string persisted in `tracks.lifecycle`.
     pub fn as_db_str(self) -> &'static str {
         match self {
             TrackLifecycle::Draft => "draft",
@@ -283,8 +228,6 @@ impl TryFrom<String> for TrackLifecycle {
         }
     }
 }
-
-// ---------------- Track workspace ----------------
 
 /// Ownership must be explicit because only managed workspaces may be recycled.
 #[derive(
@@ -328,11 +271,8 @@ pub struct TrackWorkspace {
     pub kind: TrackWorkspaceKind,
     /// Absolute path.
     pub path: String,
-    /// One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
-    /// again.
-    ///
-    /// The system-area launchpad remains unfrozen because it is repointed by
-    /// `today_launchpad_ensure_tx`.
+    /// One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change again. The system-area
+    /// launchpad stays unfrozen because it is repointed.
     pub frozen_at: Option<i64>,
 }
 
@@ -346,12 +286,7 @@ impl Default for TrackWorkspace {
     }
 }
 
-// ---------------- Track ----------------
-
 /// Purpose marker on retired Area-conversation tracks.
-///
-/// Shared by transport authorization and read-side capability derivation so a
-/// Track detail never advertises a lifecycle action the route must refuse.
 pub const AREA_CHAT_PURPOSE: &str = "area-chat";
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
@@ -367,155 +302,53 @@ pub struct Track {
     pub pinned_at: Option<i64>,
     #[serde(default)]
     pub lifecycle: TrackLifecycle,
-    /// Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
-    ///
-    /// Rust readers must use `workspace.path`; this field only preserves the
-    /// existing wire shape.
+    /// Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
     #[serde(rename = "cwd", default)]
     pub cwd_wire_alias: String,
-    /// Template this track was created from.
-    ///
-    /// Names the birth snapshot only: later edits to the report do not touch
-    /// this column, and this column does not describe the report's current
-    /// content.
-    ///
-    /// Separate from [`Self::plugin_scope`], which records the owning plugin,
-    /// and separate from where the report's bytes came from: naming a template
-    /// here is not by itself the statement that the report was born from that
-    /// template's recipe.
-    ///
-    /// The `serde(alias)` below is a deserialization-only compatibility read
-    /// for pre-#1209 event-log rows; serialization emits only this name.
-    // #1209 PR-2 — this field was renamed, and the alias exists for exactly one
-    // carrier: `Track` is `#[serde(flatten)]`-ed into `TrackUpdatedPayload`, so it
-    // is embedded verbatim in the immutable event log. Rows written before the
-    // rename spell this key with the old name. Without the alias,
-    // `#[serde(default)]` would silently replay them as `None` — a lost field
-    // with no error. Dropping `default` instead would be worse: deserialization
-    // would fail, and `events_since`'s caller of `Event::from_kind_and_payload`
-    // logs and *skips the whole row*. So keep BOTH attributes.
-    //
-    // The asymmetry with `CreateTrackRequest`, which must NOT carry the alias, is
-    // deliberate. A request body is a live contract with someone on the other
-    // end, so the old spelling there is an observable, fixable 400 via
-    // `deny_unknown_fields`. The event log is immutable history, and rejecting
-    // it would break replay.
-    //
-    // Deliberately a non-doc comment: doc comments on this struct are exported
-    // into the OpenAPI spec and the ts-rs bindings, and naming the old spelling
-    // there would put it back into five generated artifacts.
+    /// Template this track was created from. Names the birth snapshot only.
+    // The alias is a deserialization-only read for pre-rename event-log rows; keep BOTH `default` and
+    // `alias`, or old rows replay as `None` / get skipped. Non-doc on purpose: doc comments here are
+    // exported into generated artifacts.
     #[serde(default, alias = "workflow_id")]
     pub template_id: Option<String>,
     /// The plugin that owns this track, recorded when the row is created.
-    ///
-    /// A separate persisted fact from the report's source: it says which plugin
-    /// owns the track, not where the report's bytes came from. Two runtime
-    /// paths put a plugin id here — over the crates' `src` directories, every
-    /// other non-test hit is a read or a `None`; on writes from outside that
-    /// set see the last paragraph — and they take it from different places:
-    /// `POST /api/tracks` copies the plugin whose manifest claims the requested
-    /// [`Self::template_id`] (`calm-server/src/routes/tracks.rs:778`), while a
-    /// child track inherits the parent's value and gets no `template_id` of its
-    /// own (`calm-server/src/operation/child_track_adapter.rs:265`, pinned
-    /// there by "plugin_scope must inherit so Only(X) does not widen to All").
-    /// So a value here is not by itself a statement that this track named a
-    /// template.
-    ///
-    /// Not part of the ordinary track update (`calm-truth`'s `TrackUpdate`,
-    /// INV-1110-004), so the ordinary track edit cannot change it. It is not
-    /// immutable in the strongest sense either: adopting an existing track as
-    /// an area's launchpad clears it together with `template_id` and
-    /// `template_input` (`calm-server/src/routes/today.rs:393`). Nor were the
-    /// oldest values in this column written by a runtime path at all —
-    /// migration 0076 added the column and backfilled the rows that already
-    /// existed. Deliberately no claim here about the full set of statements
-    /// that write it: the two runtime writers named above were found over the
-    /// crates' `src` directories, a set that does not contain the migrations.
     #[serde(default)]
     pub plugin_scope: Option<String>,
     /// Server-owned structural marker. Public track creation cannot set this.
     #[serde(default)]
     pub purpose: Option<String>,
     /// Template input is validated at creation and otherwise remains opaque.
-    ///
-    /// Carries the same deserialization-only alias as `template_id`.
-    // #1209 PR-2 — renamed alongside `template_id`; same carrier, same reason,
-    // same non-doc comment rationale. See that field.
     #[serde(default, alias = "workflow_input")]
     #[schema(value_type = Option<Object>)]
     #[ts(type = "unknown")]
     pub template_input: Option<serde_json::Value>,
-    /// Issue #250 PR 2 — unix-ms timestamp the track most recently
-    /// entered a terminal lifecycle state (Done / Canceled / Failed),
-    /// or `None` while the track is non-terminal. Stamped inside the
-    /// same transaction as the `TrackLifecycleChanged` event by
-    /// `track_update_tx`; cleared back to `None` when a terminal track
-    /// returns to Planning or Working. The calendar window query
-    /// `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
-    /// terminal_at >= since)` to keep open tracks visible across every
-    /// day they span.
-    ///
-    /// Backfill semantics: rows that existed before this migration
-    /// stay `None` even when their lifecycle is already terminal —
-    /// the event log carries the original transition timestamp but
-    /// the migration deliberately doesn't read from `events` (mixing
-    /// migration with replay is fragile). A user-driven reopen →
-    /// re-Done cycle stamps the column with the current time, which
-    /// is the first defensible point.
+    /// Unix-ms timestamp the track most recently entered a terminal lifecycle state, or `None` while non-terminal.
     #[serde(default)]
     pub terminal_at: Option<i64>,
-    /// The user recipe ([`TrackRecipe`]) this track was instantiated from.
-    ///
-    /// Deliberately not `template_id`: that field is resolved against running
-    /// plugins' manifests to recover a bound template descriptor, and a recipe
-    /// has no manifest to match, so a recipe id there would make every
-    /// recipe-created track report a resolution failure for an entirely normal
-    /// situation. It is recorded on the track rather than derived because
-    /// instantiation is a value copy — once the recipe is edited or deleted
-    /// there is nothing left to derive the origin from.
-    ///
-    /// May name a recipe that no longer exists. That is not a broken link to
-    /// repair: it is the truthful answer to "where did this come from".
+    /// The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists.
     #[serde(default)]
     pub recipe_id: Option<String>,
-    /// The recipe's `revision` at the moment this track was created. Frozen:
-    /// later edits to the recipe bump the recipe's revision and leave this
-    /// alone, which is what makes it identify a version rather than a row.
+    /// The recipe's `revision` at the moment this track was created.
     #[serde(default)]
     pub recipe_revision: Option<i64>,
     #[serde(default)]
     pub workspace: TrackWorkspace,
-    /// #1704 S2 — the user-set Claude Code permission policy of this track's
-    /// TREE, stored on the tree root only (`tracks.claude_permissions_policy`,
-    /// migration 0109): a child row is always `null` and a PATCH of a child
-    /// is refused, while every CEILING read (`calm.terminal.open`) resolves
-    /// the root. This field is the raw column, so a child shows `null` here
-    /// even when its root carries a policy. `null` for every track without
-    /// one; always serialized (the `recipe_id` convention).
+    /// The user-set Claude Code permission policy of this track's TREE, stored on the tree root only;
+    /// a child row is always `null` here even when its root carries a policy.
     #[serde(default)]
     pub claude_permissions_policy: Option<ClaudePermissionsScope>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-// ---------------- Card ----------------
-
-/// Live runtime projection read from `worker_sessions` when a card is fetched
-/// or serialized.
-///
-/// This view is not part of the idempotency contract: across retries the
-/// worker session may have advanced, so `Card.runtime` may differ between the
-/// first POST response and a retry POST response returning the same operation
-/// result. Future cleanup (#581 item 4) will remove the legacy payload-key
-/// projection; this typed view is the forward-compatible reader path.
+/// Live runtime projection read from `worker_sessions` when a card is fetched or serialized. Not
+/// part of the idempotency contract: it may differ between a first POST response and a retry.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct CardRuntimeView {
     pub worker_session_id: String,
     pub kind: WorkerSessionKind,
     pub status: WorkerSessionState,
-    // Authoritative session activity. Older serialized card snapshots omit it;
-    // current projections always populate it from the worker session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub updated_at_ms: Option<i64>,
@@ -537,12 +370,7 @@ pub struct CardRuntimeView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub thread_status: Option<String>,
-    /// #1722 S1b — when the card's last non-interrupted turn ended (the newest
-    /// `turn/completed` transcript row whose status is not `interrupted`), or
-    /// absent when it has none. Optional like `updated_at_ms`: this view is
-    /// persisted inside `card.added` / `card.updated` events, and a required
-    /// field would invalidate every stored snapshot. A reader treats absence
-    /// as "never completed" (never unread), which is the safe direction.
+    /// When the card's last non-interrupted turn ended, or absent when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub last_turn_completed_ms: Option<i64>,
@@ -551,36 +379,24 @@ pub struct CardRuntimeView {
 #[cfg(test)]
 mod runtime_view_tests;
 
-/// One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
+/// One row of `GET /api/tracks/{track_id}/conversations`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackConversationSummary {
-    /// The assistant card's id. This is the conversation's identity everywhere,
-    /// and it is also the card the CARDS panel and `/api/cards/{id}/planner/*`
-    /// address.
+    /// The assistant card's id; the conversation's identity everywhere.
     pub id: String,
-    /// The track this conversation lives on. Always the track in the request
-    /// path; carried so a client holding a bare row can navigate.
+    /// The track this conversation lives on.
     pub track_id: String,
-    /// The conversation's own name, or null before it has one. Never the
-    /// track's title.
+    /// The conversation's own name, or null before it has one.
     pub title: Option<String>,
     /// Always `"track-assistant"`, derived from the card's persisted marker.
     pub kind: String,
-    /// The live session's state, or **null when the card has no session row**.
-    ///
-    /// The query LEFT JOINs so a card whose session is gone (failed start,
-    /// superseded runtime, shut down harness) stays visible. Never fill it with
-    /// an invented value.
+    /// The live session's state, or **null when the card has no session row**. Never fill it with an invented value.
     pub state: Option<WorkerSessionState>,
     /// The session's last update, falling back to the card's own.
     pub updated_at: i64,
-    /// #1722 S1b — when the conversation's last non-interrupted turn ended:
-    /// the newest `turn/completed` transcript row whose status is not
-    /// `interrupted`, or `null` when there is none. `updated_at` keeps its
-    /// meaning (it drives the ordering); this is the instant a read receipt
-    /// compares against. Required and nullable on the wire.
+    /// When the conversation's last non-interrupted turn ended, or `null` when there is none.
     pub last_turn_completed_at: Option<i64>,
 }
 
@@ -591,16 +407,12 @@ pub struct Card {
     pub id: CardId,
     #[schema(value_type = String)]
     pub track_id: TrackId,
-    /// `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
-    /// plugin-provided cards (the canonical MCP Apps resource URI). The
-    /// kernel never interprets beyond that prefix. `[legacy]`
-    /// `"plugin:<plugin-id>:<view-id>"` may still appear on persisted rows.
+    /// `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for plugin-provided cards.
+    /// `[legacy]` `"plugin:<plugin-id>:<view-id>"` may still appear on persisted rows.
     pub kind: String,
     pub sort: f64,
     #[schema(value_type = Object)]
-    /// Opaque JSON blob — ts-rs would otherwise emit `unknown` via the
-    /// `serde-json-impl` feature, but we pin it explicitly so a future
-    /// feature-flag change can't silently widen / narrow the surface.
+    /// Opaque JSON blob.
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -609,43 +421,21 @@ pub struct Card {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub runtime: Option<CardRuntimeView>,
-    /// Issue #229 PR A — system-card guard. `true` for user-facing cards
-    /// (the default; all pre-#229 rows backfill via the column DEFAULT in
-    /// migration 0013). `false` for kernel-owned cards that the user
-    /// cannot remove via REST / plugin callbacks — currently planner cards
-    /// (retroactively undeletable via the same migration's UPDATE) and
-    /// PR B's track-report cards.
-    ///
-    /// `#[serde(default = "default_deletable")]` so wire payloads emitted
-    /// before #229 landed (event-log replay fixtures, old test seeds)
-    /// parse as `true` without forcing a fixture rewrite — matches the
-    /// DB DEFAULT (1) in migration 0013. The default-fn lives below
-    /// because `bool::default()` would give `false` (the *un*safe
-    /// fallback for a deny-by-omission auth bit).
+    /// System-card guard: `true` for user-facing cards, `false` for kernel-owned cards the user cannot
+    /// remove. Defaults to `true` because `bool::default()` is the unsafe fallback for a deny-by-omission auth bit.
     #[serde(default = "default_deletable")]
     pub deletable: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-/// Default for `Card.deletable` when wire payloads / replay fixtures omit
-/// the field. Matches the DB DEFAULT in migration 0013 (`1`). See
-/// [`Card::deletable`] for the security rationale on biasing the default
-/// toward "deletable" rather than `bool::default()`.
+/// Default for `Card.deletable` when wire payloads / replay fixtures omit the field.
 pub fn default_deletable() -> bool {
     true
 }
 
-// ---------------- HarnessItem ----------------
-
-/// How one segment of a harness `userMessage` should be presented to a human.
-///
-/// Codex calls every turn input a `userMessage`, including observations the
-/// kernel injected on the user's behalf. The rendered English in that item is
-/// not a protocol: wording changes must not turn a system update into something
-/// the UI attributes to the user. The harness derives one value per structured
-/// [`crate::observation::Observation`] before the batch is flattened for
-/// `turn/start`.
+/// How one segment of a harness `userMessage` should be presented to a human. The rendered English
+/// is not a protocol: wording changes must not turn a system update into something the UI attributes to the user.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -659,28 +449,12 @@ pub enum HarnessInputPresentation {
 }
 
 /// One observation in the exact order and wording sent to `turn/start`.
-/// Keeping the rendered text beside its typed presentation makes a mixed batch
-/// reversible without teaching a reader how Rust joined or phrased it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct HarnessInputSegment {
     pub presentation: HarnessInputPresentation,
     pub text: String,
-    /// #1505 S6 — the images this segment carried into `turn/start`.
-    ///
-    /// Carried here rather than left for the client to dig out of the
-    /// transcript row's own `params`. Two reasons, and the second one is why
-    /// the first is not merely tidier: that blob is codex's own item, and a
-    /// transcript rendering from it would have to turn the server's private
-    /// naming of the bytes back into a REST url — a second, guessable naming
-    /// of the same thing. The id is the naming; the read-back url is built
-    /// from it by the same server function the upload response used. Because
-    /// nothing reads a path from that blob, the transcript route redacts the
-    /// one this slice put there (#1505 S6 review).
-    ///
-    /// `#[serde(default)]` because every segment persisted before this slice
-    /// has no such key, and an old transcript is a transcript with no
-    /// attachments rather than an unreadable one.
+    /// The images this segment carried into `turn/start`.
     #[serde(default)]
     pub attachments: Vec<PlannerAttachment>,
 }
@@ -706,8 +480,6 @@ pub struct HarnessItem {
     pub created_at_ms: i64,
 }
 
-// ---------------- Overlay ----------------
-
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct Overlay {
@@ -719,8 +491,7 @@ pub struct Overlay {
     /// Plugin-defined string. Kernel does not interpret.
     pub kind: String,
     #[schema(value_type = Object)]
-    /// Opaque JSON blob — see `Card.payload` for the rationale on the
-    /// explicit `unknown` override.
+    /// Opaque JSON blob.
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
     pub updated_at: i64,
@@ -732,15 +503,9 @@ mod card_role_tests {
 
     #[test]
     fn serde_round_trip_pinned_lowercase() {
-        // Wire shape is locked: serde + sqlx storage both emit the
-        // lowercase variant name. Changing the rename strategy here would
-        // silently desync code-vs-DB.
         for (role, json) in [
             (CardRole::Worker, "\"worker\""),
             (CardRole::Planner, "\"planner\""),
-            // Issue #229 PR A — track-report card role. Lowercase, no
-            // hyphen, matches the existing variant style. Migration
-            // 0013's partial unique index hardcodes the same literal.
             (CardRole::ReportCard, "\"reportcard\""),
         ] {
             let s = serde_json::to_string(&role).expect("serialize");
@@ -757,10 +522,6 @@ mod card_role_tests {
 
     #[test]
     fn db_str_matches_serde_wire_shape() {
-        // `as_db_str` replaces the `#[sqlx(rename_all = "lowercase")]`
-        // derive the enum carried in calm-server. Pin the DB string to the
-        // serde wire string so the storage shape can't silently drift from
-        // the wire shape (#679 PR1).
         for role in [CardRole::Worker, CardRole::Planner, CardRole::ReportCard] {
             let wire = serde_json::to_string(&role).expect("serialize");
             assert_eq!(format!("\"{}\"", role.as_db_str()), wire);
@@ -771,41 +532,17 @@ mod card_role_tests {
     }
 }
 
-// ---------------- TrackRecipe (#1292) ----------------
-
-/// A user-defined starting point for a new track.
-///
-/// A recipe is a saved report: `title` doubles as the report summary, and
-/// `body`'s `neige-block` fences **are** its tasks. It is deliberately not a
-/// track — #1300 removed "template = a hidden track" because storing recipes
-/// that way cost seven "this track is special" exceptions across unrelated
-/// subsystems plus a kernel report write that impersonated the user. A
-/// recipe row has neither problem: nothing schedules it, nothing lists it
-/// among tracks, and every byte in one was written by a human.
-///
-/// The built-in templates (`crates/calm-server/templates/builtin/*.md`,
-/// loaded into the roster at boot) and operator templates (`--templates-dir`,
-/// `site/<stem>`) are **not** rows here. Both feed the same instantiation
-/// seam, so "built-in" and "mine" differ only in where the payload came
-/// from — see `routes::track_recipes`.
+/// A user-defined starting point for a new track: a saved report whose `title` doubles as the
+/// summary and whose `neige-block` fences are its tasks.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackRecipe {
     pub id: String,
-    /// Picker label *and* the instantiated report's summary. One field, not
-    /// two: the three built-in templates already write the same string in
-    /// both places, so a second column would not preserve an existing
-    /// distinction — it would mint a new way for them to disagree.
+    /// Picker label *and* the instantiated report's summary.
     pub title: String,
     /// Report body. Its `neige-block` fences are the tasks.
     pub body: String,
-    /// Optimistic-lock anchor. Writers pass the revision they read and the
-    /// UPDATE validates + bumps in one statement.
-    ///
-    /// Deliberately not `updated_at`: a wall clock is not a version. Two
-    /// writes inside the same millisecond are indistinguishable by
-    /// timestamp, and a clock that steps backwards makes a stale write look
-    /// current.
+    /// Optimistic-lock anchor. Writers pass the revision they read and the UPDATE validates + bumps in one statement.
     pub revision: i64,
     pub created_at: i64,
     /// Display only — never a lock anchor. See `revision`.
@@ -825,10 +562,6 @@ mod area_kind_tests {
 
     #[test]
     fn serde_round_trip_pinned_lowercase() {
-        // Wire shape is locked: serde + sqlx storage both emit the
-        // lowercase variant name. Migration 0009 stores literal
-        // `'user'` / `'system'` strings; changing the rename strategy
-        // here would silently desync code-vs-DB.
         for (kind, json) in [
             (AreaKind::User, "\"user\""),
             (AreaKind::System, "\"system\""),
@@ -847,7 +580,6 @@ mod area_kind_tests {
 
     #[test]
     fn db_str_matches_serde_wire_shape() {
-        // See `card_role_tests::db_str_matches_serde_wire_shape`.
         for kind in [AreaKind::User, AreaKind::System] {
             let wire = serde_json::to_string(&kind).expect("serialize");
             assert_eq!(format!("\"{}\"", kind.as_db_str()), wire);
@@ -876,7 +608,6 @@ mod track_lifecycle_db_str_tests {
 
     #[test]
     fn db_str_matches_serde_wire_shape() {
-        // See `card_role_tests::db_str_matches_serde_wire_shape`.
         for state in ALL {
             let wire = serde_json::to_string(&state).expect("serialize");
             assert_eq!(format!("\"{}\"", state.as_db_str()), wire);

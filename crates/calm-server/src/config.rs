@@ -25,15 +25,8 @@ pub struct Config {
     #[arg(long, env = "CALM_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
-    /// #1147 D2 — root under which server-managed track workspaces live, one
-    /// git repository per track at `<root>/<area_id>/<track_id>`.
-    /// Defaults to `$HOME/neige-workspaces`.
-    ///
-    /// Deliberately NOT `CALM_DATA_DIR`: that path is defined as runtime state
-    /// (sockets, db, scratch) and is a legitimate reset target. A track
-    /// workspace is a user-visible product — opened in an editor, backed up —
-    /// and must survive a state reset. The default name avoids `~/neige`,
-    /// `~/neige-calm` and `~/neige-calm-wt`, which are already taken.
+    /// Root under which server-managed track workspaces live, one git repository per track at `<root>/<area_id>/<track_id>`; defaults to `$HOME/neige-workspaces`.
+    /// Deliberately NOT `CALM_DATA_DIR`: that is resettable runtime state, while a track workspace is a user-visible product that must survive a state reset.
     #[arg(long, env = "CALM_WORKSPACE_ROOT")]
     pub workspace_root: Option<PathBuf>,
 
@@ -79,14 +72,8 @@ pub struct Config {
     #[arg(long, env = "CALM_PLUGINS_DISABLED", value_delimiter = ',', num_args = 0..)]
     pub plugins_disabled: Vec<String>,
 
-    /// Directory of operator-provided track templates (`*.md` with `+++` TOML
-    /// front matter). Each file's `id` must equal its stem and is exposed as
-    /// `site/<stem>`. Read once at boot, fail-closed: a file that does not
-    /// load stops the process with an error naming it (#1635 S5).
-    ///
-    /// Flag only, no `env =` — like `isolated_codex_config` and
-    /// `mobile_access_config`, the two other opt-in path flags with no
-    /// default. Under neige-app, pass it through `[child].extra_args`.
+    /// Directory of operator-provided track templates (`*.md` with `+++` TOML front matter), exposed as `site/<stem>`. Read once at boot, fail-closed.
+    /// Flag only, no `env =`; under neige-app, pass it through `[child].extra_args`.
     #[arg(long)]
     pub templates_dir: Option<PathBuf>,
 
@@ -108,53 +95,22 @@ pub struct Config {
     #[arg(long, env = "CALM_CODEX_BRIDGE_BIN")]
     pub codex_bridge_bin: Option<PathBuf>,
 
-    /// Override path for the `neige-mcp-stdio-shim` binary that codex MCP
-    /// clients spawn from each card's generated config.toml. Defaults to
-    /// looking next to `calm-server`, then PATH. Host prod sets this to a
-    /// stable ~/.local/bin symlink so old docker paths do not leak into
-    /// local codex homes.
+    /// Override path for the `neige-mcp-stdio-shim` binary that codex MCP clients spawn; defaults to next to `calm-server`, then PATH.
     #[arg(long, env = "CALM_MCP_STDIO_SHIM_BIN")]
     pub mcp_stdio_shim_bin: Option<PathBuf>,
 
-    /// Base URL the codex hook bridge uses to POST back to calm-server.
-    /// Defaults to `http://<listen>` — when `listen` binds `0.0.0.0`, we
-    /// rewrite the host to `127.0.0.1` for the loopback POST. Override if
-    /// you front calm-server with a proxy.
+    /// Base URL the codex hook bridge uses to POST back. Defaults to `http://<listen>` with a `0.0.0.0` host rewritten to `127.0.0.1`; override if a proxy fronts calm-server.
     #[arg(long, env = "CALM_CODEX_INGEST_URL")]
     pub codex_ingest_url: Option<String>,
 
-    // ---- auth (issue #189) -------------------------------------------------
-    //
-    // Single-user owner auth. The kernel runs in one of two modes:
-    //
-    //   * Production: `auth_dev_autologin = false`. `auth_password` is
-    //     REQUIRED — boot panics in `auth::AuthConfig::from_config` if
-    //     it's unset. The configured username/password is the only way
-    //     to obtain a session cookie. `auth_username` defaults to
-    //     `"owner"` if unset; downstream display name follows.
-    //
-    //   * Dev: `auth_dev_autologin = true`. The middleware promotes
-    //     every request to the owner principal without a cookie, and
-    //     `whoami` returns the owner shape unconditionally. Skips the
-    //     credential check; useful for `make dev` loops and e2e
-    //     fixtures where typing a password every reload is pure
-    //     friction. Production deploys MUST NOT enable this.
-    /// Configured owner username for `POST /api/auth/login`. Single-user
-    /// model — there's only ever one valid username. Defaults to `owner`.
     #[arg(long, env = "CALM_AUTH_USERNAME", default_value = "owner")]
     pub auth_username: Option<String>,
 
-    /// Configured owner password for `POST /api/auth/login`. Required when
-    /// `auth_dev_autologin` is off; boot panics otherwise. Plain string
-    /// today (no hashing) because this is the single-user owner model on a
-    /// local-only deployment — adding bcrypt/argon2 buys nothing when the
-    /// only attacker who can reach the process can already read its env.
+    /// Required when `auth_dev_autologin` is off; boot panics otherwise. Plain string: on a local-only single-user deployment, hashing buys nothing against an attacker who can already read the process env.
     #[arg(long, env = "CALM_AUTH_PASSWORD")]
     pub auth_password: Option<String>,
 
-    /// Skip the cookie/login flow and promote every request to the owner
-    /// principal. ALWAYS off by default. Used by `make dev` loops; explicit
-    /// env/config opt-in only. Production deploys MUST NOT enable this.
+    /// Promote every request to the owner principal without a login. ALWAYS off by default; production deploys MUST NOT enable this.
     #[arg(long, env = "CALM_DEV_AUTOLOGIN", default_value_t = false)]
     pub auth_dev_autologin: bool,
 
@@ -187,17 +143,8 @@ pub struct Config {
     )]
     pub shared_codex_appserver_restart_max_delay_ms: u64,
 
-    /// Cold-start deadline: total time the supervisor waits for a freshly
-    /// spawned shared codex app-server to bind its socket and answer
-    /// `initialize` before reaping the spawn. Codex may spend minutes
-    /// rebuilding its state db (backfill) before the socket exists at all —
-    /// 48.7s measured in production (#949) — so the default leaves headroom
-    /// for disk load and data growth.
-    ///
-    /// #956 — the default (120) is mirrored by neige-app's
-    /// `CALM_START_TIMEOUT_DEFAULT_SECS` (`crates/neige-app/src/apply.rs`),
-    /// which derives the `/upgrade/apply` healthcheck deadline from this
-    /// setting's clap precedence. Keep the two in sync.
+    /// Cold-start deadline for a freshly spawned shared codex app-server to bind its socket and answer `initialize`; codex may spend minutes rebuilding its state db before the socket exists.
+    /// The default (120) is mirrored by neige-app's `CALM_START_TIMEOUT_DEFAULT_SECS`; keep the two in sync.
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS",
@@ -205,24 +152,8 @@ pub struct Config {
     )]
     pub shared_codex_appserver_start_timeout_secs: u64,
 
-    /// #954 — stop-grace ceiling: after SIGTERM, how long the supervisor
-    /// waits for the shared codex app-server's verified exit before the
-    /// final group SIGKILL. Exit-driven, not a fixed sleep: a cooperative
-    /// daemon (handles SIGTERM, checkpoints, exits in <2s) pays its actual
-    /// exit time; only a wedged daemon pays the full grace. The default
-    /// (60) matches codex's own supervisor grace
-    /// (`app-server-daemon/src/backend/pid.rs` `STOP_GRACE_PERIOD`).
-    /// Validated 1..=600: 0 would silently restore the instant-SIGKILL
-    /// defect that armed codex's 900s backfill lease on 7/12 (#954); 600
-    /// is a documented sanity cap. Deliberately NOT tied to
-    /// `start_timeout` — shutdown/checkpoint time and cold-start time are
-    /// different budgets.
-    ///
-    /// #954 — the default (60) is mirrored by neige-app's
-    /// `CALM_STOP_GRACE_DEFAULT_SECS` (`crates/neige-app/src/apply.rs`),
-    /// which folds this setting (same clap precedence) into the
-    /// `/upgrade/apply` healthcheck deadline
-    /// (`2·start_timeout + stop_grace + margin`). Keep the two in sync.
+    /// After SIGTERM, how long the supervisor waits for the shared codex app-server's verified exit before the final group SIGKILL; exit-driven, so a cooperative daemon pays only its actual exit time.
+    /// Validated 1..=600: 0 would restore an instant-SIGKILL defect that arms codex's backfill lease. The default (60) is mirrored by neige-app's `CALM_STOP_GRACE_DEFAULT_SECS`; keep the two in sync.
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS",
@@ -247,18 +178,7 @@ impl Config {
         })
     }
 
-    /// #1147 D2 — `$HOME/neige-workspaces` unless overridden. Falls back to
-    /// `./neige-workspaces` only when `HOME` is unset, mirroring
-    /// `data_dir_resolved`'s last-resort `.`.
-    /// #1147 D2 — `$HOME/neige-workspaces` unless overridden.
-    ///
-    /// The `HOME`-unset fallback is `current_dir()`, **not** `.`: a relative
-    /// root makes every derived workspace path relative, and materialization
-    /// requires an absolute path, so a process started without `HOME` — the
-    /// normal case under systemd or a supervisor — would 500 on every single
-    /// track create (#1147 N6). Absolute-by-construction is the fix; if even
-    /// `current_dir()` fails there is no defensible answer, so this is the one
-    /// place that gives up loudly rather than inventing a path.
+    /// `$HOME/neige-workspaces` unless overridden. The `HOME`-unset fallback is `current_dir()`, not `.`: materialization requires an absolute path, and a relative root would fail every track create under systemd.
     pub fn workspace_root_resolved(&self) -> PathBuf {
         self.workspace_root.clone().unwrap_or_else(|| {
             std::env::var_os("HOME")
@@ -278,9 +198,7 @@ impl Config {
             .unwrap_or_else(|| self.data_dir_resolved().join("proc-supervisor.sock"))
     }
 
-    /// Where plugin install dirs live. Mirrors `data_dir_resolved`'s XDG
-    /// fallback chain but anchored at `XDG_CONFIG_HOME` since plugin binaries
-    /// + assets are read-only config, not state.
+    /// Anchored at `XDG_CONFIG_HOME`: plugin binaries + assets are read-only config, not state.
     pub fn plugins_dir_resolved(&self) -> PathBuf {
         self.plugins_dir.clone().unwrap_or_else(|| {
             let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -291,8 +209,7 @@ impl Config {
         })
     }
 
-    /// Where per-plugin mutable state lives. Distinct from `plugins_dir` so
-    /// uninstall can wipe state without touching the code dir, and vice versa.
+    /// Distinct from `plugins_dir` so uninstall can wipe state without touching the code dir, and vice versa.
     pub fn plugins_data_dir_resolved(&self) -> PathBuf {
         self.plugins_data_dir.clone().unwrap_or_else(|| {
             let base = std::env::var_os("XDG_DATA_HOME")
@@ -303,9 +220,7 @@ impl Config {
         })
     }
 
-    /// Base URL bridges use to POST hook events back to the loopback
-    /// ingest endpoint. Rewrites a `0.0.0.0` bind to `127.0.0.1` so the
-    /// child process actually reaches a routable address.
+    /// Rewrites a `0.0.0.0` bind to `127.0.0.1` so the child process reaches a routable address.
     pub fn codex_ingest_url_resolved(&self) -> String {
         if let Some(u) = &self.codex_ingest_url {
             return u.clone();

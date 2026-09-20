@@ -1,52 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# #863 — Docker-isolated codex-e2e tier runner.
-#
-# Runs the calm-server `codex_forge_e2e` suite fully contained in Docker so a
-# buggy/overeager real agent can never touch host prod processes again
-# (proven killer: name-based kills from inside the suite hit prod
-# neige-app/calm-server — see /home/kenji/neige-killer.log and issue #863).
-# Design doc: #863 "Docker-isolated codex-e2e tier" (docs/_863-*-design.md
-# while in review; authoritative content posted on the issue).
-#
-# Model (host-compile, run-in-container):
-#   1. Host builds the test binary with the warm shared target
-#      (`cargo test --no-run --features codex-e2e,fixtures`) + the sibling
-#      neige-mcp-stdio-shim. Host glibc == bookworm-slim glibc (Debian 12).
-#   2. The repo checkout and CARGO_TARGET_DIR are bind-mounted READ-ONLY at
-#      their identical host paths (the binary bakes CARGO_MANIFEST_DIR and
-#      locates the shim as a target-dir sibling). The resolved codex CLI
-#      (readlink -f, never the ~/.codex symlink tree) is mounted as a single
-#      ro file at /opt/codex/codex; host ~/.codex/auth.json is the ONLY other
-#      credential mounted (single file, ro — #897 keeps the rest out).
-#   3. The run container gets `--network none`: no IP path to prod
-#      :4040/:4041 by construction. Its only egress is loopback :2081 →
-#      (in-container socat) → /sock/proxy.sock (mounted ro; connect works,
-#      agents cannot scribble in the host dir) → OUR host-side gate
-#      `e2e-egress-proxy` (the SOLE terminator of that socket; singleton
-#      forwarder container `calm-e2e-proxy-forwarder`, --network host, image
-#      digest-pinned, running our bind-mounted binary) → sing-box
-#      CALM_HOST_PROXY_HOST:CALM_HOST_PROXY_PORT. The gate DENIES every CONNECT
-#      whose host is not on a dot-anchored chatgpt/openai allowlist or whose
-#      port is not 443, so prod (:4040/:4041, wrong port + wrong host) is
-#      unreachable by construction — a rogue codex that connect(2)s /sock
-#      directly still hits our gate (#923 defect 2, design §4).
-#   4. REQUIRED fence preflight before any codex runs (entry.sh): a
-#      DETERMINISTIC assertion, not an inference. POSITIVE canary: a CONNECT to
-#      an allowlisted host (chatgpt.com:443) through the full chain MUST return
-#      200 (chain live + allowlist admits + sing-box reachable) — a dead chain
-#      would make prod "unreachable" vacuously, so the canary makes the fence
-#      provable (dead -> abort 72). NEGATIVE: CONNECT 127.0.0.1:4040/:4041 and
-#      10.0.0.1:443 through the SAME chain MUST be REFUSED (403) by our gate,
-#      which decides the denial BEFORE ever dialing sing-box, so the outcome is
-#      immune to sing-box jitter/routing. Any prod CONNECT that is NOT refused
-#      is a breach -> abort 71. No fingerprint, no calibration: deny is by
-#      construction (design §5).
-#   5. Rails (proven scope values): --memory=24g --memory-swap=24g (no swap)
-#      --cpus=8 --pids-limit=6000, non-root --user, seccomp+apparmor
-#      unconfined (needed for codex's bwrap userns; NO SYS_ADMIN — verified
-#      sufficient on this box), --init, timeout 1500s, EXIT trap removes ONLY
-#      the per-run container (never the shared forwarder).
+# Docker-isolated codex-e2e tier runner: host-compiles the calm-server
+# `codex_forge_e2e` suite and runs it in a `--network none` container whose only
+# egress is the host-side `e2e-egress-proxy` gate (deny by construction).
 #
 # Usage:
 #   scripts/e2e-isolated/run.sh                      # whole suite
@@ -64,48 +20,21 @@
 #   DECOYS=1 scripts/e2e-isolated/run.sh             # plant name-decoy
 #                                                    # processes, assert they
 #                                                    # survive (regression
-#                                                    # telemetry, design §F)
+#                                                    # telemetry)
 #
-# Opt-in budget overrides (env — for slow/loaded boxes where the suite trips
-# `timed out after 240s waiting for plan.updated` under contention). They are
-# read by the test fixture (crates/calm-server/tests/support/codex_fixture.rs);
-# because the run container is env-cleared to a fixed `-e` allowlist (#897),
-# they reach it ONLY when forwarded here, and ONLY when set in the runner's env
-# (explicit named knobs, NOT a blanket ambient passthrough). Unset -> the
-# fixture's built-in defaults apply:
+# Opt-in budget overrides (env, forwarded only when set in the runner's env):
 #   NEIGE_PLANNER_PLANNING_BUDGET=<sec>    planner plan.updated wait         (def 240)
 #   NEIGE_CODEX_FORGE_E2E_BUDGET=<sec>  worker/worktree.committed wait (def 180)
-#
-# Make wrappers: `make e2e-codex-isolated` / `e2e-proxy-forwarder-up|down` /
-# `e2e-codex-isolated-check` (shellcheck + dry-run golden, no docker needed).
-#
-# Smoke protocol: the first REAL run must follow the design's §6 checklist
-# (killer-log baseline, prod pid snapshot, setsid-detached launch — real e2e
-# crashes a harness-tracked shell, ONE smoke test with DECOYS=1 before any
-# full-suite run, post-run killer-log/prod/ro-mount audit). The bpftrace
-# forensic probe stays a manual root tool; it is NOT wrapped here.
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
-# ---- configuration (Makefile variables / flags; no new implicit env knobs —
-# CARGO_TARGET_DIR and NEIGE_CODEX_BIN are pre-existing seams) ---------------
 CALM_HOST_PROXY_HOST="${CALM_HOST_PROXY_HOST:-127.0.0.1}"
-# Deliberately NO default port: an empty value must fail LOUDLY below — the
-# container has no other egress, so a silently-wrong default would strand it.
-# The Makefile injects the value from the host .env.
+# Deliberately no default port: an empty value must fail loudly below (the Makefile injects it from the host .env).
 CALM_HOST_PROXY_PORT="${CALM_HOST_PROXY_PORT:-}"
-# Forwarder runtime image pinned BY DIGEST: the forwarder runs --network host,
-# so a mutable tag is a supply-chain hole. The forwarder is no longer a dumb
-# socat relay — it runs OUR host-compiled `e2e-egress-proxy` gate (bind-mounted
-# in), so the image is just a glibc runtime shell. It is debian:bookworm-slim,
-# the SAME base as docker/Dockerfile.e2e, so the host-compiled glibc binary is
-# guaranteed to run (identical host-compile model to the test binary). To bump:
-# `docker pull debian:bookworm-slim`, re-run `docker images --digests debian`,
-# update the digest here AND in Makefile E2E_PROXY_FORWARDER_IMAGE, then
-# `make e2e-proxy-forwarder-down` so the next run recreates the forwarder.
+# Pinned by digest: the forwarder runs --network host, so a mutable tag is a supply-chain hole. Keep in sync with Makefile E2E_PROXY_FORWARDER_IMAGE and docker/Dockerfile.e2e's base.
 PROXY_FORWARDER_IMAGE="${PROXY_FORWARDER_IMAGE:-debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df}"
 E2E_PROXY_FORWARDER_NAME="${E2E_PROXY_FORWARDER_NAME:-calm-e2e-proxy-forwarder}"
 E2E_PROXY_SOCK_DIR="${E2E_PROXY_SOCK_DIR:-/tmp/calm-e2e-proxy}"
@@ -117,19 +46,8 @@ TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 CODEX_BIN_RAW="${NEIGE_CODEX_BIN:-$HOME/.local/bin/codex}"
 AUTH_RAW="$HOME/.codex/auth.json"
 KILLER_LOG=/home/kenji/neige-killer.log
-# The host-compiled deterministic egress gate. THE forwarder is this binary
-# (bind-mounted into the --network host forwarder container); deterministic
-# path of a workspace bin crate (no deps/ hash like the test binary).
 PROXY_BIN="$TARGET_DIR/debug/e2e-egress-proxy"
-# The `neige` shell CLI (crates/neige-cli, bin name `neige`) — the PLANNER agent's
-# ONLY track-read channel: the production prompt (crates/calm-server/src/
-# planner_card.rs) tells it to run `neige state`/`neige ls`/`neige cat` EACH TURN
-# ("This is your ground truth"); writes go through the calm.* MCP tools. Like
-# codex and the stdio-shim it is host-compiled and bind-mounted (NOT an apt
-# package — it's a workspace bin crate), at the same deterministic target path
-# as the proxy. Bind-mounted onto the run container's PATH at /usr/local/bin so
-# the agent's env-cleared exec-shell can resolve the bare `neige` command
-# (without it: `neige: command not found`, and the planner agent stalls at step 1).
+# Host-compiled workspace bin, bind-mounted onto the run container's PATH so the planner agent's bare `neige` calls resolve.
 NEIGE_BIN="$TARGET_DIR/debug/neige"
 
 CONTAINER_HOME=/home/e2e
@@ -153,7 +71,6 @@ TEST_BIN_SET=0
 log() { printf '[e2e-isolated] %s\n' "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 
-# ---- flag parsing: parse EVERYTHING first, validate combinations after ----
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
@@ -174,14 +91,6 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# ---- mode matrix -----------------------------------------------------------
-# lifecycle : --forwarder-only / --forwarder-down   (forwarder state only; no
-#             build, no credentials, no run container)
-# execution : default run / --preflight-only        (build+fence+container)
-# modifiers : --dry-run / --test / --test-bin / --no-build / DECOYS=1
-# Lifecycle modes accept NO execution flags and NO modifiers. --dry-run and
-# --preflight-only conflict: dry-run prints and executes nothing, while
-# preflight-only exists to execute the fence check — pick one.
 if [ "$FORWARDER_ONLY" = 1 ] && [ "$FORWARDER_DOWN" = 1 ]; then
     die "--forwarder-only and --forwarder-down are mutually exclusive lifecycle modes"
 fi
@@ -215,7 +124,6 @@ if [ "$FORWARDER_DOWN" != 1 ] && [ -z "$CALM_HOST_PROXY_PORT" ]; then
 fi
 
 resolve() {
-    # readlink -f, but tolerant of missing paths in --dry-run mode.
     local p="$1" r
     if r="$(readlink -f -- "$p" 2>/dev/null)"; then
         printf '%s' "$r"
@@ -229,9 +137,7 @@ resolve() {
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
-# Credential/binary resolution is DEFERRED: only modes that actually print or
-# run the container argv need codex/auth; the forwarder lifecycle modes
-# (--forwarder-only / --forwarder-down) must work without credentials.
+# Deferred: the forwarder lifecycle modes must work without codex/auth credentials.
 CODEX_REAL=""
 AUTH_REAL=""
 resolve_inputs() {
@@ -239,12 +145,6 @@ resolve_inputs() {
     AUTH_REAL="$(resolve "$AUTH_RAW")"
 }
 
-# ---- egress-proxy binary (THE forwarder — host-compiled, bind-mounted) ------
-# The forwarder is no longer a dumb socat relay: it is our own gate binary.
-# Host-compile it (glibc tracks the host, same model as the test binary) so it
-# can be bind-mounted into the --network host forwarder container. Built OUTSIDE
-# the forwarder flock (cargo has its own target lock) and cached on the warm
-# shared target, so `--forwarder-only` and full runs alike stay cheap.
 ensure_proxy_bin() {
     if [ "$NO_BUILD" = 1 ] && [ -x "$PROXY_BIN" ]; then
         log "reusing existing egress proxy binary: $PROXY_BIN"
@@ -257,30 +157,15 @@ ensure_proxy_bin() {
     [ -x "$PROXY_BIN" ] || die "egress proxy binary missing after build at $PROXY_BIN"
 }
 
-# ---- host forwarder (shared singleton — mirrors Makefile proxy-forwarder-up;
-# torn down ONLY by `make e2e-proxy-forwarder-down` → --forwarder-down here,
-# never by a run's trap). It now runs OUR host-compiled `e2e-egress-proxy` gate
-# (bind-mounted read-only) as the SOLE terminator of /sock/proxy.sock, dialing
-# sing-box upstream only for CONNECTs it admits (design §4). --------------------
+# Shared singleton forwarder: torn down only by --forwarder-down, never by a run's trap.
 ensure_forwarder() {
     ensure_proxy_bin
     local sock="$E2E_PROXY_SOCK_DIR/proxy.sock"
-    # Lockfile lives in the sock dir's PARENT (e.g. /tmp/calm-e2e-proxy.lock)
-    # so teardown can rm -rf the sock dir while still holding the lock. It is
-    # NEVER unlinked (see forwarder_down): a waiter blocked on the old inode
-    # while a third process locks a freshly-created file would split-brain
-    # the critical section.
+    # Lockfile lives in the sock dir's PARENT so teardown can rm -rf the dir while holding the lock; it is never unlinked (split-brain hazard).
     local lock="${E2E_PROXY_SOCK_DIR%/}.lock"
-    # The `egress-proxy:` prefix (vs the old dumb-relay `unix:` spec) guarantees
-    # a stale alpine/socat forwarder mismatches this spec -> the singleton guard
-    # refuses to reuse it and prints the --forwarder-down remedy (correct: the
-    # old dumb relay is a fence bypass). bin= pins WHICH gate binary path backs
-    # it; after rebuilding the proxy you must --forwarder-down to pick it up.
+    # bin= pins which gate binary backs the forwarder; after rebuilding the proxy you must --forwarder-down to pick it up.
     local spec="egress-proxy:$sock->$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT bin=$PROXY_BIN image=$PROXY_FORWARDER_IMAGE"
-    # flock: concurrent runs race this mkdir/inspect/create sequence; make it
-    # a critical section so exactly one run creates the singleton. ALL shared
-    # sock-dir mutations happen only under this lock (a concurrent teardown's
-    # rm -rf must never interleave with our mkdir/chmod).
+    # All shared sock-dir mutations happen only under this lock so a concurrent teardown's rm -rf never interleaves with our mkdir/chmod.
     (
         flock -w 60 9 || { log "FATAL: could not acquire forwarder lock $lock within 60s"; exit 1; }
         mkdir -p "$E2E_PROXY_SOCK_DIR"
@@ -290,9 +175,6 @@ ensure_forwarder() {
             existing="$(docker inspect -f '{{index .Config.Labels "calm.proxy.spec"}}' "$E2E_PROXY_FORWARDER_NAME" 2>/dev/null || echo "")"
             running="$(docker inspect -f '{{.State.Running}}' "$E2E_PROXY_FORWARDER_NAME" 2>/dev/null || echo false)"
             if [ "$existing" != "$spec" ]; then
-                # NEVER auto-recreate on mismatch: a concurrent run may be
-                # using the existing forwarder; cutting it would strand that
-                # run's egress mid-suite. Human decides.
                 log "FATAL: forwarder '$E2E_PROXY_FORWARDER_NAME' exists with a DIFFERENT config:"
                 log "  existing: ${existing:-<no proxy label>}"
                 log "  wanted:   $spec"
@@ -307,11 +189,7 @@ ensure_forwarder() {
             fi
         fi
         if ! docker inspect "$E2E_PROXY_FORWARDER_NAME" >/dev/null 2>&1; then
-            # --network host: its 127.0.0.1 is the host's, so our gate dials the
-            # host-loopback sing-box directly (and has a resolver). It publishes
-            # NO ports; its only listener is the unix socket our binary binds in
-            # E2E_PROXY_SOCK_DIR (the binary sets mode 600, our uid). The gate
-            # binary is bind-mounted read-only; args = <listen-sock> <upstream>.
+            # --network host so the gate dials the host-loopback sing-box; it publishes no ports, its only listener is the unix socket (mode 600, our uid).
             docker run -d --network host \
                 --name "$E2E_PROXY_FORWARDER_NAME" \
                 --user "$HOST_UID:$HOST_GID" \
@@ -353,13 +231,8 @@ forwarder_down() {
         rm -rf -- "$dir"
         log "socket dir removed: $dir"
     ) 9>"$lock"
-    # The lockfile itself is deliberately LEFT IN PLACE: unlinking it would
-    # let a waiter holding the old inode and a third process locking a fresh
-    # file both enter the critical section (split-brain). It lives outside
-    # the removed dir, so leaving a 0-byte file behind is harmless.
 }
 
-# ---- test binary --------------------------------------------------------
 build_test_bin() {
     log "host-compiling test binary (cargo test --no-run) ..."
     local json
@@ -380,15 +253,6 @@ build_test_bin() {
     ensure_neige_bin
 }
 
-# ---- neige CLI (PLANNER agent's track-read channel — host-compiled, PATH-mounted)
-# Built here alongside the test binary + shim (same host-compile model, same
-# warm shared target): a run-container dependency compiled from source, NOT an
-# apt package. The bind-mount that puts it on the container PATH lives in
-# docker_run_args; connectivity is free — the real planner/worker spawn already
-# injects NEIGE_MCP_SOCKET+NEIGE_MCP_TOKEN into the exec-shell via
-# shell_environment_policy.set (crates/calm-server/src/mcp_server/wiring.rs),
-# pointing at the SAME in-container kernel socket the stdio-shim reaches. So the
-# only thing the container lacks is the binary on PATH.
 ensure_neige_bin() {
     log "building neige CLI (agent shells out bare \`neige\` for track reads) ..."
     RUSTC_WRAPPER='' CARGO_BUILD_JOBS=4 nice -n 10 \
@@ -398,7 +262,6 @@ ensure_neige_bin() {
 }
 
 discover_test_bin() {
-    # Newest already-built binary (for --no-build / --dry-run without cargo).
     local f newest=""
     for f in "$TARGET_DIR"/debug/deps/codex_forge_e2e-*; do
         [[ "$f" == *.d ]] && continue
@@ -416,10 +279,6 @@ discover_test_bin() {
     fi
 }
 
-# ---- docker run argv (single source for dry-run print and real run) -----
-# E2E_MODE=preflight makes entry.sh stop after the fence check + a
-# `--list` exec probe (glibc/mount-layout proof); E2E_MODE=run executes
-# the suite. Everything security-relevant is identical between the two.
 docker_run_args() {
     local mode="$1" name="$2"
     DOCKER_ARGS=(
@@ -434,18 +293,8 @@ docker_run_args() {
         -v "$TARGET_DIR:$TARGET_DIR:ro"
         -v "$CODEX_REAL:$CODEX_MOUNT:ro"
         -v "$AUTH_REAL:$CONTAINER_HOME/.codex/auth.json:ro"
-        # The `neige` CLI on the run container's PATH — the PLANNER agent's only
-        # track-read channel (bare `neige state`/`cat`/`ls`, planner_card.rs prompt).
-        # /usr/local/bin is on the exec-shell PATH (container-default PATH is
-        # forwarded live through the env-cleared daemon spawn — SPAWN_ENV_PASS-
-        # THROUGH "PATH" — then codex inherit=Core passes it to exec-shells;
-        # proven by the agent resolving bare `rg` at /usr/bin, same PATH source).
-        # ro like every other binary mount; the host file is 0755 so a non-root
-        # --user can exec it. NOT apt-installed — see docker/Dockerfile.e2e.
         -v "$NEIGE_BIN:/usr/local/bin/neige:ro"
-        # ro: connect(2) to a unix socket works on a read-only mount; agents
-        # must not be able to scribble in the host dir (entry.sh preflight
-        # proves the chain still works through it).
+        # ro: connect(2) to a unix socket works on a read-only mount; agents must not scribble in the host dir.
         -v "$E2E_PROXY_SOCK_DIR:/sock:ro"
         # exec: docker tmpfs defaults to noexec, but agent workspaces live
         # under $HOME/.cache and must exec what they write (gates, hooks).
@@ -462,13 +311,7 @@ docker_run_args() {
         -e "E2E_TEST_FILTER=$TEST_FILTER"
         -e "DECOYS=$DECOYS"
     )
-    # ---- opt-in budget overrides (see header "Opt-in budget overrides") -----
-    # Forward these named test-tuning knobs into the --network none container
-    # ONLY when set+non-empty in the runner's env. The #897 allowlist forwards
-    # NO ambient host env, so without this the fixture always sees its built-in
-    # 240s/180s defaults. Unset -> nothing is appended, so the default CI argv
-    # (and the check_dry_run.sh golden) stays byte-identical. Named, intentional,
-    # opt-in — this stays inside the explicit-allowlist philosophy.
+    # Forwarded only when set+non-empty so the default argv (and the check_dry_run.sh golden) stays byte-identical.
     if [ -n "${NEIGE_PLANNER_PLANNING_BUDGET:-}" ]; then
         DOCKER_ARGS+=(-e "NEIGE_PLANNER_PLANNING_BUDGET=$NEIGE_PLANNER_PLANNING_BUDGET")
     fi
@@ -490,7 +333,6 @@ print_argv() {
     printf '\n'
 }
 
-# =========================================================================
 if [ "$FORWARDER_DOWN" = 1 ]; then
     forwarder_down
     exit 0
@@ -534,14 +376,11 @@ fi
 
 [ -x "$TEST_BIN" ] || die "test binary not executable: $TEST_BIN"
 [ -x "$TARGET_DIR/debug/neige-mcp-stdio-shim" ] || die "neige-mcp-stdio-shim missing beside the test binary (build it first)"
-# Bind-mounting a missing source silently creates a directory in the container
-# (docker), so fail loud here instead: without the binary the planner agent's
-# `neige state`/`neige cat` reads hit `neige: command not found`.
+# Bind-mounting a missing source silently creates a directory in the container, so fail loud here instead.
 [ -x "$NEIGE_BIN" ] || die "neige CLI missing at $NEIGE_BIN (build it first, or drop --no-build)"
 [ -f "$AUTH_REAL" ] || die "codex auth.json not found at $AUTH_REAL"
 [ -x "$CODEX_REAL" ] || die "codex binary not found/executable at $CODEX_REAL"
 
-# ---- cleanup trap FIRST, then anything it owns (design §E) ----------------
 KILLER_SNAP=""
 # shellcheck disable=SC2317,SC2329  # invoked via the EXIT trap only
 cleanup() {
@@ -555,14 +394,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ---- killer-log baseline snapshot (design §5/§6) -------------------------
-# Snapshot ONLY the real capture signal, not the whole file: a genuine kill is
-# recorded by the WIDE probe as a line containing `sig=` (e.g. "... sig=15 ...").
-# The broken old neige-killer-trace.bt probe continuously appends `str() ERROR`
-# bpftrace compile-error spam to the SAME file, so diffing total file content
-# false-alarms "killer-log CHANGED" -> exit 96 even when the suite PASSED
-# (#923 defect 1). Comparing only `sig=` records ignores that non-capture noise
-# while still failing loud the instant a real kill record appears.
+# Snapshot only `sig=` capture records: a broken bpftrace probe appends compile-error spam to the same file, so a whole-file diff would false-alarm.
 if [ -r "$KILLER_LOG" ]; then
     KILLER_SNAP="$(mktemp)"
     grep -a 'sig=' -- "$KILLER_LOG" >"$KILLER_SNAP" 2>/dev/null || true
@@ -572,9 +404,7 @@ else
 fi
 
 log "building image $E2E_IMAGE_TAG ..."
-# Build-time networking only (apt fetching Debian packages) — the RUN
-# container remains --network none. --network host lets apt use the
-# host-loopback proxy on this box; explicit http_proxy env still wins.
+# Build-time networking only (apt); the run container stays --network none.
 BUILD_PROXY="${http_proxy:-http://$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT}"
 docker build --network host -f "$REPO_ROOT/docker/Dockerfile.e2e" -t "$E2E_IMAGE_TAG" \
     --build-arg "http_proxy=$BUILD_PROXY" \
@@ -583,11 +413,6 @@ docker build --network host -f "$REPO_ROOT/docker/Dockerfile.e2e" -t "$E2E_IMAGE
     "$REPO_ROOT/docker" >/dev/null
 ensure_forwarder
 
-# ---- preflight container: fence check + `--list` exec probe --------------
-# Same argv/mounts/posture as the real run; entry.sh in preflight mode
-# asserts the chain is LIVE (an allowlisted-host CONNECT returns 200) yet our
-# gate REFUSES prod :4040/:4041 (+ RFC1918) with a deterministic 403, then
-# proves the host-built binary executes in-image (glibc/layout) via `--list`.
 log "preflight: fence + exec probe (container $PREFLIGHT_NAME) ..."
 docker_run_args preflight "$PREFLIGHT_NAME"
 timeout 180 docker run "${DOCKER_ARGS[@]}" \
@@ -599,9 +424,7 @@ if [ "$PREFLIGHT_ONLY" = 1 ]; then
     exit 0
 fi
 
-# ---- the real run ---------------------------------------------------------
-# create (not run) first so we can assert isolation from the OUTSIDE before
-# a single process starts, then start attached under the timeout budget.
+# create (not run) first so isolation is asserted from the outside before a single process starts.
 docker_run_args run "$RUN_NAME"
 docker create "${DOCKER_ARGS[@]}" >/dev/null
 
@@ -625,9 +448,6 @@ if [ "$RC" -eq 124 ]; then
     log "TIMED OUT after ${E2E_TIMEOUT}s — container will be force-removed"
 fi
 
-# ---- post-run killer-log diff (sig= capture records only, see baseline) ----
-# Compare only the `sig=` capture signal so unrelated compile-error spam can't
-# false-alarm; a NEW sig= record is a genuine kill -> keep the loud exit 96.
 if [ -n "$KILLER_SNAP" ] && [ -r "$KILLER_LOG" ]; then
     KILLER_NOW="$(mktemp)"
     grep -a 'sig=' -- "$KILLER_LOG" >"$KILLER_NOW" 2>/dev/null || true

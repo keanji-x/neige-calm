@@ -1,152 +1,5 @@
-//! `POST /api/tracks`, the keyed half: **safe retry** (#1384).
-//!
-//! #1299 S1 made the create deliver the synthesiser page's first sentence
-//! atomically. It deliberately did not make the create *retryable*: a client
-//! that repeated one got a second track. This module is that second half.
-//!
-//! # Why a track create could not simply reuse the conversation machinery
-//!
-//! The two conversation write mouths are idempotent for free, because their
-//! card id is `sha256(scope, Idempotency-Key)` — recomputable, so "does this
-//! key already have one" is answered by looking the id up. A track id is
-//! `new_id()` inside `track_create_tx`; it is not a function of any request
-//! field. "Which track did this key create" therefore has to be **remembered**.
-//!
-//! Before #1384 the only row that remembered it was the `operations` row, and
-//! `OperationRuntime::submit` writes that row *after* `adapter.validate`
-//! succeeds. `PlannerHarnessStartAdapter::validate` refuses while the shared
-//! codex app-server is down, so during a daemon outage the track, its two
-//! cards, its folder claim and its workspace were all committed with **nothing
-//! pointing at them**, and the next request under the same key minted another
-//! track — one per retry, for as long as the outage lasted.
-//!
-//! The fix is a durable binding written **inside the mint transaction**:
-//! `track_create_idempotency`, keyed `(area_id, Idempotency-Key)`, carrying the
-//! track id and both card ids. On the arm that writes it there is no interval
-//! in which the track exists and the binding does not, because they are the
-//! same commit. That is what a preflight check could never buy: a preflight
-//! only narrows the window (the daemon can stop between the check and
-//! `submit`), and it regresses every in-transaction 4xx into a 500 during an
-//! outage. It was measured, rejected, and is not re-proposed here.
-//!
-//! # What `Idempotency-Key` means here, and when it is required
-//!
-//! **Required if and only if the body carries `first_message`.** The new-track
-//! route sends the header with its first message; message-less callers do not.
-//! Making it unconditionally required would 400 those legacy creates, while
-//! making it optional *with* a `first_message` would leave no dedup key at all,
-//! so a retried create could mint a second track and deliver the instruction
-//! twice.
-//!
-//! Given the key, the contract is the four-arm one `create_track_conversation`
-//! documents, reused through `retryable_operation_key`: a success replays, a
-//! terminal failure genuinely retries under a `#N` operation key, a `Stuck`
-//! predecessor keeps failing closed, and 64 failed attempts exhaust the key
-//! (409 `idempotency_key_exhausted`). A fifth statement follows from those: the
-//! same operation attempt with a **different `first_message`** is 409
-//! `conflict`. The base attempt is bound in the durable track-create row. After
-//! a persisted terminal failure, a fresh `#N` operation is a new delivery
-//! attempt whose own payload becomes the replay authority if it succeeds.
-//! The create shape itself never gets that exception: once the track exists,
-//! those inputs have already taken effect and no operation can reapply them.
-//!
-//! # A message-less create is idempotent too, but only when it asks (#1426)
-//!
-//! #1384 left this shape out and said so: [`plan_first_message`] returned
-//! [`CreatePlan::Legacy`] from its first statement when `first_message` was
-//! absent, before the header was read, so a message-less retry minted a second
-//! track. #1426 extends the mechanism to it — **header-optional, not
-//! header-required**.
-//!
-//! The fork was decided from the callers, not from taste. Every message-less
-//! caller alive today sends no `Idempotency-Key`: the new-track route's
-//! blank-message branch (`fe/web/src/app/router/public.tsx`), all four `web/`
-//! call sites (whose HTTP helper `web/src/api/calm.ts` takes no headers
-//! argument at all, so they *cannot* send one), every shell and Playwright
-//! e2e, and every Rust integration test. Requiring the header would 400 all of
-//! them at once, for a property none of them asked for. So:
-//!
-//! * **no key** ⇒ [`CreatePlan::Legacy`], the pre-#1299 path verbatim — no
-//!   lookup, no binding row, no reordering, and a retry still mints a second
-//!   track. Pinned by `a_message_less_create_without_a_key_is_unchanged`.
-//! * **a key** ⇒ [`CreatePlan::MessageLessMint`] or
-//!   [`CreatePlan::MessageLessResume`], deciding on the binding row alone.
-//!   Pinned by `a_message_less_create_with_a_key_binds_and_replays`.
-//!
-//! #1384's stated reason for not writing the binding on `Legacy` was that
-//! `Legacy` "has already returned from the dispatch, so there is no `Resume`
-//! arm for a primary-key collision to map onto". That reason is answered by
-//! building the arm rather than by weakening anything: the keyed message-less
-//! create no longer returns from the dispatch early, it selects between a mint
-//! and a resume exactly as the `first_message` path does. The unkeyed create
-//! still returns from the first statement, and *it* is the shape the old
-//! sentence was really protecting.
-//!
-//! # Why the message-less arms are a two-cell table, not [`select_arm`]'s four
-//!
-//! [`SelectedArm`]'s second input is "what sits on the chosen operation key",
-//! and a message-less create has no such key: `start_planner_harness` submits
-//! with `idempotency_key: None` and a fresh `operation_key`, so
-//! `find_by_kind_and_idempotency` could never find its predecessor. Nothing is
-//! gained by inventing one — the message-less start carries no user text, so
-//! there is no delivery to deduplicate and no `Stuck` verdict to replay. The
-//! binding row alone answers the only question this shape asks: *did this key
-//! already mint a track?*
-//!
-//! Two consequences, stated rather than left to be discovered. A keyed
-//! message-less create never consumes a `#N` retry slot, so it cannot answer
-//! 409 `idempotency_key_exhausted` for slot exhaustion (only for the
-//! un-materializable-workspace case its resume shares with
-//! [`resume_prior_attempt`]). And its resume re-runs `start_planner_harness`,
-//! whose failure is a `warn!` and a 201 on the mint arm and stays one here:
-//! the resume can answer 201-with-the-same-track, or fail closed, and nothing
-//! in between.
-//!
-//! # One key means one create shape, in both directions
-//!
-//! `create_request_sha256` covers the mint inputs, and the presence of a
-//! `first_message` is not one of them — the same body with and without a
-//! sentence hashes the same value. So the binding row's **fingerprint variant**
-//! carries that fact instead: `V1` was written by a create that carried a
-//! message, `V2MessageLess` by one that did not. A request whose shape does not
-//! match the binding's is 409 `conflict`, both ways round. Without that check a
-//! message-carrying create could resume onto a message-less binding and answer
-//! 201 for a delivery nobody made. Pinned by
-//! `a_key_bound_by_one_create_shape_refuses_the_other`.
-//!
-//! # The arm is decided BEFORE the create path validates the request
-//!
-//! Both resuming arms — replay and genuine retry — mint nothing: the track, its
-//! cards and its folder claim already exist. So `create_track` decides the arm
-//! first and, on those arms, returns through [`resume_prior_attempt`] **without
-//! running a single one of the create path's request checks** (`cwd` shape,
-//! attached-workspace existence, area 404, template admission, `template_input`
-//! binding, folder claim).
-//!
-//! That is self-consistent rather than a carve-out. Those checks exist to
-//! protect a *mint*, and there is no mint on these arms; and the very same
-//! request already passed every one of them when it was first accepted.
-//! Re-running them re-reads **mutable** state, and the state moves: delete the
-//! directory a successful create attached, and a byte-identical replay used to
-//! be answered `400 attached workspace ... does not exist` forever, for a track
-//! that is alive.
-//!
-//! # A replay resubmits the chosen operation's payload, not today's state
-//!
-//! Which request is a replay is decided by **what already sits on the operation
-//! key `retryable_operation_key` chose**, never by whether that key's name
-//! carries a `#N` suffix — a suffix says a predecessor failed, not that this
-//! request got a blank slot. [`select_arm`] is that decision as a table, and it
-//! reads the binding row first.
-//!
-//! # What this module does NOT fix
-//!
-//! `create_track` is still not a compensating handler: it mints five kinds of
-//! row and `materialize_workspace` runs after the commit, so "non-201 ⇒ no side
-//! effect" remains false for it. What is guaranteed is the narrower thing:
-//! under one `Idempotency-Key`, at most one track — and a rejected message
-//! leaves no track at all. A create that sends no `Idempotency-Key` keeps every
-//! one of its old properties, good and bad.
+//! `POST /api/tracks`, the keyed half: safe retry under an `Idempotency-Key`.
+//! Under one key, at most one track; a create that sends no key keeps its old properties.
 
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -170,46 +23,9 @@ use crate::state::RouteState;
 
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
 
-/// Which arm of the contract this request takes, decided from **two** lookups:
-/// the durable `track_create_idempotency` binding, and what sits on the chosen
-/// operation key.
-///
-/// | binding row | operation on the chosen key | arm | mints? |
-/// |---|---|---|---|
-/// | miss | vacant | [`Self::Mint`] | yes |
-/// | hit | occupied (non-`Failed`) | [`Self::Replay`] | no |
-/// | hit | vacant | [`Self::GenuineRetry`] | no |
-/// | miss | occupied | [`Self::BindingLost`] | no — 500, fail closed |
-///
-/// Two rows deserve their reason spelled out.
-///
-/// **`hit + vacant` is one row, not two.** It covers both "everything before
-/// the chosen `#N` key terminally failed" and "there is no operation row under
-/// this key at all" — the variant-4 shape, where `validate` refused before
-/// `insert_operation` ever ran. Both mean the same thing: a track exists for
-/// this key and nothing is currently executing against it, so this request
-/// genuinely re-executes. Before the binding existed the second case was
-/// indistinguishable from a fresh key, which is exactly how a daemon outage
-/// minted one track per retry.
-///
-/// **`miss + occupied` is impossible and answers 500.** The binding commits
-/// strictly before the operation is submitted, so an operation under this key
-/// with no binding cannot arise from this route. Treating it as `Mint` — which
-/// an earlier draft did — fails *open*: the mint would commit a track and its
-/// cards, and `insert_operation` would then raise `idempotency_payload_conflict`
-/// on the unique violation, leaving an orphan track behind a 409. That is
-/// precisely the failure class this module exists to abolish, so the honest
-/// answer to an unreachable state is an error, not a mint.
-///
-/// The criterion is deliberately **not** "does the chosen key carry a `#N`
-/// suffix". `retryable_operation_key` stops at the first key that is absent
-/// **or non-`Failed`**, so it can hand back a `#N` key that already holds a
-/// *succeeded* attempt — base fails, `#2` succeeds, and the third,
-/// byte-identical request is a replay of `#2`, not a retry of the base. Reading
-/// the suffix answers `GenuineRetry` there, rebuilds `cwd` from a workspace a
-/// `PATCH /api/tracks/{id}` may have repointed since, and turns a
-/// byte-identical replay into a 409 forever
-/// (`a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint`).
+/// Which arm this request takes: binding miss + vacant key → `Mint`; hit + occupied →
+/// `Replay`; hit + vacant → `GenuineRetry`; miss + occupied → `BindingLost` (unreachable;
+/// 500, fail closed — minting there would leave an orphan track behind a 409).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SelectedArm {
     Mint,
@@ -218,12 +34,7 @@ enum SelectedArm {
     BindingLost,
 }
 
-/// Evaluate the table on [`SelectedArm`]. Pure, so every cell is unit-testable
-/// without a database.
-///
-/// `chosen_is_occupied` is "`find_by_kind_and_idempotency` found an operation
-/// under the chosen key" — the state of the *selected* key, not the shape of
-/// its name.
+/// `chosen_is_occupied` is the state of the selected key, not the shape of its name.
 fn select_arm(binding_hit: bool, chosen_is_occupied: bool) -> SelectedArm {
     match (binding_hit, chosen_is_occupied) {
         (false, false) => SelectedArm::Mint,
@@ -233,111 +44,47 @@ fn select_arm(binding_hit: bool, chosen_is_occupied: bool) -> SelectedArm {
     }
 }
 
-/// Whether the payload this request submits must be **frozen** to what the
-/// predecessor submitted or **re-derived** from current state.
-///
-/// Modelled as a field on [`PriorAttempt`] rather than recomputed at the use
-/// site: two copies of the same criterion drift, and the two arms want
-/// *opposite* answers here, so a drift would silently swap them.
+/// Whether the payload this request submits must be frozen to what the predecessor
+/// submitted or re-derived from current state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PriorArm {
-    /// The chosen key already holds an operation: this request is a **replay**
-    /// of it.
-    ///
-    /// A replay must resubmit that operation's payload *byte for byte*, or
-    /// `OperationRuntime::submit` compares a different `payload_hash` and
-    /// answers 409 `conflict` — telling a caller who sent a byte-identical
-    /// request that it changed its message, permanently and indistinguishably
-    /// from the genuine different-body conflict.
+    /// The chosen key already holds an operation: a replay must resubmit its payload byte
+    /// for byte, or `submit` answers 409 `conflict`.
     Replay,
-    /// The chosen key is vacant: this request **genuinely executes**.
-    ///
-    /// It must therefore describe the world as it is **now**, not as the failed
-    /// attempt saw it: no earlier payload hash is bound to a vacant key, so
-    /// there is nothing to stay byte-identical to, and reusing a stale `cwd`
-    /// would start the harness in a directory that may since have been moved or
-    /// recycled out from under the track.
+    /// The chosen key is vacant: this request genuinely executes and must describe the
+    /// world as it is now (a stale `cwd` may have been repointed or recycled).
     GenuineRetry,
 }
 
-/// What a previous attempt under this `Idempotency-Key` already minted.
-///
-/// The three ids come from the **binding row**, not from an operation payload.
-/// That is the change #1384 makes: the payload cannot be the source, because in
-/// the variant-4 shape there is no operation row at all. Reading them back from
-/// a role query would be well-defined — `idx_cards_one_planner_per_track` and
-/// `idx_cards_one_report_per_track` are both single-valued — but it would be a
-/// second source of truth for a value the mint already knew.
+/// What a previous attempt under this `Idempotency-Key` already minted; the ids come
+/// from the binding row, not from an operation payload.
 struct PriorAttempt {
     arm: PriorArm,
     track_id: String,
     planner_card_id: String,
     report_card_id: String,
-    /// The chosen operation's `cwd`, replayed verbatim on [`PriorArm::Replay`].
-    /// `None` on [`PriorArm::GenuineRetry`], which takes `track.workspace.path`
-    /// instead — there is no operation on a vacant key to read one from.
-    ///
-    /// # Why `cwd` is the whole class of frozen fields
-    ///
-    /// `payload_hash` covers the whole payload, so *any* field this route
-    /// derives from mutable server state has the same "must freeze on replay"
-    /// property. Going through `PlannerHarnessStartOperationPayload` as
-    /// [`start_planner_harness_with_first_message`] fills it:
-    ///
-    /// - `actor` — from the request's authenticated principal, not from state.
-    /// - `track_id`, `planner_card_id`, `report_card_id` — taken from the
-    ///   binding row, i.e. already frozen on both arms.
-    /// - `cwd` — **the one remaining field read from live state**
-    ///   (`track.workspace.path`), and mutable: `PATCH /api/tracks/{id}`
-    ///   repoints a managed workspace to an attached one at any time. Hence
-    ///   this field.
-    /// - `first_message`, `create_request_sha256` — pure functions of the
-    ///   request body. The create digest is always checked against the durable
-    ///   binding. The message is checked against the chosen operation on
-    ///   Replay, against the binding on an operation-less base resume, and may
-    ///   be edited only on the genuine `#N` retry after a persisted terminal
-    ///   failure. On the Replay check the payload's `first_message` **is** the
-    ///   comparison input: #1314 deleted the payload's separate
-    ///   `first_message_sha256`, whose bytes this field already carries
-    ///   verbatim.
-    /// - `sort`, `goal`, `create_card` — hard-coded `None` here.
-    /// - the two reset/force-new-thread flags — hard-coded `false`.
-    /// - `profile` — hard-coded `Default::default()`.
-    ///
-    /// If a future field is added here that reads the track, a card, the
-    /// workspace root or any other row, it belongs in this struct too.
+    /// The chosen operation's `cwd`, replayed verbatim on `Replay`; `None` on `GenuineRetry`,
+    /// which takes `track.workspace.path`. Any future payload field read from mutable
+    /// server state belongs in this struct too.
     cwd: Option<String>,
 }
 
-/// What `POST /api/tracks` decided before it validated — let alone ran — any of
-/// the create path.
-///
-/// The three variants are the handler's whole fork, and they are a *type*
-/// rather than an `Option<PriorAttempt>` field on purpose: a
-/// [`FirstMessagePlan`] structurally cannot carry a prior attempt, so the
-/// minting path cannot be reached with one, and [`ResumeFirstMessage`]
-/// structurally always has one, so the resuming path cannot be reached without
-/// one.
+/// What `POST /api/tracks` decided before it validated any of the create path. A type,
+/// not an `Option<PriorAttempt>`: the minting arms cannot carry a prior attempt and the
+/// resuming arms always do.
 pub(super) enum CreatePlan {
-    /// The body carried no `first_message` **and** the caller sent no
-    /// `Idempotency-Key`: the pre-#1299 path verbatim. No key is derived, no
-    /// lookup happens, no binding row is written, and `create_track` runs its
-    /// checks in the order it always did. A retry mints a second track, exactly
-    /// as it always has, because the caller asked for nothing else.
+    /// No `first_message` and no `Idempotency-Key`: no lookup, no binding row; a retry
+    /// mints a second track.
     Legacy,
-    /// #1426 — no `first_message`, but a key with no binding to adopt. Mints
-    /// through the unchanged `create_track_with_planner_harness`, with the
-    /// binding row written inside the same transaction as the id.
+    /// No `first_message`, but a key with no binding to adopt; the binding row is written
+    /// inside the mint transaction.
     MessageLessMint(MessageLessPlan),
-    /// #1426 — no `first_message`, and a key a prior create already minted
-    /// under. Mints nothing; see [`resume_message_less`].
+    /// No `first_message`, and a key a prior create already minted under. Mints nothing.
     MessageLessResume(MessageLessResume),
-    /// A `first_message` on a key with no binding to adopt. This request
-    /// **mints**, so the create path's request validation runs in full.
+    /// A `first_message` on a key with no binding to adopt; this request mints.
     Mint(FirstMessagePlan),
-    /// A `first_message` on a key a prior attempt already minted under. This
-    /// request mints nothing, so the create path — validation included — is
-    /// skipped entirely; see the module docs.
+    /// A `first_message` on a key a prior attempt already minted under; the create path,
+    /// validation included, is skipped.
     Resume(ResumeFirstMessage),
 }
 
@@ -348,15 +95,8 @@ pub(super) struct ResumeFirstMessage {
     prior: PriorAttempt,
 }
 
-/// Every request field that decides the minted track, in its deserialized
-/// request shape. Its digest is persisted in the same row as the track id, so a
-/// missing operation row cannot erase request identity.
-///
-/// Cloned at the call site right after the body is deserialized and **before**
-/// `CreationSource::stamp` writes the roster's template spelling. The
-/// fingerprint deliberately describes what the caller sent; deriving it from
-/// admitted or normalized live state would rerun mutable validation on Resume,
-/// which is the variant-3 class this module avoids.
+/// Every request field that decides the minted track, as the caller sent it (cloned
+/// before `CreationSource::stamp` rewrites the template spelling).
 pub(super) struct CreateRequestShape {
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -372,29 +112,21 @@ pub(super) struct CreateRequestShape {
     pub fork_report_from: Option<String>,
 }
 
-/// #1426 — what a keyed **message-less** create needs, which is strictly less
-/// than [`FirstMessagePlan`]: no text, no message digest, and no operation key,
-/// because `start_planner_harness` submits under a fresh `operation_key` with
-/// `idempotency_key: None` and therefore has no attempt to join.
+/// What a keyed message-less create needs: no text, no message digest, no operation key.
 pub(super) struct MessageLessPlan {
     /// The caller's `Idempotency-Key`, verbatim — half of the binding row's
     /// primary key.
     idempotency_key: String,
     create_request_sha256: String,
-    /// Held from before the binding lookup until after the mint settles, so two
-    /// concurrent same-key message-less creates in one process cannot both read
-    /// "no binding" and each mint a track. The binding table's primary key is
-    /// the cross-instance wall underneath it, exactly as on the keyed
-    /// `first_message` arm.
+    /// Held from before the binding lookup until after the mint settles, so two concurrent
+    /// same-key creates in one process cannot both read "no binding"; the binding table's
+    /// primary key is the cross-instance wall underneath it.
     _same_key_claim: crate::per_card_lock::PerCardLockGuard,
 }
 
 impl MessageLessPlan {
-    /// The claim `create_track_structure` writes inside the mint transaction.
-    ///
-    /// `first_message_sha256: None` is not a missing value: it is the fact that
-    /// this create carried no message, and it is what makes the binding row
-    /// fingerprint version 2 rather than version 1.
+    /// `first_message_sha256: None` is the fact that this create carried no message; it
+    /// makes the binding row fingerprint version 2.
     pub(super) fn claim(&self) -> TrackCreateIdempotencyClaim {
         TrackCreateIdempotencyClaim {
             key: self.idempotency_key.clone(),
@@ -404,11 +136,8 @@ impl MessageLessPlan {
     }
 }
 
-/// #1426 — a [`CreatePlan::MessageLessResume`]'s payload.
-///
-/// Carries no `NewTrack` and no `CreateTrackOptions`, which is the same
-/// structural statement [`ResumeFirstMessage`] makes: this arm cannot mint, so
-/// `create_track` is right to skip the request validation that guards minting.
+/// A [`CreatePlan::MessageLessResume`]'s payload; carries no `NewTrack`, so this arm
+/// cannot mint.
 pub(super) struct MessageLessResume {
     track_id: String,
     planner_card_id: String,
@@ -421,50 +150,27 @@ pub(super) struct MessageLessResume {
 /// Everything a keyed `POST /api/tracks` needs to submit the operation.
 pub(super) struct FirstMessagePlan {
     text: String,
-    /// The digest of [`CreateRequestShape`], carried here so it reaches
-    /// `resume_prior_attempt` as well.
-    ///
-    /// It travels on the plan rather than as a `resume_prior_attempt`
-    /// parameter on purpose: that function's signature takes neither
-    /// `NewTrack` nor `CreateTrackOptions`, and that absence is what makes
-    /// "this arm cannot mint" compiler-enforced. A digest is not a mint input,
-    /// so the invariant survives.
+    /// The digest of [`CreateRequestShape`]; travels on the plan so `resume_prior_attempt`
+    /// needs no mint input.
     create_request_sha256: String,
     /// The initial message digest is stored in the binding row too. Unlike the
     /// create digest, it may be relaxed after a persisted terminal failure,
     /// when the next `#N` operation is a new delivery attempt.
     first_message_sha256: String,
-    /// The caller's `Idempotency-Key`, verbatim. On the `Mint` arm it is half
-    /// of the binding row's primary key; on the resuming arms it is unused,
-    /// because the binding has already been read.
+    /// The caller's `Idempotency-Key`, verbatim; half of the binding row's primary key on
+    /// the `Mint` arm.
     idempotency_key: String,
     /// The key to submit the `planner-harness-start` operation under, already
     /// stepped past any terminally failed predecessor.
     operation_key: String,
-    /// Held from before the two lookups until after the operation settles, so
-    /// two concurrent creates under one key cannot both read "no binding" and
-    /// each mint a track.
-    ///
-    /// In-process only, so it degrades on a multi-instance deployment — which
-    /// is why the binding table's primary key exists underneath it as the
-    /// cross-process wall. Taken OUTER, never nested inside
-    /// `planner_recovery_locks`; this path never calls `send_planner_input`, so
-    /// it takes no inner map at all and closes no cycle.
-    ///
-    /// The map is keyed by card id elsewhere; the key used here is the
-    /// `track-create-{sha256}` operation key, which no card id can spell.
+    /// Held from before the two lookups until after the operation settles, so two concurrent
+    /// creates under one key cannot both mint. In-process only; the binding primary key is
+    /// the cross-process wall. Taken OUTER, never nested inside `planner_recovery_locks`.
     _same_key_claim: crate::per_card_lock::PerCardLockGuard,
 }
 
-/// `SHA-256("track-create:{area_id}:{key}")`, prefixed `track-create-`.
-///
-/// Its own namespace, deliberately. `conversation_keys` hashes two other
-/// prefixes for the two lazy-mint conversation flavours (see that module — the
-/// literals there are frozen hash INPUT, which is why they are not restated
-/// here); a track create keyed on an area id would collide with the area-chat
-/// flavour's `(area_id, key)` pair if it shared a prefix, and one
-/// `Idempotency-Key` would then address a conversation card and a track create
-/// at once.
+/// `SHA-256("track-create:{area_id}:{key}")`, prefixed `track-create-`: its own
+/// namespace, so it cannot collide with the area-chat flavour's `(area_id, key)` pair.
 fn derive_track_create_operation_key(area_id: &str, idempotency_key: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -472,12 +178,8 @@ fn derive_track_create_operation_key(area_id: &str, idempotency_key: &str) -> St
     format!("track-create-{}", hex::encode(hasher.finalize()))
 }
 
-/// Parse and validate the first-message half of the request, and pick the arm —
-/// **before** `create_track` validates, let alone mints, anything.
-///
-/// Returns [`CreatePlan::Legacy`] when the body carried no `first_message`,
-/// which is the unchanged legacy path: the header is not read, no key is
-/// derived, no lookup happens, and the create proceeds exactly as it did before.
+/// Parse and validate the first-message half of the request, and pick the arm — before
+/// `create_track` validates, let alone mints, anything.
 pub(super) async fn plan_first_message(
     s: &RouteState,
     headers: &HeaderMap,
@@ -485,19 +187,12 @@ pub(super) async fn plan_first_message(
     area_id: &str,
     shape: CreateRequestShape,
 ) -> Result<CreatePlan> {
-    // #1426 — the header is parsed BEFORE the `first_message` fork, because it
-    // now decides the message-less fork too. The one behaviour this reorders for
-    // an existing caller is a *malformed* header on a message-less create: an
-    // empty or non-ASCII `Idempotency-Key` used to be ignored and is now a 400,
-    // the same answer the `first_message` path has always given it. A
-    // well-formed header, and the total absence of one, are unaffected — and no
-    // caller in this repository sends a malformed one (the caller sweep in
-    // #1426 enumerated all of them by directory).
+    // The header is parsed BEFORE the `first_message` fork because it decides the
+    // message-less fork too; a malformed key on a message-less create is a 400.
     let idempotency_key = parse_idempotency_key_header(headers)?;
     let Some(text) = first_message else {
-        // #1426 — header-optional. No key means the pre-#1299 path verbatim,
-        // which is what every message-less caller alive today sends; a key opts
-        // this shape into the same binding row the `first_message` path uses.
+        // No key means the legacy path verbatim; a key opts this shape into the same binding
+        // row the `first_message` path uses.
         let Some(idempotency_key) = idempotency_key else {
             return Ok(CreatePlan::Legacy);
         };
@@ -509,23 +204,18 @@ pub(super) async fn plan_first_message(
                 .into(),
         )
     })?;
-    // Byte-identical to `POST /api/cards/{id}/planner/input`'s rules, and run
-    // here — before the folder claim, the track row, the planner/report cards,
-    // the overlays and `materialize_workspace` — so a rejected message leaves no
-    // track behind.
+    // Run before the folder claim, the track row, the cards and `materialize_workspace`,
+    // so a rejected message leaves no track behind.
     validate_first_message(&text)?;
 
     let create_request_sha256 = create_request_digest(&shape)?;
     let first_message_sha256 = first_message_digest(&text);
     let base_key = derive_track_create_operation_key(area_id, &idempotency_key);
-    // Taken before either lookup, released when the plan is dropped at the end
-    // of the request. See the field's doc comment.
+    // Taken before either lookup, released when the plan is dropped at the end of the request.
     let same_key_claim = lock_card(&s.conversation_first_message_locks, &base_key).await;
 
-    // Lookup 1 — the new authority for "does a track already exist for this
-    // key". This is the whole of #1384: it is answered by a row that committed
-    // with the id, so it is still answered after every failure that leaves no
-    // operation row behind.
+    // Lookup 1 — a row that committed with the id, so it is still answered after every
+    // failure that leaves no operation row behind.
     let binding = s
         .repo
         .track_create_idempotency_get(area_id, &idempotency_key)
@@ -539,10 +229,8 @@ pub(super) async fn plan_first_message(
         )?;
     }
 
-    // Lookup 2 — unchanged in role: which harness-start *attempt* this request
-    // joins, and whether a `Failed` predecessor is stepped over with `#N`.
-    // May 409 `idempotency_key_exhausted`. Deliberately before any mint: a
-    // used-up key must not create a track on its way to the refusal.
+    // Lookup 2 — which harness-start attempt this request joins. May 409
+    // `idempotency_key_exhausted`; deliberately before any mint.
     let operation_key = retryable_operation_key(s, &base_key).await?;
     let chosen_existing = s
         .operation_runtime
@@ -571,11 +259,8 @@ pub(super) async fn plan_first_message(
         ))),
         arm => {
             let binding = binding.expect("both resuming arms are selected by a binding hit");
-            // Consume the chosen operation once so both the message criterion
-            // and the replayed cwd come from the exact attempt this request is
-            // joining. A successful edited `#N` retry is not represented by the
-            // binding's original-message digest; its operation payload is the
-            // durable authority for later replays.
+            // Consume the chosen operation once so both the message criterion and the replayed
+            // cwd come from the exact attempt this request is joining.
             let (prior_arm, cwd) = match arm {
                 SelectedArm::Replay => {
                     let op = chosen_existing
@@ -604,21 +289,9 @@ pub(super) async fn plan_first_message(
     }
 }
 
-/// #1426 — the message-less twin of [`plan_first_message`]'s keyed half.
-///
-/// Deliberately NOT a code path through `plan_first_message`'s body with the
-/// message parts made optional. There is one lookup here, not two, and the arm
-/// is a two-cell table (`binding hit ⇒ resume`, `miss ⇒ mint`) rather than
-/// [`select_arm`]'s four: `start_planner_harness` submits under a fresh
-/// `operation_key` with `idempotency_key: None`, so there is no operation for
-/// `find_by_kind_and_idempotency` to select, no `#N` chain to step along, and
-/// no delivery to replay. Folding the two would mean carrying three `Option`s
-/// whose only legal combinations are the ones these two functions already are.
-///
-/// The lock is taken on the SAME derived key the `first_message` path uses,
-/// which is required rather than incidental: the two shapes contend on one
-/// binding row, so they must serialize against each other, not merely against
-/// themselves.
+/// The message-less twin of [`plan_first_message`]'s keyed half: one lookup, a two-cell
+/// table. The lock is taken on the SAME derived key, so the two shapes serialize
+/// against each other on the one binding row.
 async fn plan_message_less(
     s: &RouteState,
     area_id: &str,
@@ -639,9 +312,8 @@ async fn plan_message_less(
             _same_key_claim: same_key_claim,
         }));
     };
-    // Before anything is resumed, and before the track is even read: the create
-    // shape is permanent once its track commits, so a request that does not
-    // match the binding is a conflict rather than something to act on.
+    // The create shape is permanent once its track commits, so a mismatching request is a
+    // conflict rather than something to act on.
     ensure_binding_create_matches(
         &binding,
         &create_request_sha256,
@@ -656,9 +328,8 @@ async fn plan_message_less(
     }))
 }
 
-/// The create-shape digest, in one place because both plans compute it and a
-/// second copy of this field list would drift silently — the two would then
-/// disagree about whether one key names the same create.
+/// The create-shape digest, in one place so both plans agree about whether one key
+/// names the same create.
 fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
     let mut payload = serde_json::json!({
         "title": shape.title,
@@ -686,24 +357,17 @@ fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
     stable_payload_hash(&payload)
 }
 
-/// #1426 — which create shape a request is, and therefore which binding
-/// fingerprint variant it may adopt.
-///
-/// This is request identity that `create_request_sha256` cannot carry: the
-/// digest covers the mint inputs, and `first_message` is not one of them, so
-/// the same body with and without a sentence hashes identically. Without this
-/// discriminator a message-carrying create could resume onto a binding written
-/// by a message-less one and answer 201 for a delivery that never happened.
+/// Which create shape a request is. `create_request_sha256` omits `first_message`, so
+/// without this a message-carrying create could resume onto a message-less binding and
+/// answer 201 for a delivery that never happened.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CreateShape {
     WithFirstMessage,
     MessageLess,
 }
 
-/// The binding's create digest, plus its message digest when the create that
-/// wrote it carried a message. `None` on the #1426 message-less variant means
-/// "that create sent no message", never "the digest is unavailable" — the
-/// legacy-unknown row is the unavailable case and it refuses outright.
+/// `None` means "that create sent no message", never "the digest is unavailable" —
+/// the legacy-unknown row refuses outright.
 fn binding_fingerprint(
     binding: &crate::db::sqlite::TrackCreateBinding,
 ) -> Result<(&str, Option<&str>)> {
@@ -734,13 +398,8 @@ fn ensure_binding_create_matches(
     shape: CreateShape,
 ) -> Result<()> {
     let (bound_create_request_sha256, bound_first_message_sha256) = binding_fingerprint(binding)?;
-    // #1426 — checked first, and checked at all because the digest below cannot
-    // see it: `create_request_sha256` omits `first_message`, so a create that
-    // added or dropped the sentence hashes to the same value as the one that
-    // bound the key. Refusing both directions is what keeps a message-carrying
-    // request from replaying a message-less binding — which would answer 201
-    // for a delivery nobody made — and a message-less request from silently
-    // adopting a track whose create did deliver one.
+    // Checked first, because the digest below omits `first_message`: a create that added
+    // or dropped the sentence hashes to the same value.
     let bound_shape = match bound_first_message_sha256 {
         Some(_) => CreateShape::WithFirstMessage,
         None => CreateShape::MessageLess,
@@ -783,19 +442,14 @@ fn ensure_binding_message_matches(
     Ok(())
 }
 
-/// A replay joins the chosen operation attempt, not necessarily the base
-/// attempt recorded by the track binding. After a terminal failure the caller
-/// may edit the message on a fresh `#N` key; once that attempt succeeds, its
-/// digest is the durable replay identity.
+/// A replay joins the chosen operation attempt, not necessarily the base attempt; once
+/// an edited `#N` retry succeeds, its digest is the durable replay identity.
 fn ensure_replay_message_matches(
     payload: &PlannerHarnessStartOperationPayload,
     plan: &FirstMessagePlan,
 ) -> Result<()> {
-    // Digested from the payload's verbatim `first_message`, not from a
-    // separate payload digest field: #1314 deleted that field because the text
-    // it hashed is right here. Still fail-closed on absence — a track-create
-    // operation always carries the sentence, so a payload without one is a
-    // corruption, and refusing it beats letting it pass unchecked.
+    // Fail closed on absence: a track-create operation always carries the sentence, so a
+    // payload without one is corruption.
     let payload_text = payload.first_message.as_deref().ok_or_else(|| {
         CalmError::Internal(format!(
             "track-create operation {} has no first message",
@@ -810,12 +464,7 @@ fn ensure_replay_message_matches(
     Ok(())
 }
 
-/// The `first_message` twin of `create_track_with_planner_harness`, for the arm
-/// that actually mints ([`CreatePlan::Mint`]).
-///
-/// Reached only after the create path's request validation, exactly like the
-/// message-less path: this is the one arm that consumes a `NewTrack` and
-/// `CreateTrackOptions`, so it is the one arm those checks protect.
+/// The `first_message` twin of `create_track_with_planner_harness`, for the arm that mints.
 pub(super) async fn create_track_with_first_message(
     s: RouteState,
     actor: Actor,
@@ -823,23 +472,10 @@ pub(super) async fn create_track_with_first_message(
     mut options: CreateTrackOptions,
     plan: FirstMessagePlan,
 ) -> Result<Response> {
-    // #1384 — the `Mint`-arm condition on the binding write, in one place.
-    //
-    // `create_track_structure` is reached by the unkeyed create too
-    // (`create_track_with_planner_harness` calls it), so conditioning the write
-    // on "the closure ran" would write a binding for `CreatePlan::Legacy` as
-    // well — for a request that sent no key to bind. It is conditioned on the
-    // plan instead: this function is the only writer of the field with a
-    // message digest, and it is reachable only from `CreatePlan::Mint`. #1426's
-    // `MessageLessMint` sets the same field from `create_track` itself, because
-    // its mint is the unforked legacy entry.
-    // #1430 — `None` in production and in every other test; one `Option` check
-    // on the mint path. Armed only by the cross-instance primary-key race case,
-    // which needs this request held *after* its lookup 1 missed and *before*
-    // `create_track_structure` opens the transaction that writes the binding
-    // row. See `super::TrackCreateMintRendezvous` for why the race has to be
-    // constructed here rather than hoped for, and why every wait it performs is
-    // bounded.
+    // Conditioned on the plan, not on the closure running: `create_track_structure` is
+    // reached by the unkeyed create too.
+    // The rendezvous is `None` in production; a test seam for the cross-instance
+    // primary-key race, held after lookup 1 missed and before the binding transaction opens.
     if let Some(gate) = s.track_create_mint_rendezvous.clone() {
         gate.hold().await;
     }
@@ -867,53 +503,15 @@ pub(super) async fn create_track_with_first_message(
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
-/// Adopt the track a previous attempt under this `Idempotency-Key` minted, and
-/// repair its workspace — the half both resuming arms share.
-///
-/// #1426 factored this out of [`resume_prior_attempt`] rather than restating it
-/// in [`resume_message_less`]: the `track_get` refusal and the
-/// materialization-failure mapping are the two fail-closed decisions this
-/// mechanism turns on, and two copies of them would be two chances to drift
-/// apart on what a poisoned key answers.
+/// Adopt the track a previous attempt under this `Idempotency-Key` minted, and repair
+/// its workspace — the half both resuming arms share.
 async fn adopt_prior_track(s: &RouteState, track_id: &str) -> Result<Track> {
-    // Direct replay materialization bypasses OperationRuntime, so take the
-    // same per-track fence as lazy harness recovery. It is released before the
-    // operation is submitted, preserving the operation-drive → track-delete
-    // order used by DELETE while preventing a replay from recreating a path
-    // already being moved to trash.
+    // Direct replay materialization bypasses OperationRuntime, so take the same per-track
+    // fence as lazy harness recovery; released before the operation is submitted to keep
+    // the operation-drive → track-delete lock order.
     let track_delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, track_id).await;
-    // Fail closed. A 201 here would have to mint a replacement track under a key
-    // that already means "that track", i.e. answer a byte-identical request with
-    // a *different* track. The binding row deliberately has no `ON DELETE
-    // CASCADE`, so a deleted track poisons its key rather than silently
-    // recycling it.
-    //
-    // #1428 — 409 `idempotency_key_exhausted`, not the 500 this used to be. The
-    // fence does not move: this still mints nothing, and the poisoning is still
-    // permanent for this key. What changes is that the answer says so.
-    //
-    // It is the same refusal the workspace arm below already makes, for a
-    // strictly cleaner reason — a deleted track cannot come back, whereas an
-    // unmarked directory theoretically could — so the two poisoned-key
-    // outcomes of this function now answer with one code instead of two.
-    //
-    // The escape needs no new machinery and no operator: a new
-    // `Idempotency-Key` misses the binding, takes `Mint`, and derives a managed
-    // path from a fresh id. A binding-row deleter would buy nothing on top of
-    // that, at the cost of the tree's first `DELETE FROM
-    // track_create_idempotency` keyed on a client-supplied string.
-    //
-    // The code is what makes the escape reachable, which is why this is worth
-    // twenty lines: `trackCreateKeyAction` (`fe/core/domain/track.ts`) returns
-    // `'preserve'` for every 5xx — deliberately, since a 5xx may have committed
-    // and rotating its key could mint a second track — and `'replace'` only for
-    // `idempotency_key_exhausted`. The new-track route mints one key per draft
-    // and replaces it in place on exactly that code (#1435). So under the old
-    // 500 a reader whose track was deleted was pinned to a dead key until they
-    // reloaded the page; under this one their next submit carries a fresh key.
-    // Zero frontend lines. Pinned by
-    // `a_replay_onto_a_deleted_track_is_key_exhausted` and
-    // `a_new_idempotency_key_recovers_from_a_deleted_track`.
+    // Fail closed: the binding row has no `ON DELETE CASCADE`, so a deleted track poisons
+    // its key. 409 `idempotency_key_exhausted` is what makes the FE rotate to a fresh key.
     let track = s.repo.track_get(track_id).await?.ok_or_else(|| {
         CalmError::IdempotencyKeyExhausted(format!(
             "this Idempotency-Key names track {}, which has been deleted, so no retry under this \
@@ -922,20 +520,8 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str) -> Result<Track> {
             track_id
         ))
     })?;
-    // #1384 — `Resume` re-materializes, and the mint arm's failure semantics is
-    // inherited rather than softened.
-    //
-    // The failure points this arm exists for include "process died between the
-    // COMMIT and `materialize_workspace`" and "`materialize_workspace` returned
-    // `Err`". Inheriting the reference branch's resume verbatim — `track_get`
-    // then submit — would answer 201 for a track whose workspace does not exist,
-    // which is the #1147 failure replayed one layer down.
-    //
-    // Re-running it is safe because the function is *designed* to be re-run:
-    // `Attached` is an unconditional no-op; on `Managed` the owner marker gates
-    // everything and its own comment says a half-built directory left by a crash
-    // is repairable; steady state costs one `rev-parse`, and the worker lease
-    // path already calls it on every acquisition for exactly this reason.
+    // `Resume` re-materializes: a 201 for a track whose workspace does not exist would
+    // replay the create failure one layer down. `materialize_workspace` is designed to be re-run.
     crate::workspace_materialize::materialize_workspace(
         &track.workspace,
         &s.workspace_root,
@@ -948,30 +534,9 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str) -> Result<Track> {
             error = %error,
             "track create replay: workspace materialization failed"
         );
-        // 409 `idempotency_key_exhausted`, not a generic 500, and this is the
-        // one behavioural change this arm makes.
-        //
-        // The fence in `materialize_workspace` refuses an unmarked non-empty
-        // directory forever, and that state IS reachable from a create crash:
-        // `write_owner_marker` creates `<path>/.git` and only then writes the
-        // marker, so death between those two syscalls leaves a directory that
-        // has entries and no marker. Relaxing the fence would mean allowlisting
-        // "the only entry is `.git/`", a marker-absence heuristic no positive
-        // fingerprint can replace, so the fence stands.
-        //
-        // The trade, in both directions: before #1384 that window produced a
-        // *second* track at a fresh path and the user got a working one. Now the
-        // key is poisoned and every retry under it re-materializes the same dead
-        // path. That is a liveness regression in a narrow window, bought for a
-        // correctness fix — and the escape needs no new machinery, because the
-        // poisoning is per-key: a new `Idempotency-Key` misses the binding, mints
-        // a fresh id, and a managed path is derived from *that* id, so it is a
-        // different directory. `idempotency_key_exhausted` already means "this
-        // key is used up; retry under a new one", which is exactly the actionable
-        // instruction. The underlying message is carried verbatim so the dead
-        // path is named. Pinned by
-        // `a_resume_onto_an_unmarked_non_empty_workspace_is_key_exhausted` and
-        // `a_new_idempotency_key_recovers_from_a_poisoned_workspace`.
+        // 409 `idempotency_key_exhausted`, not a 500: an unmarked non-empty directory is
+        // reachable from a create crash and the fence refuses it forever, so the key is
+        // poisoned; a new key mints a different path.
         CalmError::IdempotencyKeyExhausted(format!(
             "this Idempotency-Key names track {}, whose workspace can no longer be materialized, \
              so no retry under this key can produce a working track; retry under a new \
@@ -983,12 +548,8 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str) -> Result<Track> {
     Ok(track)
 }
 
-/// The arms where this key **already** minted a track ([`CreatePlan::Resume`]).
-///
-/// Takes neither `NewTrack` nor `CreateTrackOptions`, and that absence is the
-/// structural statement: nothing here can mint, so `create_track` is right to
-/// have skipped the request validation that guards minting — see the module docs
-/// for why re-running it was actively wrong.
+/// The arms where this key already minted a track. Takes neither `NewTrack` nor
+/// `CreateTrackOptions`: nothing here can mint.
 pub(super) async fn resume_prior_attempt(
     s: RouteState,
     actor: Actor,
@@ -996,9 +557,8 @@ pub(super) async fn resume_prior_attempt(
 ) -> Result<Response> {
     let ResumeFirstMessage { plan, prior } = resume;
     let track = adopt_prior_track(&s, &prior.track_id).await?;
-    // The one place the two arms diverge. See `PriorArm`: a replay owes the
-    // caller the selected operation's payload byte for byte, a genuine retry
-    // owes it the world as it is now.
+    // The one place the two arms diverge: a replay owes the caller the selected
+    // operation's payload byte for byte, a genuine retry owes it the world as it is now.
     let cwd = match prior.arm {
         PriorArm::Replay => prior
             .cwd
@@ -1022,27 +582,10 @@ pub(super) async fn resume_prior_attempt(
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
-/// #1426 — the message-less resuming arm.
-///
-/// Answers the same 201 the mint would have, for the track this key already
-/// minted. Like [`resume_prior_attempt`] it takes neither `NewTrack` nor
-/// `CreateTrackOptions`, so it structurally cannot mint, and `create_track` is
-/// therefore right to have skipped the create path's request validation.
-///
-/// **What it does NOT do, and why that is the whole point:** it derives no
-/// operation key and looks no operation up. `start_planner_harness` is the
-/// unchanged pre-#1299 submit — a fresh `operation_key`, `idempotency_key:
-/// None` — so there is nothing to join and nothing to replay. Re-running it is
-/// a *repair*, in the same sense `materialize_workspace` above is one: it is
-/// what boot recovery and the worker lease path already do to an inert planner
-/// agent, it carries no user text, and its failure is a `warn!` and a 201 on
-/// the minting path and stays one here.
-///
-/// So this arm's total answer set is: 201 with the key's own track; and 409
-/// `idempotency_key_exhausted` for either way this key can be poisoned — the
-/// track was deleted out from under the binding (#1428), or its workspace can
-/// no longer be materialized. It has no `#N` chain and cannot exhaust retry
-/// slots, because it consumes none.
+/// The message-less resuming arm: 201 with the key's own track, or 409
+/// `idempotency_key_exhausted` when the track was deleted or its workspace can no longer
+/// be materialized. Derives no operation key: `start_planner_harness` submits with
+/// `idempotency_key: None`, so there is nothing to join.
 pub(super) async fn resume_message_less(
     s: RouteState,
     actor: Actor,
@@ -1060,42 +603,20 @@ pub(super) async fn resume_message_less(
 }
 
 /// Which arm submitted, for the sole purpose of reading an `OperationOutcome`.
-/// See [`response_for`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SubmitArm {
     Mint,
     Resume,
 }
 
-/// Map an operation outcome onto this route's answer, per arm.
-///
-/// Split out of the `match` it used to be folded into, because the fold's
-/// written justification was "`SucceededViaCollision` is unreachable from this
-/// call site, since it submits `idempotency_key: None`" — and this module
-/// submits one. That ground is gone; a comment that says something false is
-/// worse than no comment.
-///
-/// **The variant nevertheless stays globally unreachable**, on a second and
-/// independent ground this issue does not touch: its sole producer,
-/// `operation_result_from`, requires a persisted
-/// `phase_detail.completion == "idempotency_collision"`, and nothing in this
-/// repository writes that key. `submit`'s collision short-circuit returns the
-/// *existing* operation's id, and `wait` then reads that operation's own durable
-/// row, whose `phase_detail` carries no `completion`. So a replay comes back as
-/// plain `Succeeded`.
-///
-/// The arm is therefore what actually decides replay semantics — "the message
-/// was delivered, but not by THIS request" is exactly what `CreatePlan::Resume`
-/// means, computed before anything is submitted. The split below is a
-/// fail-closed statement about a state that should not arise, not a runtime
-/// signal the route depends on.
+/// Map an operation outcome onto this route's answer, per arm. `SucceededViaCollision`
+/// is globally unreachable today (nothing writes the `idempotency_collision`
+/// completion); the split is a fail-closed statement, not a signal the route depends on.
 fn response_for(arm: SubmitArm, outcome: OperationOutcome) -> Result<()> {
     match outcome {
         OperationOutcome::Succeeded { .. } => Ok(()),
-        // A fresh key cannot collide with itself. Reaching this on the minting
-        // arm would mean the operation this request just submitted resolved to
-        // an *earlier* one — i.e. the key was not fresh after all, and a 201
-        // would promise a delivery this request did not make.
+        // A fresh key cannot collide with itself; a 201 would promise a delivery this request
+        // did not make.
         OperationOutcome::SucceededViaCollision { .. } if arm == SubmitArm::Mint => {
             Err(CalmError::Internal(
                 "track create: a freshly minted Idempotency-Key resolved to an earlier \
@@ -1123,26 +644,9 @@ fn response_for(arm: SubmitArm, outcome: OperationOutcome) -> Result<()> {
     }
 }
 
-/// What a create that promised a delivery says when the harness start did not
-/// complete.
-///
-/// **The endpoint still cannot say whether the message was delivered, and this
-/// text does not pretend otherwise.** `harness.user_message.enqueued` proves
-/// only an *attempt*: `prepare_tx` seeds the observation and writes the audit row
-/// in a transaction that commits at `TxCommitted`, the later `AppServerInteract`
-/// can still fail, `events` is append-only, and compensation only marks the
-/// runtime failed. There is no other durable record of the turn leaving, so no
-/// read the handler can perform answers the question. And a *negative* claim
-/// would be a lie on the `Stuck` path, where `spawn_side_effect` has already
-/// installed a live harness and fired the turn while the phase write failed.
-///
-/// What #1384 does add is the actionable half, and only the two things it can
-/// prove: a retry under the same `Idempotency-Key` creates no second track (the
-/// binding row) and delivers no second copy (`retryable_operation_key` does not
-/// step over `Stuck`, so the retry resolves to the same operation and replays
-/// the recorded failure). It deliberately does **not** promise the track is
-/// usable — a replay does not repair an attached workspace whose directory was
-/// deleted — so the text says so rather than implying health by omission.
+/// What a create that promised a delivery says when the harness start did not complete.
+/// The endpoint cannot say whether the message was delivered; it only promises that a
+/// retry under the same key creates no second track and delivers no second copy.
 fn harness_start_failure_message(reason: &str) -> String {
     format!(
         "track create: the track was created but its planner harness start did not complete, so \
@@ -1155,15 +659,9 @@ fn harness_start_failure_message(reason: &str) -> String {
     )
 }
 
-/// Submit `planner-harness-start` carrying the first message.
-///
-/// Deliberately NOT the `tracing::warn!` + `Ok(())` best-effort shape
-/// `start_planner_harness` uses for the message-less path. There the track is
-/// the whole deliverable and an inert planner agent is recoverable; here the
-/// request also promised to deliver a sentence, and answering 201 for an
-/// operation that never enqueued it would tell the user their instruction
-/// arrived when it did not. A 5xx is also what makes the genuine-retry arm
-/// usable: the client retries under the same key and the retry re-executes.
+/// Submit `planner-harness-start` carrying the first message. Deliberately NOT the
+/// best-effort shape `start_planner_harness` uses: a 201 for an operation that never
+/// enqueued the sentence would lie, and a 5xx is what makes the genuine-retry arm usable.
 #[allow(clippy::too_many_arguments)]
 async fn start_planner_harness_with_first_message(
     s: &RouteState,
@@ -1172,14 +670,10 @@ async fn start_planner_harness_with_first_message(
     track: &Track,
     planner_card_id: String,
     report_card_id: String,
-    // `cwd` is NOT `track.workspace.path`: on a replay it is the chosen
-    // operation's `cwd`, so the resubmitted payload hashes to the same value
-    // even if the workspace was repointed in between. See `PriorArm`.
+    // `cwd` is NOT `track.workspace.path`: on a replay it is the chosen operation's `cwd`,
+    // so the resubmitted payload hashes to the same value after a repoint.
     cwd: String,
     text: String,
-    // No `first_message_sha256` parameter: the payload no longer has that
-    // field (#1314), and the binding row's copy is set by
-    // `create_track_with_first_message` from `plan` directly.
     create_request_sha256: String,
     operation_key: String,
 ) -> Result<()> {
@@ -1197,33 +691,18 @@ async fn start_planner_harness_with_first_message(
         force_new_thread: false,
         profile: Default::default(),
         create_card: None,
-        // The sentence itself, which `prepare_tx` enqueues inside the mint
-        // transaction — and which, being part of the payload, also binds the
-        // body into `payload_hash`: replaying one key with a different sentence
-        // is a 409 instead of a silent replay of the first one. #1314 deleted
-        // the separate `first_message_sha256` **payload field** that used to
-        // sit here; it hashed bytes this field already carries verbatim, and
-        // `ensure_replay_message_matches` now digests this field instead.
-        //
-        // The digest function is NOT gone: `first_message_digest` still
-        // computes `plan.first_message_sha256`, which #1452 persists in the
-        // `track_create_idempotency` binding row. That row carries no message
-        // text, so there the hash is the message's only representation and is
-        // not redundant.
+        // Enqueued by `prepare_tx` inside the mint transaction; being part of the payload it
+        // also binds the body into `payload_hash`, so a different sentence under one key is a 409.
         first_message: Some(text),
-        // #1384 / #1434 — also carried in the operation payload for its local
-        // collision check. The durable authority is now the binding row, which
-        // covers every mint input and exists even when this operation does not.
-        // Other producers leave the field `None`, preserving their payload
-        // bytes across deployment.
+        // Also carried in the operation payload for its local collision check; the durable
+        // authority is the binding row. Other producers leave the field `None`.
         create_request_sha256: Some(create_request_sha256),
-        // #1343 — not a conversation create; nothing to brief. `None` is
-        // skipped by serde, so this payload's bytes are unchanged.
+        // Not a conversation create; nothing to brief.
         opening_briefing: None,
     };
     let op_payload = serde_json::to_value(&request)?;
-    // Same hash shape as `start_planner_harness`, so the two paths cannot drift
-    // on what a payload is.
+    // Same hash shape as `start_planner_harness`, so the two paths cannot drift on what a
+    // payload is.
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.as_str(),
         "request": &request,
@@ -1282,9 +761,8 @@ mod tests {
         );
     }
 
-    /// Golden, not a round trip. A self-consistency check would stay green if
-    /// the namespace were merged into the conversation flavours', which is the
-    /// one thing this derivation has to keep apart.
+    /// Golden, not a round trip: a self-consistency check would stay green if the namespace
+    /// were merged into the conversation flavours'.
     #[test]
     fn the_track_create_key_is_a_pure_function_of_area_and_idempotency_key() {
         let key = derive_track_create_operation_key("area-1", "key-a");
@@ -1297,9 +775,7 @@ mod tests {
         assert_ne!(key, derive_track_create_operation_key("area-2", "key-a"));
     }
 
-    /// The namespace separation, asserted where it can actually be constructed:
-    /// feed ONE literal id to both derivations. A route-level test could never
-    /// distinguish "separate namespaces" from "different inputs".
+    /// The namespace separation, asserted by feeding ONE literal id to both derivations.
     #[test]
     fn the_track_create_namespace_never_collides_with_a_conversation_key() {
         let create = derive_track_create_operation_key("id-1", "key-a");
@@ -1307,14 +783,7 @@ mod tests {
         assert_ne!(create, track.operation_key);
     }
 
-    /// T-ARM-1 — [`SelectedArm`]'s table, cell by cell, over the two inputs that
-    /// decide it.
-    ///
-    /// The load-bearing cells are the two on the right: the binding row alone
-    /// decides whether this request may mint, and what sits on the chosen
-    /// operation key decides only whether it replays or re-executes. Before
-    /// #1384 the second input was asked to answer both questions, and it cannot
-    /// answer the first when `validate` refused before the row existed.
+    /// [`SelectedArm`]'s table, cell by cell.
     #[test]
     fn the_arm_is_decided_by_the_binding_then_by_what_sits_on_the_chosen_key() {
         let table = [
@@ -1333,11 +802,8 @@ mod tests {
         }
     }
 
-    /// T-COLL-1 — a collision outcome is a success only on a resuming arm.
-    ///
-    /// Constructed directly: the variant is globally unreachable (see
-    /// [`response_for`]'s doc comment for the surviving reason), so there is no
-    /// integration construction and none is faked.
+    /// A collision outcome is a success only on a resuming arm. Constructed directly: the
+    /// variant is globally unreachable, so there is no integration construction.
     #[test]
     fn a_collision_outcome_is_a_success_only_on_a_resume_arm() {
         let collision = || OperationOutcome::SucceededViaCollision {

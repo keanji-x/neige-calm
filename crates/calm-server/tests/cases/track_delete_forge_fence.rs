@@ -122,9 +122,7 @@ async fn delete(app: axum::Router, uri: &str) -> StatusCode {
 }
 
 async fn create_track(boot: &Boot, title: &str) -> String {
-    // #1147 S3 — an attached `cwd` must be a real Git work tree now. These
-    // fence tests never look at the directory, only at the track/operation
-    // rows, so any real repository will do.
+    // An attached `cwd` must be a real Git work tree; these tests never look at the directory, so any real repository will do.
     let cwd = attached_repo_fixture(&format!("track-delete-forge-fence-{title}"));
     let (status, body) = post(
         boot.app.clone(),

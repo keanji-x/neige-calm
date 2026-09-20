@@ -1,24 +1,5 @@
-//! #1669 §2.2 — `calm.source.capture` and `calm.source.list`, the
-//! Planner's way to turn a plugin result it just read into a stable,
-//! verifiable source and to name anchors in it.
-//!
-//! Both handlers check `require_role(Planner)` themselves: discovery
-//! hiding and the worker allowlist are not kernel refusals, tools still
-//! dispatch by name. `MCP_TOOL_ALLOWLIST` (`dedicated_codex/policy.rs`)
-//! deliberately does not list these (design §6).
-//!
-//! `capture` has three mutually exclusive shapes (§2.2 field matrix):
-//!
-//! | branch | required | forbidden |
-//! |---|---|---|
-//! | `call` | `call.tool`, `provenance ∈ {full_text, summary, web_page}`, `title` | `manual`, `source_id` |
-//! | `manual` | `manual.text`, `provenance == "manual"`, `title` | `call`, `source_id` |
-//! | append | `source_id`, non-empty `quotes` | `call`, `manual`, `title`, `provenance` |
-//!
-//! Errors: shape, missing fields, an unresolvable call, a quote that is
-//! not a byte substring, a branch conflict → `-32602` with the reason;
-//! a non-Planner → `-32602` (`require_role`); the per-track quota →
-//! `-32403` (`CalmError::Forbidden`, reason `quota`).
+//! `calm.source.capture` and `calm.source.list`: turn a plugin result the Planner just read into a stable, verifiable source.
+//! Both handlers check `require_role(Planner)` themselves; tools still dispatch by name.
 
 use std::sync::Arc;
 
@@ -45,14 +26,11 @@ use calm_types::report_source_links::is_source_id;
 pub const TOOL_SOURCE_CAPTURE: &str = "calm.source.capture";
 pub const TOOL_SOURCE_LIST: &str = "calm.source.list";
 
-/// Wording shared by every "nothing recorded" refusal for a tool the Track
-/// can see, so the Planner reads the same list of causes whatever the
-/// lookup that missed.
+/// Wording shared by every "nothing recorded" refusal for a tool the Track can see.
 const NO_RECORD: &str = "no recorded result for this call in this track \
                          (expired, evicted, never made, or made by a worker)";
 
-/// #1686 — a `call.tool` no visible plugin exposes is a different fact
-/// from a known tool with no entry, and says so.
+/// A `call.tool` no visible plugin exposes is a different fact from a known tool with no entry.
 const UNKNOWN_TOOL_NAME: &str = concat!(
     "unknown tool name: accepted spellings are the registry name (plugin.<id>_<tool>), ",
     "its sanitized form (plugin_<id>_<tool>) or the Codex-qualified form ",
@@ -138,10 +116,6 @@ fn list_descriptor() -> ToolDescriptor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// calm.source.capture
-// ---------------------------------------------------------------------------
-
 const CAPTURE_KEYS: &[&str] = &[
     "call",
     "manual",
@@ -166,11 +140,7 @@ async fn source_capture(
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: caller has no track")))?;
     let obj = require_object(&args, tool)?;
     reject_unknown_keys(obj, CAPTURE_KEYS, tool)?;
-    // A key is "present" when it is in the object, whatever its value: a
-    // `manual: null` next to `call` is still two branches named at once,
-    // and `title: null` on the append branch is still a field that would
-    // be dropped. (`call.args: null` alone means "omitted"; the tool
-    // description says so.)
+    // A key is "present" when it is in the object, whatever its value: `manual: null` next to `call` is still two branches at once.
     let has = |key: &str| obj.contains_key(key);
     match (has("call"), has("manual"), has("source_id")) {
         (true, false, false) => capture_call(&ctx, &track_id, obj, tool).await,
@@ -185,8 +155,6 @@ async fn source_capture(
     }
 }
 
-/// The fields every new source needs, parsed the same way on both the
-/// `call` and the `manual` branch.
 struct NewSourceFields {
     provenance: Provenance,
     title: String,
@@ -300,13 +268,8 @@ async fn capture_call(
     Ok(receipt)
 }
 
-/// `call.tool` → the recorded `(plugin_id, tool_name)` it names. Candidates
-/// are only the tools with a live entry in this track (the resolver's
-/// universe, §2.2): an exact registry name wins; otherwise the
-/// [`model_tool_key`] (qualifier stripped, Codex-sanitized) must match
-/// exactly one of them. No match lists the recorded tools and says which
-/// fact it is (#1686): a tool the Track can see with no entry
-/// (`NO_RECORD`), or a name nothing visible exposes (`UNKNOWN_TOOL_NAME`).
+/// Candidates are only tools with a live entry in this track: an exact registry name wins; otherwise the
+/// [`model_tool_key`] must match exactly one of them.
 async fn resolve_recorded_tool(
     ctx: &Arc<AppContext>,
     track_id: &str,
@@ -487,20 +450,14 @@ async fn insert_source(
     }))
 }
 
-/// `src_` + 8 lowercase hex digits. Not a secret: uniqueness is per track
-/// and [`mint_unique_source_id_tx`] re-mints on a collision.
+/// Not a secret: uniqueness is per track and [`mint_unique_source_id_tx`] re-mints on a collision.
 fn mint_source_id() -> String {
     format!("src_{:08x}", rand::random::<u32>())
 }
 
-/// How many mints a capture tries before giving up. 32 random bits against
-/// at most [`MAX_SOURCES_PER_TRACK`] rows never gets near this in practice;
-/// the bound exists so a broken generator cannot spin the transaction
-/// forever.
+/// Bound so a broken generator cannot spin the transaction forever.
 const MAX_MINT_ATTEMPTS: usize = 8;
 
-/// A source id no row of `track_id` uses, from up to [`MAX_MINT_ATTEMPTS`]
-/// draws of `mint`; `Internal` when every draw collided.
 async fn mint_unique_source_id_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track_id: &str,
@@ -575,10 +532,6 @@ fn quotes_json(mapping: &[(String, String)]) -> Vec<Value> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// calm.source.list
-// ---------------------------------------------------------------------------
-
 async fn source_list(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
@@ -629,10 +582,6 @@ pub fn list_entry(row: &SourceRow) -> Value {
     }
     entry
 }
-
-// ---------------------------------------------------------------------------
-// Shared plumbing
-// ---------------------------------------------------------------------------
 
 fn map_err(tool: &str, e: CalmError) -> RpcError {
     match e {
@@ -772,7 +721,6 @@ mod mint_tests {
     async fn mint_skips_a_collision_and_gives_up_after_the_bound() {
         let (repo, track) = repo_with_track().await;
         seed(&repo, &track, "src_00000001").await;
-        // One collision, then a free id.
         let t = track.clone();
         let minted = write_in_tx_typed(&repo, move |tx| {
             Box::pin(async move {
@@ -783,7 +731,6 @@ mod mint_tests {
         .await
         .expect("minted");
         assert_eq!(minted, "src_00000002");
-        // Every draw collides: bounded, Internal.
         let t = track.clone();
         let mut draws = 0usize;
         let err = write_in_tx_typed(&repo, move |tx| {

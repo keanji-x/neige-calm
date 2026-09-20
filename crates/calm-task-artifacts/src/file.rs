@@ -7,19 +7,9 @@ use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use std::{fs::File, io::Seek, os::fd::AsRawFd};
 
 impl ArtifactStore {
-    /// Capture exactly one ordinary file; no Git, source pathname or directory walk.
-    ///
-    /// The caller must hold the declared stop boundary throughout this call, bind
-    /// the path to the correct source attempt/root, and open beneath its pinned
-    /// directory with symlinks and mount crossings refused. `open_source` must use
-    /// O_NONBLOCK at open time (a FIFO must never block before returning here), and
-    /// transfer an independently owned read-only file description with no concurrent
-    /// offset users or writers. The library checks regular type, link count and
-    /// descriptor flags, and rewinds before reading the complete bytes. It cannot
-    /// prove the caller's path, stop or provenance assertions from a descriptor.
-    ///
-    /// The opener is invoked once only for an unfrozen key, under the store lock;
-    /// it must not reenter this store. Frozen replay/conflict never invokes it.
+    /// Capture exactly one ordinary file; no Git, source pathname or directory walk. `open_source` must open read-only
+    /// with O_NONBLOCK beneath a pinned directory (symlinks/mount crossings refused) and hand over an independently owned
+    /// description; it is invoked once, under the store lock, and must not reenter this store.
     pub fn capture_file(
         &self,
         request: FileCaptureRequest<'_>,
@@ -74,10 +64,7 @@ impl ArtifactStore {
         )
     }
 
-    /// Return the exact file bytes from a verified sealed version. Limits apply
-    /// before allocation, and the returned bytes are hashed again against the
-    /// manifest. This grants no acceptance or consumption authority and performs
-    /// no JSON or business validation. Callers must authorize the snapshot/path.
+    /// Return the exact file bytes from a verified sealed version; limits apply before allocation and the bytes are re-hashed against the manifest. Grants no acceptance authority.
     pub fn read_snapshot_file(&self, id: &SnapshotId, path: &FileArtifactPath) -> Result<Vec<u8>> {
         model::file_path(path.as_str(), &self.limits)?;
         let snapshot = self.open_snapshot(id)?;

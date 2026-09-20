@@ -1,19 +1,5 @@
-//! Issue #682 PR-1 — `POST /dev/force-planner-phase` on the replay binary.
-//!
-//! These tests exercise the replay-mode boot (`replay::boot_in_memory`,
-//! the same path `cargo run --bin replay -- --serve` takes) plus the
-//! fixtures-gated `PlannerHarness::force_phase_for_dev` seam.
-//!
-//! Step-0 probe findings (recorded here and in the PR commit body):
-//! in replay boot the shared codex app-server is `new_stub` (supervisor
-//! state `Idle`, no `fake`), so `is_running()` is false and the
-//! `planner-harness-start` operation submitted by `POST /api/tracks` fails
-//! at `validate` ("shared codex app-server is not running") — track +
-//! planner/report cards are created, but NO runtime row exists and NO
-//! harness is registered. `probe_replay_boot_track_create_leaves_planner_card_inert`
-//! pins that, which is why the dev endpoint must stand up its own
-//! runtime row + harness (fixtures-gated `run_unstarted_for_test`-style
-//! spawn) instead of 404ing on registry miss.
+//! `POST /dev/force-planner-phase` on the replay binary, over the replay-mode
+//! boot and the fixtures-gated `PlannerHarness::force_phase_for_dev` seam.
 
 #![cfg(feature = "fixtures")]
 
@@ -135,10 +121,8 @@ async fn create_track(boot: &Boot) -> (String, String) {
     (track_id, planner_card.id.to_string())
 }
 
-/// Step-0 probe — pinned as a regression test. In replay boot (stub
-/// shared codex app-server) the track-create `planner-harness-start`
-/// operation fails at validate, leaving the planner card with no runtime
-/// row and no registered harness; `GET /planner/run` answers dormant.
+/// In replay boot (stub shared codex app-server) the track-create `planner-harness-start`
+/// operation fails at validate, leaving the planner card with no runtime row and no registered harness.
 #[tokio::test]
 async fn probe_replay_boot_track_create_leaves_planner_card_inert() {
     let boot = boot().await;
@@ -270,11 +254,6 @@ async fn phase_changed_events(boot: &Boot, tag: HarnessPhaseTag) -> usize {
         .count()
 }
 
-/// (a) Force-phase on a valid planner card: the forced phase must agree on
-/// all three read surfaces — `GET /planner/run` (live in-memory snapshot),
-/// the emitted `harness.phase.changed` event (persisted row + bus
-/// envelope, i.e. what WS clients see), and the persisted runtime
-/// snapshot (`handle_state_json`).
 #[tokio::test]
 async fn force_planner_phase_three_surfaces_agree() {
     let boot = boot().await;
@@ -297,7 +276,6 @@ async fn force_planner_phase_three_surfaces_agree() {
     );
     assert_eq!(outcome.new_phase, HarnessPhaseTag::TurnRunning);
 
-    // Surface 1 — GET /planner/run reads the live harness snapshot.
     let (status, body) = get(
         boot.app.clone(),
         &format!("/api/cards/{planner_card_id}/planner/run"),
@@ -307,7 +285,6 @@ async fn force_planner_phase_three_surfaces_agree() {
     assert_eq!(body["worker_session_id"], json!(outcome.worker_session_id));
     assert_eq!(body["phase"], json!("turn_running"));
 
-    // Surface 2 — `harness.phase.changed` is persisted AND broadcast.
     assert_eq!(
         phase_changed_events(&boot, HarnessPhaseTag::TurnRunning).await,
         1,
@@ -336,7 +313,6 @@ async fn force_planner_phase_three_surfaces_agree() {
         )
     );
 
-    // Surface 3 — the persisted runtime snapshot + status columns.
     let runtime = boot
         .repo
         .session_projection_active_for_card(&planner_card_id)
@@ -355,8 +331,6 @@ async fn force_planner_phase_three_surfaces_agree() {
     );
 }
 
-/// (b) Guard chain mirrors the production `/planner/*` routes: non-planner cards
-/// are 403 Forbidden, unknown cards 404 NotFound.
 #[tokio::test]
 async fn force_planner_phase_rejects_non_planner_and_unknown_cards() {
     let boot = boot().await;
@@ -399,9 +373,7 @@ async fn force_planner_phase_rejects_non_planner_and_unknown_cards() {
     assert_eq!(err.status(), StatusCode::NOT_FOUND);
 }
 
-/// (c) Forcing the same phase twice goes through the persist path twice
-/// but emits the phase event only once — `persist_snapshot` only emits
-/// when `last_phase != new_phase`.
+/// `persist_snapshot` only emits when `last_phase != new_phase`.
 #[tokio::test]
 async fn force_planner_phase_same_phase_twice_emits_one_event() {
     let boot = boot().await;
@@ -442,7 +414,6 @@ async fn force_planner_phase_same_phase_twice_emits_one_event() {
         "same-phase repeat must not emit a duplicate phase event"
     );
 
-    // And a real transition afterwards still emits exactly one more.
     let third = replay::force_planner_phase(
         &boot.state,
         boot.dyn_repo(),
@@ -459,11 +430,8 @@ async fn force_planner_phase_same_phase_twice_emits_one_event() {
     );
 }
 
-/// (d) #684 review — `wedged` is rejected with 400. Persisting a forced
-/// Wedged writes `WorkerSessionState::Failed`, which `session_projection_active_for_card`
-/// filters out: `GET /planner/run` would instantly answer dormant and the
-/// next force would mint a second runtime. The guard runs before any
-/// stand-up, so a rejected force leaves no runtime row behind.
+/// A persisted forced Wedged writes `WorkerSessionState::Failed`, which `session_projection_active_for_card`
+/// filters out, so the next force would mint a second runtime.
 #[tokio::test]
 async fn force_planner_phase_rejects_wedged_with_bad_request() {
     let boot = boot().await;
@@ -509,12 +477,8 @@ async fn force_planner_phase_rejects_wedged_with_bad_request() {
     );
 }
 
-/// (e) #684 review — the dev-stood-up harness must never run the issuing
-/// loop against the replay stub daemon. `/planner/input` (registry fast path,
-/// hard-fire `UserMessage`) on a forced-`idle` harness would otherwise
-/// flip to `issuing_turn` on the next 50ms tick, fail `turn_start` against
-/// the stub, re-buffer with `hard_fire`, and churn phases forever. With
-/// issuance paused the observation enqueues and the phase stays put.
+/// The dev-stood-up harness must never run the issuing loop against the replay stub daemon:
+/// it would fail `turn_start`, re-buffer with `hard_fire`, and churn phases forever.
 #[tokio::test]
 async fn forced_harness_planner_input_enqueues_without_issuing_turns() {
     let boot = boot().await;
@@ -529,9 +493,6 @@ async fn forced_harness_planner_input_enqueues_without_issuing_turns() {
     .await
     .expect("force to idle");
 
-    // PR-2's happy path: `/planner/input` through the real route. The forced
-    // harness is registered, so `ensure_live_planner_harness` takes the
-    // registry fast path (no daemon-liveness 503).
     let (status, body, text) = post(
         boot.app.clone(),
         &format!("/api/cards/{planner_card_id}/planner/input"),
@@ -544,9 +505,7 @@ async fn forced_harness_planner_input_enqueues_without_issuing_turns() {
     );
     assert_eq!(body["worker_session_id"], json!(outcome.worker_session_id));
 
-    // UserMessage is hard-fire: an unpaused harness would issue on the
-    // next 50ms tick. Give the run loop several ticks (and clear the
-    // 250ms debounce floor) to prove nothing fires.
+    // UserMessage is hard-fire: give the run loop several ticks (and clear the 250ms debounce floor) to prove nothing fires.
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let (status, run) = get(
@@ -577,10 +536,6 @@ async fn forced_harness_planner_input_enqueues_without_issuing_turns() {
     );
 }
 
-/// (f) #684 review — the `/dev/reset` drain seam: every registered harness
-/// is shut down and deregistered so reseeding can't leave orphaned
-/// 50ms-tick tasks warning against wiped runtime rows. A later force
-/// stands a fresh harness back up.
 #[tokio::test]
 async fn shutdown_registered_harnesses_drains_registry_and_allows_reforce() {
     let boot = boot().await;
@@ -604,8 +559,6 @@ async fn shutdown_registered_harnesses_drains_registry_and_allows_reforce() {
         "registry must be empty after the dev-reset drain"
     );
 
-    // Re-forcing after a drain recovers: the runtime row is still active,
-    // so the same runtime gets a freshly spawned harness.
     let again = replay::force_planner_phase(
         &boot.state,
         boot.dyn_repo(),

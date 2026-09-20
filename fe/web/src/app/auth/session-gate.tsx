@@ -1,9 +1,4 @@
-/**
- * SessionGate is outside ServerCompatGate. The whoami verdict therefore lands
- * before either the router or `/api/version` mounts: a logged-out deep link
- * cannot let a route loader (or the compatibility query) leak a preliminary
- * 401. Once authenticated, ServerCompatGate remains the next inner gate.
- */
+/** SessionGate sits outside ServerCompatGate so the whoami verdict lands before any route loader or the compatibility query can leak a preliminary 401. */
 import { type QueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { whoamiOperation } from '../../../../core/api/auth.ts';

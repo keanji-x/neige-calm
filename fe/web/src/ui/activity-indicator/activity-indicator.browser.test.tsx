@@ -12,11 +12,8 @@ afterEach(() => {
 
 type Rgb = readonly [number, number, number];
 
-/*
- * Chromium serialises a computed colour in the space it was authored in, so
- * the string tells us nothing about the pixel. Painting it does: canvas runs
- * the same parse and gamut mapping as the compositor.
- */
+// Chromium serialises a computed colour in the space it was authored in, so the string tells us
+// nothing about the pixel; canvas runs the same parse and gamut mapping as the compositor.
 function paintedRgb(cssColor: string): Rgb {
   const canvas = document.createElement('canvas');
   canvas.width = 1;
@@ -57,13 +54,6 @@ function backgroundOf(state: 'attention' | 'failed'): Rgb {
 }
 
 describe('activity indicator colours', () => {
-  /*
-   * #1722 decision (b): amber for "waiting on you", red for "broken". Before
-   * the re-hue the two families sat 5° apart on the OKLCH wheel and the two
-   * dots were indistinguishable; this pins the distance as the engine paints
-   * it, in both themes, so `.failed` cannot quietly fall back to `--warn`
-   * (or the palette drift back together) without this reddening.
-   */
   it.each(['light', 'dark'] as const)('%s: attention and failed sit more than 30° apart in OKLCH hue', (theme) => {
     if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
     const attention = backgroundOf('attention');

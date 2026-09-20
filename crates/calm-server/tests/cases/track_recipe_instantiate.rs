@@ -1,26 +1,4 @@
-//! #1292 S2 — creating a track from a user-defined recipe.
-//!
-//! S1 gave recipes storage and a write boundary. This is the other half: a
-//! recipe becomes a track's initial report through the same seam a built-in
-//! template uses (`prepare_initial_report_payload`), so the two differ only
-//! in where the payload came from.
-//!
-//! What needs pinning here, and why:
-//!
-//!   * **The instantiated report equals the recipe.** Not "contains the
-//!     title" — field by field on the task blocks, because a seam that
-//!     dropped or rewrote a field would still produce a plausible report.
-//!   * **Instantiation is a value copy.** Editing the recipe afterwards must
-//!     not reach tracks already made from it, and editing such a track must
-//!     not reach the recipe. Both directions, because either one leaking
-//!     would make a recipe a live reference rather than a snapshot.
-//!   * **`tracks.template_id` stays NULL.** A recipe id there would be
-//!     resolved against plugin manifests on the track start path and log a
-//!     failure for an entirely normal track.
-//!   * **Two starting points is a 400**, not a silent winner.
-//!
-//! S3 adds provenance to the same file, since it is the same event being
-//! observed from the other end — see the section header further down.
+//! Creating a track from a user-defined recipe, and the provenance it records.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,9 +28,7 @@ struct Boot {
     app: axum::Router,
     area_id: String,
     repo: Arc<dyn Repo>,
-    /// The same repo, un-erased, so the provenance tests below can reach
-    /// `pool()` and probe migration 0085's CHECK directly. Nothing else needs
-    /// it: every other assertion here goes through a real read path.
+    /// Un-erased so the provenance tests can probe the cross-column CHECK directly.
     sqlx_repo: Arc<SqlxRepo>,
     _tmp: TempDir,
 }
@@ -153,10 +129,6 @@ pub(crate) fn task_fence(payload: Value) -> String {
 }
 
 /// A recipe body with two tasks, one depending on the other.
-///
-/// `pub(crate)` since #1252 R1/F4: `track_report_fork` needs the *same* recipe
-/// shape when it asserts that all three creation sources go through the
-/// structural door with the same absences.
 pub(crate) fn two_task_body() -> String {
     format!(
         "# Plan\n\nSet the thing up, then check it.\n\n{}{}",
@@ -228,13 +200,6 @@ async fn track_detail(app: axum::Router, track_id: &str) -> Value {
     detail
 }
 
-// ---------------------------------------------------------------------------
-
-/// The instantiated report carries the recipe's tasks field for field.
-///
-/// Asserted per field rather than by comparing whole bodies: block ids and
-/// revs are not a cross-implementation contract (#1300 §1.4 made that
-/// explicit for the built-in path), but every *semantic* field is.
 #[tokio::test]
 async fn a_recipe_becomes_the_new_tracks_report() {
     let boot = boot().await;
@@ -267,8 +232,6 @@ async fn a_recipe_becomes_the_new_tracks_report() {
     assert_eq!(tasks[1]["key"], json!("verify"));
     assert_eq!(tasks[1]["depends_on"], json!(["setup"]));
 
-    // Normalized on the way *in* (S1), so it is already right here — the
-    // instantiation seam re-normalizes nothing.
     for task in &tasks {
         assert_eq!(task["declared_by"], json!("spec"));
         assert_eq!(task["ready"], json!(false));
@@ -282,23 +245,6 @@ async fn a_recipe_becomes_the_new_tracks_report() {
     );
 }
 
-/// A recipe whose *source* body carried `refs` instantiates to a task with
-/// no reference, and therefore to no blocking diagnostic.
-///
-/// The write boundary already dropped the field (S1,
-/// `normalize_recipe_body`), and `track_recipes.rs` asserts that on the
-/// stored row. This asserts the same thing one layer down, where the cost
-/// actually lands: `reference_missing` and `reference_cross_area` both carry
-/// the `"refs"` diagnostic path, which is in
-/// `TASK_BLOCKING_DIAGNOSTIC_PATHS`, so a surviving reference does not
-/// merely look untidy in the report — it makes the instantiated task
-/// unschedulable, in every track the recipe ever produces, until somebody
-/// edits each one by hand.
-///
-/// The reference is deliberately dangling. A recipe can only ever ship a
-/// block id it does not own — ids are minted per track at instantiation —
-/// so "names a track that does not exist here" is the ordinary case, not a
-/// contrived one.
 #[tokio::test]
 async fn a_recipe_that_carried_refs_instantiates_with_no_reference() {
     let boot = boot().await;
@@ -309,9 +255,7 @@ async fn a_recipe_that_carried_refs_instantiates_with_no_reference() {
             "goal": "set the thing up",
             "kind": "codex",
             "cwd": "/srv/repos/thing",
-            // So the only thing that can make this task unschedulable is the
-            // reference — `schedulable` below is then a real assertion and
-            // not one absorbed by an unrelated `gate_required`.
+            // Keeps the reference the only thing that could make this task unschedulable.
             "no_gate_reason": "nothing to check yet",
             "refs": [calm_types::report_links::format_track_destination(
                 "some-other-track",
@@ -344,8 +288,6 @@ async fn a_recipe_that_carried_refs_instantiates_with_no_reference() {
         "the instantiated task must carry no reference: {:?}",
         tasks[0]
     );
-    // Not stripped, and the reason it is not: a path is a value its author
-    // can mean, an id space that does not exist yet is not.
     assert_eq!(tasks[0]["cwd"], json!("/srv/repos/thing"));
 
     let blocks = payload.blocks.as_deref().expect("report blocks");
@@ -367,14 +309,7 @@ async fn a_recipe_that_carried_refs_instantiates_with_no_reference() {
         blocking.is_empty(),
         "a recipe-borne reference left the task unschedulable: {blocking:#?}"
     );
-    // Stronger, and reachable because the fixture gave the task a
-    // `no_gate_reason`: the instantiated declaration raises *nothing*.
-    //
-    // Not `schedulable`, which is false here for a reason that has nothing
-    // to do with references: S1 normalization sets `ready: false` on every
-    // recipe task, so a recipe-created task is always waiting on its
-    // planner. Asserting it would have been an assertion that can never go
-    // green, and one that no mutation of this change could flip.
+    // Not `schedulable`: recipe normalization sets `ready: false`, so it is always false here.
     assert!(
         verdicts
             .iter()
@@ -383,10 +318,6 @@ async fn a_recipe_that_carried_refs_instantiates_with_no_reference() {
     );
 }
 
-/// A recipe id must not land on `tracks.template_id`: the track start path
-/// resolves that column against running plugins' manifests, and a recipe has
-/// no manifest — every recipe-created track would log a resolution failure
-/// for an entirely normal situation.
 #[tokio::test]
 async fn a_recipe_created_track_has_no_template_id() {
     let boot = boot().await;
@@ -417,8 +348,6 @@ async fn a_recipe_created_track_has_no_template_id() {
     );
 }
 
-/// Instantiation is a value copy, asserted in **both** directions. Either
-/// leak would make a recipe a live reference rather than a snapshot.
 #[tokio::test]
 async fn recipe_and_instantiated_track_are_independent() {
     let boot = boot().await;
@@ -438,7 +367,6 @@ async fn recipe_and_instantiated_track_are_independent() {
     .await;
     let track_id = created["id"].as_str().unwrap().to_string();
 
-    // Edit the recipe out from under the track.
     let (status, updated) = send(
         boot.app.clone(),
         "PUT",
@@ -456,7 +384,6 @@ async fn recipe_and_instantiated_track_are_independent() {
     .await;
     assert_eq!(status, StatusCode::OK, "{updated}");
 
-    // The existing track is untouched.
     let payload = report_payload(&track_detail(boot.app.clone(), &track_id).await);
     assert_eq!(payload.summary, "v1", "the track kept its snapshot");
     let keys: Vec<_> = task_blocks(&payload)
@@ -465,9 +392,6 @@ async fn recipe_and_instantiated_track_are_independent() {
         .collect();
     assert_eq!(keys, vec![json!("setup"), json!("verify")]);
 
-    // …and a *new* track picks up the edit, which is what makes the first
-    // half meaningful: without this, "unchanged" could just mean the edit
-    // never landed.
     let (_, second) = send(
         boot.app.clone(),
         "POST",
@@ -491,8 +415,6 @@ async fn recipe_and_instantiated_track_are_independent() {
     );
 }
 
-/// Deleting a recipe leaves tracks made from it alone — they hold a copy,
-/// not a reference.
 #[tokio::test]
 async fn deleting_a_recipe_does_not_disturb_tracks_made_from_it() {
     let boot = boot().await;
@@ -525,8 +447,6 @@ async fn deleting_a_recipe_does_not_disturb_tracks_made_from_it() {
     assert_eq!(task_blocks(&payload).len(), 2);
 }
 
-/// A recipe deleted between the picker's read and the create is a 400 that
-/// names the recipe, not a 500 and not a blank track.
 #[tokio::test]
 async fn an_unknown_recipe_id_is_a_400() {
     let boot = boot().await;
@@ -551,31 +471,6 @@ async fn an_unknown_recipe_id_is_a_400() {
     );
 }
 
-/// Two starting points is not a preference to resolve.
-///
-/// The `code` assertion separates the refusal from a `500`/`internal` body — a
-/// `panic!` on this path would produce exactly that, and asserting the status
-/// alone would not tell the two apart.
-///
-/// 第一轮评审 MINOR-3 (#1321 S2) — this comment used to justify the `code`
-/// assertion by a *second, local* refusal for the same combination inside the
-/// `init` match in `create_track`. #1321 S2 deleted that match together with
-/// its fallback arm (`NamedSource::from_request` is now the only refusal), so
-/// the redundancy the sentence described no longer exists. The assertion is
-/// still worth keeping for the reason above; it just is not guarding a second
-/// guard any more.
-///
-/// 第一轮评审 MINOR-1 (#1321 S2) — the message assertion below is new. This is
-/// the oldest of the four exclusivity cases (#1292) and it was the only one
-/// asserting nothing about the body, which made it the one input on which the
-/// design promise `NamedSource::from_request` writes down — *name the
-/// conflicting fields, not "parameter conflict"* — had no pin. Two independent
-/// review channels found it with the same construction: replace the computed
-/// field list with a hard-coded `template_id`/`recipe_id`/`fork_report_from`
-/// triple (or with one generic sentence) and every other exclusivity case goes
-/// red while this one stays green. The negative half (`fork_report_from` must
-/// **not** be named) is what makes it a pin on "the fields the caller actually
-/// sent" rather than on "some fields".
 #[tokio::test]
 async fn template_id_and_recipe_id_together_are_a_400() {
     let boot = boot().await;
@@ -609,29 +504,12 @@ async fn template_id_and_recipe_id_together_are_a_400() {
     );
 }
 
-/// All three named at once is the same 400.
-///
-/// Until #1321 S2 this case carried a narrower statement: `fork_report_from`
-/// won over *one* named starting point but did not get to resolve a request
-/// that named *two*, so ordering the fork arm first would have swallowed the
-/// contradiction. With every pair refused there is no priority rule left to
-/// outrank — what remains worth pinning is that the three-field request lands
-/// on the *ambiguity* 400 and not on some later check, and that the message
-/// still names the fields.
-///
-/// As above, the `code` assertion separates the refusal from a `500`/`internal`
-/// panic body. 第一轮评审 MINOR-3 (#1321 S2) — it used to say "so this case
-/// stays decisive **if the early guard is removed**", which named the same
-/// deleted second refusal as the case above; there is no longer a second guard
-/// for this one to survive the removal of. What the assertion still buys is
-/// telling a refusal apart from a crash.
 #[tokio::test]
 async fn template_id_and_recipe_id_with_a_fork_source_are_still_a_400() {
     let boot = boot().await;
     let recipe = create_recipe(boot.app.clone(), "mine", &two_task_body()).await;
 
-    // A real, forkable source track, so the request is rejected for its
-    // ambiguity and not for a dangling fork source.
+    // A real, forkable source track, so the refusal is for ambiguity and not a dangling id.
     let (_, source) = send(
         boot.app.clone(),
         "POST",
@@ -667,32 +545,11 @@ async fn template_id_and_recipe_id_with_a_fork_source_are_still_a_400() {
     }
 }
 
-/// #1321 S2 — a `recipe_id` and a `fork_report_from` together are a 400.
-///
-/// ## Why this pair, when the issue only named the other one
-///
-/// This case replaces `an_explicit_fork_source_still_wins_over_a_recipe`, which
-/// pinned the deleted behaviour: the fork used to win silently and the recipe
-/// was dropped.
-///
-/// #1321 S2's acceptance names `template_id + fork_report_from`. The argument
-/// #1292 wrote for `template_id + recipe_id` is what generalizes it: *a request
-/// naming two starting points is ambiguous whether or not it also asks for a
-/// fork, and ambiguity is not something a priority rule gets to resolve.* That
-/// argument is about **naming two starting points**, not about which two — so
-/// refusing only the pair the issue names would leave a hole of identical shape
-/// one field over, in the field pair that this file, not the issue's, exercises.
-///
-/// The `summary` assertion is what makes this more than a status check: it
-/// establishes the request was well-formed enough to have *succeeded* under the
-/// old rule (a real recipe, a real forkable source), so the 400 is the
-/// exclusivity and not a dangling id.
 #[tokio::test]
 async fn a_recipe_and_an_explicit_fork_source_are_a_400() {
     let boot = boot().await;
     let recipe = create_recipe(boot.app.clone(), "recipe-side", &two_task_body()).await;
 
-    // A plain track whose report the old rule would have forked.
     let (_, source) = send(
         boot.app.clone(),
         "POST",
@@ -752,9 +609,6 @@ async fn a_recipe_and_an_explicit_fork_source_are_a_400() {
     );
 }
 
-/// A zero-task recipe instantiates into a track with no tasks — legal all
-/// the way down, and pinned so nobody adds a minimum-one-task rule at the
-/// instantiation end either.
 #[tokio::test]
 async fn a_zero_task_recipe_instantiates() {
     let boot = boot().await;
@@ -777,49 +631,7 @@ async fn a_zero_task_recipe_instantiates() {
     assert_eq!(payload.summary, "empty");
 }
 
-// ---------------------------------------------------------------------------
-// #1292 S3 — provenance: which recipe, at which revision.
-//
-// S2 made instantiation a value copy. That is exactly what makes provenance a
-// stored column rather than something derivable: once the recipe is edited or
-// deleted there is nothing left to derive it from.
-//
-// The two column-list cases immediately below —
-// `a_recipe_created_track_records_which_recipe_and_which_revision` and
-// `the_track_detail_route_carries_the_provenance` — each run a real SELECT, one
-// per constant. `TRACK_SELECT_COLUMNS` and `TRACK_SELECT_COLUMNS_W` are spliced
-// into `query_as::<_, TrackRow>` SQL and bound by name at *runtime*, so a field
-// added to `TrackRow` without the matching column in a list compiles clean and
-// fails on the query. Comparing the two constants to each other cannot see that
-// — they can be wrong together. Only executing the query can.
-//
-// The later cases in this section have other subjects, and one of them —
-// `the_database_refuses_half_a_provenance` — runs no SELECT at all.
-// ---------------------------------------------------------------------------
-
-/// `repo.track_get` — the path built on `TRACK_SELECT_COLUMNS`.
-///
-/// # Why a constant-comparison test cannot replace this one
-///
-/// `calm_truth::db::rows::track_select_columns_lists_agree` compares
-/// `TRACK_SELECT_COLUMNS` against `TRACK_SELECT_COLUMNS_W` and nothing else. It
-/// defends the consistency of the two constants **with each other**, not their
-/// consistency with `TrackRow` or with the `tracks` table — it never reads
-/// either. Two lists that are wrong in the same way agree with each other
-/// perfectly, so a field added to `TrackRow` and left out of both lists leaves
-/// that test green and every `query_as::<_, TrackRow>` SELECT broken. The
-/// binding happens by name at runtime, so the compiler is silent too.
-///
-/// Executing a SELECT is therefore the only thing in the repository that can
-/// observe the failure, and this test is that execution for the unaliased
-/// constant. Verified by mutation: deleting `recipe_id` from
-/// `TRACK_SELECT_COLUMNS` turns this test red with `database error: no column
-/// found for name: recipe_id`.
-///
-/// Reading the values back through a real query is also why this asserts on
-/// `track_get` rather than on the `Track` the create call returned: that value
-/// is built in memory by `track_create_tx` from what it just wrote, so it
-/// would report the right answer with the column missing from every SELECT.
+/// Reads back through a real SELECT so a column missing from `TRACK_SELECT_COLUMNS` fails here.
 #[tokio::test]
 async fn a_recipe_created_track_records_which_recipe_and_which_revision() {
     let boot = boot().await;
@@ -851,18 +663,7 @@ async fn a_recipe_created_track_records_which_recipe_and_which_revision() {
     assert_eq!(track.recipe_revision, Some(1));
 }
 
-/// `GET /api/tracks/{id}` — the detail query, the one built on
-/// `TRACK_SELECT_COLUMNS_W`.
-///
-/// A separate test from the one above on purpose: the aliased constant is a
-/// second column list feeding a second SELECT, and a list that lost a column is
-/// invisible until that particular query runs. Every case here that calls
-/// `track_detail` executes the aliased constant; this is the case written for
-/// it, and it reads the provenance columns back through it rather than the
-/// report body. Same reasoning as the test above about why
-/// comparing the two constants to each other cannot stand in for running the
-/// query; verified by mutation, dropping `w.recipe_id` from
-/// `TRACK_SELECT_COLUMNS_W` turns this red.
+/// Reads the provenance back through `TRACK_SELECT_COLUMNS_W`, the detail query's column list.
 #[tokio::test]
 async fn the_track_detail_route_carries_the_provenance() {
     let boot = boot().await;
@@ -887,10 +688,6 @@ async fn the_track_detail_route_carries_the_provenance() {
     assert_eq!(detail["track"]["recipe_revision"], json!(1), "{detail}");
 }
 
-/// A track that came from anywhere else carries no origin at all.
-///
-/// Both columns, because "recorded for everything" and "recorded for recipes"
-/// are different claims and only the second one is true.
 #[tokio::test]
 async fn a_track_not_made_from_a_recipe_has_no_provenance() {
     let boot = boot().await;
@@ -913,13 +710,6 @@ async fn a_track_not_made_from_a_recipe_has_no_provenance() {
     assert_eq!(track.recipe_revision, None);
 }
 
-/// Editing the recipe does not rewrite what an existing track records.
-///
-/// This is the whole reason the revision is stored rather than looked up: a
-/// lookup would answer with today's revision, which is not the one the track
-/// was built from. The second half — a track created *after* the edit records
-/// the new revision — is what makes the first half mean "frozen" rather than
-/// "always 1".
 #[tokio::test]
 async fn editing_the_recipe_leaves_an_existing_tracks_revision_alone() {
     let boot = boot().await;
@@ -986,12 +776,6 @@ async fn editing_the_recipe_leaves_an_existing_tracks_revision_alone() {
     assert_eq!(newer.recipe_revision, Some(2));
 }
 
-/// A deleted recipe leaves the id behind, and nothing about reading the track
-/// breaks.
-///
-/// The id is deliberately not a foreign key and deliberately not cleared: "made
-/// from a recipe that no longer exists" is the truthful answer, and blanking it
-/// would replace a true statement with "made from nothing".
 #[tokio::test]
 async fn deleting_the_recipe_leaves_the_provenance_readable() {
     let boot = boot().await;
@@ -1020,7 +804,6 @@ async fn deleting_the_recipe_leaves_the_provenance_readable() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // Both read paths, because a dangling id must break neither.
     let track = boot
         .repo
         .track_get(&track_id)
@@ -1034,30 +817,7 @@ async fn deleting_the_recipe_leaves_the_provenance_readable() {
     assert_eq!(detail["track"]["recipe_id"], json!(recipe_id), "{detail}");
 }
 
-/// Migration 0085's cross-column CHECK, exercised in both directions.
-///
-/// The `track_create_tx` parameter is a single `Option<TrackRecipeOrigin>`, so
-/// no caller of *that* writer can produce half a provenance — which is exactly
-/// why this test writes straight at the database instead. The CHECK is the
-/// fence for every other writer there will ever be: a later PATCH branch, a
-/// backfill migration, a hand-run UPDATE. It only earns its keep if the
-/// database is the thing refusing, and the only way to see that is to ask the
-/// database.
-///
-/// The two UPDATEs run against a row the real create path produced, so both
-/// column names and the constraint under test are the ones production uses,
-/// not a re-spelling of the create. The INSERT below them adds no
-/// mutation-catching power — SQLite evaluates the same CHECK expression on both
-/// paths, so nothing can break the INSERT direction alone — and is here only so
-/// that "does the fence stand in front of new rows too" is answered where it is
-/// asked.
-///
-/// Each assertion names the constraint rather than matching bare
-/// `"CHECK constraint failed"`: `tracks` also carries the CHECK 0071 added,
-/// today reading `parent_track_id IS NULL OR parent_track_id <> id`, so the
-/// bare substring is satisfiable by a constraint that is not the one under
-/// test. SQLite reports the declared name in the error text, which is why 0085
-/// declares one.
+/// Written straight at the database: no repo writer can produce half a provenance.
 #[tokio::test]
 async fn the_database_refuses_half_a_provenance() {
     let boot = boot().await;
@@ -1077,7 +837,6 @@ async fn the_database_refuses_half_a_provenance() {
     let pool = boot.sqlx_repo.pool();
     const REFUSED_BY: &str = "CHECK constraint failed: track_recipe_origin_is_whole";
 
-    // An id with no revision.
     let error = sqlx::query("UPDATE tracks SET recipe_revision = NULL WHERE id = ?1")
         .bind(&track_id)
         .execute(pool)
@@ -1088,7 +847,6 @@ async fn the_database_refuses_half_a_provenance() {
         "expected {REFUSED_BY} to be what refused it, got: {error}"
     );
 
-    // A revision naming no recipe.
     let error = sqlx::query("UPDATE tracks SET recipe_id = NULL WHERE id = ?1")
         .bind(&track_id)
         .execute(pool)
@@ -1099,10 +857,6 @@ async fn the_database_refuses_half_a_provenance() {
         "expected {REFUSED_BY} to be what refused it, got: {error}"
     );
 
-    // And on the INSERT direction. SQLite evaluates the same expression on both
-    // paths, so this catches no mutation the UPDATEs above miss; it is here
-    // because "the fence also stands in front of new rows" is the thing a
-    // reader wants answered, and answering it costs three lines.
     let error = sqlx::query(
         "INSERT INTO tracks \
            (id, area_id, title, sort, created_at, updated_at, recipe_id, recipe_revision) \
@@ -1119,7 +873,6 @@ async fn the_database_refuses_half_a_provenance() {
         "expected {REFUSED_BY} to be what refused it, got: {error}"
     );
 
-    // Clearing both together is the one legal way out, and it stays legal.
     sqlx::query("UPDATE tracks SET recipe_id = NULL, recipe_revision = NULL WHERE id = ?1")
         .bind(&track_id)
         .execute(pool)
@@ -1127,33 +880,6 @@ async fn the_database_refuses_half_a_provenance() {
         .expect("clearing both at once is a state the system has a reading for");
 }
 
-/// A fork of a recipe-born track records no provenance of its own.
-///
-/// That is a decision made by omission — the fork arm of
-/// `create_track_with_planner_harness` never produces a `TrackRecipeOrigin` —
-/// which is why it is pinned rather than left to the columns' defaults.
-///
-/// #1321 S2 — this case used to pin a second half in the same body: that a
-/// request naming both a `recipe_id` and a `fork_report_from` resolved to the
-/// fork rather than to a 400. That half is deleted, not rewritten: the
-/// combination is now the 400 that
-/// `a_recipe_and_an_explicit_fork_source_are_a_400` above pins. Note what the
-/// deleted half is *not* — it was never needed to reach this case's own
-/// property. The recipe provenance being tested belongs to the **source**
-/// track, and this fork now names only `fork_report_from`, which is the shape
-/// every production fork has always had (neither frontend has ever sent
-/// `fork_report_from` at all, let alone with a second source alongside it).
-///
-/// The forked report is asserted first so "no provenance" is not read as "the
-/// content did not arrive either": it did arrive, one hop removed, and the
-/// columns still stay NULL, because they name the recipe a track was
-/// *instantiated* from and this track was instantiated from a track.
-///
-/// Mutations this catches. Bound but not separately run: a fork arm that
-/// stamped provenance would break the two NULL assertions below, and no other
-/// case in this file asserts on a fork's provenance columns. (The mutation the
-/// previous version named — adding a `(_, Some(_), Some(_))` 400 arm ahead of
-/// the fork arm — is no longer a mutation; it is the behaviour.)
 #[tokio::test]
 async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
     let boot = boot().await;
@@ -1174,8 +900,6 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
     assert_eq!(status, StatusCode::CREATED, "{source}");
     let source_id = source["id"].as_str().unwrap().to_string();
 
-    // The source does carry provenance — otherwise the fork having none below
-    // would prove nothing about the fork.
     let source_track = boot
         .repo
         .track_get(&source_id)
@@ -1184,7 +908,6 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
         .expect("source exists");
     assert_eq!(source_track.recipe_id.as_deref(), Some(recipe_id.as_str()));
 
-    // Fork it — naming only the fork source, the one shape a create may name.
     let (status, forked) = send(
         boot.app.clone(),
         "POST",
@@ -1199,7 +922,6 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
     assert_eq!(status, StatusCode::CREATED, "{forked}");
     let fork_id = forked["id"].as_str().unwrap().to_string();
 
-    // The fork did receive the recipe's content, one hop removed.
     let payload = report_payload(&track_detail(boot.app.clone(), &fork_id).await);
     assert_eq!(payload.summary, "forkable");
     let keys: Vec<_> = task_blocks(&payload)
@@ -1208,7 +930,6 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
         .collect();
     assert_eq!(keys, vec![json!("setup"), json!("verify")]);
 
-    // …and records no origin anyway.
     let fork = boot
         .repo
         .track_get(&fork_id)
@@ -1222,16 +943,7 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
     assert_eq!(fork.recipe_revision, None);
 }
 
-// ---------------------------------------------------------------------------
-// #1635 S2c — instantiation is fail-closed on a template-file prefix
-// ---------------------------------------------------------------------------
-
-/// The write boundary refuses a `+++` body (see `track_recipes.rs`), so the
-/// only way such a row exists is one written before that boundary did — this
-/// test writes it through the repo directly, the way such a row would have
-/// got there. `prepare_initial_report_payload` refuses to instantiate it
-/// (D1: `+++` is front matter, never report content), and the create rolls
-/// back rather than minting a track whose report opens with TOML.
+/// The write boundary refuses a `+++` body, so the row is written through the repo directly.
 #[tokio::test]
 async fn a_stored_recipe_that_starts_with_front_matter_does_not_instantiate() {
     let boot = boot().await;
@@ -1279,12 +991,7 @@ async fn a_stored_recipe_that_starts_with_front_matter_does_not_instantiate() {
     );
 }
 
-/// The structural door runs the contract-header funnel (`check_document` in
-/// `write_report_row_and_project_tx`), not only the persist door. A recipe
-/// row inserted through the repo — the way a row written before the recipe
-/// boundary normalized would have got there — with the header on line 2
-/// reaches the funnel untouched by any ingress, and the create answers
-/// `Misplaced` as a 400 with nothing minted.
+/// Inserted through the repo so the header reaches the funnel untouched by any ingress.
 #[tokio::test]
 async fn a_stored_recipe_with_the_header_off_line_1_does_not_instantiate() {
     use calm_types::report_contract::canonical_line;
@@ -1337,13 +1044,7 @@ async fn a_stored_recipe_with_the_header_off_line_1_does_not_instantiate() {
     );
 }
 
-/// KNOWN GAP (#1635 S2c, issue §6), pinned rather than papered over: a row
-/// whose line 1 was stored NON-canonical before S2c (nothing normalized it on
-/// the way in) reaches the funnel through the structural door, and the funnel
-/// reads a non-canonical line 1 as "an ingress skipped `normalize_header`" —
-/// `HeaderError::Internal`, a 500. That is the fail-closed answer the design
-/// accepts for such rows; this test says so, so a change that turns it into
-/// a 400 (or lets it through) is a decision, not a drift.
+/// KNOWN GAP: a non-canonical line 1 stored before normalization is a fail-closed 500, not a 400.
 #[tokio::test]
 async fn a_stored_recipe_with_a_non_canonical_header_is_a_fail_closed_500() {
     let boot = boot().await;

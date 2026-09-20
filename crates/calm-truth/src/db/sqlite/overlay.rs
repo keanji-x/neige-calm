@@ -52,10 +52,8 @@ pub async fn overlay_delete_tx(
     Ok(())
 }
 
-/// Drop every overlay row addressed at the given `(entity_kind, entity_id)`,
-/// across all `plugin_id`s and all `kind`s. Used by the card / track / area
-/// delete paths to keep the table from growing orphans; the `overlays`
-/// schema has no FK because SQLite can't express polymorphic ones.
+/// The `overlays` schema has no FK (SQLite can't express polymorphic ones), so
+/// entity delete paths sweep here explicitly.
 pub async fn overlay_delete_by_entity_tx(
     tx: &mut Transaction<'_, Sqlite>,
     entity_kind: &str,
@@ -69,12 +67,8 @@ pub async fn overlay_delete_by_entity_tx(
     Ok(res.rows_affected())
 }
 
-/// Drop every card-scoped overlay for cards still belonging to the given
-/// track, in the caller's transaction. Race-safe replacement for "read
-/// cards_by_track, loop, sweep" — the IN subquery sees the same DB state
-/// the subsequent `track_delete_tx` cascade will see, so a card+overlay
-/// created between an outside-tx snapshot and the txn commit is still
-/// caught.
+/// The IN subquery sees the same DB state the subsequent cascade will see, so a
+/// card+overlay created after an outside-tx snapshot is still caught.
 pub async fn overlay_delete_card_overlays_by_track_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
@@ -90,17 +84,11 @@ pub async fn overlay_delete_card_overlays_by_track_tx(
     Ok(res.rows_affected())
 }
 
-/// Drop every card-scoped and track-scoped (`'track'` + `'view'`) overlay
-/// under the area, in the caller's transaction. Same race-safe shape as
-/// `overlay_delete_card_overlays_by_track_tx`. Caller still needs to
-/// sweep `('area', area_id)` separately — plugins may address overlays
-/// at the area kind.
+/// Caller still sweeps `('area', area_id)` separately.
 pub async fn overlay_delete_subtree_by_area_tx(
     tx: &mut Transaction<'_, Sqlite>,
     area_id: &str,
 ) -> Result<u64> {
-    // Three statements, accumulated count. Could be one nested query but
-    // splitting keeps each delete legible and individually optimizable.
     let cards = sqlx::query(
         r#"DELETE FROM overlays
            WHERE entity_kind = 'card'

@@ -228,13 +228,8 @@ async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
         .len()
 }
 
-/// Wait until the Claude transcript cursor for `card_id` reaches
-/// `record_index`/`byte_offset`.
-///
-/// Recorded items and the cursor checkpoint are two separate asynchronous
-/// writes, and the checkpoint is the later one, so waiting on the item count
-/// and then asserting the cursor can read the checkpoint one record behind.
-/// Wait on the cursor and assert the item count afterwards instead.
+/// Wait until the Claude transcript cursor for `card_id` reaches `record_index`/`byte_offset`.
+/// The cursor checkpoint is written after the items, so wait on the cursor and assert the item count afterwards.
 async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64, byte_offset: i64) {
     wf::wait_until(wf::LIVENESS_BUDGET, || async {
         cursor_matches(repo, card_id, record_index, byte_offset).await

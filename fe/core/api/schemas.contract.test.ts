@@ -1,6 +1,4 @@
-// Unit tests for the WS event zod schemas. Pinned to the discriminated
-// union in `schemas.ts`; if the kernel adds a new variant server-side, this
-// file is where the parser regression will surface.
+// Unit tests for the WS event zod schemas.
 
 import { describe, it, expect, expectTypeOf } from 'vitest';
 import type { z } from 'zod';
@@ -51,9 +49,6 @@ describe('wireEventSchema', () => {
   });
 
   it('defaults area.updated kind to "user" when absent (legacy wire payload)', () => {
-    // Issue #175 — `areaKindSchema` carries `.default('user')` so pre-#175
-    // wire payloads (event-log replay, legacy fixtures) parse without
-    // requiring a fixture migration.
     const payload = {
       ev: 'area.updated',
       data: {
@@ -74,9 +69,6 @@ describe('wireEventSchema', () => {
   });
 
   it('parses card.added with an arbitrary unknown payload blob', () => {
-    // `payload` on a kernel card is `serde_json::Value`; the schema accepts
-    // anything. Throw a deeply-nested object at it to make sure z.unknown()
-    // really is permissive.
     const cardPayload = { terminal_id: 't_42', nested: { foo: [1, 2, 3] } };
     const event = {
       ev: 'card.added',
@@ -104,21 +96,17 @@ describe('wireEventSchema', () => {
       data: { id: 'x' },
     });
     expect(result.success).toBe(false);
-    // The discriminator should surface in the issues — the exact issue code
-    // varies by zod version, but we always see at least one issue.
+    // The exact issue code varies by zod version.
     if (!result.success) {
       expect(result.error.issues.length).toBeGreaterThan(0);
     }
   });
 
   it('rejects a malformed track (missing required fields)', () => {
-    // track.updated requires the full trackSchema; drop `area_id` to force a
-    // failure.
     const bad = {
       ev: 'track.updated',
       data: {
         id: 'track_1',
-        // area_id missing on purpose
         title: 'hello',
         sort: 0,
         archived_at: null,
@@ -153,8 +141,6 @@ describe('wireEventSchema', () => {
     if (parsed.ev === 'track.updated') {
       expect(parsed.data.agent_message).toBe('moving to dispatch');
       expect(parsed.data.lifecycle).toBe('dispatching');
-      // Pre-#891 payload: no `template_input` key — hydrates to the null
-      // default rather than failing the parse.
       expect(parsed.data.template_input).toBeNull();
       expect(parsed.data.plugin_scope).toBeNull();
     }
@@ -208,18 +194,8 @@ describe('wireEventSchema', () => {
   });
 });
 
-// ---------------- ts-rs ↔ zod conformance (D7 / issue #5) ----------------
-//
-// These assertions pin the runtime zod schemas to the TS types emitted by
-// `ts-rs` from the Rust `Event` enum. The generator is the single source of
-// truth; the zod schemas in `schemas.ts` only exist for runtime validation
-// at the WS boundary. If a Rust-side change drifts ahead of zod (or vice
-// versa), the project's `tsc -b` step (run during `npm run build` and on
-// each `npm run test` via vitest's type-check inference) fails right here.
-//
-// We use `expectTypeOf(...).toEqualTypeOf<...>()` for bidirectional
-// assignability. The whole-`Event`-union check is the bigger guarantee;
-// the per-entity checks make a regression easier to localize.
+// The zod schemas are pinned to the TS types `ts-rs` emits from the Rust `Event` enum;
+// drift in either direction fails `tsc -b` here.
 describe('zod ↔ ts-rs conformance', () => {
   it('keeps API and state decode failures intentionally shape-equivalent', () => {
     expectTypeOf<ApiDecodeFailure>().toEqualTypeOf<DecodeFailure>();
@@ -231,9 +207,6 @@ describe('zod ↔ ts-rs conformance', () => {
   });
 
   it('entity sub-schemas match their generated counterparts', () => {
-    // Per-entity pins make a regression easier to localize than the
-    // whole-union check above — a drift in `Card.payload` lights up here
-    // before reaching `wireEventSchema`.
     expectTypeOf<z.infer<typeof areaSchema>>().toEqualTypeOf<GeneratedArea>();
     expectTypeOf<z.infer<typeof trackSchema>>().toEqualTypeOf<GeneratedTrack>();
     expectTypeOf<z.infer<typeof cardSchema>>().toEqualTypeOf<GeneratedCard>();
@@ -300,10 +273,7 @@ describe('planner harness transcript lifecycle events', () => {
     expect(result.success).toBe(false);
   });
 
-  // #1252 R1/F1 — the Rust field is `Option<i64>` (so pre-#1252 event rows
-  // still replay instead of being dropped), and serde writes `None` as an
-  // explicit `null`. So the wire always carries all three keys, and `null`
-  // is the "this reset predates the telemetry" value.
+  // The Rust field is `Option<i64>` and serde writes `None` as an explicit `null`.
   it('parses harness.transcript.cleared with unmeasured (null) telemetry', () => {
     const parsed = wireEventSchema.parse({
       ev: 'harness.transcript.cleared',
@@ -318,17 +288,14 @@ describe('planner harness transcript lifecycle events', () => {
     });
     expect(parsed.ev).toBe('harness.transcript.cleared');
     if (parsed.ev === 'harness.transcript.cleared') {
-      // null, NOT coerced to 0 — an unmeasured reset must stay
-      // distinguishable from one that measured an empty transcript.
+      // null, NOT coerced to 0.
       expect(parsed.data.cleared_item_count).toBeNull();
       expect(parsed.data.cleared_params_bytes).toBeNull();
       expect(parsed.data.card_age_ms_at_clear).toBeNull();
     }
   });
 
-  // Still rejected: the keys themselves are not optional. serde emits them
-  // on every frame, so an absent key means the producer is not the kernel
-  // we think it is.
+  // The keys themselves are not optional: serde emits them on every frame.
   it('rejects harness.transcript.cleared missing the reset telemetry keys', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
@@ -341,7 +308,6 @@ describe('planner harness transcript lifecycle events', () => {
     expect(result.success).toBe(false);
   });
 
-  // The type is still pinned when the field IS present.
   it('rejects harness.transcript.cleared with non-numeric telemetry', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
@@ -378,13 +344,6 @@ describe('planner harness transcript lifecycle events', () => {
   });
 });
 
-// ---- PR4 of #136: dispatcher + task-lifecycle variants ----------------
-//
-// Schema-only PR. These tests pin the wire shape the parser accepts/rejects
-// for each of the four new variants. Two per variant: a happy-path parse,
-// and a `safeParse` confirming a missing required field fails. PR5's
-// Dispatcher will emit these payloads — these tests are the contract
-// they're emitting against.
 describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   it('parses a valid codex.worker_requested', () => {
     const parsed = wireEventSchema.parse({
@@ -440,8 +399,7 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   });
 
   it('parses a valid task.completed (artifacts as bare strings)', () => {
-    // `ArtifactRef` is `#[serde(transparent)]` around `String` on the
-    // server, so each artifacts[] element is a bare string on the wire.
+    // `ArtifactRef` is `#[serde(transparent)]` around `String`, so each element is a bare string.
     const parsed = wireEventSchema.parse({
       ev: 'task.completed',
       data: {
@@ -641,12 +599,6 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   });
 });
 
-// ---- PR2 of #247: track.report_edited ----------------------------------
-//
-// Structured edit-log companion to `card.updated`. Card-scoped. PR4
-// (web UI) and PR5 (planner agent) both subscribe to it; the parser must
-// accept the three `author` discriminator values + reject missing
-// required fields without falling back to a permissive shape.
 describe('PR2 of #247: track.report_edited', () => {
   it('parses a valid track.report_edited with author=planner', () => {
     const parsed = wireEventSchema.parse({
@@ -800,14 +752,7 @@ describe('entity sub-schemas', () => {
     expect(trackSchema.parse(w).archived_at).toBeNull();
   });
 
-  // ---------------- Issue #145 — Track lifecycle ----------------
-
   it('trackSchema defaults `lifecycle` to "draft" when the field is missing', () => {
-    // Pre-#145 wire payloads (event-log replay fixtures from older
-    // kernels, recorded sessions) carry no `lifecycle`. The schema
-    // default + the Rust struct's `#[serde(default)]` keep them
-    // parseable; the parsed value is always `draft` for the back-
-    // compat path.
     const w = {
       id: 'w1',
       area_id: 'c1',
@@ -821,11 +766,8 @@ describe('entity sub-schemas', () => {
   });
 
   it('trackSchema hydrates + preserves `workspace` (#1147 S1)', () => {
-    // Two halves, and the second is the one that has burned this repo before:
-    // an undeclared field is *stripped* by zod, so a server that sends
-    // `workspace` and a client that never declared it look identical to a
-    // pre-#1147 replay payload. The "missing key" case pins the default; the
-    // "present key" case pins that the field actually survives parsing.
+    // An undeclared field is *stripped* by zod, so the "present key" case pins that
+    // the field actually survives parsing.
     const base = {
       id: 'w1',
       area_id: 'c1',
@@ -854,19 +796,12 @@ describe('entity sub-schemas', () => {
       path: '/srv/neige-workspaces/c1/w1',
       frozen_at: 4242,
     });
-    // NB: there is deliberately no `live.workspace.path === live.cwd`
-    // assertion here. Both values come from this fixture's own literal and
-    // zod has no cross-field constraint, so it would be true no matter what
-    // the schema said. The projection invariant is a *server* property and is
-    // asserted where it can fail — `track_workspace_migration_tests` in
-    // calm-truth, against a real row.
+    // No `live.workspace.path === live.cwd` assertion: zod has no cross-field constraint,
+    // so it would be true no matter what the schema said.
   });
 
   it('trackSchema rejects a present-but-incomplete `workspace` (#1147 S1)', () => {
-    // Absent key ⇒ default (old payloads keep working). Present key ⇒ every
-    // field required, because a partial object means the server is wrong and
-    // silently defaulting it would hide a regression or a half-rolled deploy.
-    // Mirrors serde: none of the three fields has `#[serde(default)]`.
+    // Present key ⇒ every field required; mirrors serde, where none of the three fields has `#[serde(default)]`.
     const base = {
       id: 'w1',
       area_id: 'c1',
@@ -943,7 +878,6 @@ describe('entity sub-schemas', () => {
   });
 });
 
-// ---- #955 §5 PR-a: proposal-channel events ------------------------------
 describe('#955: proposal events', () => {
   it('parses proposal.submitted with every op shape', () => {
     const parsed = wireEventSchema.parse({
@@ -1035,16 +969,8 @@ describe('#955: proposal events', () => {
   });
 });
 
-// #1209 PR-2 test #14 (design §3.4) — historical `track.updated` rows and REST
-// replays still spell the template fields with the pre-rename keys. The Rust
-// side keeps a deserialize-only `#[serde(alias)]`; this reader keeps the
-// matching one-way normalize. Without it the schema's `.default(null)` would
-// hydrate every historical row as `template_id: null` — silently.
-//
-// One of THREE independent copies of this normalize (the other two live in
-// `web/src/api/schemas.ts` and `web/src/track-fs-viewers/schemas.ts`). They are deliberately not
-// factored into a shared helper: "only the third reader was missed" has to be a
-// red test, not a green one.
+// Historical rows spell the template fields with the pre-rename keys; this one-way
+// normalize is deliberately one of three independent copies, not a shared helper.
 describe('#1209 pre-rename template keys on the track shape', () => {
   const legacyTrack = {
     id: 'w1',
@@ -1096,7 +1022,6 @@ describe('#1209 pre-rename template keys on the track shape', () => {
   });
 });
 
-// Candidate verification is separate from immutable-file publication.
 describe('candidate verification settlement', () => {
   it('requires exact task and verification operation identities', () => {
     const event = { ev: 'task.candidate_verification_settled', data: { task_id: 'attempt', operation_id: 'verification' } };

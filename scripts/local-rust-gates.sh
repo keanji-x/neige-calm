@@ -1,21 +1,7 @@
 #!/usr/bin/env bash
-# Run the Rust gates the way CI runs them — in BOTH feature combinations.
-#
-# Why both: `.github/workflows/ci.yml` sets `RUSTFLAGS: -D warnings` globally,
-# and its jobs do NOT all use the same features.
-#
-#   * `lint` and `rust (test)` build with `--features calm-server/codex-e2e`.
-#   * `openapi drift`, `chromium e2e`, `fe e2e` and `stack e2e (tier 1)` build
-#     with DEFAULT features (`cargo run --bin emit-openapi`,
-#     `cargo build --release ...`).
-#
-# Running only the first set is not a proxy for CI. `cargo check --all-targets`
-# is not either: it pulls in the `calm-server` dev-dependency self-loop, which
-# turns `fixtures` on and feature-unifies it into the lib build — so a symbol
-# reachable only under `fixtures` looks alive locally and is dead code in CI.
-# That is exactly how #1147 S2 shipped a `-D dead-code` failure to five jobs
-# while every local gate was green.
-#
+# Run the Rust gates the way CI runs them — in BOTH feature combinations: `-D warnings`
+# is global and CI jobs differ in features. `cargo check --all-targets` is no proxy: the
+# dev-dependency self-loop turns `fixtures` on, so dead-in-CI code looks alive locally.
 # Usage: scripts/local-rust-gates.sh [--quick]
 #   --quick skips the full test run (keeps both compile matrices + openapi).
 set -euo pipefail
@@ -42,8 +28,7 @@ cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shi
   --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
 
 step "5/6 openapi drift (DEFAULT features)"
-# The maintained frontend owns the OpenAPI and wire outputs. Regenerate both
-# with (cd fe && npm run gen:api); this Rust-only check compares the JSON spec.
+# The maintained frontend owns the OpenAPI and wire outputs; this Rust-only check compares the JSON spec.
 cargo run --quiet --manifest-path Cargo.toml --bin emit-openapi > /tmp/neige-openapi-check.json
 openapi_stale=0
 for spec in fe/core/api/generated/openapi.json; do

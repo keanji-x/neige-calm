@@ -27,18 +27,10 @@ fn properties(schema: &Value) -> BTreeSet<String> {
         .collect()
 }
 
-/// #1666 — the targeted tools are flat objects: both selectors are optional
-/// root properties (exactly-one targeting is enforced server-side by
-/// `Target::from_ids` and stated first in every description), no root
-/// `anyOf`/`oneOf`, and the closed `action` arms stay intact. The whole
-/// input schema of every tool stays under the local 4000-byte compaction
-/// threshold, which the former selector arms (3× every property) had
-/// exhausted.
+/// Every tool's input schema must stay under the local 4000-byte compaction threshold.
 #[test]
 fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
-    // Reproducible diagnostics for real JSON Schema validator checks; emitted
-    // from the actual registration, not a hand-written schema or renderer copy.
     let terminal_schemas: serde_json::Map<String, Value> = descriptors
         .iter()
         .filter(|descriptor| descriptor.name.starts_with("calm.terminal."))
@@ -69,7 +61,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         "wait_text",
         "wait_text_absent",
     ];
-    // #1710 — the history search is observe's alone (below).
     const SCROLL_TO: [&str; 2] = ["scroll_to_text", "scroll_to_occurrence"];
     for (name, common, mandatory) in [
         ("resolve", vec![], vec![]),
@@ -156,9 +147,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             "{name}: exactly-one targeting is the first sentence"
         );
         if name != "calm.terminal.resolve" {
-            // #1618 waiting arguments: raised budget, change mode and settle.
-            // The omitted-budget default depends on wait_for, so it is stated
-            // in the description rather than as a single JSON Schema default.
+            // The omitted-budget default depends on wait_for, so it is stated in the description rather than as a JSON Schema default.
             assert_eq!(
                 schema["properties"]["wait_ms"],
                 json!({"type":"integer","minimum":0,"maximum":20000}),
@@ -169,22 +158,16 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
                 json!({"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"}),
                 "{name}"
             );
-            // #1620 signal events: signal mode only. The vocabulary is
-            // validated server-side and stated in the descriptions.
             assert_eq!(
                 schema["properties"]["signal_events"],
                 json!({"type":"array","minItems":1,"items":{"type":"string"}}),
                 "{name}"
             );
-            // #1666 text patterns: text mode only (refused elsewhere
-            // server-side); the bounds are the server's.
             assert_eq!(
                 schema["properties"]["wait_text"],
                 json!({"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}}),
                 "{name}"
             );
-            // #1677 r16 absent patterns: text and signal modes (refused
-            // elsewhere server-side); the same bounds as wait_text.
             assert_eq!(
                 schema["properties"]["wait_text_absent"], schema["properties"]["wait_text"],
                 "{name}"
@@ -194,9 +177,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
                 json!({"type":"integer","minimum":0,"maximum":2000,"default":150}),
                 "{name}"
             );
-            // #1628 repaint window: signal mode only (refused elsewhere
-            // server-side; that and the 1500 default are stated in the
-            // descriptions to keep the input schema under the compaction cap).
             assert_eq!(
                 schema["properties"]["repaint_ms"],
                 json!({"type":"integer","minimum":0,"maximum":5000}),
@@ -204,9 +184,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             );
         }
     }
-    // #1620: open claims in one call; #1677: and waits like a readback, with
-    // observe's wait properties (no selectors: an open names no terminal),
-    // under the same byte ceiling.
     let open_schema = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.open")
@@ -234,8 +211,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         )
     );
     assert_eq!(required(open_schema), fields(&["request_id"]));
-    // #1704 S1 — the declared scope is a closed object of three bounded
-    // string lists; the caps are `terminal_permissions`' constants.
     let permissions = &open_schema["properties"]["claude_permissions"];
     assert_eq!(permissions["type"], "object");
     assert_eq!(permissions["additionalProperties"], false);
@@ -277,10 +252,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         bytes < 4000,
         "open: {bytes} bytes; avoid model schema compaction"
     );
-    // #1710 — the history search: a bounded plain pattern (the wait_text
-    // bounds) and a two-value occurrence defaulting to latest, on observe
-    // ONLY; the coupling (scroll_offset 0, no text conditions) is refused
-    // server-side. The observe byte ceiling is asserted in the loop above.
     assert_eq!(
         observe_schema["properties"]["scroll_to_text"],
         json!({"type":"string","minLength":1,"maxLength":200})
@@ -307,8 +278,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         .find(|descriptor| descriptor.name == "calm.terminal.input")
         .unwrap()
         .input_schema;
-    // #1618 drift opt-in, #1666 below-cursor tolerance and control steps:
-    // plain booleans, default false, validated server-side.
     for flag in [
         "allow_output_since_observation",
         "allow_output_below_cursor",
@@ -328,11 +297,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     );
     let actions = input["properties"]["action"]["anyOf"].as_array().unwrap();
     assert_eq!(actions.len(), 5);
-    // #1620: `submit` shares the text arm (same fields, same limits) as a
-    // two-value discriminator instead of a separate arm. #1666: `sequence`
-    // is its own arm; its steps are typed as objects here and validated
-    // server-side (text or editing-key actions, 2..=8 of them). #1677:
-    // `replace` is its own closed arm (from 1..200 bytes, to may be empty).
     for (action, kind, properties, mandatory) in [
         (
             &actions[0],

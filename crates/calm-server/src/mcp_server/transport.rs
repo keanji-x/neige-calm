@@ -1,36 +1,5 @@
 //! UDS listener + per-connection JSON-RPC pump for the kernel-as-MCP-server.
-//!
-//! PR7a (#136). One Unix domain socket lives under
-//! `<config.data_dir>/mcp/kernel.sock` (mode 0600). Each `accept()` spawns
-//! a `tokio` task that:
-//!
-//!   1. Reads line-delimited JSON frames from the socket via
-//!      [`crate::mcp_server::framing::parse_frame`].
-//!   2. Waits for the first `initialize` request, drives
-//!      [`crate::mcp_server::handshake::handle_initialize`] to verify
-//!      the token and establish a per-connection identity mode, then
-//!      sends the response.
-//!   3. After handshake, treats every subsequent `tools/call` as an
-//!      invocation of a [`ToolRegistry`] handler, resolving identity
-//!      according to the established connection identity.
-//!   4. Responds to `tools/list` from the registry's descriptors.
-//!   5. Echoes a `MethodNotFound` for any other request method.
-//!
-//! ## Lifecycle
-//!
-//! [`McpServer::spawn`] binds the socket and returns immediately; the
-//! `accept` loop runs in a background tokio task held alive by the
-//! `Arc<McpServer>` field on [`crate::state::AppState`]. Dropping the
-//! `AppState` doesn't immediately abort the listener — closure happens
-//! when the task's stop-channel fires (today: process exit). A future
-//! graceful-shutdown signal could be added here if a long-running handler
-//! ever needs cooperative cancellation.
-//!
-//! ## Why not axum / hyper
-//!
-//! MCP is line-delimited JSON-RPC, not HTTP. The transport is a few
-//! hundred lines of `tokio::net::UnixListener` + `BufReader::lines()`;
-//! adding an HTTP framework would only obscure the framing.
+//! One socket under `<data_dir>/mcp/kernel.sock` (mode 0600); a connection must `initialize` before any `tools/*` request.
 
 pub(crate) mod worker_grants;
 pub(crate) use worker_grants::resolve_dispatch_plugin_tools;
@@ -68,31 +37,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinHandle;
 
-/// Protocol version the kernel advertises in its `initialize` response.
-/// Codex's MCP client echoes back whatever it sent; we don't strictly
-/// validate the request's version yet (PR7a is the first wire we ship),
-/// but we *do* echo a stable value so future codex versions can match
-/// behavior on it.
+/// Protocol version advertised in `initialize`; the request's version is not validated.
 pub const KERNEL_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// File mode the listener applies to the socket after `bind`. Matches
-/// the trust model in `auth.rs`: the per-card token is the credential,
-/// and the socket's filesystem ACL is the perimeter — only the same
-/// uid (i.e. processes the kernel itself spawned) can `connect`.
+/// The per-card token is the credential; the socket's filesystem ACL is the perimeter (same uid only).
 const SOCKET_MODE: u32 = 0o600;
 
-/// Boot-time probe budget for the "is there already a live listener at
-/// this path?" check. UDS connects are sub-ms on a healthy listener;
-/// the budget exists only to bound a pathological case where the kernel
-/// stalls a connect attempt. A timeout falls through to the stale-file
-/// reclaim path, same as `ECONNREFUSED`.
+/// Bounds a pathological stalled connect; a timeout falls through to the stale-file reclaim path, same as `ECONNREFUSED`.
 const LIVE_LISTENER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 const PLUGIN_TOOL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Worker];
 
-/// Configuration the codex daemon needs to know about the kernel's MCP
-/// server, including the shim binary and Unix socket path.
-///
-/// `Clone` is cheap (two small `PathBuf`s).
 #[derive(Clone, Debug)]
 pub struct McpShimConfig {
     /// Path to the `neige-mcp-stdio-shim` binary, resolved at boot.
@@ -101,10 +55,6 @@ pub struct McpShimConfig {
     pub socket_path: PathBuf,
 }
 
-/// Handle held on [`crate::state::AppState`]. Owns the listener task's
-/// `JoinHandle` (held via `Mutex<Option<…>>` so a future shutdown path
-/// can `take()` and `abort()` it), plus the shim config the planner_card
-/// helper reads to build per-card config.toml blocks.
 pub struct McpServer {
     pub terminal_interaction:
         Arc<tokio::sync::OnceCell<Arc<crate::terminal_interaction::TerminalInteraction>>>,
@@ -123,22 +73,8 @@ impl McpServer {
         })
     }
 
-    /// Bind the UDS at `socket_path`, spawn the accept loop, and return
-    /// the handle. The accept loop runs until the process exits or the
-    /// listener errors out (logged at warn!).
-    ///
-    /// If `socket_path` already exists we probe it with a short
-    /// `UnixStream::connect`. A live peer means another process is
-    /// already serving on the same XDG-shared path (a second
-    /// `calm-server` against the same `$HOME`, a leftover from a prior
-    /// boot, etc.); we refuse to boot rather than unlink-and-rebind,
-    /// because the unlink would steal the path from the live listener
-    /// without breaking its socket — `connect()` against the new file
-    /// would then return `ECONNREFUSED` even though the kernel thinks
-    /// it's "running". A connect failure (`ECONNREFUSED` /
-    /// `ENOENT`) is the stale-file case the original boot code was
-    /// already handling; we unlink and rebind in that path the way
-    /// `routes/terminal.rs`'s daemon-socket setup does.
+    /// If `socket_path` already exists, probe it: a live peer means another process serves the same path and we refuse to boot rather than
+    /// unlink-and-rebind (the unlink would steal the path without breaking its socket); a connect failure is the stale-file case, unlinked and rebound.
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn(
         repo: Arc<dyn Repo>,
@@ -166,11 +102,7 @@ impl McpServer {
         Self::spawn_with_context(ctx, socket_path, shim_bin, registry).await
     }
 
-    /// [`Self::spawn`] with a context the caller built and keeps (#1628 S4):
-    /// `AppState::new` hands the same `Arc<AppContext>` to the HTTP layer so
-    /// `GET /api/tracks/{id}/report/series/{block_id}` and `calm.report.read`
-    /// resolve through one `SeriesResolver`. The socket probe-and-bind is
-    /// unchanged from `spawn`.
+    /// [`Self::spawn`] with a context the caller built and keeps, so the HTTP layer and MCP resolve through one `SeriesResolver`.
     pub async fn spawn_with_context(
         ctx: Arc<AppContext>,
         socket_path: PathBuf,
@@ -184,7 +116,6 @@ impl McpServer {
                 .map_err(|e| anyhow::anyhow!("mkdir mcp socket dir {}: {e}", parent.display()))?;
         }
         if socket_path.exists() {
-            // Probe before unlink — see doc above.
             match tokio::time::timeout(
                 LIVE_LISTENER_PROBE_TIMEOUT,
                 UnixStream::connect(&socket_path),
@@ -199,8 +130,6 @@ impl McpServer {
                     );
                 }
                 Ok(Err(_)) | Err(_) => {
-                    // Connect refused, timed out, or other error — treat as
-                    // stale and reclaim the path.
                     let _ = std::fs::remove_file(&socket_path);
                 }
             }
@@ -209,9 +138,7 @@ impl McpServer {
         let listener = UnixListener::bind(&socket_path)
             .map_err(|e| anyhow::anyhow!("bind mcp socket {}: {e}", socket_path.display()))?;
 
-        // Tighten the perm bits — the default umask leaves a
-        // world-readable socket, which would let a different user
-        // poke at the kernel's MCP wire.
+        // The default umask leaves a world-readable socket.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -269,8 +196,6 @@ async fn accept_loop(
     }
 }
 
-/// One per-connection task. Owns the socket; runs until either side
-/// hangs up or a fatal framing error happens.
 async fn handle_connection(
     stream: UnixStream,
     ctx: Arc<AppContext>,
@@ -280,15 +205,11 @@ async fn handle_connection(
     let mut reader = BufReader::new(rd);
     let mut line = String::new();
 
-    // Phase 1: wait for `initialize`. Anything else before initialize
-    // gets a `MethodNotFound`-shaped error. We don't bind an identity
-    // until `initialize` succeeds — every other request before then is
-    // unauthenticated and rejected.
+    // Phase 1: no identity is bound until `initialize` succeeds; every other request before then is rejected.
     let connection_identity = loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
-            // EOF before initialize — client disconnected.
             return Ok(());
         }
         let trimmed = line.trim_end_matches(['\n', '\r']);
@@ -324,14 +245,11 @@ async fn handle_connection(
                         let frame = build_error_response_frame(&id, &rpc_err);
                         wr.write_all(&frame).await?;
                         wr.flush().await?;
-                        // The client should disconnect on
-                        // initialize failure. We drop the connection.
                         return Ok(());
                     }
                 }
             }
             Frame::Request { id, method, .. } => {
-                // Pre-initialize traffic — refuse.
                 let err = RpcError::custom(
                     -32002,
                     format!("server not initialized; expected `initialize`, got `{method}`"),
@@ -345,8 +263,7 @@ async fn handle_connection(
                 tracing::debug!(method = %method, "mcp_server: pre-initialize notification dropped");
             }
             Frame::Response { .. } => {
-                // We don't issue requests pre-handshake; a response
-                // arriving here is wrong-direction noise.
+                // A response arriving pre-handshake is wrong-direction noise.
             }
         }
     };
@@ -357,10 +274,7 @@ async fn handle_connection(
     };
     tracing::info!(identity_mode, "mcp_server: connection initialized");
 
-    // Phase 2: post-initialize message pump. Any request after this
-    // resolves identity according to the explicit connection mode fixed
-    // by initialize: daemon trust requires `_meta.threadId`, while a
-    // card-bound connection may omit it and use the bound card.
+    // Phase 2: daemon trust requires `_meta.threadId`, while a card-bound connection may omit it and use the bound card.
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
@@ -403,9 +317,6 @@ async fn handle_connection(
                 wr.flush().await?;
             }
             Frame::Notification { method, .. } => {
-                // PR7a's tools are all request/response. Cancellation
-                // / progress notifications are PR8 territory — drop
-                // for now.
                 tracing::debug!(method = %method, "mcp_server: notification dropped (PR7a no-op)");
             }
             Frame::Response { id, .. } => {
@@ -415,9 +326,6 @@ async fn handle_connection(
     }
 }
 
-/// Dispatch a single JSON-RPC request to the right place. Centralized
-/// here so the pre-/post-initialize message pump can share a single
-/// switch.
 async fn dispatch_request(
     method: &str,
     params: Value,
@@ -428,10 +336,7 @@ async fn dispatch_request(
 ) -> Result<Value, RpcError> {
     match method {
         "tools/list" => {
-            // Resolve role per-call so shared-daemon connections (one socket,
-            // many thread identities) get the right per-thread tools/list.
-            // Card-bound sockets use their bound role when no threadId is
-            // supplied; an explicit per-call threadId resolves independently.
+            // Resolve role per-call so shared-daemon connections (one socket, many thread identities) get the right per-thread tools/list.
             let top_meta = request_meta_outcome(request_meta.as_ref());
             let params_meta = extract_request_meta_outcome(&params);
             let thread_id = thread_id_from(&top_meta).or_else(|| thread_id_from(&params_meta));
@@ -442,9 +347,7 @@ async fn dispatch_request(
                         .ok()
                     {
                         Some(identity) => {
-                            // #891 slice ④ — plugin tools are scoped to the
-                            // resolved thread's track (bound template ⇒ owning
-                            // plugin only).
+                            // Plugin tools are scoped to the resolved thread's track.
                             let scope =
                                 plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
                             let mut descriptors = registry.descriptors_for_role(identity.role);
@@ -458,11 +361,7 @@ async fn dispatch_request(
                             descriptors
                         }
                         None => {
-                            // Unresolvable threadId: no track context, so the
-                            // shared scope function yields the union (F7 —
-                            // "discovery wide, dispatch strict"); tools/call
-                            // still resolves + enforces per-thread identity
-                            // and per-track scope.
+                            // Unresolvable threadId: no track context, so the scope is the union ("discovery wide, dispatch strict"); tools/call still enforces per-thread identity and per-track scope.
                             let scope = plugin_scope_for_track(ctx, None).await;
                             let mut descriptors =
                                 registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
@@ -470,14 +369,7 @@ async fn dispatch_request(
                             descriptors
                         }
                     },
-                    // Shared-daemon Codex sessions may send tools/list before
-                    // a thread is attributed. Discovery can safely return the
-                    // role-visible union because tools/call still resolves and
-                    // enforces the exact per-thread identity (and, per #891
-                    // slice ④, the per-track plugin scope). With no track to
-                    // key on, the shared scope function deliberately keeps the
-                    // union here (决策记录 F7): the residual exposure is tool
-                    // *names* only.
+                    // Shared-daemon Codex sessions may send tools/list before a thread is attributed. Discovery returns the role-visible union because tools/call still enforces identity and scope; the residual exposure is tool names only.
                     None => {
                         let scope = plugin_scope_for_track(ctx, None).await;
                         let mut descriptors =
@@ -511,8 +403,6 @@ async fn dispatch_request(
                         _ => Vec::new(),
                     },
                     None => {
-                        // The bound card's identity carries the track the
-                        // per-track plugin scope keys on — no extra query.
                         let card =
                             ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
                         let scope = plugin_scope_for_track(ctx, Some(card.track_id.as_str())).await;
@@ -529,9 +419,7 @@ async fn dispatch_request(
                     }
                 },
             };
-            // Codex's `tools/list` expects `{ "tools": [...] }`. Each
-            // entry is `{ name, description, inputSchema }`, optionally
-            // carrying MCP `annotations` when a descriptor provides them.
+            // Codex's `tools/list` expects `{ "tools": [...] }`.
             let tools: Vec<Value> = descriptors
                 .into_iter()
                 .map(|d| {
@@ -568,9 +456,7 @@ async fn extend_plugin_tool_descriptors_for_role(
     worker_grants::filter(ctx, identity, descriptors).await
 }
 
-/// Plugin tool descriptors visible under `scope` (#891 slice ④). Kernel
-/// `calm.*` registry descriptors never route through here — they stay
-/// purely role-gated.
+/// Plugin tool descriptors visible under `scope`; kernel `calm.*` descriptors never route through here.
 async fn plugin_tool_descriptors(
     ctx: &Arc<AppContext>,
     scope: &TrackPluginScope,
@@ -583,13 +469,7 @@ async fn plugin_tool_descriptors(
     plugin_tool_descriptors_from(plugin_host.registry().list(), &running_ids, scope)
 }
 
-/// Pure core of [`plugin_tool_descriptors`]. Split out (#1164) so tests can
-/// drive the REAL discovery projection — including `exposes_tools` entries a
-/// connector materialized into the registry — without standing up an
-/// `AppContext`, a socket, and a child process.
-///
-/// This function is the only place `plugin.<id>_<tool>` names are minted for
-/// discovery; `plugin_tool_route` is its inverse.
+/// The only place `plugin.<id>_<tool>` names are minted for discovery; `plugin_tool_route` is its inverse.
 fn plugin_tool_descriptors_from(
     manifests: Vec<crate::plugin_host::Manifest>,
     running_ids: &BTreeSet<String>,
@@ -603,9 +483,7 @@ fn plugin_tool_descriptors_from(
         }
         for entry in manifest.exposes_tools {
             descriptors.push(ToolDescriptor {
-                // Plugin ids exclude `_` (is_valid_plugin_id), so `_` is an
-                // unambiguous id↔tool boundary; tool names may contain `.`/`_`
-                // after it.
+                // Plugin ids exclude `_`, so `_` is an unambiguous id↔tool boundary.
                 name: format!("plugin.{}_{}", plugin_id, entry.name),
                 description: entry.description.unwrap_or_default(),
                 input_schema: entry
@@ -648,8 +526,7 @@ async fn dispatch_tools_call(
             resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
         worker_grants::require(ctx, &identity, name).await?;
         let fut = handler(ctx.clone(), identity, arguments);
-        // Serialize the typed envelope once. In particular, native images
-        // must not be converted into text by wrapping the result again.
+        // Serialize the typed envelope once; native images must not be converted into text by wrapping again.
         return Ok(json!(fut.await?));
     }
 
@@ -685,19 +562,10 @@ async fn dispatch_plugin_tools_call(
     arguments: Value,
     connection_identity: &ConnectionIdentity,
 ) -> Result<Value, RpcError> {
-    // #891 review fix — identity FIRST. Route lookup used to precede
-    // identity resolution, so a genuinely-unknown tool returned `-32601`
-    // immediately while an existing out-of-scope tool with a
-    // missing/malformed threadId surfaced an identity error — making tool
-    // EXISTENCE distinguishable from the error shape. Resolving identity
-    // before any route knowledge makes identity failures uniform regardless
-    // of whether `name` exists. (Kernel `calm.*` tools return earlier in
-    // `dispatch_tools_call` and already resolve identity before running.)
+    // Identity FIRST, before any route knowledge, so identity failures are uniform whether or not `name` exists.
     let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
 
-    // Single shared construction for EVERY existence-shaped rejection below
-    // (no plugin host, unknown route, out-of-scope plugin) so the error
-    // object is byte-identical and cannot be used as an existence oracle.
+    // One construction for EVERY existence-shaped rejection below so the error object is byte-identical and cannot be an existence oracle.
     let unknown_tool = || RpcError::method_not_found(&format!("tools/call: {name}"));
 
     let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
@@ -710,11 +578,7 @@ async fn dispatch_plugin_tools_call(
         return Err(unknown_tool());
     };
 
-    // #891 slice ④ — dispatch-side per-track scope enforcement (the strict
-    // half of "discovery wide, dispatch strict"): a track bound to a template
-    // may only call the owning plugin's tools. Rejected via `unknown_tool` —
-    // the same object an unknown tool gets — so a bound track cannot probe
-    // for the existence of other plugins' tools.
+    // A track bound to a template may only call the owning plugin's tools; rejected via `unknown_tool` so a bound track cannot probe for other plugins' tools.
     if !plugin_scope_for_track(ctx, identity.track_id.as_deref())
         .await
         .allows(&plugin_id)
@@ -725,21 +589,14 @@ async fn dispatch_plugin_tools_call(
     worker_grants::require(ctx, &identity, name).await?;
     match kind {
         None => {
-            // #1164 §2.7 — ordinary tool dispatch is kind-agnostic and so goes
-            // through `connector_client()`, not the narrowed `mcp_client()`.
-            // Connector tools materialize into `exposes_tools` with
-            // `kind: None`, so without this arm they would fall through to the
-            // stdio-only accessor and get a spurious `-32002 not running`.
+            // Connector tools materialize with `kind: None`, so without this arm they would fall through to the stdio-only accessor and get a spurious `-32002 not running`.
             let client = plugin_host
                 .connector_client(&plugin_id)
                 .await
                 .ok_or_else(|| {
                     RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
                 })?;
-            // #1669 §2.1 (I4) — only a Planner's call carrying a track is
-            // recorded for `calm.source.capture`; the identity is the
-            // resolved one, never anything in the request. The arguments
-            // are kept (canonical text) for the receipt's `matched_call`.
+            // Only a Planner's call carrying a track is recorded for `calm.source.capture`; the identity is the resolved one, never anything in the request.
             let record_for = match (&identity.role, identity.track_id.as_deref()) {
                 (CardRole::Planner, Some(track_id)) => {
                     Some((track_id.to_string(), arguments.clone()))
@@ -747,28 +604,16 @@ async fn dispatch_plugin_tools_call(
                 _ => None,
             };
             let called = match &client {
-                // The Track rides along only to LOCAL plugins. A remote
-                // `mcp-http` connector is somebody else's service: it has no
-                // per-Track state the kernel vouches for, and sending our
-                // identifiers to it would be telling a third party which
-                // Track a reader is looking at, for nothing in return.
+                // The Track rides along only to LOCAL plugins; a remote connector is a third party that must not learn which Track a reader is looking at.
                 ConnectorClient::Stdio(c) => {
                     c.tools_call(&tool_name, arguments, identity.track_id.as_deref())
                         .await
                 }
                 ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await,
-                // #1164 P3 — the pinned local query binary. Same envelope as
-                // the other two: an `Ok` result carries the child's own
-                // `isError` verdict, an `Err` is a kernel-side refusal.
+                // An `Ok` result carries the child's own `isError` verdict, an `Err` is a kernel-side refusal.
                 ConnectorClient::Cli(c) => c.tools_call(&tool_name, arguments).await,
             };
-            // Recording reads the outcome; the value handed back to the
-            // model is serialized from the same struct, untouched, and an
-            // `Err` is propagated unchanged. A call that produced no result
-            // (transport error, unparseable reply, disconnect) still replaces
-            // the key's entry — with `Error` — so the body of the call before
-            // it is not capturable any more (I6 holds for every failure
-            // shape, not only `isError` replies).
+            // A call that produced no result (transport error, unparseable reply, disconnect) still replaces the key's entry with `Error`, so the previous body is not capturable any more.
             if let Some((track_id, args)) = record_for {
                 match &called {
                     Ok(result) => ctx
@@ -789,9 +634,7 @@ async fn dispatch_plugin_tools_call(
                     "plugin not trusted to submit forge actions",
                 ));
             }
-            // Deliberately still `mcp_client()`: forge actions are stdio-only
-            // (D6/D12). A connector cannot reach this arm anyway — its
-            // materialized tools always carry `kind: None`.
+            // Forge actions are stdio-only; a connector's materialized tools always carry `kind: None`.
             let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
                 RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
             })?;
@@ -803,14 +646,7 @@ async fn dispatch_plugin_tools_call(
     }
 }
 
-/// Inverse of [`plugin_tool_descriptors_from`]: resolve a minted
-/// `plugin.<id>_<tool>` name back to its owner.
-///
-/// #1164 narrowed the parameter from `&Arc<PluginHost>` to the registry it was
-/// already the only consumer of — the routing decision depends purely on
-/// manifests + the running set, and taking the registry directly makes the
-/// underscore-boundary uniqueness property (acceptance §4 #9) unit-testable
-/// against the production function rather than a re-implementation.
+/// Inverse of [`plugin_tool_descriptors_from`]: resolve a minted `plugin.<id>_<tool>` name back to its owner.
 fn plugin_tool_route(
     registry: &crate::plugin_host::PluginRegistry,
     name: &str,
@@ -844,9 +680,7 @@ fn plugin_tool_route(
             Ok(Some((plugin_id, tool_name, kind)))
         }
         _ => {
-            // Unreachable by construction: plugin ids cannot contain `_`, so
-            // the `_` id/tool boundary guarantees at most one running manifest
-            // can match. Keep this as defense-in-depth against future changes.
+            // Unreachable by construction (plugin ids cannot contain `_`); kept as defense-in-depth.
             let mut matches = candidates
                 .into_iter()
                 .map(|(plugin_id, tool_name, _kind)| format!("plugin.{plugin_id}_{tool_name}"))
@@ -863,11 +697,7 @@ fn plugin_tool_route(
     }
 }
 
-/// #1628 S2 (D2 step 2) — what the kernel finds when it looks a plugin tool up
-/// by its two exact names instead of by a minted `plugin.<id>_<tool>` string.
-/// Four outcomes, not a boolean: the read end of `calm.report.read` reports
-/// the three negatives as distinct `pending` reasons, and the resolver treats
-/// them all as "do not call, do not store".
+/// Four outcomes, not a boolean: the three negatives become distinct `pending` reasons and all mean "do not call, do not store".
 #[derive(Debug, Clone)]
 pub(crate) enum ToolEntry {
     /// `registry.get(plugin_id)` is `None`.
@@ -880,8 +710,7 @@ pub(crate) enum ToolEntry {
 }
 
 impl ToolEntry {
-    /// The `pending` reason a reader gets for a negative outcome; `None` for
-    /// `Found`.
+    /// The `pending` reason for a negative outcome; `None` for `Found`.
     pub(crate) fn miss_reason(&self, plugin_id: &str, tool: &str) -> Option<String> {
         match self {
             Self::NotInstalled => Some(format!("plugin {plugin_id} is not installed")),
@@ -892,15 +721,7 @@ impl ToolEntry {
     }
 }
 
-/// Exact lookup of `(plugin_id, tool)` against the registry and the running
-/// set — the kernel-as-caller counterpart of [`plugin_tool_route`].
-///
-/// `registry.get` is a precise key lookup, never a `plugin.{id}_{tool}` string
-/// re-parse: a `source` segment such as `aa_b` (legal in a block, impossible
-/// as a manifest id because ids exclude `_`) is a clean `NotInstalled` here,
-/// whereas re-parsing `plugin.aa_b_c` would land on plugin `aa`'s tool `b_c`.
-/// The meta-test `tool_entry_matches_tool_route` pins that the two functions
-/// agree wherever both are defined.
+/// Exact `(plugin_id, tool)` lookup — never a `plugin.{id}_{tool}` string re-parse, which would land `plugin.aa_b_c` on plugin `aa`'s tool `b_c`.
 pub(crate) fn plugin_tool_entry(
     registry: &crate::plugin_host::PluginRegistry,
     running_ids: &BTreeSet<String>,
@@ -939,19 +760,8 @@ pub(crate) struct PluginForgePayload {
     pub(crate) parked: bool,
 }
 
-/// Semantic subset used for idempotency payload comparison.
-///
-/// The per-verb `idem_key` is the identity. `argv` is intentionally
-/// excluded so a legitimate retry with edited volatile argv dedups instead
-/// of permanently conflicting; the op still runs at most once and the
-/// verdict probe confirms whether the side effect landed.
-///
-/// Changing this hashed field set is a one-time idempotency-scheme boundary:
-/// pre-existing in-flight forge-action ops resubmitted with the same
-/// `idempotency_key` across that deploy may conflict once, while
-/// recovery-by-op-id remains unaffected. Any future field-set change should
-/// ship with a boot-time recompute migration for stored forge-action
-/// `payload_hash` values.
+/// Semantic subset used for idempotency payload comparison. `argv` is excluded so a retry with edited volatile argv dedups instead of conflicting;
+/// changing this field set needs a boot-time recompute migration for stored forge-action `payload_hash` values.
 #[derive(Serialize)]
 struct SemanticForgePayload<'a> {
     idem_key: &'a str,
@@ -1144,8 +954,6 @@ async fn resolve_forge_cwd(
                     "workspace lease path must not be empty",
                 ));
             }
-            // ③-c re-anchors the lease under repo_root (git toplevel of track.cwd)
-            // and updates BOTH ① and this resolve together; until then match ①'s base.
             if lease_path.is_absolute() {
                 Ok(lease_path.to_path_buf())
             } else {
@@ -1299,22 +1107,14 @@ fn mcp_error_result_with_structured(message: String, structured: Value) -> Value
     })
 }
 
-/// #1164 §4 #2 + #9 — discovery and routing for connector-materialized tools.
-///
-/// These drive the production `plugin_tool_descriptors_from` /
-/// `plugin_tool_route` pair against a registry in exactly the state
-/// `spawn_admitted` leaves it in after materialization (§2.7): the manifest's
-/// `exposes_tools` holds the synthesized catalog, and the connector id is in
-/// the running set.
+/// Discovery and routing for connector-materialized tools, against a registry in the state `spawn_admitted` leaves it in.
 #[cfg(test)]
 mod connector_tool_routing_tests {
     use super::*;
     use crate::plugin_host::{Manifest, PluginRegistry};
 
     const CONNECTOR_ID: &str = "mcp-wisburg";
-    /// Underscores, not hyphens — §4 #9 is explicit that the test must use a
-    /// tool name that actually contains `_`, because that is the character the
-    /// `plugin.<id>_<tool>` boundary is built on.
+    /// Underscores, not hyphens: the tool name must contain `_`, the character the `plugin.<id>_<tool>` boundary is built on.
     const UNDERSCORE_TOOL: &str = "list_institutional_reports";
     const OTHER_TOOL: &str = "get_report_detail";
     const DENIED_TOOL: &str = "admin_purge_everything";
@@ -1335,15 +1135,7 @@ mod connector_tool_routing_tests {
         Manifest::parse(&manifest.to_string()).expect("connector manifest parses")
     }
 
-    /// One connector in the post-materialization state: manifest parsed from
-    /// disk, then the tools `spawn_admitted` would have materialized folded
-    /// into `exposes_tools`.
-    ///
-    /// #1196 S0a — this used to `insert` + `set_exposes_tools` on an already
-    /// built registry, a shape neither the build-time builder nor the runtime
-    /// (guard-taking) entry can serve. Materializing into the `Manifest` before
-    /// it ever reaches a registry makes it a plain build-time seed. The
-    /// resulting registry contents are identical.
+    /// One connector in the post-materialization state: the tools `spawn_admitted` would have materialized folded into `exposes_tools`.
     fn materialized_connector(id: &str, allow: &[&str], served: &[&str]) -> Manifest {
         let upstream: Vec<Value> = served
             .iter()
@@ -1352,10 +1144,7 @@ mod connector_tool_routing_tests {
         materialized_connector_from_upstream(id, allow, &upstream)
     }
 
-    /// Same, but the upstream `tools/list` entries carry NO `inputSchema` —
-    /// which materializes to `input_schema: None`. Kept as a distinct helper so
-    /// fixtures that were written against a schemaless upstream keep producing
-    /// byte-identical registry contents.
+    /// Same, but the upstream `tools/list` entries carry NO `inputSchema` (`input_schema: None`).
     fn materialized_connector_schemaless(id: &str, allow: &[&str], served: &[&str]) -> Manifest {
         let upstream: Vec<Value> = served.iter().map(|name| json!({ "name": name })).collect();
         materialized_connector_from_upstream(id, allow, &upstream)
@@ -1393,8 +1182,7 @@ mod connector_tool_routing_tests {
             &[UNDERSCORE_TOOL, OTHER_TOOL],
             &[UNDERSCORE_TOOL, OTHER_TOOL, DENIED_TOOL],
         )]);
-        // `TrackPluginScope::All` is what an UNBOUND track resolves to
-        // (`plugin_scope_for_track`: no track / no `plugin_scope` → All).
+        // `TrackPluginScope::All` is what an UNBOUND track resolves to.
         let names: Vec<String> = plugin_tool_descriptors_from(
             registry.list(),
             &running(&[CONNECTOR_ID]),
@@ -1438,11 +1226,7 @@ mod connector_tool_routing_tests {
         );
     }
 
-    /// #1628 S2 A19 — `plugin_tool_entry` and `plugin_tool_route` are two
-    /// spellings of one routing decision. For every `(id, tool)` the fixture
-    /// registry knows, plus pairs it does not, and with each id running or
-    /// not: `entry is Found(e)` iff `route(plugin.{id}_{tool}) == Some((id,
-    /// tool, e.kind))`.
+    /// `entry is Found(e)` iff `route(plugin.{id}_{tool}) == Some((id, tool, e.kind))`.
     #[test]
     fn tool_entry_matches_tool_route() {
         let sibling = "mcp";
@@ -1529,27 +1313,15 @@ mod connector_tool_routing_tests {
             .expect("minted name must route");
         assert_eq!(route.0, CONNECTOR_ID);
         assert_eq!(route.1, UNDERSCORE_TOOL);
-        // Connector tools are never forge actions (D6) — a `Some(ForgeAction)`
-        // here would hand them the forge credential passthrough.
+        // Connector tools are never forge actions; a `Some(ForgeAction)` would hand them the forge credential passthrough.
         assert!(route.2.is_none(), "connector tools must carry kind: None");
     }
 
-    /// The uniqueness guarantee under maximal adversarial pressure: a second
-    /// connector whose id is a strict PREFIX of the first's, whose own tool
-    /// name is chosen to reconstruct the first's minted name as closely as the
-    /// id charset allows.
-    ///
-    /// It cannot actually collide, and that is the property: ids exclude `_`
-    /// (`is_valid_plugin_id`), so `plugin.mcp_wisburg_list_…` (id `mcp`) and
-    /// `plugin.mcp-wisburg_list_…` (id `mcp-wisburg`) differ at the boundary
-    /// character itself. Every minted name therefore has exactly one possible
-    /// split, no matter how many `_` the TOOL name contains.
+    /// A sibling connector whose id is a strict PREFIX cannot collide: ids exclude `_`, so every minted name has exactly one possible split.
     #[test]
     fn prefix_sibling_connector_cannot_shadow_the_route() {
         let sibling = "mcp";
         let near_miss = format!("wisburg_{UNDERSCORE_TOOL}");
-        // Schemaless on purpose: the pre-#1196 fixture built this sibling from
-        // `json!({ "name": near_miss })`, so its `input_schema` is `None`.
         let sibling_manifest =
             materialized_connector_schemaless(sibling, &[&near_miss], &[&near_miss]);
         assert_eq!(
@@ -1842,12 +1614,7 @@ fn thread_id_from<'a>(request_meta: &MetaLookupOutcome<'a>) -> Option<&'a str> {
     }
 }
 
-/// Helper used by integration tests to resolve the kernel-side socket
-/// path from a data dir, matching what the production code uses. Kept
-/// `pub(crate)` so it can't be reached from outside the crate's test
-/// module set.
-///
-/// PR7a (#136) — shared helper for production boot and integration tests.
+/// Shared by production boot and integration tests.
 pub(crate) fn default_socket_path(data_dir: &Path) -> PathBuf {
     data_dir.join("mcp").join("kernel.sock")
 }

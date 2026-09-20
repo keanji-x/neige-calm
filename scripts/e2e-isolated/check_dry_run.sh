@@ -1,14 +1,5 @@
 #!/usr/bin/env bash
-# #863 — dry-run golden assertions for the docker-isolated codex-e2e tier.
-# Runs run.sh --dry-run with a fully fake environment (needs NO docker daemon,
-# NO cargo, NO codex install) and asserts the security-critical shape of the
-# produced `docker run` argv. Wired as `make e2e-codex-isolated-check`.
-#
-# NOTE(future hardening idea, not built): put a fake `docker`/`cargo` shim
-# first on PATH that records+fails on any invocation — that would prove
-# "dry-run executes nothing" positively. Today it is proven by proxy: run.sh
-# exits 0 below with fake paths that would make any real docker/cargo call
-# fail loudly.
+# Dry-run golden assertions for the docker-isolated codex-e2e tier: runs run.sh --dry-run with a fully fake environment (no docker, cargo or codex) and asserts the security-critical shape of the `docker run` argv. "Executes nothing" is proven by proxy: run.sh exits 0 with fake paths that would make any real docker/cargo call fail.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,8 +23,7 @@ if [ "$RC" -ne 0 ]; then
     exit 1
 fi
 
-# The argv under test is only the run-container block (the forwarder container
-# legitimately uses --network host and is not part of this argv).
+# Only the run-container block; the forwarder container legitimately uses --network host.
 ARGV="$(printf '%s\n' "$OUT" \
     | sed -n '/--- dry-run: docker run argv (run container) ---/,/--- dry-run: end argv ---/p')"
 [ -n "$ARGV" ] || { echo "FAIL: dry-run did not print a delimited docker run argv"; printf '%s\n' "$OUT"; exit 1; }
@@ -52,7 +42,7 @@ must_not_contain() {
     fi
 }
 
-# -- required rails (design §B/§C/§E golden list) --
+# -- required rails --
 must_contain '--network none'
 must_contain '--pids-limit=6000'
 must_contain '--memory=24g'
@@ -78,11 +68,7 @@ must_contain 'scripts/e2e-isolated/entry.sh'
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 must_contain "$REPO_ROOT:$REPO_ROOT:ro"
 
-# -- exact-token assertions: parse the argv line back into an array --------
-# The line is run.sh's own `printf ' %q'` output (a controlled helper we
-# fully own), so eval-ing it is the faithful inverse of %q: it reconstructs
-# the exact argv tokens with all escaping undone. The raw must_contain /
-# must_not_contain substring checks above stay as belt-and-suspenders.
+# The line is run.sh's own `printf ' %q'` output, so eval-ing it is the faithful inverse; the substring checks above stay as belt-and-suspenders.
 ARGV_LINE="$(printf '%s\n' "$ARGV" | grep '^docker run ' || true)"
 if [ -z "$ARGV_LINE" ]; then
     echo "FAIL: no 'docker run ...' line inside the delimited argv block"
@@ -140,11 +126,6 @@ must_not_contain '--net='
 must_not_contain '--userns'
 must_not_contain '--ipc'
 must_not_contain '--uts'
-
-# dry-run must never execute docker: the printed argv line is the only place
-# the word `docker` may appear, and it must be the golden print, not output
-# of a real invocation. Cheap proxy: run.sh exited 0 with fake paths above,
-# which is impossible if it had actually invoked docker/cargo on them.
 
 if [ "$fail" -ne 0 ]; then
     echo "--- captured argv block ---"

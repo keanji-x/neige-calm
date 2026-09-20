@@ -1,13 +1,5 @@
-//! The request the kernel derives from a `chart.series` payload (#1628 D1/D2).
-//!
-//! `from_payload` is called twice per block lifetime: by the read end (to
-//! find the row and decide whether to enqueue) and by the drain task when the
-//! job is dequeued (to build the plugin call from the payload *as it is then*,
-//! never from what a reader observed earlier). Both derive the same
-//! `request_hash`, which is the row identity together with `(track, block)`.
-//!
-//! The window is not part of the fingerprint: a live block's cutoff moves
-//! every day and is filled in at resolve time from the injected clock.
+//! The request the kernel derives from a `chart.series` payload. `from_payload` runs at the read end and again when the job is dequeued, from the payload *as it is then*; both derive the same `request_hash`.
+//! The window is not part of the fingerprint: a live block's cutoff moves every day.
 
 use chrono::{Datelike, Days, NaiveDate};
 use serde_json::{Value, json};
@@ -79,10 +71,7 @@ fn string_or<'a>(payload: &'a Value, key: &str, default: &'a str) -> Result<&'a 
 }
 
 impl SeriesRequest {
-    /// Derive the request from a `chart.series` payload that already passed
-    /// `validate_chart_series`. Errors here are for payloads that bypassed it
-    /// (the read end reports them as `pending` with a reason and never
-    /// enqueues).
+    /// Derive the request from a payload that already passed `validate_chart_series`; errors here are for payloads that bypassed it.
     pub fn from_payload(payload: &Value) -> Result<Self, String> {
         let source = payload
             .get("source")
@@ -176,7 +165,7 @@ impl SeriesRequest {
     /// The cutoff window for a resolution happening at `now_ms`: frozen uses
     /// the payload's `as_of`, live uses yesterday UTC; `start` is
     /// `as_of - RANGE_DAYS[range]` on both. `None` only when the stored
-    /// `as_of` is not a calendar date (a payload that bypassed S1).
+    /// `as_of` is not a calendar date (a payload that bypassed validation).
     pub fn window(&self, now_ms: i64) -> Option<Window> {
         let as_of = match &self.as_of {
             Some(text) => NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?,
@@ -193,8 +182,7 @@ impl SeriesRequest {
         max_points(&self.range, &self.period)
     }
 
-    /// The `tools/call` arguments (D2 request shape). Every field is filled
-    /// by the kernel; the plugin refuses a request that lacks any of them.
+    /// The `tools/call` arguments. Every field is filled by the kernel; the plugin refuses a request that lacks any of them.
     pub fn tool_arguments(&self, window: &Window, deadline_ms: i64) -> Value {
         json!({
             "series": self.series,

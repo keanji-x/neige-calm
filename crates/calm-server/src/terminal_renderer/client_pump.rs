@@ -12,32 +12,18 @@ use super::{
 };
 use crate::terminal_renderer::snapshot::{rebuild_server_hello_snapshot, scrollback_request};
 
-/// Kernel-internal commands a Planner client issues next to the wire
-/// protocol (#1620). Never decoded from a socket: browser connections have no
-/// command channel.
+/// Kernel-internal commands a Planner client issues next to the wire protocol. Never decoded
+/// from a socket: browser connections have no command channel.
 #[derive(Debug)]
 pub enum PumpCommand {
-    /// Claim control only if no OTHER client currently holds it, decided
-    /// under the owner-registry lock in the same pass that would apply an
-    /// ordinary `OwnerClaim` (same grant barrier, same scope check, same
-    /// effects). When another client owns the terminal nothing changes and
-    /// the client receives `ProtocolError { code: NotOwner, message:
-    /// CONTROL_HELD_BY_ANOTHER_CLIENT }`.
-    ///
-    /// `reply` is resolved by the pump with ITS decision, in the same
-    /// registry-lock pass (#1620 R6): the caller must not infer the verdict
-    /// from the `OwnerChanged` deliveries it happens to see, since a grant
-    /// and a later takeover can be applied back to back on its connection
-    /// and another client's `OwnerChanged` can arrive while this claim is
-    /// still queued.
+    /// Claim control only if no OTHER client currently holds it, decided under the owner-registry
+    /// lock. `reply` is resolved by the pump with ITS decision in that same pass: the caller must
+    /// not infer the verdict from the `OwnerChanged` deliveries it happens to see.
     ClaimIfUnowned {
         reply: oneshot::Sender<ClaimOutcome>,
     },
-    /// #1725 — an input with a write shape: applied exactly like the wire
-    /// `ClientMsg::Input { data, input_seq }` (same `on_client_frame`, same
-    /// authorization, same acknowledgement), except that the `PtyWrite` the
-    /// pump queues carries `shape`. A wire frame is always
-    /// [`WriteShape::Verbatim`]: only this channel can ask for a split.
+    /// An input with a write shape, applied exactly like the wire `ClientMsg::Input`. A wire frame
+    /// is always [`WriteShape::Verbatim`]: only this channel can ask for a split.
     Input {
         data: Vec<u8>,
         input_seq: u64,
@@ -48,15 +34,13 @@ pub enum PumpCommand {
 /// The pump's own decision on a [`PumpCommand::ClaimIfUnowned`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClaimOutcome {
-    /// The registry now names this connection; its `OwnerChanged` is on
-    /// the way (the cached `control` id is minted when it is applied).
+    /// The registry now names this connection; its `OwnerChanged` is on the way.
     Granted,
     /// Nothing changed; `reason` is the `NotOwner` protocol error's message.
     Refused { reason: String },
 }
 
-/// Reason carried by the `NotOwner` protocol error a refused
-/// [`PumpCommand::ClaimIfUnowned`] produces.
+/// Reason carried by the `NotOwner` protocol error a refused claim-if-unowned produces.
 pub const CONTROL_HELD_BY_ANOTHER_CLIENT: &str = "terminal is controlled by another client";
 
 pub struct ClientPumpContext {
@@ -122,7 +106,7 @@ async fn next_command(commands: &mut Option<mpsc::Receiver<PumpCommand>>) -> Pum
     }
 }
 
-/// [`run_client_pump`] with an optional [`PumpCommand`] channel (#1620).
+/// [`run_client_pump`] with an optional [`PumpCommand`] channel.
 pub async fn run_client_pump_with_commands(
     mut incoming_rx: mpsc::Receiver<ClientMsg>,
     mut commands: Option<mpsc::Receiver<PumpCommand>>,
@@ -311,10 +295,8 @@ pub async fn run_client_pump_with_commands(
 
     connection.downstream = Some(down_task.abort_handle());
     loop {
-        // `claim_reply` marks a claim that must not displace another
-        // client's control (#1620 open+claim) and carries the caller's
-        // outcome channel; an ordinary `OwnerClaim` keeps its
-        // deliberate-takeover semantics.
+        // `claim_reply` marks a claim that must not displace another client's control; an ordinary
+        // `OwnerClaim` keeps its deliberate-takeover semantics.
         let (msg, mut claim_reply, shape) = tokio::select! {
             msg = incoming_rx.recv() => match msg {
                 Some(msg) => (msg, None, WriteShape::Verbatim),
@@ -372,8 +354,7 @@ pub async fn run_client_pump_with_commands(
                     .current_owner()
                     .is_some_and(|owner| Some(owner) != connection.state.client_id());
             let effects = if held_by_another {
-                // Decided under the registry lock: the holder keeps control
-                // and the registry is untouched.
+                // Decided under the registry lock: the holder keeps control and the registry is untouched.
                 vec![Effect::SendProtocolError {
                     code: calm_session::ProtocolErrorCode::NotOwner,
                     message: CONTROL_HELD_BY_ANOTHER_CLIENT.into(),
@@ -384,10 +365,8 @@ pub async fn run_client_pump_with_commands(
                     .state
                     .on_client_frame(msg, guard.transcript(), &mut reg, &ctx)
             };
-            // #1620 R6 — the claim-if-unowned verdict, decided in this same
-            // registry-lock pass: granted iff the registry now names this
-            // connection; otherwise the refusal carries the protocol error
-            // this pass produced.
+            // The claim-if-unowned verdict, decided in this same registry-lock pass: granted iff the
+            // registry now names this connection.
             if let Some(reply) = claim_reply.take() {
                 let me = connection.state.client_id();
                 let outcome = if me.is_some() && reg.current_owner() == me {
@@ -521,7 +500,6 @@ pub async fn run_client_pump_with_commands(
     Ok(())
 }
 
-// Copied from crates/calm-session/src/bin/daemon.rs::apply_broadcaster_effects as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 pub(crate) fn apply_broadcaster_effects(
     tx: &broadcast::Sender<DaemonMsg>,
     supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>,
@@ -558,7 +536,6 @@ pub(crate) fn apply_broadcaster_effects(
     }
 }
 
-// Copied from crates/calm-session/src/bin/daemon.rs::request_resize as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 fn request_resize(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>, cols: u16, rows: u16) {
     if cols == 0 || rows == 0 {
         return;
@@ -566,7 +543,6 @@ fn request_resize(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>, cols
     let _ = supervisor_tx.send(SupervisorControl::Resize { cols, rows });
 }
 
-// Copied from crates/calm-session/src/bin/daemon.rs::signal_child as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 fn signal_child(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>) {
     let _ = supervisor_tx.send(SupervisorControl::Signal(
         calm_session::control::ProcSignal::Hup,

@@ -19,10 +19,8 @@ use super::track_tree::{
 use crate::error::{CalmError, Result};
 use crate::model::now_ms;
 
-/// Persisted task columns compared for in-flight declaration drift. `refs` is
-/// resolved through the frozen context/index rather than stored on `tasks`;
-/// `no_gate_reason` only affects gate validation, so neither belongs to this
-/// direct column comparison.
+/// Persisted task columns compared for in-flight declaration drift. `refs`
+/// (resolved through the frozen context) and `no_gate_reason` are excluded.
 pub const PROJECTION_DRIFT_TASK_FIELDS: &[&str] = &[
     "kind",
     "goal",
@@ -43,9 +41,7 @@ fn declaration_field_changed(
     let (_, _, kind, goal, context, acceptance, cwd, depends, _, gate, _, _, _) = row;
     Ok(match field {
         "kind" => kind != &declaration.kind,
-        // Both public instruction spellings lower into the frozen `tasks.goal`
-        // storage column; listing both keeps the public field partition
-        // exhaustive without changing the released schema.
+        // Both public instruction spellings lower into the frozen `tasks.goal` column.
         "goal" | "command" => goal != &declaration.goal,
         "context" => !context_eq(context, expected_context),
         "acceptance" => acceptance != &declaration.acceptance,
@@ -83,20 +79,8 @@ type FrozenDeclarationRow = (
     i64,
 );
 
-/// Which declaration edge was withdrawn, in the order the rationale prefers.
-///
-/// **`Ready` outranks `ReleasedByUser`, and the variant order is that rule.**
-/// `evaluate_schedulability_with_tree_term` already picks this way for a single
-/// block — it tests `decl_ready` first and only falls to the release edge in
-/// the `else if` — because unsetting `ready` withdraws the declaration itself
-/// while unsetting `released_by_user` only withdraws the wait release, which is
-/// the narrower of the two. #1160 review ② makes the key-level fold agree:
-/// folding across several blocks used to take the *document-order first* edge,
-/// so a key declared by a `ready=false` block and a `released_by_user=false`
-/// block reported a different rationale depending on which block came first —
-/// the same block-order bug this change set exists to remove. Taking the `min`
-/// makes one document produce one rationale, and makes the one-block and
-/// many-block answers the same rule instead of two.
+/// Which declaration edge was withdrawn. `Ready` outranks `ReleasedByUser`,
+/// and the variant order IS that rule: key-level folds take the `min`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum WithdrawalEdge {
@@ -163,27 +147,20 @@ pub struct BlockVerdict {
     pub schedulable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// Issue #1147 slice ① / #1149 — the failure classifier plus its
-    /// human reason tail (`"spawn-failed: track … is not a git
-    /// repository"`). Without it a failed task reads as a bare
-    /// classifier on every surface and the real diagnosis stays buried
-    /// in the operation's `phase_detail_json`.
+    /// Failure classifier plus its human reason tail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_card_id: Option<String>,
-    /// Written after claim, so exposing it preserves the #1030 read-state
-    /// exception. `spawn` must never be added beside it.
+    /// Written after claim, so exposing it preserves the read-state exception.
+    /// `spawn` must never be added beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_track_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_track_deleted: Option<bool>,
-    /// Server-owned explanation for a task that has not started. The tagged
-    /// variants keep dependency readiness, scheduler budget, and projection
-    /// admission distinct so clients never need to reconstruct scheduler
-    /// policy from `schedulable`, diagnostics, or environment defaults.
+    /// Server-owned explanation for a task that has not started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_reason: Option<TaskPendingReason>,
     #[serde(skip)]
@@ -207,27 +184,13 @@ struct TaskReadState {
 }
 
 /// Live (non-tombstoned) declaration block ids per key, in document order.
-///
-/// This is the read-path twin of `calm-server`'s
-/// `TaskContextService::resolve_task_closure` (`crates/calm-server/src/task_context.rs`,
-/// the `let root = match live.as_slice()` arm): `[root] => Ok`,
-/// `[] if tombstoned => RootTombstoned`, `[] => RootAbsent`,
-/// `_ => DuplicateLiveKey`. The dispatch side has always failed closed on every
-/// shape but `[root]` — the scheduler leaves such a task pending instead of
-/// claiming it. #1160 applies the same verdict on the read path, so an
-/// ambiguous key answers `status: null` on the wire instead of stamping one
-/// row's run onto every block that happens to carry the key.
-///
-/// `calm-truth` cannot depend on `calm-server`, so the rule is stated twice;
-/// both sites name each other. Do not add a third spelling.
+/// Read-path twin of `calm-server`'s `resolve_task_closure`; the rule is
+/// stated twice because `calm-truth` cannot depend on `calm-server`.
 fn live_declaration_blocks_by_key(declarations: &[TaskDeclaration]) -> BTreeMap<&str, Vec<&str>> {
     declarations
         .iter()
-        // The empty key is grouped like any other. `key` is not required to be
-        // non-empty on the wire, and `UNIQUE (track_id, key)` means two blocks
-        // declaring `""` still share exactly one row — the very ambiguity this
-        // index exists to name. Dropping them here would hand both blocks the
-        // same run again.
+        // The empty key is grouped like any other: two blocks declaring `""` still
+        // share exactly one row.
         .filter(|declaration| !declaration.tombstone)
         .fold(BTreeMap::new(), |mut grouped, declaration| {
             grouped
@@ -238,15 +201,9 @@ fn live_declaration_blocks_by_key(declarations: &[TaskDeclaration]) -> BTreeMap<
         })
 }
 
-/// Attach the task-table state carried by `track_projection_state`'s single
-/// statement. This deliberately stays beside the projection query instead of
-/// introducing a live block data-source abstraction.
-///
-/// #1160 — run state is attached only where the declaration index gives one
-/// unambiguous owner. `tasks` is keyed by `(track_id, key)` and carries no block
-/// identity, so when *several* live declarations claim a key nothing in the
-/// data says which block owns the run; every field below then stays `None`
-/// rather than being copied onto each candidate. See `owned` for the arms.
+/// Run state is attached only where the declaration index gives one
+/// unambiguous owner: `tasks` is keyed by `(track_id, key)` and carries no
+/// block identity.
 fn attach_task_read_state(
     rows: &[TaskReadState],
     track_id: &str,
@@ -259,25 +216,9 @@ fn attach_task_read_state(
         let Some(row) = by_key.get(verdict.key.as_str()) else {
             continue;
         };
-        // Only *duplication* is ambiguous. `resolve_task_closure` returns a
-        // single answer for the other two shapes too, and this mirrors them:
-        //
-        // - `[root]` — the one live declaration owns the run.
-        // - `[]` / absent — no live declaration. `RootAbsent` /
-        //   `RootTombstoned` on the dispatch side. Two verdicts can reach this
-        //   arm and they are told apart by block id, not by guessing:
-        //     * a *tombstoned* declaration carries its own block id, and must
-        //       stay bare — that is #1160 case 1;
-        //     * the `block_id: ""` verdict the loop above synthesises for a
-        //       hard-deleted block is the only carrier the still-live row has
-        //       left, and it is unique (the synthesis is guarded by "no
-        //       declaration mentions this key at all"). Refusing it would leave
-        //       a verdict this function's caller already stamped `status` on
-        //       with no worker card for its own `open_worker_output` action,
-        //       no `status_detail`, no child track, and neither reference
-        //       diagnostic — the §6.5 withdrawal row would name a run nobody
-        //       can open.
-        // - two or more — genuinely undecidable, `DuplicateLiveKey`.
+        // Only *duplication* is ambiguous. The `block_id: ""` verdict synthesised
+        // for a hard-deleted block is the only carrier the still-live row has left,
+        // so it may own the run.
         let owned = match live_blocks.get(verdict.key.as_str()).map(Vec::as_slice) {
             Some([root]) => *root == verdict.block_id,
             None | Some([]) => verdict.block_id.is_empty(),
@@ -432,10 +373,8 @@ fn task_verdict_row_state<'a>(
     }
 }
 
-/// Finish the read verdict with the scheduler-facing explanation. All inputs
-/// come from `track_projection_state`'s one statement: the nullable track
-/// override, every task status, and every persisted dependency list. The only
-/// outside value is the already server-resolved environment default.
+/// All inputs come from `track_projection_state`'s one statement; the only
+/// outside value is the server-resolved environment default.
 fn attach_task_pending_reasons(
     state: &TrackProjectionState,
     declarations: &[TaskDeclaration],
@@ -565,9 +504,8 @@ pub struct TaskProjectionOutcome {
     pub changed_keys: Vec<String>,
     pub diagnostics: Vec<BlockVerdict>,
     pub kernel_events: Vec<(ActorId, EventScope, Event)>,
-    /// Recursive tree statements used to obtain this projection's tree term.
-    /// Whole-tree callers use this countable seam to prevent an accidental
-    /// return to one full member walk per projected track.
+    /// Countable seam: whole-tree callers use it to prevent a return to one full
+    /// member walk per projected track.
     pub tree_cte_queries: u32,
 }
 
@@ -653,8 +591,6 @@ fn reference_diagnostic(code: &str, reference: &str, track_id: Option<String>) -
     )
 }
 
-/// One in-flight `tasks` row, as carried by [`track_projection_state`]'s
-/// `json_group_array`. Shape mirrors the three columns the predicate needs.
 #[derive(Deserialize)]
 struct InflightTaskRow {
     key: String,
@@ -662,11 +598,8 @@ struct InflightTaskRow {
     declared_by: String,
 }
 
-/// One normalized reference lookup passed to [`track_projection_state`].
-///
-/// Declarations stay Rust-owned. SQL receives only the relational lookup keys
-/// it needs, as one JSON parameter, and returns facts; the verdict remains the
-/// single Rust predicate shared by reads and writes.
+/// Declarations stay Rust-owned; SQL receives only lookup keys as one JSON
+/// parameter and returns facts.
 #[derive(Serialize)]
 #[serde(tag = "lookup_kind", rename_all = "snake_case")]
 enum ReferenceLookupRequest {
@@ -733,14 +666,12 @@ fn reference_lookup_request(reference: &str) -> Option<ReferenceLookupRequest> {
         })
 }
 
-/// Everything the schedulability verdict needs from `tracks` + the in-flight
-/// `tasks` rows, read in ONE statement (#1016).
+/// Everything the schedulability verdict needs, read in ONE statement.
 struct TrackProjectionState {
     policy: Option<String>,
     ceiling: i64,
     require_gates: bool,
-    /// Area of the track being projected — the source side of the
-    /// cross-area reference check.
+    /// Source side of the cross-area reference check.
     source_area: String,
     inflight: Vec<InflightTaskRow>,
     task_read_state: Vec<TaskReadState>,
@@ -764,23 +695,9 @@ struct TrackProjectionStateRow {
     recovery_constraints_json: String,
 }
 
-/// Materializes every database fact used by the local schedulability verdict
-/// in a SINGLE statement.
-///
-/// This used to be four statements — policy/ceiling/gates, the in-flight key
-/// list, the ceiling-occupancy `count(*)`, and `SELECT area_id` — which is
-/// fine inside the write path's IMMEDIATE transaction but mixes database
-/// versions on the read path, where the caller runs in autocommit. A ceiling
-/// read at t0 against an occupancy counted at t1 can report a capacity that
-/// never existed, and the orphaned-in-flight scan could contradict the
-/// in-flight key list. One statement is one implicit transaction, so all of
-/// it now comes from one version. It also removes the `SELECT area_id ...
-/// fetch_one` that turned a concurrently deleted track into a 500 (it is the
-/// `NotFound` below, i.e. a 404, on the same row that carries the policy).
-///
-/// The in-flight key set, ceiling occupancy, orphan candidates, frozen
-/// declarations, task-budget override, dependency rows, and reference targets
-/// are captured by the same statement.
+/// Materializes every database fact used by the local verdict in a SINGLE
+/// statement: the read path runs in autocommit, so separate statements would
+/// mix database versions.
 async fn track_projection_state(
     conn: &mut SqliteConnection,
     track_id: &str,
@@ -874,9 +791,8 @@ async fn track_projection_state(
     .bind(i64::from(include_read_state))
     .fetch_optional(&mut *conn)
     .await?;
-    // Keep the test seam immediately after the one statement. A future
-    // extraction of frozen/reference facts into another query must therefore
-    // cross this t0/t1 boundary and trip the concurrency regressions.
+    // Keep the test seam immediately after the one statement, so any future
+    // split crosses this t0/t1 boundary.
     after_statement.await;
     let row = row.ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     let reference_targets =
@@ -898,28 +814,9 @@ async fn track_projection_state(
     })
 }
 
-/// The single DB-aware schedulability predicate used by writes, rebuilds and reads.
-///
-/// Takes a bare connection rather than a transaction (#1016): the WRITE path
-/// hands it `&mut **tx` so its verdict stays atomic with the projection it
-/// drives, while the read-only path (`read.rs::task_diagnostics`) hands it a
-/// pooled connection in AUTOCOMMIT mode.
-///
-/// Consistency on the READ path: policy, ceiling, local in-flight occupancy,
-/// frozen declarations, task read state, source area and every normalized
-/// reference target are materialized by ONE autocommit statement
-/// ([`track_projection_state`]). It is therefore one SQLite snapshot without
-/// taking the writer slot or introducing the shared-cache deferred-reader
-/// deadlock pinned by `deferred_read_tx_deadlock_repro`.
-///
-/// [`track_tree_term`] still runs before that statement. Its bounded tree
-/// walks are a separate tree-budget term, while all local/reference facts in
-/// the #1027 tear are version-locked here. The WRITE path remains fully atomic
-/// because its caller supplies the enclosing IMMEDIATE transaction.
 /// Every declaration of a track whose tree root cannot be resolved is
-/// unschedulable, with a diagnostic that says so. Deliberately NOT "skip the
-/// tree term when there is no tree": one broken link would then exempt an
-/// entire subtree from the bound.
+/// unschedulable. Deliberately NOT "skip the tree term when there is no
+/// tree": one broken link would exempt an entire subtree from the bound.
 fn tree_root_unresolved_diagnostic() -> Diagnostic {
     Diagnostic::coded(
         "tree_root_unresolved",
@@ -953,11 +850,9 @@ pub async fn evaluate_schedulability(
     .await
 }
 
-/// Read-side form of [`evaluate_schedulability`]. `task_budget_default` is the
-/// server-resolved `NEIGE_TRACK_TASK_BUDGET` value; the repository combines it
-/// with the nullable per-track override and returns the finished diagnosis.
-/// Write paths intentionally call the sibling above because pending reasons
-/// are presentation metadata, never projection inputs.
+/// Read-side form: `task_budget_default` is the server-resolved
+/// `NEIGE_TRACK_TASK_BUDGET`. Write paths call the sibling because pending
+/// reasons are presentation metadata, never projection inputs.
 pub async fn evaluate_schedulability_with_task_budget_default(
     conn: &mut SqliteConnection,
     track_id: &str,
@@ -1006,10 +901,8 @@ async fn evaluate_schedulability_with_tree_term(
     .await
 }
 
-/// Test-only interleaving seam. `after_snapshot` runs after the one fact query
-/// has completed and before any verdict consumes it, so concurrency tests can
-/// mutate the database at a proven t0/t1 boundary without copying the
-/// production predicate or relying on scheduler timing.
+/// Test-only seam: `after_snapshot` runs between the one fact query and any
+/// verdict, a proven t0/t1 boundary.
 #[cfg(test)]
 pub(super) async fn evaluate_schedulability_after_snapshot_for_test(
     conn: &mut SqliteConnection,
@@ -1078,23 +971,14 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         after_snapshot,
     )
     .await?;
-    // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
-    // share)` where `share` is this track's deterministic slice of the root's
-    // `tree_task_budget`, split over the tree's tracks in `(created_at, id)`
-    // order. Its quota is a function of tree SHAPE, never sibling projection
-    // output. Within this track, immutable in-flight occupancy is subtracted and
-    // pending rows re-enter as ordered candidates. That keeps
-    // "rebuild ≡ incremental" (D.1 #11) true. A shared sibling count would
-    // instead be first-come-first-served,
-    // path-dependent, and not reconstructible by a rebuild.
+    // Tree term: `effective_ceiling = min(ceiling, share)`, where `share` is a
+    // function of tree SHAPE, never sibling projection output — that keeps
+    // rebuild ≡ incremental.
     let ceiling = state.ceiling;
     let (tree_share, tree_root_unresolved) = match &tree_term {
         TrackTreeTerm::RootUnresolved => {
-            // Fail closed. A broken parent link, a cycle, or an over-deep chain
-            // means we cannot name the budget this track draws from; treating
-            // "no resolvable tree" as "no tree constraint" would leave a whole
-            // subtree unbounded, which is the one outcome the tree bound exists
-            // to prevent.
+            // Fail closed: treating "no resolvable tree" as "no tree constraint" would
+            // leave a whole subtree unbounded.
             (None, true)
         }
         TrackTreeTerm::Share(share) => (Some(share.clone()), false),
@@ -1102,7 +986,6 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
     let require_gates = state.require_gates;
     let source_area = state.source_area.as_str();
     let effective_wait = state.policy.as_deref() == Some("declare-and-wait");
-    // unknown_deps knows every in-flight key in the track.
     let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
     let inflight_key_set: BTreeSet<&str> = inflight_keys.iter().map(String::as_str).collect();
     let ceiling_occupied: i64 = state
@@ -1238,9 +1121,8 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         });
     }
 
-    // Freeze all persisted declaration columns before ceiling admission. A stale
-    // in-flight declaration cannot consume capacity, and a terminal key can never
-    // produce a new live row.
+    // Freeze before ceiling admission: a stale in-flight declaration cannot
+    // consume capacity, and a terminal key never produces a new live row.
     let frozen_by_key: BTreeMap<_, _> = state
         .frozen
         .iter()
@@ -1328,11 +1210,9 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         &state.recovery_constraints,
     )?;
 
-    // A deleted block has no declaration to drive the loop above. Surface its
-    // still-live projection row as a synthetic verdict so both read APIs retain
-    // the §6.5 withdrawal diagnostic without changing their response shape.
+    // A deleted block has no declaration to drive the loop above; surface its
+    // still-live row as a synthetic verdict.
     let declared_keys: BTreeSet<&str> = declarations.iter().map(|d| d.key.as_str()).collect();
-    // Same rows the in-flight key list came from (one statement, one version).
     for row in &state.inflight {
         if !declared_keys.contains(row.key.as_str()) {
             verdicts.push(BlockVerdict {
@@ -1380,11 +1260,9 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         })
         .map(|(_, declaration)| declaration.block_id.clone())
         .collect();
-    // Attribution matters here (§12.2 C): recovery must name every setting
-    // that actually binds this admission. A strict minimum names one knob;
-    // equality names BOTH, because raising either one alone leaves the other
-    // at the same minimum. An overage freeze always binds the tree and also
-    // binds the local ceiling when that ceiling has no remaining slot.
+    // Recovery must name every setting that actually binds this admission:
+    // equality names BOTH knobs, since raising either alone leaves the other at
+    // the minimum.
     let tree_bound = tree_share
         .as_ref()
         .filter(|share| share.admission_frozen || tree_capacity < ceiling_capacity)
@@ -1395,9 +1273,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         .cloned();
     for index in candidates.into_iter().skip(capacity) {
         let tree_diagnostic = |share: &super::track_tree::TreeShare, bounds_tied: bool| {
-            // The target must gain a genuinely free slot, not merely catch up
-            // to immutable occupancy. In a self-overage freeze the first B
-            // that increases `share` can still leave share == occupancy.
+            // The target must gain a genuinely free slot, not merely catch up to occupancy.
             let occupied_or_current_share = share.share.max(tree_occupied);
             let minimum_for_target =
                 (share.budget.saturating_add(1)..=MAX_TREE_TASK_BUDGET).find(|budget| {
@@ -1451,10 +1327,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         let ceiling_diagnostic = |tree_context: Option<&super::track_tree::TreeShare>,
                                   admission_frozen: bool,
                                   raise_available: bool| {
-            // The new ceiling must clear both the configured bound and fixed
-            // in-flight occupancy. When an operator lowered the ceiling below
-            // occupancy this is `occupied + 1`; otherwise it preserves the
-            // ordinary `ceiling + 1` minimum.
+            // The new ceiling must clear both the configured bound and in-flight occupancy.
             let minimum_planner_task_ceiling = ceiling.max(ceiling_occupied).saturating_add(1);
             let mut args = diagnostic_args([
                 ("ceiling", serde_json::Value::from(ceiling)),
@@ -1572,9 +1445,8 @@ pub async fn project_tasks_tx(
     project_tasks_from_verdicts_tx(tx, track_id, declarations, verdicts, tree_cte_queries).await
 }
 
-/// Projection entry point for a whole-tree rebuild. The caller enumerates the
-/// tree once and passes each deterministic share here, avoiding one recursive
-/// member walk per track.
+/// Whole-tree rebuild entry point: the caller enumerates the tree once and
+/// passes each share, avoiding one member walk per track.
 pub async fn project_tasks_with_tree_term_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
@@ -1604,17 +1476,9 @@ async fn project_tasks_from_verdicts_tx(
     verdicts: Vec<BlockVerdict>,
     tree_cte_queries: u32,
 ) -> Result<TaskProjectionOutcome> {
-    // #1160 — these three indexes ask row-level questions ("is this *key*
-    // still backed by the document?"), but used to be built as last-wins
-    // `BTreeMap` collects, so with several blocks on one key the answer
-    // depended on document order. Each is now an explicit fold over every
-    // block carrying the key. The dimension stays `key`: `tasks` rows are
-    // keyed by `(track_id, key)` and `block_id` is not a durable identity.
-    //
-    // `schedulable` folds with `any`: the row is still wanted as long as *one*
-    // live block can produce it. Folding with `all` would let a tombstone (or
-    // a diagnosed twin) of a key that is still declared delete the pending row
-    // / raise a withdrawal.
+    // Row-level questions folded over every block carrying the key, so document
+    // order cannot matter. `schedulable` folds with `any`: a tombstone beside a
+    // live re-declaration must not delete the pending row.
     let schedulable_by_key = verdicts.iter().filter(|v| !v.key.is_empty()).fold(
         BTreeMap::<String, bool>::new(),
         |mut folded, verdict| {
@@ -1649,16 +1513,9 @@ async fn project_tasks_from_verdicts_tx(
             .get(key)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        // Withdrawal folds with `all`: the key is withdrawn only when *every*
-        // block carrying it withdrew. One block that is still ready keeps the
-        // key claimed — otherwise a tombstone left beside a live
-        // re-declaration would read as a withdrawal of the new declaration.
-        //
-        // The edge itself is the *strongest* one, by `WithdrawalEdge`'s own
-        // ordering — not the first one in document order, which was still a
-        // block-order dependency (#1160 review ②): two withdrawing blocks with
-        // different edges sent a different rationale for `[X, Y]` than for
-        // `[Y, X]`. See `WithdrawalEdge` for why `Ready` is the stronger.
+        // Withdrawal folds with `all`: one block still ready keeps the key claimed.
+        // The edge is the strongest by `WithdrawalEdge`'s ordering, not the first
+        // in document order.
         let withdrawal_edge = (!verdict_indexes.is_empty()
             && verdict_indexes
                 .iter()
@@ -1677,9 +1534,8 @@ async fn project_tasks_from_verdicts_tx(
                     .get(key.as_str())
                     .is_none_or(Vec::is_empty);
                 if withdrawal || declaration_removed {
-                    // Withdrawal is a declaration edge, not a content change. Keep
-                    // the hash-typed changed_refs clean and describe the edge in the
-                    // rationale instead.
+                    // Withdrawal is a declaration edge, not a content change: keep
+                    // `changed_refs` clean and describe the edge in the rationale.
                     let mut changed_refs = Vec::new();
                     if declaration_removed {
                         changed_refs.extend(
@@ -1741,9 +1597,8 @@ async fn project_tasks_from_verdicts_tx(
             } else if task_delete_pending_tx(tx, id).await? != 0 {
                 changed.insert(key.clone());
             }
-            // SQLite serializes writers, and this function already owns the write
-            // transaction, so a pending row cannot be claimed between SELECT and
-            // the guarded DELETE; a zero-row DELETE needs no race diagnostic here.
+            // This function owns the write transaction, so a pending row cannot be
+            // claimed between SELECT and the guarded DELETE.
         }
     }
     let now = now_ms();
@@ -1887,12 +1742,6 @@ mod tests {
         let track = "track-projection".to_string();
         sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area-projection','c','#000',0,'user',0,0)")
             .execute(&repo.pool).await.unwrap();
-        // #1147 S1 — this fixture used to inline `cwd='/'`, which made it a
-        // second writer of a column design D1 reserves for
-        // `track_workspace_write_tx`. It is converted rather than exempted:
-        // a fixture that bypasses a production invariant is exactly the shape
-        // that lets the invariant rot. The projection assertions never read
-        // the workspace, so the value is the same `/` routed properly.
         sqlx::query("INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at,planner_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,'draft',0,0,1,0)")
             .bind(&track).execute(&repo.pool).await.unwrap();
         let mut tx = repo.pool.begin().await.unwrap();
@@ -2274,10 +2123,6 @@ mod tests {
         assert_eq!(persisted_events, 0);
     }
 
-    /// #1160 case 2 — two live blocks claim one key while the row is in
-    /// flight. `tasks` has a single row for `(track_id, key)` and nothing in
-    /// the data says which block owns that run, so neither verdict may carry
-    /// it. Mirrors `resolve_task_closure`'s `DuplicateLiveKey`.
     #[tokio::test]
     async fn duplicate_live_declarations_never_stamp_run_state() {
         let (repo, track) = setup().await;
@@ -2290,9 +2135,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Declarations *and* diagnostics from the production producer: a
-        // contested key never reaches the projection with an empty diagnostic
-        // list, it reaches it carrying `duplicate_key` on both blocks.
         let (declarations, block_local_diags) =
             calm_types::report_blocks::tasks::project_task_declarations(&[
                 live_task_block(0, "contested"),
@@ -2332,9 +2174,6 @@ mod tests {
         }
     }
 
-    /// #1160 case 1 — a tombstoned block and a live block carry the same key.
-    /// Exactly one live declaration exists, so it takes the run state; the
-    /// tombstone must stay bare.
     #[tokio::test]
     async fn tombstoned_declaration_never_stamps_run_state() {
         let (repo, track) = setup().await;
@@ -2374,19 +2213,8 @@ mod tests {
         assert_eq!(verdicts[1].worker_card_id, None);
     }
 
-    /// #1160 review ① — the run of a *hard-deleted* block still has to be
-    /// readable.
-    ///
-    /// `evaluate_schedulability` synthesises a `block_id: ""` verdict for an
-    /// in-flight row no declaration carries any more, and deliberately stamps
-    /// `status` on it by hand. The first cut of the uniqueness rule then asked
-    /// `live_blocks.get(key) == Some([root])`, which a deleted block can never
-    /// satisfy, so everything `attach_task_read_state` adds — the worker card
-    /// the `open_worker_output` action needs, the failure detail, the child
-    /// track, and both reference diagnostics — silently fell off that verdict
-    /// while `status` stayed. The key is not ambiguous here: it has *zero*
-    /// live declarations, which `resolve_task_closure` answers `RootAbsent`,
-    /// one single answer, and there is exactly one verdict to give it to.
+    /// A hard-deleted block leaves zero live declarations (`RootAbsent`): one
+    /// answer, and exactly one synthetic verdict to give it to.
     #[tokio::test]
     async fn deleted_declaration_run_state_survives_on_the_synthetic_verdict() {
         let (repo, track) = setup().await;
@@ -2407,8 +2235,7 @@ mod tests {
         .unwrap();
 
         let mut conn = repo.pool.acquire().await.unwrap();
-        // The document no longer declares the key at all — the block was hard
-        // deleted, and `delete_block` leaves no tombstone behind.
+        // `delete_block` leaves no tombstone behind.
         let verdicts = evaluate_schedulability(&mut conn, &track, &[], &[], true)
             .await
             .unwrap();
@@ -2440,9 +2267,7 @@ mod tests {
         );
     }
 
-    /// #1160 review ① — the same fix must not hand a *tombstoned* block the
-    /// run through the new zero-live-declarations arm. A tombstone carries a
-    /// real block id, so `block_id: ""` is what separates the two.
+    /// A tombstone carries a real block id, so `block_id: ""` is what separates the two.
     #[tokio::test]
     async fn tombstone_only_document_still_never_stamps_run_state() {
         let (repo, track) = setup().await;
@@ -2476,13 +2301,8 @@ mod tests {
         assert_eq!(verdicts[0].worker_card_id, None);
     }
 
-    /// A task block as the report card actually stores it, so the declarations
-    /// *and* the block-local diagnostics below both come out of the production
-    /// producer instead of being asserted into existence. Two live blocks
-    /// sharing a key really do carry `duplicate_key`; a tombstone standing
-    /// beside a re-declaration really does carry
-    /// `tombstone_blocks_redeclaration`. A fixture that passes `&[vec![]]`
-    /// hands the projection a document shape the kernel never produces.
+    /// A task block as the report card actually stores it, so declarations and
+    /// block-local diagnostics come out of the production producer.
     fn task_block(index: usize, payload: serde_json::Value) -> ReportBlock {
         ReportBlock {
             id: format!("b_{index:04x}"),
@@ -2507,8 +2327,6 @@ mod tests {
         )
     }
 
-    /// The rationale carried by each `task.context_advanced` this projection
-    /// emitted, which is the only field the folds under test decide.
     fn context_advanced_rationales(outcome: &TaskProjectionOutcome) -> Vec<String> {
         outcome
             .kernel_events
@@ -2540,16 +2358,8 @@ mod tests {
         outcome
     }
 
-    /// #1160 — `declaration_by_key` used to be a last-wins `BTreeMap`, so the
-    /// same document content produced different kernel events depending on
-    /// whether the tombstone block sat before or after the live one.
-    ///
-    /// **This is the negative half of a pair.** On its own an equality between
-    /// two orders proves nothing — any constant predicate satisfies it — so it
-    /// asserts the *value*: a key that still has a live declaration is not
-    /// removed, therefore zero events, in both orders.
-    /// `tombstone_only_document_advances_the_in_flight_context` is the positive
-    /// half, and the two together pin the predicate rather than its symmetry.
+    /// Negative half of a pair: asserts the *value* (zero events in both orders),
+    /// since order-equality alone is satisfied by any constant predicate.
     #[tokio::test]
     async fn tombstone_beside_live_redeclaration_emits_no_kernel_event_in_either_order() {
         async fn rationales_for(blocks: [ReportBlock; 2]) -> Vec<String> {
@@ -2561,8 +2371,6 @@ mod tests {
 
         let live = live_task_block(0, "reordered");
         let tombstone = tombstone_task_block(1, "reordered");
-        // The document really is diagnosed — the projection is fed the shape
-        // the kernel produces for it, not an empty diagnostic list.
         let (_, diags) = calm_types::report_blocks::tasks::project_task_declarations(&[
             live.clone(),
             tombstone.clone(),
@@ -2589,9 +2397,6 @@ mod tests {
         );
     }
 
-    /// #1160 — the positive half. Every live declaration of the key is gone,
-    /// so the in-flight row's frozen context is material and the kernel must
-    /// say so.
     #[tokio::test]
     async fn tombstone_only_document_advances_the_in_flight_context() {
         let (repo, track) = setup().await;
@@ -2610,8 +2415,6 @@ mod tests {
         assert!(stale.is_some(), "the row itself carries the verdict");
     }
 
-    /// One live block on the contested key `contended`, carrying whichever of
-    /// the two declaration edges the caller wants withdrawn.
     fn contended_task_block(index: usize, ready: bool, released_by_user: bool) -> ReportBlock {
         task_block(
             index,
@@ -2621,14 +2424,10 @@ mod tests {
         )
     }
 
-    /// Project `blocks` over an in-flight row whose stored declaration carried
-    /// *both* edges, under the policy that makes the release edge exist at all,
-    /// and return the `task.context_advanced` rationales.
     async fn withdrawal_rationales_for(blocks: [ReportBlock; 2]) -> Vec<String> {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "contended", "running").await;
-        // The row was established by a declaration that carried *both*
-        // edges; withdrawing either one is what the fold has to name.
+        // The row was established by a declaration that carried *both* edges.
         sqlx::query(
             "UPDATE tasks SET decl_ready=1,decl_released_by_user=1 WHERE track_id=?1 AND key='contended'",
         )
@@ -2646,17 +2445,9 @@ mod tests {
         context_advanced_rationales(&outcome)
     }
 
-    /// #1160 review ② — the withdrawal rationale used to be `verdict_indexes[0]`,
-    /// i.e. the first block in document order, so two blocks withdrawing
-    /// *different* edges sent a different rationale for `[X, Y]` than for
-    /// `[Y, X]` — the same block-order bug this change set removes elsewhere.
-    ///
-    /// Both orders expect the *same* rationale here, which is the point of the
-    /// case but also its blind spot: an implementation that ignored the edges
-    /// and answered `Ready` unconditionally would satisfy it. That mutant is
-    /// killed by
-    /// `withdrawal_rationale_names_the_release_edge_when_it_is_the_only_one`
-    /// below, whose expectation is the *other* variant.
+    /// Both orders expect the same rationale, which an implementation answering
+    /// `Ready` unconditionally would also satisfy; the release-edge case below
+    /// kills that mutant.
     #[tokio::test]
     async fn withdrawal_rationale_is_edge_ordered_not_block_ordered() {
         // X dropped `ready` → `WithdrawalEdge::Ready`.
@@ -2678,12 +2469,8 @@ mod tests {
         assert_eq!(withdrawal_rationales_for([y, x]).await, expected);
     }
 
-    /// #1160 review ② (second round) — the counter-example that makes the fold
-    /// falsifiable. Both live blocks keep `ready` and drop only the user
-    /// release, so `Ready` is not an edge *any* block withdrew and the only
-    /// honest rationale is the release one. A fold hard-coded to
-    /// `Some(WithdrawalEdge::Ready)` — which the paired case above cannot see —
-    /// reports "ready was withdrawn" about a declaration that is still ready.
+    /// The counter-example that makes the fold falsifiable: `Ready` is not an
+    /// edge any block withdrew.
     #[tokio::test]
     async fn withdrawal_rationale_names_the_release_edge_when_it_is_the_only_one() {
         let x = contended_task_block(0, true, false);

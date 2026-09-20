@@ -1,9 +1,4 @@
-//! `calm.plan.list` only: the way out of a refused recovery. The refusing
-//! site decided the continuation and the sentence; this module carries
-//! them through and adds what the failed attempt retained on disk — the
-//! worktree facts the caller already read for the entry's `worktree` key,
-//! handed in rather than read again. Not part of the REST `TaskRecoveryView`
-//! wire type.
+//! `calm.plan.list` only: the way out of a refused recovery.
 use crate::error::Result;
 use crate::model::Task;
 use crate::operation::Tx;
@@ -11,22 +6,9 @@ use crate::operation::workspace_lease::facts::WorkerWorktreeFacts;
 use crate::task_recovery::{AdmissionError, RefusalSite, RefusedRecovery};
 use serde_json::{Value, json};
 
-/// `{ blocking_condition, supported_continuation, retained }` for a refused
-/// recovery of `task` (the failed current attempt). `blocking_condition` is
-/// the refusal's reason sentence and `supported_continuation` the
-/// continuation its site decided; nothing is re-derived from the code or
-/// the task shape. The Track comes from the refusal: the row admission read
-/// under this transaction. `worktree` is `worker_worktree_facts_tx` for the
-/// task's worker card as the caller read it in this transaction (`None` when
-/// there is no worker card or it never held a lease); `retained` is its
-/// projection, `{}` when absent.
-///
-/// Admission checks the actor-dependent policy before the actor-independent
-/// contract and predecessor checks, so a policy refusal (`user_recovery`,
-/// lifecycle) can mask a refusal any actor would meet next. Behind one of
-/// the three policy sites, guidance re-runs those checks read-only and, when
-/// they refuse, advertises THAT refusal's continuation and appends its
-/// sentence; `recovery.code` stays what admission returned.
+/// A policy refusal can mask a refusal any actor would meet next; behind a policy
+/// site, guidance re-runs the contract/predecessor checks read-only and advertises
+/// that refusal's continuation, while `recovery.code` stays what admission returned.
 pub(crate) async fn guidance_tx(
     tx: &mut Tx<'_>,
     task: &Task,
@@ -60,9 +42,6 @@ pub(crate) async fn guidance_tx(
     }))
 }
 
-/// `{policy}. Independently of who asks: {tail}` — the policy reason ends
-/// its sentence first: a full stop is added unless it already ends with `.`
-/// or `;`.
 fn join_independent(policy: &str, tail: &str) -> String {
     let stop = if policy.ends_with(['.', ';']) {
         ""
@@ -72,16 +51,7 @@ fn join_independent(policy: &str, tail: &str) -> String {
     format!("{policy}{stop} Independently of who asks: {tail}")
 }
 
-/// What the failed attempt's worker card left behind, as `retained`: the
-/// same facts `calm.plan.list` renders as `worktree`
-/// (`operation::workspace_lease::facts`), keyed the way the Planner prompt
-/// names them. `workspace_path` is the lease path (held or released — the
-/// directory may still exist), `branch` the slice branch, `last_commit` the
-/// kernel commit recorded for that card; every field is optional. A
-/// `worktree.removed` newer than the last `worktree.provisioned` means the
-/// directory and slice branch are gone: only `removed: true` and the commit
-/// (the object survives removal) are reported. The lease `state` is not
-/// carried — `retained` says what is left, not what the lease row says.
+/// The lease `state` is not carried — `retained` says what is left, not what the lease row says.
 fn retained_from_facts(facts: WorkerWorktreeFacts) -> Value {
     let WorkerWorktreeFacts {
         path,

@@ -1,6 +1,4 @@
-//! #1704 S2 — the Track tree's Claude permission policy as the ceiling of
-//! `calm.terminal.open`, through the real MCP tools, the real operation
-//! runtime, a real PTY and the production REST router (the user's PATCH).
+//! The Track tree's Claude permission policy as the ceiling of `calm.terminal.open`.
 use crate::terminal_support::Harness;
 use calm_server::db::prelude::*;
 use calm_server::model::NewTrack;
@@ -17,8 +15,8 @@ use tower::ServiceExt;
 /// from disk by the test, not by the fake.
 const FAKE_CLAUDE: &str = "printf 'READY %s\\n' \"$NEIGE_CARD_ID\"; exec cat";
 
-/// The floor's `ask` rules in `cwd`: `git push` and `git reset --hard` are
-/// followed by their `git -C /<cwd>` spelling (#1729), the rest are single.
+/// The floor's `ask` rules in `cwd`: `git push` and `git reset --hard` are followed by their
+/// `git -C /<cwd>` spelling, the rest are single.
 fn floor_ask(root: &str) -> Vec<String> {
     vec![
         "Bash(git push *)".to_owned(),
@@ -33,9 +31,8 @@ fn floor_ask(root: &str) -> Vec<String> {
     ]
 }
 
-/// The `Bash(...)` rules of one prefix in `cwd` (S1's rendering, #1729): a
-/// `git <rest>` prefix is followed by its `git -C /<cwd> <rest>` spelling;
-/// a bare `git` and any other command render one rule.
+/// The `Bash(...)` rules of one prefix in `cwd`: a `git <rest>` prefix is followed by its
+/// `git -C /<cwd> <rest>` spelling; a bare `git` and any other command render one rule.
 fn bash_rules(prefix: &str, root: &str) -> Vec<String> {
     let mut rules = vec![format!("Bash({prefix} *)")];
     if let Some(rest) = prefix.strip_prefix("git ") {
@@ -52,7 +49,7 @@ fn policy() -> Value {
     })
 }
 
-/// The block the kernel renders for `scope` in `cwd` (S1's rendering).
+/// The block the kernel renders for `scope` in `cwd`.
 fn block(cwd: &str, scope: &Value) -> Value {
     let root = cwd.trim_matches('/');
     let strings = |key: &str| -> Vec<String> {
@@ -213,13 +210,6 @@ async fn assert_effective(h: &Harness, opened: &Opened, expected: &Value, source
     );
 }
 
-/// (a) policy, no declaration: the policy is the scope (`track_policy`);
-/// a scope-less replay returns the same terminal. (b) policy + `{deny}`: the
-/// policy's allow, the deny appended (`declared_within_policy`). (b') policy
-/// + `{bash}`: `edit` inherited. (c) an exceeding declaration is refused by
-/// name with the ceiling, before any create. (d) no policy + declaration:
-/// S1's block, source `declared`. (e) a REST terminal card under a policy
-/// gets no file and no keys. (f) the third key is server-owned and sticky.
 #[tokio::test]
 async fn policy_is_the_ceiling_of_every_planner_open() {
     let h = Harness::start().await;
@@ -232,7 +222,6 @@ async fn policy_is_the_ceiling_of_every_planner_open() {
 
     patch_policy(&h, &h.track, policy()).await;
 
-    // (a)
     let a = open_ok(&h, None, open_args("policy-only", None)).await;
     assert_effective(&h, &a, &block(&a.cwd, &policy()), "track_policy").await;
     let replay = receipt(
@@ -249,7 +238,6 @@ async fn policy_is_the_ceiling_of_every_planner_open() {
         "the settings file is untouched by the replay"
     );
 
-    // (b)
     let b = open_ok(
         &h,
         None,
@@ -260,7 +248,6 @@ async fn policy_is_the_ceiling_of_every_planner_open() {
     merged["deny"] = json!(["git rebase", "git push"]);
     assert_effective(&h, &b, &block(&b.cwd, &merged), "declared_within_policy").await;
 
-    // (b')
     let b2 = open_ok(
         &h,
         None,
@@ -275,7 +262,6 @@ async fn policy_is_the_ceiling_of_every_planner_open() {
     assert_effective(&h, &b2, &block(&b2.cwd, &merged), "declared_within_policy").await;
     let cards_before = terminal_cards(&h, &h.track).await;
 
-    // (c)
     for (scope, reason) in [
         (
             json!({"edit": ["**"]}),
@@ -415,9 +401,6 @@ async fn policy_is_the_ceiling_of_every_planner_open() {
     h.stop(&a.terminal).await;
 }
 
-/// (c') the probe: a replayed request_id with the same arguments returns
-/// the existing terminal whatever the policy is now; only a fresh request_id
-/// meets the narrowed policy.
 #[tokio::test]
 async fn replay_after_narrowing_returns_the_existing_terminal() {
     let h = Harness::start().await;
@@ -455,7 +438,7 @@ async fn replay_after_narrowing_returns_the_existing_terminal() {
         "declared_within_policy"
     );
     assert_eq!(terminal_cards(&h, &h.track).await, 1);
-    // Same request_id, other arguments: S1's payload conflict, not the policy.
+    // Same request_id, other arguments: the payload conflict, not the policy.
     let conflict = h
         .call("calm.terminal.open", open_args("before-narrowing", None))
         .await;
@@ -483,10 +466,6 @@ async fn replay_after_narrowing_returns_the_existing_terminal() {
     h.stop(&first.terminal).await;
 }
 
-/// (g) TOCTOU: the policy narrows between the handler's pre-check and the
-/// write transaction; the in-tx re-check refuses the open from Pending —
-/// `outcome: unavailable` naming the entry, `bad_request`, no card, no
-/// terminal row, no file.
 #[tokio::test]
 async fn policy_narrowed_between_the_precheck_and_the_transaction_fails_the_open() {
     let h = Harness::start().await;
@@ -587,10 +566,7 @@ async fn policy_narrowed_between_the_precheck_and_the_transaction_fails_the_open
     h.stop(&next.terminal).await;
 }
 
-/// (h) the ceiling resolves the tree ROOT: a child track's Planner opens
-/// under the root's policy (rows 3/4/5 hold in the child), its `Edit` rules
-/// are anchored at the CHILD's cwd, and the child's own `Track` still shows
-/// `claude_permissions_policy: null`.
+/// The child's `Edit` rules are anchored at the CHILD's cwd; the child's own `Track` still shows `claude_permissions_policy: null`.
 #[tokio::test]
 async fn a_child_track_opens_under_its_root_policy() {
     let h = Harness::start().await;

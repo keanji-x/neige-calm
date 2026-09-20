@@ -1,31 +1,5 @@
-//! Issue #229 PR B — `mcp_server::tools::track_report` integration smoke.
-//!
-//! Same shape as `mcp_track_state.rs`: in-memory `SqlxRepo`, an
-//! `EventBus`, a pre-seeded `CardRoleCache`, and an `AppContext`
-//! constructed directly so we can drive the three tool handlers
-//! (`calm.report.read`, `calm.report.write`, `calm.report.edit`) as
-//! plain async fns.
-//!
-//! Coverage:
-//!
-//!   1. `report_read` (planner) returns the initial seeded body + summary
-//!      + schemaVersion + updated_at.
-//!   2. `report_write` (planner) replaces the body wholesale, bumps
-//!      `updated_at`, and emits one `card.updated` event.
-//!   3. `report_write` keeps the existing summary when omitted; honors
-//!      a non-null override when provided.
-//!   4. `report_edit` happy path — unique substring replacement.
-//!   5. `report_edit` rejects missing `old_string` (-32602).
-//!   6. `report_edit` rejects duplicate matches without `replace_all`
-//!      (-32602).
-//!   7. `report_edit` honors `replace_all=true` on multi-match.
-//!   8. `report_edit` short-circuits when `old_string == new_string`
-//!      (no write, no event, returns current `updated_at`).
-//!   9. Worker calling any of the three is refused at the soft role
-//!      gate (-32602 "tool requires role=Planner got=Worker").
-//!  10. Planner card on a different track cannot reach this track's report
-//!      — the (planner_card_id → track_id → report_card) lookup confines
-//!      writes to the caller's own track.
+//! `mcp_server::tools::track_report` integration smoke: in-memory `SqlxRepo`, `EventBus`, seeded
+//! `CardRoleCache` and a directly constructed `AppContext` driving the report tool handlers as plain async fns.
 
 #![cfg(unix)]
 
@@ -56,22 +30,13 @@ use calm_types::worker::{
 use serde_json::{Value, json};
 
 const PLANNER_SESSION_ID: &str = "planner-session";
-/// #1189 — the assistant's session is deliberately NOT the track root, and
-/// it is bound to its own `CardRole::Assistant` card. Both facts are what
-/// the S2 recorder criterion actually reads.
+/// The assistant's session is deliberately not the track root; it is bound to its own `CardRole::Assistant` card.
 pub(crate) const ASSISTANT_SESSION_ID: &str = "assistant-session";
-/// #1189 S6 — a **second, independent** assistant conversation on the same
-/// track: its own `CardRole::Assistant` card and its own non-root session.
-/// §3.3's whole argument ("concurrency is handled by the existing CAS, no
-/// locks") is a claim about two of these interleaving, which cannot be
-/// expressed with a single session handing itself a stale rev.
+/// A second, independent assistant conversation on the same track: its own `CardRole::Assistant` card and its own non-root session.
 pub(crate) const ASSISTANT_B_SESSION_ID: &str = "assistant-b-session";
 pub(crate) const WORKER_SESSION_ID: &str = "worker-session";
 
-/// In-memory fixture: one area → one track → one planner card + one
-/// track-report card + one worker card. Mirrors the post-`create_track`
-/// shape (planner + track-report kernel-owned) plus a worker for the
-/// cross-role tests.
+/// In-memory fixture: one area → one track → one planner card + one track-report card + one worker card.
 pub(crate) struct Boot {
     pub(crate) ctx: Arc<AppContext>,
     pub(crate) registry: Arc<ToolRegistry>,
@@ -82,15 +47,8 @@ pub(crate) struct Boot {
     pub(crate) report_card_id: CardId,
     pub(crate) worker_card_id: CardId,
     pub(crate) assistant_card_id: CardId,
-    /// #1189 S6 — the second assistant conversation. See
-    /// [`ASSISTANT_B_SESSION_ID`].
     pub(crate) assistant_b_card_id: CardId,
-    /// #1252 — the same `CardRoleCache` handle that is inside
-    /// [`Boot::ctx`]'s `WriteContext` (`CardRoleCache` is an `Arc<DashMap>`
-    /// newtype, so this clone shares state). A test that mints a card after
-    /// `boot()` has to get it into the cache the role gate reads, and the
-    /// production way to do that is `repo.seed_card_role_cache(&cache)` —
-    /// the same call `AppState::new` makes at boot (`state.rs:996`).
+    /// Shares state with the `CardRoleCache` inside [`Boot::ctx`]; a card minted after `boot()` must be seeded into it via `repo.seed_card_role_cache(&cache)`.
     pub(crate) card_role_cache: CardRoleCache,
 }
 
@@ -148,18 +106,8 @@ async fn seed_track_root_session(
     .expect("seed track root session");
 }
 
-/// A live, card-bound, non-root session row. The recorder gate resolves
-/// session → card → {role, track} against these rows, so a test identity
-/// without one is denied before any of the S2 behaviour is reached.
-///
-/// Contract is `Executor`, not `Planner`, and that is load-bearing:
-/// `session_mirror.rs:266-270` repoints `tracks.root_session_id` at *any*
-/// session whose `contract == Planner` and whose state is an active
-/// authority. A Planner-contract session on the assistant card would
-/// therefore steal the track root from the planner card the moment it went live
-/// — a shape that never occurs in production and that would make these tests
-/// a false reference for S3. Matches `frozen_gate_vectors_transport.rs`,
-/// which seeds its assistant sessions the same way.
+/// A live, card-bound, non-root session row. Contract must be `Executor`: an active `Planner`-contract
+/// session would repoint `tracks.root_session_id` and steal the track root from the planner card.
 async fn seed_non_root_session(
     repo: &dyn RepoEventWrite,
     track_id: &TrackId,
@@ -176,20 +124,8 @@ async fn seed_non_root_session(
     .await;
 }
 
-/// [`seed_non_root_session`] with the `worker_sessions.provider` column
-/// spelled out. #1252 seeds a Claude row so a Claude case's fixture rows
-/// match the identity it acts under — but be clear about what that buys:
-/// the column is **not** what picks the actor arm.
-/// `registry::provider_session_actor` reads `ToolCallIdentity::provider`,
-/// which `call_tool` callers set by hand. Verified rather than assumed:
-/// seeding this row as `Codex` while leaving the identity `Claude` still
-/// leaves
-/// `report_write_characterization::mcp_claude_assistant_block_write_is_actored_to_the_claude_session`
-/// green, because the session-authority resolution looks the row up by
-/// session id and never compares its provider. In production the column
-/// does reach the identity, but only through the transport
-/// (`crates/calm-server/src/mcp_server/transport.rs:1615-1618`), which
-/// `call_tool` bypasses — so no test on this path covers that hop.
+/// [`seed_non_root_session`] with `worker_sessions.provider` spelled out. The column does not pick the
+/// actor arm — `ToolCallIdentity::provider` does; `call_tool` bypasses the transport hop that would derive it.
 pub(crate) async fn seed_non_root_session_with_provider(
     repo: &dyn RepoEventWrite,
     track_id: &TrackId,
@@ -260,10 +196,6 @@ pub(crate) async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    // The track-report card row matching what `routes::tracks::create_track`
-    // (and migration 0014) mint. These integration tests look up the row
-    // by `kind == "track-report"`, not by role/deletable. We pin the role
-    // in the cache below to mirror production semantics.
     let report_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -284,14 +216,8 @@ pub(crate) async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    // #1189 — the two assistant conversation cards. Payload is the one
-    // production mints (`planner_harness_start_adapter.rs:620`, via
-    // `minted_card_shape(HarnessProfile::Assistant)`): a v1 codex payload
-    // plus the `harness_profile` marker. It is not decoration — a card
-    // without that marker is invisible to the track conversation list
-    // (`track_conversations.rs:327`) and cannot receive a message
-    // (`plain_chat::card_is_track_assistant`, `cards.rs:150`), so a fixture
-    // assistant card without it is not the thing production makes.
+    // The payload carries the `harness_profile` marker; without it a card is invisible to the track
+    // conversation list and cannot receive a message.
     let assistant_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -385,8 +311,7 @@ pub(crate) async fn boot() -> Boot {
         task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
-        // #1628 S2 — unstarted: reads record their `enqueue` outcomes and
-        // the series tests run the recorded jobs by hand.
+        // Unstarted: reads record their `enqueue` outcomes and the series tests run the recorded jobs by hand.
         series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
             repo.sqlite_pool(),
         )),
@@ -428,9 +353,7 @@ pub(crate) async fn call_tool(
         .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
-/// #1727 S2 — the wire shape of a tool result (`content` + `structuredContent`),
-/// for assertions about what the model is actually handed; `call_tool` above
-/// projects to `structuredContent` and hides the text block.
+/// The wire shape of a tool result (`content` + `structuredContent`); `call_tool` projects to `structuredContent` and hides the text block.
 pub(crate) async fn call_tool_raw(
     boot: &Boot,
     name: &str,
@@ -469,8 +392,7 @@ pub(crate) fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-/// #1189 — an `CardRole::Assistant` caller on this track: its own card, its
-/// own non-root session.
+/// A `CardRole::Assistant` caller on this track: its own card, its own non-root session.
 pub(crate) fn assistant_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.assistant_card_id.as_str().to_string(),
@@ -483,28 +405,8 @@ pub(crate) fn assistant_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-/// #1189 S6 — the *other* assistant conversation on this same track: a
-/// distinct `CardRole::Assistant` card with the production `harness_profile`
-/// marker, a distinct live non-root `worker_sessions` row bound to it, same
-/// track and area.
-///
-/// **What this is not**: it is not minted by the production route. A real
-/// second conversation is born inside the harness-start operation
-/// (`planner_harness_start_adapter`), which also marks the card kernel-owned
-/// (`deletable = false`) and issues per-card / per-session MCP tokens that
-/// the transport then binds to the identity it hands a tool. Here the rows
-/// are inserted directly and the [`ToolCallIdentity`] is constructed by the
-/// test, so the token issuance and the transport's token → identity binding
-/// are out of frame — nothing in these tests could notice if they broke.
-///
-/// That is sound for what these tests claim, and only for that. The write
-/// path they exercise re-derives everything it authorizes on from the
-/// database: the recorder gate looks the `session_id` up in the real
-/// `worker_sessions` table, follows it to the real `cards.role`, and checks
-/// the real `cards.track_id`. A hand-made identity that did not correspond to
-/// those rows would be refused before reaching any CAS. So the CAS
-/// conclusions in `mcp_report_concurrent_sessions.rs` hold; a claim about
-/// how conversations are *created* would not, and is not made here.
+/// The other assistant conversation on this same track: a distinct `CardRole::Assistant` card and a
+/// distinct live non-root session. Token issuance and the transport's token → identity binding are out of frame.
 pub(crate) fn assistant_b_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.assistant_b_card_id.as_str().to_string(),
@@ -529,8 +431,6 @@ pub(crate) fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-/// Subscribe to the bus and collect `n` envelopes — small helper so
-/// the write/edit tests can assert on the emitted `card.updated`.
 pub(crate) async fn collect_n(
     events: &EventBus,
     n: usize,
@@ -555,10 +455,6 @@ async fn recv_env(
         .expect("bus delivers within timeout")
         .expect("bus open")
 }
-
-// ---------------------------------------------------------------------------
-// calm.report.read
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn read_returns_initial_seeded_body() {
@@ -588,10 +484,6 @@ async fn read_refuses_worker() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("Planner"), "msg = {err:?}");
 }
-
-// ---------------------------------------------------------------------------
-// calm.report.write
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_planner_writer() {
@@ -638,10 +530,6 @@ async fn write_replaces_body_and_emits_card_updated() {
     let events = boot.ctx.events.clone();
     let report_id = boot.report_card_id.clone();
     let track_id = boot.track_id.clone();
-    // PR2 of #247 — every persist_report call now emits TWO envelopes:
-    //   1. Event::CardUpdated (generic "row changed" signal — existing PR1 behavior)
-    //   2. Event::TrackReportEdited (structured edit-log entry — new in PR2)
-    // Subscribe early and collect both so the test can assert order + payload.
     let sub = tokio::spawn(async move { collect_n(&events, 2).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -664,9 +552,6 @@ async fn write_replaces_body_and_emits_card_updated() {
         .expect("updated_at i64");
     assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
 
-    // Bus saw exactly two envelopes: CardUpdated first (preserves
-    // pre-PR2 broadcast order so the generic "re-fetch" signal lands
-    // before the structured edit-log entry), then TrackReportEdited.
     let envs = sub.await.expect("collector ok");
     assert_eq!(
         envs.len(),
@@ -690,7 +575,6 @@ async fn write_replaces_body_and_emits_card_updated() {
     }
     assert!(matches!(envs[0].scope, EventScope::Card { .. }));
 
-    // Second envelope: structured TrackReportEdited.
     match &envs[1].event {
         Event::TrackReportEdited {
             track_id: w,
@@ -706,19 +590,8 @@ async fn write_replaces_body_and_emits_card_updated() {
         } => {
             assert_eq!(w, &track_id, "track_id matches the report card's track");
             assert_eq!(c, &report_id, "card_id matches the report card");
-            // Issue #247 PR3 — the MCP `report.write` / `report.edit`
-            // wrapper now passes `EditAuthor::Planner` explicitly (was
-            // hard-coded in PR2). #1318 §1 — REST reaches the same
-            // private writer (`track_report::write::persist`) but through
-            // a different door: `write::rest_user_replace`, which fixes
-            // `EditAuthor::User` in its own body rather than taking it
-            // from the handler. See `tests/rest_track_report.rs` for the
-            // User-author regression. Planner attribution stays the
-            // contract for every planner-MCP write.
             assert_eq!(*author, EditAuthor::Planner, "MCP path tags Planner");
             assert_eq!(agent_message.as_deref(), Some("rewrite report"));
-            // edit_id must be a non-empty UUID-shaped string. Don't pin
-            // the exact value — it's a fresh UUID per call.
             assert!(!edit_id.is_empty(), "edit_id must be a non-empty UUID");
             // UUID v4 string is 36 chars (8-4-4-4-12 with hyphens).
             assert_eq!(
@@ -726,8 +599,6 @@ async fn write_replaces_body_and_emits_card_updated() {
                 36,
                 "edit_id should be a UUID v4 string; got {edit_id:?}",
             );
-            // Pre-write state: the seed body + empty summary that
-            // `boot()` minted via `TrackReportPayload::initial()`.
             assert_eq!(
                 summary_before, "",
                 "pre-write summary is the empty initial value",
@@ -737,16 +608,12 @@ async fn write_replaces_body_and_emits_card_updated() {
                 &TrackReportPayload::initial().body,
                 "pre-write body is the initial seed body",
             );
-            // Post-write state: matches what was passed to report.write.
             assert_eq!(summary_after, "done refactoring");
             assert_eq!(body_after, "# Goal\n\nrefactored everything\n");
         }
         other => panic!("expected TrackReportEdited second, got {other:?}"),
     }
-    // Same card scope as the CardUpdated envelope, and the scope row
-    // must also populate `scope_track` + `scope_card` so the dispatcher's
-    // push filter can subscribe to the track's edit log without scanning
-    // the firehose.
+    // The scope row must also populate `scope_track` + `scope_card` for the dispatcher's push filter.
     match &envs[1].scope {
         EventScope::Card { card, track, .. } => {
             assert_eq!(card, &report_id, "scope_card persisted on the events row");
@@ -755,7 +622,6 @@ async fn write_replaces_body_and_emits_card_updated() {
         other => panic!("expected Card-scoped envelope, got {other:?}"),
     }
 
-    // DB also has the new shape.
     let card = boot
         .repo
         .card_get(report_id.as_str())
@@ -1048,14 +914,9 @@ async fn write_lifecycle_illegal_rolls_back_report_and_events() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// PR2 of #247 — Event::TrackReportEdited coverage.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn edit_emits_track_report_edited_alongside_card_updated() {
     let boot = boot().await;
-    // Seed a known body so the before/after diff is predictable.
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -1070,9 +931,6 @@ async fn edit_emits_track_report_edited_alongside_card_updated() {
     .await
     .expect("seed write");
 
-    // Now subscribe before issuing the edit — we expect TWO envelopes
-    // (CardUpdated + TrackReportEdited) from a single `report.edit`
-    // call, identical to the `report.write` path.
     let events = boot.ctx.events.clone();
     let report_id = boot.report_card_id.clone();
     let track_id = boot.track_id.clone();
@@ -1121,8 +979,6 @@ async fn edit_emits_track_report_edited_alongside_card_updated() {
             assert_eq!(*author, EditAuthor::Planner);
             assert_eq!(agent_message.as_deref(), Some("edit report"));
             assert_eq!(edit_id.len(), 36, "edit_id is a UUID v4 string");
-            // Summary unchanged by report.edit — both before and after
-            // are the seeded summary.
             assert_eq!(summary_before, "before-summary");
             assert_eq!(summary_after, "before-summary");
             assert_eq!(body_before, "before XYZ after\n");
@@ -1134,10 +990,6 @@ async fn edit_emits_track_report_edited_alongside_card_updated() {
 
 #[tokio::test]
 async fn write_with_unchanged_content_still_emits_track_report_edited() {
-    // Invariant: every persist_report call → one CardUpdated + one
-    // TrackReportEdited. Re-asserting the same body twice produces a
-    // second TrackReportEdited with `body_before == body_after`. PR4's
-    // UI can filter no-op entries from the timeline if it wants.
     let boot = boot().await;
     call_tool(
         &boot,
@@ -1172,7 +1024,6 @@ async fn write_with_unchanged_content_still_emits_track_report_edited() {
     let sub = tokio::spawn(async move { collect_n(&events, 2).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    // Second write with identical body + summary.
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -1235,12 +1086,6 @@ async fn write_with_unchanged_content_still_emits_track_report_edited() {
 
 #[tokio::test]
 async fn track_report_edited_persisted_with_track_and_card_scope_columns() {
-    // The `TrackReportEdited` row must land in the `events` table with
-    // `scope_track = track_id` and `scope_card = card_id` so the
-    // dispatcher's push filter can subscribe to a single track's edit log
-    // without scanning the firehose. Query the table directly through
-    // the replay path so
-    // we're testing what's persisted, not just what's broadcast.
     let boot = boot().await;
     call_tool(
         &boot,
@@ -1256,13 +1101,7 @@ async fn track_report_edited_persisted_with_track_and_card_scope_columns() {
     .await
     .expect("write succeeds");
 
-    // Replay every event through the same path the WS handler uses
-    // (`events_since`). The tuple shape `(id, version, scope, event)`
-    // is reconstructed from the `events.scope_*` columns — so a
-    // round-trip back through this path is the strongest assertion
-    // available that the row was persisted with the correct scope
-    // columns. Filter to the TrackReportEdited rows for the report
-    // card and assert the reconstructed scope matches.
+    // `events_since` reconstructs scope from the `events.scope_*` columns, so this round-trip asserts what was persisted.
     let cursor_rows = boot.repo.events_since(0, 1000).await.expect("events_since");
     let edited_rows: Vec<_> = cursor_rows
         .iter()
@@ -1282,8 +1121,6 @@ async fn track_report_edited_persisted_with_track_and_card_scope_columns() {
         }
         other => panic!("expected Card-scoped row, got {other:?}"),
     }
-    // Payload round-trips with the planner author + the seed body before /
-    // new body after.
     match ev {
         Event::TrackReportEdited {
             author,
@@ -1329,7 +1166,6 @@ async fn historical_task_context_advanced_payload_survives_events_since() {
 #[tokio::test]
 async fn write_preserves_summary_when_omitted() {
     let boot = boot().await;
-    // First write sets a known summary.
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -1343,7 +1179,6 @@ async fn write_preserves_summary_when_omitted() {
     )
     .await
     .unwrap();
-    // Second write omits summary; it should keep "preserved".
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -1393,14 +1228,9 @@ async fn write_rejects_missing_body() {
     assert!(err.message.contains("body"), "msg = {err:?}");
 }
 
-// ---------------------------------------------------------------------------
-// calm.report.edit
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn edit_unique_substring_replacement_happy_path() {
     let boot = boot().await;
-    // Seed a body with a known unique substring.
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -1413,7 +1243,6 @@ async fn edit_unique_substring_replacement_happy_path() {
     )
     .await
     .unwrap();
-    // Now edit it.
     let out = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
@@ -1682,10 +1511,6 @@ async fn edit_lifecycle_illegal_rolls_back_report_and_events() {
     );
 }
 
-/// Planner feedback #3 — a planner that did the work itself never left
-/// `planning`. It concludes in two hops: `reviewing` on the final report edit
-/// (previously `-32403` illegal edge), then `done`. `calm.track.state` tells it
-/// so via `next` after the first hop.
 #[tokio::test]
 async fn edit_lifecycle_planning_to_reviewing_then_done_concludes_self_executed_track() {
     use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
@@ -1863,20 +1688,8 @@ async fn edit_replace_all_on_duplicates() {
 
 #[tokio::test]
 async fn edit_with_identical_old_and_new_still_emits_both_events() {
-    // Issue #247 PR2 review fix: `report.edit` used to short-circuit
-    // when `old_string == new_string` (return early, no write, no
-    // event). That broke symmetry with `report.write` — a
-    // content-equal `report.write` still emitted both `CardUpdated`
-    // and `TrackReportEdited` (see
-    // `write_with_unchanged_content_still_emits_track_report_edited`),
-    // while a `report.edit` with equal strings emitted nothing.
-    // After the fix every persist path emits exactly the same
-    // two-event pair, with `body_before == body_after` and
-    // `summary_before == summary_after` for the equal-strings case.
     let boot = boot().await;
-    // Seed a known body. The substring "stable" must exist for the
-    // post-fix flow to find it (the old `old == new` short-circuit
-    // ran *before* the not-found check; now both checks run).
+    // The substring "stable" must exist in the seeded body: the not-found check runs even when `old == new`.
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -1900,8 +1713,6 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
     let report_id = boot.report_card_id.clone();
     let track_id = boot.track_id.clone();
 
-    // Subscribe — we now expect TWO envelopes from the equal-strings
-    // edit, identical to the `report.write` path.
     let events = boot.ctx.events.clone();
     let sub = tokio::spawn(async move { collect_n(&events, 2).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1928,8 +1739,6 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
         "content-equal edit bumps (or keeps) updated_at; before={before_ts} after={new_ts}",
     );
 
-    // Bus must see exactly two envelopes: CardUpdated then
-    // TrackReportEdited, same invariant as `report.write`.
     let envs = sub.await.expect("collector ok");
     assert_eq!(
         envs.len(),
@@ -1958,8 +1767,6 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
             assert_eq!(*author, EditAuthor::Planner);
             assert_eq!(agent_message.as_deref(), Some("equal edit"));
             assert_eq!(edit_id.len(), 36, "edit_id is a UUID v4 string");
-            // The defining assertion: equal-strings replacement is
-            // the identity map, so before == after on both fields.
             assert_eq!(
                 body_before, body_after,
                 "equal-strings edit: body_before == body_after",
@@ -1974,7 +1781,6 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
         other => panic!("expected TrackReportEdited, got {other:?}"),
     }
 
-    // Row's payload is unchanged byte-for-byte (it's the same body).
     let after = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -2005,19 +1811,10 @@ async fn edit_refuses_worker() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 }
 
-// ---------------------------------------------------------------------------
-// Cross-track isolation: a planner card on track A cannot reach track B's report.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 #[allow(deprecated)]
 async fn planner_from_different_track_cannot_reach_this_track_report() {
     let boot = boot().await;
-    // Mint a second track + a second planner card, and use that planner
-    // identity to call `report.write`. The tool resolves the report
-    // through (planner_card_id → planner_card.track_id → track's report card),
-    // so the write lands on track 2's report — *not* track 1's. We
-    // confirm track 1's body is untouched.
 
     let area2 = boot
         .repo
@@ -2078,7 +1875,6 @@ async fn planner_from_different_track_cannot_reach_this_track_report() {
         .role_cache()
         .insert(planner2.id.clone(), CardRole::Planner, track2.id.clone());
 
-    // Call from planner2's identity.
     let planner2_identity = ToolCallIdentity {
         card_id: planner2.id.as_str().to_string(),
         role: CardRole::Planner,
@@ -2102,7 +1898,6 @@ async fn planner_from_different_track_cannot_reach_this_track_report() {
     .await
     .expect("planner2 writes its own track's report");
 
-    // Track 1's report is untouched.
     let card1 = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -2116,7 +1911,6 @@ async fn planner_from_different_track_cannot_reach_this_track_report() {
         "track 1's report is the original seed body — cross-track isolation held",
     );
 
-    // Track 2's report has the new body.
     let card2 = boot
         .repo
         .card_get(report2.id.as_str())
@@ -2127,15 +1921,8 @@ async fn planner_from_different_track_cannot_reach_this_track_report() {
     assert_eq!(payload2.body, "track 2 only\n");
     assert_eq!(payload2.summary, "track 2");
 
-    // Use track_id to silence unused-variable lints — referenced for
-    // potential future per-track-id assertions.
     let _ = boot.track_id.clone();
 }
-
-// ---------------------------------------------------------------------------
-// #1727 S2 — calm.report.read diet: summary envelope, no `body`, `select`,
-// and rev-conflict `data`.
-// ---------------------------------------------------------------------------
 
 /// A prose body of at least 80 KB (three blocks), written through the
 /// planner's whole-document write.
@@ -2213,10 +2000,7 @@ async fn full_read_delivers_the_document_once_behind_a_one_line_summary() {
     assert!(structured.get("taskDiagnostics").is_some(), "{structured}");
 }
 
-/// #1727 fix round 1 F2 — the receipt's summary clip is a BYTE budget on a
-/// char boundary: `planner.md` mandates a Chinese summary, and 120 CJK chars
-/// clipped by chars would be ~360 bytes, blowing the size bound the test
-/// above pins on an ASCII summary.
+/// The receipt's summary clip is a byte budget on a char boundary; a CJK summary clipped by chars would blow the size bound.
 #[tokio::test]
 async fn full_read_summary_line_stays_short_for_a_long_cjk_summary() {
     use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_COMMIT;
@@ -2286,7 +2070,6 @@ async fn select_index_returns_anchors_without_text() {
     let line = wire["content"][0]["text"].as_str().unwrap();
     assert!(line.contains(" · index only · "), "{line}");
     assert!(line.len() < 300, "{line}");
-    // `"full"` spelled out is today's shape.
     let full = call_tool(
         &boot,
         TOOL_REPORT_READ,
@@ -2318,8 +2101,6 @@ async fn select_blocks_returns_only_those_blocks_in_document_order_with_markers(
         .collect();
     let (b1, b2, b3) = (&ids[0], &ids[1], &ids[2]);
 
-    // Requested out of order; delivered in document order, each behind its
-    // marker, and nothing from the block that was not asked for.
     let out = call_tool(
         &boot,
         TOOL_REPORT_READ,
@@ -2400,7 +2181,6 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
     let current = current_doc_rev(&boot).await;
     assert!(current > 0);
 
-    // Stale `if_doc_rev` on the three whole-document carriers.
     for (tool, args) in [
         (
             TOOL_REPORT_COMMIT,
@@ -2431,7 +2211,6 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
         );
     }
 
-    // Stale block `if_rev` through `blocks.upsert`.
     let index = call_tool(
         &boot,
         TOOL_REPORT_READ,
@@ -2458,7 +2237,7 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
         err.message.contains(&format!("current rev is {rev}")),
         "{err:?}"
     );
-    // #1678 B2 — both anchors, so the retry needs no full re-read.
+    // Both anchors, so the retry needs no full re-read.
     assert_eq!(
         err.data,
         Some(json!({"docRev": current, "rev": rev})),

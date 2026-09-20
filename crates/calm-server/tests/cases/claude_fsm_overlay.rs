@@ -1,10 +1,5 @@
-//! Regression anchor: Claude hook ingest -> role gate -> card FSM -> card
-//! status overlay, end-to-end at the kernel level (no real Claude Code CLI
-//! involved).
-//!
-//! Claude worker `Stop` matches codex foreground-agent `Stop`: the turn is
-//! over and the card rests at `Idle` (#1722 — attention comes only from the
-//! permission / elicitation hooks and whitelisted `Notification` subtypes).
+//! Claude hook ingest -> role gate -> card FSM -> card status overlay, end-to-end at the
+//! kernel level (no real Claude Code CLI involved).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -154,11 +149,8 @@ async fn await_card_state(repo: &Arc<dyn Repo>, card_id: &str, expected_state: &
     }
 }
 
-/// The first card-`status` overlay state observed on `rx` for `card_id`,
-/// bounded by `OVERLAY_DEADLINE`. Overlays are upserts, so "which state came
-/// first" is only observable on the bus, not on the row. `rx` must have been
-/// subscribed BEFORE the hooks were posted (broadcast delivers nothing sent
-/// before the subscription).
+/// The first card-`status` overlay state observed on `rx` for `card_id`. Overlays are upserts,
+/// so order is only observable on the bus; `rx` must have been subscribed BEFORE the hooks were posted.
 async fn first_card_status_on_bus(
     rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
     card_id: &str,
@@ -224,10 +216,8 @@ async fn claude_activity_and_permission_hooks_set_distinct_card_states() {
     await_card_state(&repo, &card_id, "AwaitingInput").await;
 }
 
-/// #1722 — `SubagentStop` is registered (the settings file still carries it)
-/// but no longer moves the FSM. The `Stop` posted right after it is the
-/// card's FIRST status overlay: had `SubagentStop` projected `Working`, that
-/// would have been observed first (in-order processing).
+/// The `Stop` posted right after `SubagentStop` is the card's FIRST status overlay: had
+/// `SubagentStop` projected `Working`, that would have been observed first.
 #[tokio::test]
 async fn claude_subagent_stop_does_not_project() {
     let (app, repo, card_id, bus) = setup().await;
@@ -238,7 +228,6 @@ async fn claude_subagent_stop_does_not_project() {
     await_card_state(&repo, &card_id, "Idle").await;
 }
 
-/// #1722 — same contract for `TaskCompleted`.
 #[tokio::test]
 async fn claude_task_completed_does_not_project() {
     let (app, repo, card_id, bus) = setup().await;
@@ -254,9 +243,7 @@ async fn claude_task_completed_does_not_project() {
     await_card_state(&repo, &card_id, "Idle").await;
 }
 
-/// #1722 — a `Notification` projects `AwaitingInput` only for the
-/// whitelisted subtypes; `idle_prompt` (sent ~60 s after every `Stop`) is a
-/// no-op, so the card stays `Idle`.
+/// `idle_prompt` (sent ~60 s after every `Stop`) is a no-op, so the card stays `Idle`.
 #[tokio::test]
 async fn claude_notification_projects_only_whitelisted_subtypes() {
     let (app, repo, card_id, bus) = setup().await;

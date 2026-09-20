@@ -19,8 +19,8 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 use clap::Parser;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
-// self-skip via `skip!`. Tests must never probe/spawn a PATH codex.
+// No-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒ self-skip via `skip!`.
+// Tests must never probe/spawn a PATH codex.
 use support::codex_fixture::resolve_codex_bin;
 use tower::ServiceExt;
 

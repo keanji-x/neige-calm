@@ -1,37 +1,5 @@
-// Settings › Plugins › one plugin's configuration (#1284 §2.5).
-//
-// Presentational and props-driven like every other settings surface: the
-// detail, both error strings and the two writes arrive as props, and this file
-// never calls an API.
-//
-// ## Why this pane has a Save button when no other settings pane does
-//
-// `README.md`'s INV-SETTINGS-003 — a row commits itself, there is no Save — is
-// a rule about *a setting*, and it is right for one: a proxy is one value, and
-// asking the reader to press Save for one value is asking them to do the app's
-// bookkeeping.
-//
-// A plugin's configuration is not one value, and #1284 §2.2.5 makes the
-// difference structural rather than aesthetic. A patch may carry **only the
-// keys the operator edited**: the kernel applies manifest defaults on read and
-// never stores them, so a per-row commit of an effective value would write a
-// default into the row the moment the reader tabbed through a field — and from
-// then on a manifest that changed that default could never reach this plugin
-// again. On top of that, nothing here takes effect until the plugin restarts
-// (§2.4), so a self-committing row would confirm a save that changes nothing
-// observable and leave the operator to discover the restart on their own.
-//
-// So: one explicit Save for the edited keys, and one explicit Apply & restart
-// that is the only thing on the screen that makes them live.
-//
-// ## The three failure states of a restart are the point, not a detail
-//
-// A reload stops the plugin *before* re-reading anything, so a failed restart
-// is never "carried on with the old configuration" — it is a plugin that is
-// down. The verdict therefore cannot come from the HTTP status: it is computed
-// by `core/domain/plugins`'s `reloadOutcome` from the plugin's state and
-// `last_error` read back after the attempt. This file renders that verdict; it
-// does not classify anything itself.
+// Settings › Plugins › one plugin's configuration.
+// A patch carries only the keys the operator edited (the kernel applies manifest defaults on read and never stores them), hence an explicit Save.
 
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { NumberInput as AstryxNumberInput } from '@astryxdesign/core/NumberInput';
@@ -55,12 +23,9 @@ import styles from './settings.module.css';
 export type PluginConfigPaneProps = Readonly<{
   pluginId: string;
   pluginName: string;
-  /** The plugin's own switch position. A disabled plugin can be configured, but
-   *  nothing will run the configuration until it is enabled, and offering
-   *  Apply & restart would promise otherwise. */
+  /** The plugin's own switch position; Apply & restart is offered only when enabled. */
   enabled: boolean;
-  /** `undefined` means "still loading" — never render a form for it: an empty
-   *  form invites a Save that clears keys the reader never saw. */
+  /** `undefined` means "still loading" — never render a form for it: an empty form invites a Save that clears keys the reader never saw. */
   detail: PluginDetail | undefined;
   loadError: string | null;
   onRetryLoad: () => void;
@@ -85,8 +50,7 @@ type Phase =
 
 const IDLE: Phase = Object.freeze({ phase: 'idle' });
 
-/** A write that never reached the kernel still has to say something, and it is
- *  not one of §2.4's rows: nothing was saved and nothing was restarted. */
+/** A write that never reached the kernel: nothing was saved and nothing was restarted. */
 const UNREACHED: PluginConfigWriteError = Object.freeze({
   message: 'The request did not reach the workspace. Check the connection and try again.',
   fieldKey: null,
@@ -102,22 +66,11 @@ export function PluginConfigPane({
     () => (detail === undefined ? null : storedConfigOf(detail.user_config)),
     [detail],
   );
-  /* A row whose stored document is not an object at all. The kernel refuses to
-     merge into it (409 `plugin_config_corrupt`) rather than silently dropping
-     whatever it holds, so an ordinary patch cannot repair it and the Save on
-     this screen has to be the named, destructive one. Knowing it up front is
-     what turns that 409 from a dead end into a labelled button. */
+  /* A stored document that is not an object: the kernel refuses to merge into it (409 `plugin_config_corrupt`), so Save must be the named destructive one. */
   const corrupt = detail !== undefined && stored === null;
   const base = useMemo(() => configDraftFrom(fields, stored), [fields, stored]);
 
-  /*
-   * Seeded **by value**, not by object identity: the detail arrives from a
-   * query cache that hands back a fresh object on every render, and re-seeding
-   * on identity would wipe out what the reader is typing. A genuine change to
-   * the stored document does re-seed — and keeps whichever fields the reader
-   * has since edited, because a background refetch must not silently discard
-   * an edit in progress either.
-   */
+  /* Seeded by value, not object identity: the detail arrives as a fresh object every render, and re-seeding on identity would wipe what the reader is typing. */
   const signature = JSON.stringify(base);
   const [seeded, setSeeded] = useState<Readonly<{ id: string; signature: string; base: PluginConfigDraft }> | null>(null);
   const [draft, setDraft] = useState<PluginConfigDraft>({});
@@ -135,26 +88,7 @@ export function PluginConfigPane({
       }
       return next;
     });
-    /*
-     * ── Why this is not an unconditional `setPhase(IDLE)` ──────────────────
-     *
-     * It used to be, and that erased the confirmation of every write that
-     * worked. `save` / `applyRestart` invalidate this plugin's detail before
-     * they resolve, so the successful write's *own* refetch lands a new
-     * `user_config`, which changes `signature`, which re-seeds — and the
-     * "Saved." / §2.4 sentence the same write had just produced was gone by the
-     * next paint. Only the success path could hit it: a refused write changes
-     * nothing stored, so the signature holds and the error survived. Worse, a
-     * re-seed arriving mid-write cleared `saving` / `restarting`, which
-     * re-enabled the buttons under a request still in flight.
-     *
-     * What a new stored document actually invalidates is narrower than "every
-     * verdict": each phase is a statement about a write that already happened,
-     * and it stays true no matter what the row says now. The one exception is
-     * structural — a field-level error is rendered *inside a control*, so if
-     * the schema no longer declares that key there is nowhere to draw it and it
-     * would vanish with no trace either way. That, and only that, is cleared.
-     */
+    /* Not an unconditional `setPhase(IDLE)`: a successful write's own refetch re-seeds here and would erase its confirmation. Only a field-level error whose key the schema no longer declares is cleared. */
     if (phase.phase === 'failed'
       && phase.error.fieldKey !== null
       && !fields.some((field) => field.key === phase.error.fieldKey)) {
@@ -199,9 +133,6 @@ export function PluginConfigPane({
       title={`${pluginName} configuration`}
       lede="What this plugin runs with. Saving stores the values; the plugin keeps running its previous configuration until it restarts."
     >
-      {/* A ghost button above the title, never a filled one beside it: a filled
-          button beside a title reads as an action on the thing rather than as
-          the way back out of it (README, "Going back from a second level"). */}
       <div className={styles.actions}>
         <AstryxButton label="‹ Plugins" variant="ghost" onClick={onBack} />
       </div>
@@ -212,13 +143,6 @@ export function PluginConfigPane({
         : (
           <>
             {corrupt && (
-              /* Not "replaces it with the values below": the Save sends a
-                 patch, and a patch carries only what was edited (§2.2.5). The
-                 controls below start empty, and a switch showing `true` because
-                 that is the manifest's default is showing an inherited value,
-                 not a stored one — none of that reaches the payload. So the
-                 honest sentence is that the row is discarded and only what the
-                 operator fills in here survives it. */
               <p className={styles.notice} role="alert">
                 {`This plugin's stored configuration is not readable as a set of keys, so it cannot be `}
                 {'patched. Saving discards it and keeps only the values you enter here; every other '}
@@ -227,10 +151,6 @@ export function PluginConfigPane({
             )}
             {fields.length === 0
               ? (
-                /* Reached only through a row that said it had configuration, so
-                   this is not "nothing to configure" — that row is not offered
-                   at all (§2.5). It is a schema the kernel published and this
-                   build cannot render, which is a different sentence. */
                 <AstryxText as="p" color="secondary">
                   This plugin publishes a configuration schema this build cannot render.
                 </AstryxText>
@@ -252,8 +172,6 @@ export function PluginConfigPane({
                       )}
                       control={control(field, draft[field.key] ?? null, (value) => {
                         setDraft({ ...draft, [field.key]: value });
-                        /* A verdict about the value that was sent is not a
-                           verdict about the one being typed. */
                         if (phase.phase !== 'saving' && phase.phase !== 'restarting') setPhase(IDLE);
                       })}
                     />
@@ -282,9 +200,6 @@ export function PluginConfigPane({
                   onClick={() => applyRestart(corrupt)}
                 />
               )}
-              {/* `?reset=true` is the kernel's own exit from two of its
-                  refusals, and it is destructive, so it is offered by name and
-                  never taken implicitly. */}
               {paneError?.offersReset === true && (
                 <AstryxButton
                   label="Discard stored configuration and save"
@@ -321,18 +236,7 @@ export function PluginConfigPane({
   );
 }
 
-/**
- * The one line a control cannot say for itself.
- *
- * A text or number field shows its default as a placeholder, so repeating it
- * would be the same fact twice. A switch and a choice have nowhere to put one —
- * a switch has two positions and no third — so their default is stated here
- * instead. `required` is worth saying wherever it holds: the kernel deliberately
- * does **not** enforce it on the write (that would make a half-filled first
- * save impossible), it enforces it when the plugin starts, so a missing
- * required key surfaces as a plugin that will not come up rather than as a
- * refused Save.
- */
+/** The one line a control cannot say for itself. `required` is enforced when the plugin starts, not on the write. */
 function hintFor(field: PluginConfigField): string | null {
   const parts: string[] = [];
   if (field.required) parts.push('Required to start');
@@ -341,15 +245,7 @@ function hintFor(field: PluginConfigField): string | null {
   return parts.length === 0 ? null : parts.join(' · ');
 }
 
-/**
- * One control per declared type, per §2.5.
- *
- * The controls all agree on one thing: **empty means unset**, and unset is what
- * lets a manifest default keep applying. `NumberInput` and `Selector` get
- * `hasClear` for exactly that reason — without it the reader can move a value
- * but never take it back, and the only way to return a key to its default
- * would be to know the default and retype it.
- */
+/** One control per declared type. Empty means unset, which is what lets a manifest default keep applying; hence `hasClear`. */
 function control(
   field: PluginConfigField,
   value: PluginConfigValue | null,
@@ -400,9 +296,7 @@ function control(
       isLabelHidden
       value={typeof value === 'string' ? value : ''}
       placeholder={placeholder}
-      /* Cleared is `null`, never `''`: the kernel deletes a key for `null` and
-         would store an empty string as a value, and "no value" is what lets the
-         manifest default apply again (INV-SETTINGS-001, same rule). */
+      /* Cleared is `null`, never `''`: the kernel deletes a key for `null` and would store an empty string as a value. */
       onChange={(next) => onChange(next === '' ? null : next)}
       width={CONTROL_WIDTH}
     />

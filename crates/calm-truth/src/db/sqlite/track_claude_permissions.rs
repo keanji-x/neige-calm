@@ -1,11 +1,5 @@
-//! #1704 S2 — the root-resolving read of a track tree's Claude Code
-//! permission policy.
-//!
-//! The policy lives on the tree ROOT only (`track_update_tx` refuses it on a
-//! child), so the ceiling of any track is its root's column. Both readers —
-//! the terminal adapter's `prepare_tx` (inside the write transaction) and the
-//! handler's pre-check (`RepoRead::track_claude_permissions_ceiling`) — go
-//! through this one function, on whatever connection they hold.
+//! Root-resolving read of a track tree's Claude Code permission policy: the
+//! policy lives on the tree ROOT only, so any track's ceiling is its root's column.
 
 use sqlx::SqliteConnection;
 
@@ -14,14 +8,9 @@ use calm_types::claude_permissions::ClaudePermissionsScope;
 use super::track_tree::{MAX_TRACK_TREE_DEPTH, TRACK_ROOT_DEPTH_SQL};
 use crate::error::{CalmError, Result};
 
-/// The policy that applies to `track_id`: its tree root's
-/// `claude_permissions_policy`, `None` when the root carries none.
-///
-/// Fails closed the way `track_tree_term` does: the bounded ancestor walk
-/// must yield exactly one root within [`MAX_TRACK_TREE_DEPTH`] (a missing
-/// track, a broken parent link, a cycle or an over-deep chain is a
-/// `Conflict`, never "no ceiling"), and a stored value that does not decode
-/// as a scope is an error, never "no ceiling".
+/// The tree root's `claude_permissions_policy`, `None` when the root carries
+/// none. Fails closed: an unresolved root or an undecodable value is an error,
+/// never "no ceiling".
 pub async fn track_claude_permissions_ceiling_read(
     conn: &mut SqliteConnection,
     track_id: &str,

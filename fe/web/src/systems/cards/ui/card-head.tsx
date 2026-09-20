@@ -1,5 +1,4 @@
-// Copied from web/src/cards/CardHead.tsx. Rename / entry actions stay off
-// this slice; the DOM slots and class names are the CSS contract.
+// Rename / entry actions stay off this component; the DOM slots and class names are the CSS contract.
 
 import type { ReactNode } from 'react';
 

@@ -7,7 +7,6 @@ use tokio::task::JoinHandle;
 
 use super::SharedRenderPlane;
 
-// Copied from crates/calm-session/src/bin/daemon.rs::run_terminal child-ready poller as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 pub fn spawn_child_ready_poller(
     render_plane: SharedRenderPlane,
     event_tx: broadcast::Sender<DaemonMsg>,

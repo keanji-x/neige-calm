@@ -8,11 +8,6 @@ use crate::task_recovery::{
 };
 use sha2::{Digest, Sha256};
 
-/// Every refusal here is the typed fact that the predecessor's namespace
-/// stop is not confirmed, decided per branch: the operation may still be
-/// stopping (its settlement briefing re-opens the decision) or the denial is
-/// permanent (no briefing will ever confirm this stop). The write path
-/// surfaces each as a Conflict.
 fn denied(
     site: RefusalSite,
     continuation: SupportedContinuation,
@@ -31,8 +26,7 @@ fn permanent(site: RefusalSite, reason: String) -> AdmissionError {
     denied(site, SupportedContinuation::None, reason)
 }
 
-/// Used by the shared predecessor fence at recovery admission and again before
-/// successor claim/preparation. No live card/session or filesystem is authority.
+/// No live card/session or filesystem is authority.
 pub(crate) async fn require_stopped_tx(
     tx: &mut Tx<'_>,
     task: &Task,
@@ -86,9 +80,8 @@ pub(crate) async fn require_stopped_tx(
                 ),
             ));
         }
-        // The Controller may already have checkpointed a matching quiescence
-        // proof: it records `Quiesced` before the separate parked-completion
-        // transaction. What this branch tests is the phase alone.
+        // The Controller may already have checkpointed `Quiesced` before the separate
+        // parked-completion transaction; this branch tests the phase alone.
         return Err(denied(
             RefusalSite::IsolatedStopPending,
             SupportedContinuation::WaitForSettlement,
@@ -109,7 +102,6 @@ pub(super) async fn confirmed_record_tx(
     task: &Task,
     op_id: &str,
 ) -> Result<super::record::RunRecord, AdmissionError> {
-    // The typed private reader already binds Operation payload/output/target.
     // Do not expose parse errors or the private record through this capability.
     let unreadable = || {
         permanent(
@@ -172,15 +164,6 @@ pub(super) async fn confirmed_record_tx(
             "prior_boot" | "init_absent" | "init_reaped" | "init_pid_reused"
         )
     {
-        // Two sentences for one disjunction, not one per disjunct. An
-        // admission that never closed reaches here with every identity field
-        // unchanged and is named as such. Everything else shares the second
-        // bucket: an identity field that differs, OR a stop proof whose
-        // metadata does not validate with every identity field matching
-        // (`observed_at_ms == 0`, an unknown `method`, a malformed boundary
-        // — `isolated_codex_retry` installs the first on a real receipt), so
-        // that sentence names the disjunction the branch tests, not the
-        // disjunct that failed.
         let unmet = if admission_open {
             format!(
                 "has admission state {}, not closed",

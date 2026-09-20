@@ -1,23 +1,5 @@
-// The source panel (#1669 §2.5): what a `neige://source/…` citation opens.
-//
-// A citation used to be a title, a date and a content id the reader could do
-// nothing with. The kernel now keeps the text the planner read — the plugin
-// call's own reply, byte for byte — and this panel shows it: the provenance
-// badge first (whether this is the institution's text, 智堡's summary, a web
-// page, or the planner's own hand), then the title and the row's facts, then
-// the body **as raw text**. Not Markdown: a source is evidence, and rendering
-// it would let an untrusted document draw links and images in the reader's
-// own product. Monospace, wrapped, nothing interpreted.
-//
-// With an anchor, the quote is sliced out of the body by `indexOf` (first
-// occurrence — `core/domain/report-source`), painted as a `<mark>` and
-// scrolled into view. A quote that cannot be placed leaves the body whole and
-// says so above it; a citation the track cannot answer says "来源缺失" and
-// shows the destination as written.
-//
-// It fetches nothing. `resolution` is the app's query, handed in the way the
-// series block receives its resolver: `features/**` may not import `app/**`,
-// and the query — its key, its 404-is-a-state rule — is the app's.
+// The source panel: what a `neige://source/…` citation opens.
+// The body is raw text, never Markdown: a source is evidence, and rendering it would let an untrusted document draw links and images.
 
 import { useEffect, useRef, type ReactNode } from 'react';
 
@@ -29,26 +11,9 @@ import { ErrorBox } from '../../../ui/error-box/public.tsx';
 import { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
 import styles from './source.module.css';
 
-/* The feature's one public entry: the document's inline citation badge and
-   the app's drawer chrome read their words through here, so `copy.ts` stays
-   internal to this directory. */
 export { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
 
-/**
- * The citation itself, as the document's prose and the table's cells both
- * paint it (#1669 §2.5, #1687). One component, because the two surfaces
- * used to disagree: the table showed the raw `[label](neige://source/…)`
- * while the prose beside it was clickable.
- *
- * With a handler it is a control — a `<button>`, never an `<a href>`
- * (INV-A11Y-061) — and that includes a citation whose id or anchor will not
- * parse: the panel is where "来源缺失" is said, so a malformed citation must
- * still be reachable. Without a handler — on Today or a Markdown file — it
- * is the 「来源」 badge and its label, without an inactive button. The badge
- * still says what the
- * label is. The badge carries no provenance because nothing on this path has
- * read the row.
- */
+/** The citation, as the document's prose and the table's cells both paint it. With a handler it is a `<button>` even when the id or anchor will not parse; without one it is the badge and its label. */
 export function ReportSourceCitation({ target, onOpen, children }: {
   target: ReportSourceLinkTarget;
   onOpen?: (target: ReportSourceLinkTarget) => void;
@@ -84,11 +49,7 @@ export type ReportSourcePanelProps = Readonly<{
   onRetry: () => void;
 }>;
 
-/**
- * The drawer's accessible name for this state: the row's title once it is
- * known, the generic word until then. Exported so the app can name the
- * `<Drawer>` it wraps this in without re-deriving the rule.
- */
+/** The drawer's accessible name for this state: the row's title once known, the generic word until then. */
 export function reportSourcePanelTitle(resolution: SourceResolution): string {
   return resolution.status === 'ok' ? resolution.source.title : SOURCE_PANEL_COPY.panelTitle;
 }
@@ -109,16 +70,7 @@ export function ReportSourcePanel({ target, resolution, onRetry }: ReportSourceP
   );
 }
 
-/**
- * The missing state, in one shape for its three causes (§2.5: the panel says
- * the citation is missing and prints the destination as written, because
- * that is the one thing the reader can act on). A dangling id is the
- * design's own admitted state (a recipe-born track, a link written for
- * another track); a link that will not parse is the author's typo; an
- * anchor the row does not carry is a citation written ahead of — or against
- * — the source's quotes. The first two are the whole panel; the third sits
- * above a source that is still shown, so its heading is one rank down.
- */
+/** The missing state, in one shape for its three causes: dangling id, malformed link, or an anchor the row does not carry. */
 function MissingNotice({ destination, reason, title, detail }: {
   destination: string;
   reason: 'dangling' | 'malformed' | 'anchor';
@@ -155,13 +107,6 @@ function Source({ source, target }: { source: TrackSourceDetail; target: ReportS
   const anchorMissed = quoteId !== null && highlight === null;
   const markRef = useRef<HTMLElement | null>(null);
 
-  /*
-   * Scroll to the quote once it is painted. `block: 'center'` rather than
-   * `start`: the reader wants the sentence in context, and a quote pinned to
-   * the top edge of the pane reads as the beginning of something rather than
-   * the middle of it. Re-run on the quote, not on every render — the body is
-   * immutable, so the mark only moves when the citation does.
-   */
   const placed = highlight !== null;
   useEffect(() => {
     if (!placed) return;
@@ -189,8 +134,6 @@ function Source({ source, target }: { source: TrackSourceDetail; target: ReportS
           <Origin source={source} />
         </dl>
       </header>
-      {/* The source exists, the anchor does not: the missing state, with the
-          destination as written, above a body that is still worth reading. */}
       {anchorMissed && (
         <MissingNotice
           destination={target.destination}
@@ -199,7 +142,6 @@ function Source({ source, target }: { source: TrackSourceDetail; target: ReportS
           detail={SOURCE_PANEL_COPY.anchorMissingDetail}
         />
       )}
-      {/* `<pre>`, never a Markdown pass: see the file header. */}
       <pre className={styles.body} data-nc-report-source-body="">
         {highlight === null
           ? source.body
@@ -217,11 +159,6 @@ function Source({ source, target }: { source: TrackSourceDetail; target: ReportS
   );
 }
 
-/**
- * Where the body came from, in the kernel's own terms: the plugin and tool
- * whose reply it is, or, for a manual row, whatever the planner declared.
- * The content id / URL rides on the row itself and prints for either kind.
- */
 function Origin({ source }: { source: TrackSourceDetail }) {
   const { origin } = source;
   return (
@@ -243,8 +180,7 @@ function Origin({ source }: { source: TrackSourceDetail }) {
       {source.url !== undefined && source.url !== '' && (
         <div className={styles.metaRow}>
           <dt className={styles.metaLabel}>{SOURCE_PANEL_COPY.url}</dt>
-          {/* Text, not `<a href>`: INV-A11Y-061 holds on this surface too, and
-              the URL is planner-declared, so it steers nothing. */}
+          {/* Text, not `<a href>`: the URL is planner-declared, so it steers nothing. */}
           <dd className={`${styles.metaValue} ${styles.mono}`}>{source.url}</dd>
         </div>
       )}

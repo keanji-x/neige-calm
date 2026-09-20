@@ -1,22 +1,4 @@
-//! `/api/areas` — Area CRUD. **Owned by Track B.**
-//!
-//! Writes go through `Repo::write_with_event` (via the
-//! `write_with_event_typed` ergonomic wrapper). The wrapper atomically
-//! commits the entity write + the events-table insert, then broadcasts a
-//! `BroadcastEnvelope { id, actor, event }` on the bus. Handler-level `events.emit`
-//! calls are gone after Scope A; see `docs/sync-engine-design.md` §3.
-//!
-//! Issue #175 — `areas.kind` (introduced in migration 0009) marks rows as
-//! either user-visible or system-owned. `GET /api/areas` defaults to the
-//! filtered `kind='user'` list so the kernel-minted system area (which
-//! hosts the default Today terminal's track + card) doesn't leak into the
-//! sidebar; opt back into the full list via `?include_system=true`.
-//! `POST /api/areas` never accepts a `kind` field — every area created
-//! through the regular surface lands as `User`. The system area is minted
-//! exclusively via the idempotent `POST /api/areas/system` upsert, and
-//! `DELETE /api/areas/{id}` refuses (`403 forbidden`) when the target row
-//! has `kind = 'system'` — system scaffolding is kernel-owned and not
-//! user-deletable.
+//! `/api/areas` — Area CRUD. `GET` defaults to `kind='user'`; the system area is minted only via the idempotent `POST /api/areas/system` upsert, and `DELETE` refuses a `kind='system'` row.
 
 use crate::actor::Actor;
 use crate::db::sqlite::{
@@ -72,27 +54,14 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Query string accepted by `GET /api/areas`.
-///
-/// Issue #175 — `include_system=true` opts into the full list (including
-/// the singleton system area). Default false: the system area stays hidden
-/// from the user-facing surface so the sidebar doesn't render it.
 #[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
 pub struct ListAreasQuery {
-    /// When true, also include `kind='system'` areas in the response.
-    /// Default false — the sidebar / Today UI consume the filtered list
-    /// and never need the system area. Documented opt-in for debug surfaces
-    /// and integration tests.
+    /// When true, also include `kind='system'` areas. Opt-in for debug surfaces and integration tests.
     #[serde(default)]
     pub include_system: bool,
 }
 
-/// User-facing Area creation. The raw sync-domain `NewArea` stays narrow for
-/// internal callers; these two preferences belong to the REST product surface
-/// and are applied inside the same audited transaction as the Area row.
-///
-/// Deliberately permissive about unknown JSON keys, matching the historical
-/// `NewArea` contract: in particular a caller-supplied `kind` must continue to
-/// be ignored rather than gaining a path to create a system Area.
+/// User-facing Area creation. Deliberately permissive about unknown JSON keys: a caller-supplied `kind` must continue to be ignored rather than gaining a path to create a system Area.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CreateAreaRequest {
     pub name: String,
@@ -143,10 +112,7 @@ pub(crate) async fn list_areas(
     State(s): State<RouteState>,
     Query(q): Query<ListAreasQuery>,
 ) -> Result<Json<Vec<Area>>> {
-    // Issue #175 — default to the user-visible subset so the sidebar
-    // never sees the singleton system area. `?include_system=true` is
-    // the opt-in escape hatch for debug surfaces and integration tests
-    // that need to assert on the full row set.
+    // Default to the user-visible subset so the sidebar never sees the singleton system area.
     let areas = if q.include_system {
         s.repo.areas_list().await?
     } else {
@@ -182,7 +148,7 @@ pub(crate) async fn create_area(
     // transaction and returns the proven row through this local channel. Only
     // that branch populates it; unrelated errors cannot become successes.
     let (replay_tx, mut replay_rx) = tokio::sync::oneshot::channel();
-    // #1635 S4 — `&'static`, captured by copy into the closure below.
+    // `&'static`, captured by copy into the closure below.
     let templates = s.templates;
     let result =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
@@ -251,49 +217,18 @@ pub(crate) async fn create_area(
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-/// Issue #175 — idempotent upsert for the singleton system area that
-/// hosts the default Today terminal's track + card. Returns 200 with the
-/// existing row when one is present; otherwise mints a new row and
-/// returns 201. The DB-level partial unique index on
-/// `areas(kind) WHERE kind = 'system'` enforces the at-most-one
-/// invariant as a backstop, so two tabs racing this endpoint can both
-/// safely call it: the loser of the write race catches the unique
-/// violation, re-reads the row the winner committed, and returns 200
-/// to its own caller. From the frontend's perspective both racers see a
-/// success and a populated `Area` body — the only observable difference
-/// is the status code (201 vs 200), and `useTodayTerminal` treats both
-/// as success.
-///
-/// The endpoint exists so the frontend's `useTodayTerminal` hook can
-/// bootstrap a default terminal without exposing the underlying system
-/// area to the regular `POST /api/areas` surface (which the sidebar
-/// "+ New area" affordance consumes and which would otherwise need a
-/// reserved-name policy).
+/// Idempotent upsert for the singleton system area that hosts the default Today terminal. 200 with the existing row, else mint and 201.
+/// The partial unique index on `areas(kind) WHERE kind = 'system'` backstops at-most-one: the loser of a write race re-reads the winner's row and returns 200.
 pub(crate) async fn get_or_create_system_area(
     State(s): State<RouteState>,
-    // Note: `Actor` is extracted to keep this handler consistent with the
-    // rest of the area surface (it forces the middleware to validate the
-    // `X-Calm-Actor` header), but the value is intentionally **not**
-    // propagated into the event log. The system area is kernel-owned
-    // scaffolding — a `area.updated` event for the mint stamped with
-    // `User` would be untruthful and would let a future audit pipeline
-    // misattribute the row to the human caller. We hardcode
-    // `ActorId::Kernel` below, mirroring the convention the FSM projector
-    // and terminal sweeper already use for server-internal lifecycle.
+    // `Actor` is extracted so the middleware validates `X-Calm-Actor`, but the event is stamped `ActorId::Kernel`: the system area is kernel-owned scaffolding and a `User` actor would be untruthful.
     _actor: Actor,
 ) -> Result<(StatusCode, Json<Area>)> {
-    // Existence check first — the common path is "system area already
-    // exists, just return it" (every Today-page load after the first
-    // ever). Avoids opening a write transaction in the hot path.
+    // Existence check first: the common path avoids opening a write transaction.
     if let Some(existing) = s.repo.area_get_system().await? {
         return Ok((StatusCode::OK, Json(existing)));
     }
-    // Mint the row inside a `write_with_event` closure so the create
-    // emits a `area.updated` envelope on the bus, just like the regular
-    // `POST /api/areas`. Scope is `System` (same rationale as
-    // `create_area`: the area id is minted inside the closure). Actor is
-    // hardcoded to `ActorId::Kernel` — see the `_actor` extractor doc
-    // above for the rationale.
+    // Mint inside `write_with_event` so the create emits `area.updated` like the regular `POST /api/areas`.
     let mint_result = write_with_event_typed(
         s.repo.as_ref(),
         ActorId::Kernel,
@@ -311,21 +246,7 @@ pub(crate) async fn get_or_create_system_area(
     .await;
     match mint_result {
         Ok((area, _id)) => Ok((StatusCode::CREATED, Json(area))),
-        // Race: two cold-boot Today-page loads can both see `area_get_system()
-        // == None` above and both reach the mint closure; the partial unique
-        // index on `areas(kind) WHERE kind = 'system'` from migration 0009
-        // backstops the at-most-one invariant by failing the loser's INSERT.
-        // We catch that DB error, re-read the now-existing row, and return
-        // 200 — the caller's effective postcondition (a present system area)
-        // is satisfied. Without this fallback the loser would surface a 500
-        // and `useTodayTerminal` would render the Today page in an error
-        // state until reload. We're permissive (any `Db` error retries the
-        // read) rather than down-casting to a typed `sqlx::error::DatabaseError`
-        // because sqlx requires an `Any` boundary for that and the repo's
-        // existing precedent (`dispatcher::is_sqlite_busy`) likewise
-        // matches on the surface string; if the original error is something
-        // other than the unique violation, the follow-up read returns `None`
-        // and we propagate it unchanged.
+        // Two cold-boot Today-page loads can both reach the mint; the partial unique index fails the loser's INSERT, so re-read and return 200. Any `Db` error retries the read (sqlx needs an `Any` boundary to downcast); if it was something else the follow-up read returns `None` and propagates.
         Err(e) => match e {
             CalmError::Db(_) => match s.repo.area_get_system().await? {
                 Some(existing) => Ok((StatusCode::OK, Json(existing))),
@@ -355,10 +276,7 @@ pub(crate) async fn update_area(
     Path(id): Path<String>,
     Json(mut p): Json<AreaPatch>,
 ) -> Result<Json<Area>> {
-    // Preserve the route's resource-first error contract. Besides returning
-    // the documented 404 for an unknown id, this prevents an invalid
-    // caller-supplied path from triggering filesystem metadata and `git`
-    // probes for a resource that does not exist.
+    // Resource-first: an unknown id 404s before an invalid caller-supplied path can trigger filesystem and `git` probes.
     s.repo
         .area_get(&id)
         .await?
@@ -407,13 +325,10 @@ struct PreparedAreaDeletion {
 struct QuiescedAreaDeletion {
     prepared: PreparedAreaDeletion,
     terminal_ids: Vec<String>,
-    /// #1620 — the Terminal cards whose generated hook settings file is
-    /// removed on the committed arm only.
+    /// The Terminal cards whose generated hook settings file is removed on the committed arm only.
     terminal_card_ids: Vec<String>,
     sealed_thread_ids: Vec<String>,
-    /// #1444 — every Card under every member Track, collected while quiesce
-    /// already enumerates them. Used only on the committed arm of
-    /// [`RecycledAreaDeletion::commit`].
+    /// Every Card under every member Track, used only on the committed arm of [`RecycledAreaDeletion::commit`].
     card_ids: HashSet<String>,
 }
 
@@ -696,27 +611,18 @@ impl RecycledAreaDeletion {
                 return Err(error);
             }
         };
-        // #1444 — the area delete has COMMITTED. Drop the shared daemon's
-        // in-memory thread attribution for every Card that went with it, so a
-        // later daemon reconnect cannot resume a thread whose Card has no
-        // database owner. Post-commit and infallible: the rollback arm above
-        // returns before reaching this, and no failure here can be reported as
-        // a database rollback. Other areas' Cards are not in this set.
+        // The area delete has COMMITTED. Drop the shared daemon's in-memory thread attribution for every deleted Card so a later reconnect cannot resume a thread with no database owner. Post-commit and infallible.
         self.quiesced
             .prepared
             .turn_daemon
             .forget_threads_for_deleted_cards(&self.quiesced.card_ids)
             .await;
-        // #1553 (hygiene) — the Area twin of the same post-commit sweep: drop
-        // the deletion-time seal verdict and any active turn id for the threads
-        // this delete sealed. The rollback arm above returns first and leaves
-        // both entries alone.
+        // Drop the deletion-time seal verdict and any active turn id for the threads this delete sealed.
         self.quiesced
             .prepared
             .turn_daemon
             .forget_turn_state_for_deleted_threads(&self.quiesced.sealed_thread_ids);
-        // #1620 — post-commit, best effort: the generated hook settings file
-        // of every deleted Terminal card (server-derived path only).
+        // Post-commit, best effort: the generated hook settings file of every deleted Terminal card.
         for card_id in &self.quiesced.terminal_card_ids {
             route.terminal_renderer.remove_hook_settings(card_id);
         }
@@ -852,24 +758,8 @@ pub(crate) async fn delete_area(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    // Issue #175 followup — refuse to delete the singleton system area
-    // via the REST surface. The underlying `area_delete_tx` is a low-level
-    // primitive that trusts its caller (the same helper is reachable from
-    // server-internal sites like replay fixtures); the policy decision
-    // "system areas are not user-deletable" lives at the handler boundary
-    // here. We pre-check via `area_get` rather than threading the kind
-    // through `_tx`'s WHERE clause because:
-    //   * the read is cheap (single row, indexed by PK),
-    //   * a transactional check would still need this surface to translate
-    //     "no row affected because kind='system'" into a 403 rather than
-    //     the txn's natural 404 — same code-shape, same trip to the DB,
-    //     and the handler check fails fast without opening a write txn.
-    // #1147 S5 — also the input to recycle guard 4. `None` (no such area)
-    // stays `None` and makes every recycle below refuse; the row delete still
-    // runs and 404s naturally in `area_delete_tx`.
-    // Lock order is area delete → operation drive → sorted track delete.
-    // The normal track-create route takes this area lock before entering the
-    // operation driver, so neither side can invert the pair.
+    // Refuse to delete the singleton system area at the handler boundary; `area_delete_tx` trusts its caller. `None` (no such area) makes every recycle below refuse; the row delete still 404s naturally.
+    // Lock order is area delete → operation drive → sorted track delete; the track-create route takes this area lock before entering the operation driver, so neither side can invert the pair.
     let area_delete_guard = crate::per_card_lock::lock_key(&s.area_delete_locks, &id).await;
     let area_kind = s.repo.area_get(&id).await?.map(|area| area.kind);
     if area_kind == Some(AreaKind::System) {
@@ -878,9 +768,7 @@ pub(crate) async fn delete_area(
         )));
     }
 
-    // OperationRuntime is the common funnel for normal runtime/process starts.
-    // Track DELETE holds this same guard through commit or compensation, so an
-    // area deletion cannot erase the rows underneath a workspace restoration.
+    // Track DELETE holds this same guard through commit or compensation, so an area deletion cannot erase the rows underneath a workspace restoration.
     let operation_guard = s.operation_runtime.lock_for_track_delete().await;
 
     let tracks = s.repo.tracks_by_area(&id).await?;
@@ -889,9 +777,7 @@ pub(crate) async fn delete_area(
         .map(|track| track.id.to_string())
         .collect::<Vec<_>>();
     guarded_track_ids.sort();
-    // Direct harness recovery and websocket terminal reattach bypass the
-    // operation driver. Lock every member in stable order before teardown so
-    // those paths either finish before this snapshot or observe deleted rows.
+    // Direct harness recovery and websocket terminal reattach bypass the operation driver; lock every member in stable order so those paths either finish first or observe deleted rows.
     let mut track_delete_guards = Vec::with_capacity(guarded_track_ids.len());
     for track_id in &guarded_track_ids {
         track_delete_guards
@@ -901,10 +787,7 @@ pub(crate) async fn delete_area(
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    // Defensive TOCTOU guard only: this non-transactional read happens before
-    // the teardown tx, so a forge-action can still become in-flight before the
-    // sweep. It shrinks the race; durable parked recovery is the backstop, and
-    // the airtight in-tx/lease-hold guard belongs to slice ⑤.
+    // Defensive TOCTOU guard only: this non-transactional read happens before the teardown tx, so a forge-action can still become in-flight; durable parked recovery is the backstop.
     let pool = w.repo.sqlite_pool().ok_or_else(|| {
         CalmError::Internal("delete_area forge-action fence requires sqlite-backed repo".into())
     })?;

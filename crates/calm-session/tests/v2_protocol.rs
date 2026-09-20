@@ -1,9 +1,4 @@
-//! Unit tests for the v2 terminal-mode protocol state machine.
-//!
-//! Each case feeds one or more frames into a fresh
-//! [`TerminalSessionState`] + [`OwnerRegistry`] and asserts on the
-//! [`Effect`] list returned. No PTY, no tokio runtime, no socket — these
-//! complete in microseconds.
+//! Unit tests for the v2 terminal-mode protocol state machine: frames in, [`Effect`] list out. No PTY, no tokio, no socket.
 
 use calm_session::terminal_session::{
     ByteRing, Effect, OwnerRegistry, PtyBroadcaster, SessionContext, TerminalSessionState,
@@ -23,9 +18,7 @@ fn ctx<'a>(broadcaster: &PtyBroadcaster, session_id: Uuid) -> SessionContext<'a>
     ctx_with_colors(broadcaster, session_id, None, None)
 }
 
-/// Like [`ctx`] but lets a test pin the daemon's "current" OSC 10/11
-/// colors so the `TerminalThemeUpdate` suppression path (fix A) can be
-/// exercised without a real `RenderPlane`.
+/// Like [`ctx`] but lets a test pin the daemon's "current" OSC 10/11 colors.
 fn ctx_with_colors<'a>(
     broadcaster: &PtyBroadcaster,
     session_id: Uuid,
@@ -44,9 +37,7 @@ fn ctx_with_colors<'a>(
         pty_seq_head: broadcaster.pty_seq_head(),
         pty_seq_tail: broadcaster.pty_seq(),
         render_rev: broadcaster.render_rev(),
-        // PtyBroadcaster doesn't track child-readiness — the legacy
-        // unit-test fixture defaults to `false`, matching the safe
-        // wait-for-ready posture an older serializer would produce.
+        // PtyBroadcaster doesn't track child-readiness; `false` is the safe wait-for-ready posture.
         is_child_ready: false,
         current_default_fg,
         current_default_bg,
@@ -84,9 +75,7 @@ fn hello_with<F: FnOnce(&mut ClientMsg)>(client_id: Uuid, f: F) -> ClientMsg {
     h
 }
 
-/// Drive a fresh client through a successful handshake and return its
-/// state + the broadcaster used to seed it. Used by tests that want to
-/// assert post-handshake behaviour.
+/// Drive a fresh client through a successful handshake and return its state + the broadcaster used to seed it.
 fn attached_owner(
     registry: &mut OwnerRegistry,
     client_id: Uuid,
@@ -100,7 +89,6 @@ fn attached_owner(
         registry,
         &ctx(&broadcaster, session_id),
     );
-    // Sanity: handshake must have succeeded with ServerHello.
     assert!(
         effects
             .iter()
@@ -111,12 +99,9 @@ fn attached_owner(
     (state, broadcaster)
 }
 
-// ---- Handshake ---------------------------------------------------------
-
 #[test]
 fn client_hello_returns_server_hello_with_snapshot() {
     let mut broadcaster = PtyBroadcaster::new(1024);
-    // Seed some PTY output so the snapshot has data.
     let _ = broadcaster.on_pty_chunk(b"prior output".to_vec());
 
     let mut registry = OwnerRegistry::new();
@@ -141,7 +126,6 @@ fn client_hello_returns_server_hello_with_snapshot() {
             .any(|e| matches!(e, Effect::ResizePty { .. })),
         "ClientHello must not destructively resize before recovery snapshot"
     );
-    // ServerHello carries the seeded snapshot bytes.
     let server_hello = effects
         .iter()
         .find_map(|e| match e {
@@ -361,11 +345,8 @@ fn second_client_becomes_observer_by_default() {
             .any(|e| matches!(e, Effect::ResizePty { .. })),
         "second attach observer must not resize the shared PTY, got {observer_effects:?}"
     );
-    // Registry still points at the original owner.
     assert_eq!(registry.current_owner(), Some(owner_id));
 }
-
-// ---- Role enforcement --------------------------------------------------
 
 #[test]
 fn observer_input_yields_not_owner() {
@@ -373,7 +354,6 @@ fn observer_input_yields_not_owner() {
     let mut registry = OwnerRegistry::new();
     let session_id = Uuid::new_v4();
 
-    // Pre-register an owner so the next attach defaults to Observer.
     let _ = registry.on_attach(Uuid::new_v4(), None);
 
     let observer_id = Uuid::new_v4();
@@ -405,8 +385,7 @@ fn observer_input_yields_not_owner() {
         )),
         "expected NotOwner, got {effects:?}"
     );
-    // PR-1 review nit #3: rejection must NOT also fire any of the
-    // side-effecting effects — observers' input/resize/kill must be inert.
+    // Rejection must NOT also fire any side-effecting effect — observers' input/resize/kill must be inert.
     assert!(
         !effects.iter().any(|e| matches!(
             e,
@@ -500,8 +479,6 @@ fn observer_kill_yields_not_owner() {
     );
 }
 
-// ---- Ownership transitions --------------------------------------------
-
 #[test]
 fn owner_claim_changes_role_and_broadcasts() {
     let broadcaster = PtyBroadcaster::new(1024);
@@ -510,7 +487,6 @@ fn owner_claim_changes_role_and_broadcasts() {
     let original_owner = Uuid::new_v4();
     let _ = registry.on_attach(original_owner, None);
 
-    // Observer claims.
     let claimant = Uuid::new_v4();
     let mut state = TerminalSessionState::new();
     let _ = state.on_client_frame(
@@ -568,8 +544,6 @@ fn owner_release_clears_owner() {
     );
 }
 
-// ---- Resize epoch -----------------------------------------------------
-
 #[test]
 fn resize_commit_increments_epoch_and_yields_resize_applied() {
     let mut registry = OwnerRegistry::new();
@@ -618,7 +592,6 @@ fn stale_resize_epoch_ignored() {
     let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
     let session_id = Uuid::new_v4();
 
-    // Bump epoch to 5.
     let _ = state.on_client_frame(
         ClientMsg::ResizeCommit {
             epoch: 5,
@@ -631,7 +604,6 @@ fn stale_resize_epoch_ignored() {
     );
     assert_eq!(state.resize_epoch(), 5);
 
-    // Stale epoch=3 must be silently dropped.
     let effects = state.on_client_frame(
         ClientMsg::ResizeCommit {
             epoch: 3,
@@ -664,8 +636,6 @@ fn stale_resize_epoch_ignored() {
         "expected no effects for equal epoch, got {effects:?}"
     );
 }
-
-// ---- PtyBroadcaster v2 shape ------------------------------------------
 
 #[test]
 fn pty_chunk_broadcasts_render_patch_with_seq_and_rev() {
@@ -710,8 +680,6 @@ fn child_exit_broadcasts_terminal_exited_with_cursors() {
 
 #[test]
 fn byte_ring_evicts_oldest_chunk_when_over_budget() {
-    // Append 60 bytes then 80 bytes into a 100-byte budget: the first chunk
-    // is dropped, snapshot is just the second.
     let mut ring = ByteRing::new(100);
     ring.append(vec![b'a'; 60]);
     ring.append(vec![b'b'; 80]);
@@ -721,16 +689,7 @@ fn byte_ring_evicts_oldest_chunk_when_over_budget() {
     assert_eq!(snap, vec![b'b'; 80]);
 }
 
-// ---- kernel_originated_input capability --------------------------------
-//
-// PR-2.5: an observer that advertises `kernel_originated_input = true` in
-// its ClientHello is allowed to send `Input` frames as if it were owner.
-// Other owner-gated frames (ResizeCommit, Kill) stay owner-only.
-
-/// Drive a fresh state through a handshake as Observer, with the
-/// `kernel_originated_input` flag turned on. Returns the attached state
-/// + the broadcaster used. Caller must have already pre-registered an
-///   owner in `registry` so this attach defaults to Observer.
+/// Handshake as Observer with `kernel_originated_input` on; the caller must have pre-registered an owner in `registry`.
 fn attached_observer_with_kernel_input(
     registry: &mut OwnerRegistry,
     client_id: Uuid,
@@ -762,8 +721,6 @@ fn attached_observer_with_kernel_input(
 #[test]
 fn observer_with_kernel_input_capability_can_send_input() {
     let mut registry = OwnerRegistry::new();
-    // Pre-register the original owner so the kernel client attaches as
-    // Observer.
     let _ = registry.on_attach(Uuid::new_v4(), None);
 
     let (mut state, broadcaster) =
@@ -781,14 +738,12 @@ fn observer_with_kernel_input_capability_can_send_input() {
         &ctx(&broadcaster, session_id),
     );
 
-    // MUST route the bytes to the PTY...
     assert!(
         effects
             .iter()
             .any(|e| matches!(e, Effect::WriteToPty { data, .. } if data == b"keys")),
         "kernel-input observer Input should produce WriteToPty, got {effects:?}"
     );
-    // ...and MUST NOT emit a NotOwner error.
     assert!(
         !effects.iter().any(|e| matches!(
             e,
@@ -871,12 +826,6 @@ fn observer_with_kernel_input_capability_still_blocked_on_kill() {
     );
 }
 
-// ---- TerminalThemeUpdate (#177) ----------------------------------------
-//
-// Mid-session theme toggle: the browser POSTs the new (fg, bg) over the
-// WS so the daemon can update its OSC 10/11 reply colors AND synthesize
-// a focus-in nudge to make codex / claude-tui re-paint.
-
 #[test]
 fn owner_terminal_theme_update_yields_terminal_theme_update_effect() {
     let mut registry = OwnerRegistry::new();
@@ -909,13 +858,7 @@ fn owner_terminal_theme_update_yields_terminal_theme_update_effect() {
 
 #[test]
 fn owner_terminal_theme_update_matching_current_colors_is_suppressed() {
-    // Fix A: the New-terminal mount always re-POSTs the host theme,
-    // but the daemon was already spawned with that exact theme. When
-    // the requested colors equal the daemon's current OSC 10/11
-    // colors, the state machine must emit NOTHING — pre-#305 the
-    // resulting OSC blob landed in a raw-mode shell's line editor
-    // (ZLE/readline, no DECSET 1004) and got redrawn as `^[]10;rgb:…`
-    // glyphs (#295).
+    // The New-terminal mount always re-POSTs the host theme the daemon was already spawned with; a matching update must emit NOTHING.
     let mut registry = OwnerRegistry::new();
     let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
     let session_id = Uuid::new_v4();
@@ -937,14 +880,10 @@ fn owner_terminal_theme_update_matching_current_colors_is_suppressed() {
 
 #[test]
 fn owner_terminal_theme_update_differing_colors_still_emits() {
-    // A genuine toggle (colors actually differ from the daemon's
-    // current defaults) must continue to flow through unchanged — the
-    // suppression in fix A is strictly limited to no-op updates.
     let mut registry = OwnerRegistry::new();
     let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
     let session_id = Uuid::new_v4();
 
-    // Daemon currently serving dark; client toggles to light.
     let current_fg = (216, 219, 226);
     let current_bg = (15, 20, 24);
     let new_fg = (42, 47, 58);
@@ -971,10 +910,7 @@ fn owner_terminal_theme_update_differing_colors_still_emits() {
 
 #[test]
 fn owner_terminal_theme_update_emits_when_current_colors_unknown() {
-    // When the daemon's current colors are unknown (`None` — e.g. the
-    // legacy fixture, or any pre-theming call site), suppression is
-    // opt-out: the update always flows through so we can never swallow
-    // a real toggle on a call site that doesn't report its colors.
+    // With the daemon's current colors unknown (`None`), the update always flows through so a real toggle is never swallowed.
     let mut registry = OwnerRegistry::new();
     let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
     let session_id = Uuid::new_v4();
@@ -985,7 +921,6 @@ fn owner_terminal_theme_update_emits_when_current_colors_unknown() {
         ClientMsg::TerminalThemeUpdate { fg, bg },
         broadcaster.buffer(),
         &mut registry,
-        // Colors unknown — matches `ctx()`'s `None`/`None` default.
         &ctx_with_colors(&broadcaster, session_id, None, None),
     );
 
@@ -1000,7 +935,6 @@ fn owner_terminal_theme_update_emits_when_current_colors_unknown() {
 #[test]
 fn observer_terminal_theme_update_yields_not_owner() {
     let mut registry = OwnerRegistry::new();
-    // Pre-register a different owner so this attach defaults to Observer.
     let _ = registry.on_attach(Uuid::new_v4(), None);
 
     let broadcaster = PtyBroadcaster::new(1024);
@@ -1045,7 +979,6 @@ fn observer_terminal_theme_update_yields_not_owner() {
 #[test]
 fn observer_terminal_theme_update_matching_current_colors_is_suppressed() {
     let mut registry = OwnerRegistry::new();
-    // Pre-register a different owner so this attach defaults to Observer.
     let _ = registry.on_attach(Uuid::new_v4(), None);
 
     let broadcaster = PtyBroadcaster::new(1024);
@@ -1068,9 +1001,7 @@ fn observer_terminal_theme_update_matching_current_colors_is_suppressed() {
         &ctx_with_colors(&broadcaster, session_id, Some(fg), Some(bg)),
     );
 
-    // #359: observer mounts can send a benign #177 host-theme re-POST.
-    // If it matches the daemon's known current colors, drop it silently
-    // instead of surfacing NotOwner to the observer.
+    // An observer's benign host-theme re-POST matching the daemon's colors is dropped silently instead of surfacing NotOwner.
     assert!(
         effects.is_empty(),
         "matching-color observer TerminalThemeUpdate must produce no effect, got {effects:?}"
@@ -1080,7 +1011,6 @@ fn observer_terminal_theme_update_matching_current_colors_is_suppressed() {
 #[test]
 fn observer_terminal_theme_update_differing_colors_still_yields_not_owner() {
     let mut registry = OwnerRegistry::new();
-    // Pre-register a different owner so this attach defaults to Observer.
     let _ = registry.on_attach(Uuid::new_v4(), None);
 
     let broadcaster = PtyBroadcaster::new(1024);
@@ -1128,9 +1058,7 @@ fn observer_terminal_theme_update_differing_colors_still_yields_not_owner() {
 
 #[test]
 fn kernel_input_observer_terminal_theme_update_allowed() {
-    // Kernel-private clients carry the same trust posture for theme as
-    // they do for Input — see the `TerminalThemeUpdate` doc on
-    // `ClientMsg`. Authorize via the kernel_originated_input flag.
+    // Kernel-private clients carry the same trust posture for theme as they do for Input.
     let mut registry = OwnerRegistry::new();
     let _ = registry.on_attach(Uuid::new_v4(), None);
 
@@ -1158,9 +1086,7 @@ fn kernel_input_observer_terminal_theme_update_allowed() {
 
 #[test]
 fn terminal_theme_update_bincode_roundtrips() {
-    // The kernel↔daemon hop uses bincode (issue #44). Lock the wire
-    // shape of the new variant so a missed schema bump fails loudly in
-    // CI rather than as a silent payload mismatch.
+    // Lock the bincode wire shape so a missed schema bump fails loudly in CI rather than as a silent payload mismatch.
     let original = ClientMsg::TerminalThemeUpdate {
         fg: (1, 2, 3),
         bg: (4, 5, 6),

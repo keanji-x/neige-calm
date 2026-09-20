@@ -1,20 +1,5 @@
-//! #1016 — `track_detail` ships `cards` / `overlays` as
-//! `json_group_array(json_object(…))`, so the array is built by sqlite's JSON
-//! constructors rather than by string concatenation. This file pins the
-//! guarantees that choice buys, against the real statement:
-//!
-//!   * TEXT escaping — quotes, backslashes, newlines, control characters,
-//!     non-ASCII,
-//!   * NULL `title` -> JSON `null`,
-//!   * `deletable` as a JSON keyword, not sqlite's 0/1,
-//!   * an empty `cards` / `overlays` group rendering `[]`, not `null`,
-//!   * every `payload` shape round-tripping unchanged,
-//!   * and the constructive safety property itself: a `payload` that is not
-//!     valid JSON makes the read FAIL, it can never turn into card
-//!     structure.
-//!
-//! (`sort` precision has its own file, `track_detail_sort_precision_tests`;
-//! ordering has `track_detail_order_tests`.)
+//! `track_detail` builds `cards` / `overlays` with sqlite's JSON constructors;
+//! these pin the escaping, NULL, bool, empty-group and corrupt-payload shapes.
 
 use super::{SqlxRepo, area_create_tx, card_create_tx, overlay_upsert_tx, track_create_tx};
 use crate::card_role_cache::CardRoleCache;
@@ -22,9 +7,8 @@ use crate::db::RepoRead;
 use crate::model::{NewArea, NewCard, NewOverlay, NewTrack, RequestTheme};
 use serde_json::json;
 
-/// Every escape hazard a TEXT column can carry into hand-built JSON: the two
-/// characters JSON itself must escape, the whitespace escapes, a C0 control
-/// character (which JSON forbids raw), and multi-byte UTF-8.
+/// Every escape hazard a TEXT column can carry: the two characters JSON must
+/// escape, whitespace escapes, a raw C0 control character, multi-byte UTF-8.
 const HOSTILE_TEXT: &str = "quote\" backslash\\ newline\n tab\t ctrl\u{1}\u{1f} 中文 🌊";
 
 async fn empty_track(repo: &SqlxRepo) -> String {
@@ -73,9 +57,6 @@ async fn add_card(repo: &SqlxRepo, track_id: &str, card: NewCard) -> String {
     created.id.to_string()
 }
 
-/// A track with no cards and no overlays must come back as two EMPTY vectors.
-/// `json_group_array` over zero rows is `[]` rather than `null` — a `null`
-/// there would fail to deserialize into `Vec<_>`.
 #[tokio::test]
 async fn track_detail_renders_empty_groups_as_empty_arrays() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
@@ -95,9 +76,6 @@ async fn track_detail_renders_empty_groups_as_empty_arrays() {
     );
 }
 
-/// Every TEXT that crosses the aggregated-JSON boundary — card `kind`,
-/// `title`, overlay `kind`/`plugin_id`, and strings nested inside both
-/// `payload` columns — must round-trip byte-for-byte.
 #[tokio::test]
 async fn track_detail_round_trips_hostile_text_in_every_string_column() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
@@ -149,8 +127,6 @@ async fn track_detail_round_trips_hostile_text_in_every_string_column() {
     assert_eq!(overlay.payload["text"], json!(HOSTILE_TEXT));
 }
 
-/// A NULL `title` column must render JSON `null` (i.e. `Option::None`), not
-/// an empty string.
 #[tokio::test]
 async fn track_detail_renders_null_title_as_none() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
@@ -176,9 +152,6 @@ async fn track_detail_renders_null_title_as_none() {
     assert_eq!(detail.cards.first().expect("one card").title, None);
 }
 
-/// `deletable` is 0/1 in sqlite and `bool` in the model; both states must
-/// survive as JSON keywords. `false` is the security-relevant one (#229) —
-/// a card that reads back `true` becomes deletable through the REST surface.
 #[tokio::test]
 async fn track_detail_round_trips_deletable_both_ways() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
@@ -228,9 +201,6 @@ async fn track_detail_round_trips_deletable_both_ways() {
     );
 }
 
-/// `payload` is not always an object: the column stores whatever
-/// `serde_json::Value` the writer had. Every JSON shape must splice through
-/// unchanged.
 #[tokio::test]
 async fn track_detail_round_trips_non_object_payloads() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
@@ -268,20 +238,9 @@ async fn track_detail_round_trips_non_object_payloads() {
     assert_eq!(got, shapes, "payload must splice through byte-identically");
 }
 
-/// The constructive-safety property of `json_object` / `json()`, and the
-/// reason the hand-assembled `printf` + raw-splice variant was reverted
-/// (#1016): a `payload` that is not valid JSON makes the read FAIL LOUDLY.
-///
-/// The fixture writes the column directly, the way disk corruption, a
-/// hand-edited row or a restored bad backup would — no application writer is
-/// involved, so no write-side trigger could stand in the way. The text is
-/// crafted to *close* the card object and open another one, which is exactly
-/// what a raw splice would have obeyed: the array would have decoded into TWO
-/// cards, one of them fabricated, with no error anywhere. Because the
-/// statement routes `payload` through `json()`, sqlite parses it and the
-/// whole statement errors instead — the behaviour
-/// `planner_harness_track_vcs::transcript_refresh_failure_from_corrupt_card_payload_does_not_wedge_harness`
-/// relies on to degrade gracefully.
+/// The fixture writes the column directly, the way disk corruption would, with
+/// text crafted to close the card object and open another: a raw splice would
+/// decode TWO cards; `json()` makes the whole statement error instead.
 #[tokio::test]
 async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {
     const FORGERY: &str =
@@ -302,7 +261,6 @@ async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {
     )
     .await;
 
-    // Nothing stops the corrupt bytes from reaching the column ...
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
         .bind(FORGERY)
         .bind(&card_id)
@@ -310,7 +268,6 @@ async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {
         .await
         .expect("a raw column write is exactly what corruption looks like");
 
-    // ... and the read refuses to interpret them.
     let err = repo
         .track_detail(&track_id)
         .await
@@ -320,7 +277,6 @@ async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {
         "unexpected error: {err}"
     );
 
-    // Same fence on the other table.
     sqlx::query("UPDATE cards SET payload = \'{}\' WHERE id = ?1")
         .bind(&card_id)
         .execute(repo.pool())

@@ -1,15 +1,4 @@
 // @vitest-environment jsdom
-//
-// #1234 S1b-3b — the three projection marker channels this primitive opened.
-//
-// Each channel gets two assertions and needs both: that the marker lands on the
-// **right element** (a `data-nc-module` on the head row instead of the section
-// would satisfy a "the attribute is somewhere" check and break the projection's
-// scoping), and that **omitting the prop leaves no attribute at all**. The
-// second one is not symmetry for its own sake: the track page renders
-// `Referenced by` and `Conversations` through `PanelModule` as well, and those
-// two must stay unmarked or the panel's tree holds four module markers against a
-// view model of two.
 
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -23,8 +12,7 @@ describe('PanelModule module marker', () => {
     const { container } = render(<PanelModule title="Cards" moduleMarker="cards">rows</PanelModule>);
     const section = container.querySelector('section');
     expect(section?.getAttribute('data-nc-module')).toBe('cards');
-    /* On the section itself, not on some descendant that happens to be inside
-       it — the marker is the module layer's scope boundary. */
+    /* On the section itself: the marker is the module layer's scope boundary. */
     expect(container.querySelectorAll('[data-nc-module]').length).toBe(1);
   });
 
@@ -42,8 +30,6 @@ describe('PanelModule title field marker', () => {
     );
     const heading = container.querySelector('h2');
     expect(heading?.getAttribute('data-nc-field')).toBe('module-title');
-    /* The carrier owes an exact string, so it must be the element whose whole
-       text is the title. */
     expect(heading?.textContent).toBe('Cards');
     expect(container.querySelectorAll('[data-nc-field]').length).toBe(1);
   });

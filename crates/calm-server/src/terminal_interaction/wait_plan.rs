@@ -1,6 +1,4 @@
-//! Validated waiting arguments shared by observe and action readbacks (moved
-//! out of `wait.rs` with #1666 so the loops stay in one file and the
-//! argument contract in another).
+//! Validated waiting arguments shared by observe and action readbacks.
 use super::text_conditions::TextConditions;
 use crate::terminal_hooks::{DEFAULT_SIGNAL_EVENTS, TERMINAL_SIGNAL_EVENTS};
 use anyhow::{Result, ensure};
@@ -9,30 +7,24 @@ use serde::Deserialize;
 pub const WAIT_MS_MAX: u64 = 20_000;
 pub const SETTLE_MS_MAX: u64 = 2_000;
 pub const SETTLE_MS_DEFAULT: u64 = 150;
-/// #1725 — a `submit` is two PTY writes `SUBMIT_CR_GAP` apart. Policy, not
-/// a correctness guarantee (a readback starts after the write completed):
-/// the gap is kept small relative to the default settle so a submit's
-/// readback is not dominated by the gap.
+/// The submit CR gap is kept small relative to the default settle so a submit's readback is
+/// not dominated by the gap. Policy, not a correctness guarantee.
 const _: () = assert!(
     crate::terminal_renderer::SUBMIT_CR_GAP.as_millis() * 3 <= SETTLE_MS_DEFAULT as u128,
     "SUBMIT_CR_GAP stays at most a third of the default settle (#1725)"
 );
-/// Budget when `wait_ms` is omitted in change mode. Elapsed mode keeps 0 so an
-/// observation without waiting arguments stays an immediate read.
+/// Budget when `wait_ms` is omitted in change mode. Elapsed mode keeps 0 so an observation
+/// without waiting arguments stays an immediate read.
 pub const CHANGE_WAIT_MS_DEFAULT: u64 = 2_000;
-/// Budget when `wait_ms` is omitted in signal mode (#1620): a model answer
-/// takes seconds, and the wait ends early on the signal anyway.
+/// Budget when `wait_ms` is omitted in signal mode: a model answer takes seconds.
 pub const SIGNAL_WAIT_MS_DEFAULT: u64 = 15_000;
-/// Budget when `wait_ms` is omitted in text mode (#1666): a TUI start takes
-/// seconds too, and the wait ends early once the target screen shows.
+/// Budget when `wait_ms` is omitted in text mode: a TUI start takes seconds too.
 pub const TEXT_WAIT_MS_DEFAULT: u64 = 15_000;
-/// Signal mode (#1628): how long after the signal to wait for the first
-/// repaint. Claude's `Stop` hook fires before the TUI paints the answer, so
-/// a signal readback that returned at once would still show the spinner.
+/// How long after the signal to wait for the first repaint. Claude's `Stop` hook fires before
+/// the TUI paints the answer, so a readback that returned at once would still show the spinner.
 pub const REPAINT_MS_MAX: u64 = 5_000;
 pub const REPAINT_MS_DEFAULT: u64 = 1_500;
-/// Text mode (#1666): at most this many patterns per wait, each at most
-/// this many bytes.
+/// Text mode: at most this many patterns per wait, each at most this many bytes.
 pub const WAIT_TEXT_MAX_PATTERNS: usize = 8;
 pub const WAIT_TEXT_MAX_BYTES: usize = 200;
 
@@ -64,28 +56,19 @@ pub struct WaitPlan {
     pub settle_ms: u64,
     /// Signal mode only: snake_case hook events that end the wait.
     pub signal_events: Vec<String>,
-    /// Signal mode only: how long after the signal to wait for a repaint
-    /// (0 returns at the signal as before #1628). 0 in the other modes.
+    /// Signal mode only: how long after the signal to wait for a repaint (0 returns at the signal). 0 in the other modes.
     pub repaint_ms: u64,
-    /// Text mode (#1666): literal patterns, any of which on any live
-    /// viewport row ends the wait once the screen is quiet; signal mode
-    /// (#1677 r16): the repaint phase settles only while one is on a row.
-    /// Empty elsewhere.
+    /// Literal patterns, any of which on any live viewport row ends a text wait or lets a signal
+    /// repaint phase settle. Empty elsewhere.
     pub wait_text: Vec<String>,
-    /// Text and signal modes (#1677 r16): literal patterns none of which may
-    /// be on any live viewport row for the wait to end (text) or the
-    /// repaint phase to settle (signal). Empty elsewhere.
+    /// Literal patterns none of which may be on any live viewport row for the wait to end or
+    /// the repaint phase to settle. Empty elsewhere.
     pub wait_text_absent: Vec<String>,
 }
 impl WaitPlan {
-    /// `wait_ms == None` selects the mode's default budget:
-    /// [`CHANGE_WAIT_MS_DEFAULT`] for change, [`SIGNAL_WAIT_MS_DEFAULT`] for
-    /// signal, [`TEXT_WAIT_MS_DEFAULT`] for text, 0 for elapsed.
-    /// `signal_events == None` selects [`DEFAULT_SIGNAL_EVENTS`] in signal
-    /// mode; `repaint_ms == None` selects [`REPAINT_MS_DEFAULT`] there.
-    /// Text mode requires at least one of `wait_text` / `wait_text_absent`;
-    /// signal mode accepts either; both are refused in change and elapsed
-    /// mode.
+    /// `None` selects each mode's default budget, event set and repaint window. Text mode
+    /// requires at least one of `wait_text` / `wait_text_absent`; signal mode accepts either;
+    /// both are refused in change and elapsed mode.
     pub fn new(
         wait_for: Option<WaitFor>,
         wait_ms: Option<u64>,
@@ -158,7 +141,7 @@ impl WaitPlan {
             mode != WaitFor::Text || wait_text.is_some() || wait_text_absent.is_some(),
             "wait_for=text requires wait_text or wait_text_absent"
         );
-        // Review r1 E: `repaint_ms: 0` skips the phase that tests them.
+        // `repaint_ms: 0` skips the phase that tests them.
         ensure!(
             mode != WaitFor::Signal
                 || repaint_ms != Some(0)
@@ -187,17 +170,14 @@ impl WaitPlan {
             wait_text_absent: patterns(wait_text_absent)?,
         })
     }
-    /// The text conditions of this wait (#1677 r16): empty outside text and
-    /// signal modes.
+    /// The text conditions of this wait: empty outside text and signal modes.
     pub fn conditions(&self) -> TextConditions {
         TextConditions {
             present: self.wait_text.clone(),
             absent: self.wait_text_absent.clone(),
         }
     }
-    /// Whether the wait tests live viewport rows: text mode, or signal mode
-    /// with text conditions. Such a wait needs the live viewport
-    /// (`scroll_offset` 0).
+    /// Whether the wait tests live viewport rows; such a wait needs `scroll_offset` 0.
     pub fn tests_text(&self) -> bool {
         match self.mode {
             WaitFor::Text => true,
@@ -241,8 +221,7 @@ impl WaitPlan {
     }
 }
 
-/// Text mode (#1666): 1..=8 literal patterns, each 1..=200 bytes and free of
-/// control characters (a pattern is matched against rendered rows, which
+/// 1..=8 literal patterns, each 1..=200 bytes and free of control characters (rendered rows
 /// never contain any).
 fn validate_wait_text(patterns: &[String]) -> Result<()> {
     ensure!(
@@ -300,9 +279,6 @@ mod tests {
         assert_eq!(plan(Some(WaitFor::Change), None).repaint_ms, 0);
     }
 
-    /// #1620 signal mode: its own default budget, the default event set, the
-    /// same 20 s ceiling, a validated event vocabulary and (#1628) a settle
-    /// window plus a bounded repaint window.
     #[test]
     fn signal_mode_defaults_and_validation() {
         let signal = plan(Some(WaitFor::Signal), None);
@@ -421,9 +397,6 @@ mod tests {
         assert_eq!(only.budget_ms, 0);
     }
 
-    /// #1666 text mode: its own default budget, settle allowed, patterns
-    /// required and bounded (count, bytes, control characters), refused in
-    /// every other mode; `validate` re-checks a hand-built plan.
     #[test]
     fn text_mode_defaults_and_validation() {
         let text = |patterns: Vec<&str>| {
@@ -457,8 +430,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!((tuned.budget_ms, tuned.settle_ms), (0, 300));
-        // Mode coupling in both directions (#1677 r16: signal mode accepts
-        // the text conditions too; change and elapsed refuse them).
+        // Mode coupling in both directions: signal mode accepts the text conditions too; change and
+        // elapsed refuse them.
         assert!(
             WaitPlan::new(Some(WaitFor::Text), None, None, None, None, None, None).is_err(),
             "wait_for=text without text conditions"
@@ -541,10 +514,6 @@ mod tests {
         );
     }
 
-    /// #1677 r16 `wait_text_absent`: the same bounds as `wait_text`, alone
-    /// or with it in text mode, either in signal mode (where the conditions
-    /// gate the repaint settle), refused in change and elapsed mode;
-    /// `conditions()` and `tests_text()` follow.
     #[test]
     fn absent_conditions_and_signal_mode_conditions() {
         let absent = WaitPlan::new(
@@ -634,7 +603,7 @@ mod tests {
             );
             assert!(absent(vec!["a\tb"]).is_err(), "{mode:?}: tab");
         }
-        // Review r1 E: repaint_ms 0 would skip the phase that tests them.
+        // repaint_ms 0 would skip the phase that tests them.
         for (present, absent) in [
             (Some(vec!["❯".into()]), None),
             (None, Some(vec!["busy".into()])),

@@ -1,7 +1,5 @@
-//! #1699 review (MAJOR-1 on 8961d9c59): the outage budget covers the
-//! replay-handshake wait, not only the connect attempts. These tests run
-//! a budget down for real (30 s and 15 s of wall clock) and are the slow
-//! ones in this crate; every other wait is bounded by `common::TEST_BUDGET`.
+//! These tests run a budget down for real (30 s and 15 s of wall clock) and are
+//! the slow ones in this crate.
 
 #![cfg(unix)]
 
@@ -15,15 +13,9 @@ use tokio::net::UnixListener;
 
 use common::{handshake_then_shut_read, read_stderr_line};
 
-/// The budget-exhaustion tests wait for the real budget; this is the
-/// longest a run may take before the test itself gives up.
+/// The longest a run may take before the test itself gives up.
 const EXIT_WAIT: Duration = Duration::from_secs(40);
 
-/// A restarted kernel that accepts the reconnect and reads the replayed
-/// `initialize` but never answers it. The shim must still exit 5 when the
-/// 30 s outage budget runs out: the held request (id 2, owed) gets the
-/// synthesized -32000; the `tools/call` still unread in the stdin pipe
-/// (id 3) gets nothing — the process exit closes stdout instead.
 #[tokio::test]
 async fn stalled_replay_handshake_exhausts_the_budget_and_exits_5() {
     let (_tmp, socket_path) = common::socket();
@@ -35,15 +27,12 @@ async fn stalled_replay_handshake_exhausts_the_budget_and_exits_5() {
 
     let old_stream = handshake_then_shut_read(&listener, &mut stdin, &mut stdout).await;
     let t0 = Instant::now();
-    // id 2 hits EPIPE inside the shim: held, owed.
     common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
     let lost = read_stderr_line(&mut stderr).await;
     assert!(lost.contains("connection to kernel lost"), "{lost:?}");
-    // id 3 is written after the loss; the shim only probes stdin while
-    // reconnecting, so it stays unread in the pipe.
+    // The shim only probes stdin while reconnecting, so id 3 stays unread in the pipe.
     common::write_stdin(&mut stdin, &common::tools_call_line(3)).await;
 
-    // The new kernel accepts, reads the replay, and stalls forever.
     let mut conn = common::accept(&listener, "reconnect").await;
     drop(old_stream);
     let replayed = conn.read_frame("replayed initialize").await;
@@ -58,7 +47,6 @@ async fn stalled_replay_handshake_exhausts_the_budget_and_exits_5() {
         "the 30 s budget must be honoured, not skipped: exited after {elapsed:?}"
     );
 
-    // stdout: the held id's -32000, then EOF — nothing for id 3.
     let err = common::read_stdout(&mut stdout, "-32000 for the held request").await;
     assert_eq!(err["id"], serde_json::json!(2), "got {err}");
     assert_eq!(err["error"]["code"], serde_json::json!(-32000), "got {err}");
@@ -82,11 +70,8 @@ async fn stalled_replay_handshake_exhausts_the_budget_and_exits_5() {
     drop(stdin);
 }
 
-/// A kernel that answers every `initialize` with -32603 and drops the
-/// connection, forever. Counts the answers in `answered`. The last
-/// attempt lands exactly at the deadline, so the shim may exit between
-/// this stub's accept and its reply: EOF on the read and EPIPE on the
-/// write are the shim giving up, not stub failures.
+/// The last attempt lands exactly at the deadline, so EOF on the read and EPIPE on
+/// the write are the shim giving up, not stub failures.
 async fn always_internal_error(listener: &UnixListener, answered: &Cell<u32>) {
     loop {
         let (stream, _addr) = listener.accept().await.expect("accept ok");
@@ -109,12 +94,8 @@ async fn always_internal_error(listener: &UnixListener, answered: &Cell<u32>) {
     }
 }
 
-/// An outage that starts before codex has an `initialize` response runs
-/// under the 15 s initial-connect budget, not the 30 s reconnect budget
-/// (15 s + 30 s would outlive codex's 30 s MCP startup timeout). The
-/// kernel here answers every `initialize` with -32603: exit 5 after
-/// ~15 s, exactly one initialize response on stdout (the synthesized
-/// -32000), and the exit line carries the real last error.
+/// An outage before codex has an `initialize` response runs under the 15 s
+/// initial-connect budget (15 s + 30 s would outlive codex's MCP startup timeout).
 #[tokio::test]
 async fn unacked_initialize_outage_runs_under_the_initial_budget() {
     let (_tmp, socket_path) = common::socket();
@@ -143,7 +124,6 @@ async fn unacked_initialize_outage_runs_under_the_initial_budget() {
         answered.get()
     );
 
-    // stdout: one frame for the initialize, then EOF.
     let err = common::read_stdout(&mut stdout, "synthesized error for the initialize").await;
     assert_eq!(err["id"], serde_json::json!(1), "got {err}");
     assert_eq!(err["error"]["code"], serde_json::json!(-32000), "got {err}");

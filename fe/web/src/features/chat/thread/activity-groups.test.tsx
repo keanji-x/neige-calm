@@ -21,18 +21,7 @@ function activity(id: string, overrides: Partial<ConversationActivity> = {}): Co
   };
 }
 
-/*
- * ── The keys a run carries are read off the last transcript that was shown ──
- *
- * React renders transcripts it then throws away: a transition that suspends
- * and is overtaken by a synchronous update never commits. The run's key must
- * be computed from the memory of the transcript on screen, and only a commit
- * may advance that memory — otherwise the abandoned render leaves keys for
- * calls nobody saw, the transcript that comes back reads a memory with none
- * of its calls in it, and every open group is rebuilt closed. The route hands
- * a new array on every render (it filters), so "the same transcript" here is
- * semantically the same and a different object, as in production.
- */
+/* React renders transcripts it then throws away (a suspended transition overtaken by a synchronous update never commits), so only a commit may advance the memory the run's key is read from. */
 describe('a run’s key across a render that never committed', () => {
   const committed: readonly ConversationActivity[] = [
     activity('a', { state: 'failed', detail: 'retained failure evidence' }),
@@ -42,10 +31,7 @@ describe('a run’s key across a render that never committed', () => {
   const appended = [...committed, activity('c')];
   type Mode = 'committed' | 'speculative' | 'reset' | 'appended';
 
-  /**
-   * Renders the transcript `transcripts[mode]`, starting at `committed`;
-   * `suspendsIn` also suspends, forever, below it.
-   */
+  /** Renders `transcripts[mode]`, starting at `committed`; `suspendsIn` suspends forever below it. */
   function mount<M extends string>(
     transcripts: Readonly<Record<M | 'committed', readonly TranscriptEntry[]>>,
     suspendsIn: M,
@@ -83,7 +69,6 @@ describe('a run’s key across a render that never committed', () => {
     const detail = screen.getByText('retained failure evidence');
     expect(header.getAttribute('aria-expanded')).toBe('true');
 
-    /* The transition renders `[x, y]` and hangs; what is on screen is untouched. */
     await act(async () => {
       startTransition(() => { changeMode('speculative'); });
       await Promise.resolve();
@@ -92,14 +77,11 @@ describe('a run’s key across a render that never committed', () => {
     expect(container.querySelector('[aria-expanded]')).toBe(header);
     expect(screen.getByText('retained failure evidence')).toBe(detail);
 
-    /* A synchronous update abandons it and brings `[a, b]` back — the same
-       run, a new array. */
     act(() => { flushSync(() => { changeMode('reset'); }); });
     expect(container.querySelector('[aria-expanded]')).toBe(header);
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('retained failure evidence')).toBe(detail);
 
-    /* And the run goes on being the same run as it grows. */
     act(() => { flushSync(() => { changeMode('appended'); }); });
     expect(container.querySelector('[aria-expanded]')).toBe(header);
     expect(header.getAttribute('aria-expanded')).toBe('true');
@@ -115,17 +97,6 @@ describe('a run’s key across a render that never committed', () => {
     await abandonThenReturn((node) => <StrictMode>{node}</StrictMode>);
   });
 
-  /*
-   * The pair above no longer tells a memory advanced by the commit from one
-   * advanced by the render: since the memory keeps every call it has ever
-   * seen, strangers in an abandoned render take nothing from the run that is
-   * on screen. What does is an abandoned render that *splits* the run — a
-   * message between its calls, so the second half is keyed as a new run —
-   * followed by the page shift that drops the run's head: the transcript
-   * that lands then has only the second half's word for which run it is, and
-   * a memory written in render remembers the split nobody saw. The reader's
-   * open run comes back closed, under a stranger's key.
-   */
   const head = activity('head');
   const tail = activity('tail', { state: 'failed', detail: 'split failure evidence' });
   const between: TranscriptEntry = { id: 'between', author: 'agent', text: 'Between', atMs: 2 };
@@ -141,7 +112,6 @@ describe('a run’s key across a render that never committed', () => {
     const detail = screen.getByText('split failure evidence');
     expect(header.getAttribute('aria-expanded')).toBe('true');
 
-    /* The transition renders the run split in two and hangs; what is on screen is untouched. */
     await act(async () => {
       startTransition(() => { changeMode('split'); });
       await Promise.resolve();
@@ -150,8 +120,6 @@ describe('a run’s key across a render that never committed', () => {
     expect(container.querySelector('[aria-expanded]')).toBe(header);
     expect(screen.getByText('split failure evidence')).toBe(detail);
 
-    /* A synchronous update abandons it and lands the run without its head:
-       the same run, open, with the same detail open. */
     act(() => { flushSync(() => { changeMode('shifted'); }); });
     expect(container.querySelector('[aria-expanded]')).toBe(header);
     expect(header.getAttribute('aria-expanded')).toBe('true');
@@ -168,13 +136,7 @@ describe('a run’s key across a render that never committed', () => {
   });
 });
 
-/*
- * The replay that reopens a detail the reader had open presses the vendor's
- * row once per rebuild of the rows — here, on mount. StrictMode mounts every
- * effect twice on the same instance, and the first press has not landed when
- * the second mount runs; pressing again would close what was just opened.
- * One press, and the detail is open.
- */
+/* StrictMode mounts every effect twice on the same instance before the first press has landed; pressing again would close what was just opened. */
 describe('a run rebuilt after shrinking to one call, under StrictMode', () => {
   it('reopens the failure detail exactly once', () => {
     const failed = activity('f', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'test failed' });
@@ -187,17 +149,14 @@ describe('a run rebuilt after shrinking to one call, under StrictMode', () => {
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*npm test/ })); });
     expect(screen.getByText('test failed')).toBeTruthy();
 
-    /* The page shifts: the run's head is gone, and one call is a line. */
     rerender(thread([failed]));
     expect(container.querySelector('[aria-expanded]')).toBeNull();
     expect(screen.getByText('test failed')).toBeTruthy();
 
-    /* Load earlier restores it: open, the detail open, once. */
     rerender(thread([done, failed]));
     const header = container.querySelector<HTMLElement>('[aria-expanded]')!;
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getAllByText('test failed')).toHaveLength(1);
-    /* The reader can still close it, and that is remembered too. */
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*npm test/ })); });
     expect(screen.queryByText('test failed')).toBeNull();
     rerender(thread([failed]));
@@ -207,18 +166,6 @@ describe('a run rebuilt after shrinking to one call, under StrictMode', () => {
   });
 });
 
-/*
- * ── A row that leaves a group that stays, and comes back ─────────────────
- *
- * The 300-row page shifts under a refetch by however many rows arrived. A run
- * of three the reader has open can lose its first call and keep two — so the
- * vendor's element stays, with its rows keyed on the calls' own ids — until
- * *Load earlier* brings the first call back as a *new* row, closed. The
- * reader had that row's failure detail open. What is pinned: the detail is
- * open again when the row is, once, whether or not every effect runs twice;
- * a detail the reader closed stays closed across the same trip; and a
- * neighbouring failed row's own state is not moved by it.
- */
 describe('a row leaving and returning while its group stays mounted', () => {
   const failed = activity('failed', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'retained failure detail' });
   const second = activity('second');
@@ -236,25 +183,21 @@ describe('a row leaving and returning while its group stays mounted', () => {
       act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*npm test/ })); });
       expect(screen.getByText('retained failure detail')).toBeTruthy();
 
-      /* The shifted window drops the opened row; two calls keep the group mounted. */
       rerender(thread([second, third]));
       expect(screen.getByRole('group', { name: '2 tool calls' })).toBe(group);
       expect(header.getAttribute('aria-expanded')).toBe('true');
       expect(screen.queryByText('retained failure detail')).toBeNull();
 
-      /* Load earlier: the same group, the row rebuilt, the detail open on it. */
       rerender(thread(fullRun));
       expect(screen.getByRole('group', { name: '3 tool calls' })).toBe(group);
       expect(header.getAttribute('aria-expanded')).toBe('true');
       expect(screen.getAllByText('retained failure detail')).toHaveLength(1);
 
-      /* Round trip again: still open, still once. */
       rerender(thread([second, third]));
       rerender(thread(fullRun));
       expect(screen.getByRole('group', { name: '3 tool calls' })).toBe(group);
       expect(screen.getAllByText('retained failure detail')).toHaveLength(1);
 
-      /* The reader closes it; that is what the next trip brings back. */
       act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*npm test/ })); });
       expect(screen.queryByText('retained failure detail')).toBeNull();
       rerender(thread([second, third]));
@@ -275,7 +218,6 @@ describe('a row leaving and returning while its group stays mounted', () => {
     expect(screen.getByText('retained failure detail')).toBeTruthy();
     expect(screen.queryByText('other failure')).toBeNull();
 
-    /* Only the first row leaves; the second failed row stays closed as it was. */
     rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={run.slice(1)} />);
     expect(screen.queryByText('retained failure detail')).toBeNull();
     expect(screen.queryByText('other failure')).toBeNull();
@@ -283,7 +225,6 @@ describe('a row leaving and returning while its group stays mounted', () => {
     expect(screen.getAllByText('retained failure detail')).toHaveLength(1);
     expect(screen.queryByText('other failure')).toBeNull();
 
-    /* Now the reader opens the second; the first leaves and returns; both are as left. */
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*cargo test/ })); });
     expect(screen.getByText('other failure')).toBeTruthy();
     rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={run.slice(1)} />);
@@ -294,17 +235,6 @@ describe('a row leaving and returning while its group stays mounted', () => {
   });
 });
 
-/*
- * ── The whole run leaves the window, and comes back ──────────────────────
- *
- * Enough newer rows shift every call of a run out of the newest page; the
- * reader had it open with a failure detail open. *Load earlier* brings the
- * same calls back — the same stable ids, before the newer message — and they
- * are the same run: open, the detail open. The element is not kept (nothing
- * was on screen to keep it in), and nothing is drawn for a run that is not in
- * the transcript. A run of *other* ids that appears after it is a stranger,
- * closed.
- */
 describe('a run that leaves the window whole and returns', () => {
   const failed = activity('failed', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'whole-run failure detail' });
   const done = activity('done');
@@ -332,7 +262,6 @@ describe('a run that leaves the window whole and returns', () => {
       expect(screen.getAllByText('whole-run failure detail')).toHaveLength(1);
       expect(container.textContent).toContain('newer page');
 
-      /* Closed by the reader, it comes back closed the next time round. */
       act(() => { fireEvent.click(restored.querySelector<HTMLElement>('[aria-expanded]')!); });
       rerender(thread([newer]));
       rerender(thread([...run, newer]));
@@ -345,7 +274,6 @@ describe('a run that leaves the window whole and returns', () => {
     act(() => { fireEvent.click(screen.getByRole('group', { name: '2 tool calls' }).querySelector<HTMLElement>('[aria-expanded]')!); });
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*npm test/ })); });
 
-    /* The run leaves; a stranger with a failed call of its own takes the window. */
     const stranger = [activity('s1'), activity('s2', { state: 'failed', verb: 'Ran', target: 'cargo test', detail: 'stranger failure' })];
     rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={[newer, ...stranger]} />);
     const strangerGroup = screen.getByRole('group', { name: '2 tool calls' });
@@ -353,7 +281,6 @@ describe('a run that leaves the window whole and returns', () => {
     expect(screen.queryByText('stranger failure')).toBeNull();
     expect(screen.queryByText('whole-run failure detail')).toBeNull();
 
-    /* Both on screen: the original open with its detail, the stranger still closed. */
     rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={[...run, newer, ...stranger]} />);
     const [original, still] = screen.getAllByRole('group', { name: '2 tool calls' });
     expect(still).toBe(strangerGroup);

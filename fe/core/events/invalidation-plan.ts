@@ -57,12 +57,7 @@ export type TrackFilesDerivedKind =
   | 'codex.worker_requested' | 'terminal.worker_requested'
   | 'task.completed' | 'task.failed' | 'task.execution_settled' | 'task.file_publication_settled' | 'task.candidate_verification_settled' | 'task.dispatched' | 'task.gate_result';
 
-/**
- * Every kind that can change what a track's workspace looks like.
- *
- * NOT the same set as the task-verdict one below — see
- * `taskVerdictInvalidatingKinds`, which is this list minus the two hooks.
- */
+/** Every kind that can change what a track's workspace looks like. */
 export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'terminal.deleted', 'codex.hook', 'claude.hook',
@@ -71,52 +66,17 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
 ] as const);
 
 /**
- * The track conversation list (#1189 §5.5), keyed by the track it belongs to.
- *
- * The id is derivable: every event this key hangs off carries either a `track_id` or a
- * `card_id` an `InvalidationContext` can resolve, and the endpoint itself is
- * per-track (`GET /api/tracks/{track_id}/conversations`, §4.1). Invalidating
- * `['track-conversations']` wholesale on
- * every runtime tick would refetch the list of every track the user has open.
- *
- * The prefix is still what comes back when the track genuinely cannot be
- * resolved (a `worker_session.*` event for a card no cached track owns). That is the
- * honest answer to "some track's list may have changed", and it costs nothing
- * when no wave-conversation query is mounted: invalidating a key with no
- * active observer only marks cache entries stale.
+ * Keyed by track; the bare prefix only when the track cannot be resolved (a key with no
+ * active observer only marks entries stale, so that fallback is cheap).
  */
 function trackConversations(trackId: string | null): QueryKey {
   return trackId === null ? ['track-conversations'] : ['track-conversations', trackId];
 }
 
 /**
- * The conversation list's `state` is read from `worker_sessions.state`. The
- * three `worker_session.*`
- * kinds are what actually move that column, `worker_session.started` being the
- * `null → starting` transition that turns the dot on at all, so a session
- * could start, change status and be superseded with the list still showing
- * whatever it had. Adding the track list without fixing the area one would have
- * left the older list with the same stale `state`.
- *
- * `track.lifecycle_changed` is deliberately NOT a caller. It does not write
- * `worker_sessions.state`; a track reaching a terminal lifecycle ends its
- * sessions by superseding their worker sessions, which emits `worker_session.superseded` —
- * already here. A second trigger for one change buys a duplicate refetch of a
- * wholesale list and makes it impossible to prove either one does the work.
- *
- * `card.deleted` is knowingly absent from the list and is not this slice's to
- * fix: nothing drops a deleted conversation's row today (#1140).
- *
- * `state` is not the only field this list shows. `updated_at` comes from
- * `worker_sessions.updated_at_ms`, and every harness snapshot persist writes it
- * — which is why `harness.phase.changed`, `harness.user_message.enqueued` and
- * (#1505 PR2) `harness.queue.changed` are callers too: each of them is emitted
- * immediately after a persist that moved the timestamp this list sorts and
- * renders.
- *
- * The exact caller set is pinned from both sides in `invalidation-plan.test.ts`
- * against a list kept by hand there, so neither a missing nor an extra caller
- * can land silently.
+ * The list's `state` comes from `worker_sessions.state` and its `updated_at` from every harness
+ * snapshot persist; `track.lifecycle_changed` is deliberately NOT a caller (it ends sessions via
+ * `worker_session.superseded`, already here). The caller set is pinned from both sides in the test.
  */
 function conversationLists(trackId: string | null): readonly QueryKey[] {
   return [trackConversations(trackId)];
@@ -133,40 +93,10 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
 }
 
 /**
- * The kinds that invalidate a track's task verdicts (`['track-report', …]`).
- *
- * A function, not a frozen const, only because `no-module-runtime-state` will
- * not accept a module-level binding whose initializer is a call.
- *
- * Derived from `TRACK_FILES_DERIVED_KINDS` rather than typed out again, minus
- * the two hooks — and the difference is the whole point. `codex.hook` fires per
- * CLI hook, roughly twice per tool call per running worker, and it writes no
- * `tasks` row: a hook is the agent telling the kernel what it just did, not the
- * scheduler moving a task. It does change the workspace, so it keeps its
- * `track-files` key.
- *
- * Six non-derived events deliberately join the list. `track.updated` carries
- * task budget, planner ceiling, and root tree budget changes. `track.deleted`
- * changes the surviving tree's membership and therefore its effective budget.
- * Both use the broad report prefix because their effect can reach child or
- * sibling tracks. Area deletion changes cross-area references into missing
- * targets; card add/delete changes the existence of `neige://card/*` reference
- * targets in any track. A `plan.updated` carrying `agent_message` is the standalone
- * pending-task cancellation path and can use its explicit track id; projection
- * events omit that field and ride with one of the broader events above.
- *
- * Invalidation is not free here. `['track-report', …]` resolves to a live query
- * on `GET /api/tracks/{id}/report`, which loads the track's CRDT, projects the
- * whole document and runs `task_diagnostics` — one snapshot statement whose
- * reference work scales with the declarations' deduplicated lookup set (see
- * `task_projection.rs`). The frontend then throws away everything but
- * `taskDiagnostics`.
- * Paying that twice per tool call, per worker, for a value that provably cannot
- * have changed, is the cost this exclusion removes.
- *
- * `staleTime` is deliberately NOT the fix and is not set on that query:
- * `invalidateQueries` refetches an active observer whatever its staleTime, so a
- * stale window would have suppressed nothing here.
+ * The kinds that invalidate a track's task verdicts (`['track-report', …]`): the workspace kinds
+ * minus the two hooks (a hook fires ~twice per tool call and writes no `tasks` row, and the report
+ * query re-projects the whole document), plus the non-derived events whose effect can reach other tracks.
+ * A function because `no-module-runtime-state` rejects a module-level binding initialised by a call.
  */
 export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
   return [
@@ -176,12 +106,7 @@ export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
   ];
 }
 
-/**
- * The three `worker_session.*` kinds share one plan, because they are one statement:
- * this card's session moved. They were already identical; they are now
- * identical *and* carrying the conversation lists, so a third copy that drifted
- * would silently drop a list from one transition only.
- */
+/** The three `worker_session.*` kinds share one plan: this card's session moved. */
 function runtimePlan(cardId: string, context: InvalidationContext): InvalidationPlan {
   const trackId = context.findTrackOwningCard(cardId);
   return result([
@@ -204,10 +129,8 @@ function policies(): PolicyMap {
     [{ key: ['areas'], mode: 'replace-existing-area', value: event.data }],
   )),
   'area.deleted': plan(() => result([['areas'], ['overlays', 'track'], ['track-report']])),
-  /* `track.updated` carries the task-budget / planner-ceiling PATCH event.
-     The report key is deliberately broad: a root track's tree budget changes
-     the admission diagnosis of its child tracks, but the event carries only
-     the updated root id. React Query refetches only active observers. */
+  /* The report key is deliberately broad: a root track's tree budget changes the admission
+       diagnosis of its child tracks, but the event carries only the updated root id. */
   'track.updated': plan((event) => result([
     ['tracks', 'area', event.data.area_id], ['track', event.data.id],
     ['track-files', event.data.id], ['tracks-range'], ['track-report'],
@@ -227,20 +150,14 @@ function policies(): PolicyMap {
     ['track', event.data.track_id], ['track-files', event.data.track_id],
     ['track-report'], ...conversationLists(event.data.track_id),
   ])),
-  /* `['planner-run', id]` is #1505 S4's, and it is keyed by the CARD rather
-     than the track because that is what the query is keyed by. Without it a
-     second tab's model picker reads its value from a `planner-run` nothing
-     ever invalidates: tab 1 chooses a model, the write emits `card.updated`,
-     tab 2 keeps showing the previous one and sends under it while the server
-     runs the new one. The mutation's own local invalidation repairs only the
-     tab that made the change. */
+  /* `['planner-run', id]` is keyed by the CARD. Without it a second tab's model picker keeps
+       showing the previous model and sends under it; the mutation's own invalidation repairs only its tab. */
   'card.updated': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id],
     ['planner-run', event.data.id],
     ...conversationLists(event.data.track_id),
   ])),
-  /* No conversation key, and not an oversight — see the note on
-     `conversationLists`. Dropping the deleted row is #1140's. */
+  /* No conversation key: nothing drops a deleted conversation's row today. */
   'card.deleted': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id], ['track-report'],
   ])),
@@ -248,34 +165,14 @@ function policies(): PolicyMap {
   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
-  /*
-   * #1625 P1 — `harness-items` is here because the phase event IS the
-   * delivery signal for the per-turn outcome row. The kernel writes the
-   * `turn/completed` row before the snapshot commit that emits
-   * `TurnRunning → TurnCompleted` (`run_loop.rs`, `persist_turn_outcome`), and
-   * emits no `harness.item.added` for it. The cost is a transcript refetch on
-   * EVERY phase change — three per ordinary turn cycle (issuing, running,
-   * completed) and on the interrupt cycle alike — since this plan cannot tell
-   * the one transition that carries a row from the ones that do not; what it
-   * buys is one fewer event plus one fewer track-vcs commit per turn.
-   */
+  /* `harness-items` is here because the phase event IS the delivery signal for the per-turn
+   * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */
   'harness.phase.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationLists(event.data.track_id),
-    // Harness observations update runtime activity without a separate worker
-    // status event. The Track's Planner row consumes that runtime projection.
+    // Harness observations update runtime activity without a separate worker status event.
     ['track', event.data.track_id],
   ])),
-  /*
-   * #1625 P2 — `harness-items` rides on the phase event above because a
-   * refused `turn/start` DELETES the drain's projection row and emits no
-   * event for the delete (`run_loop.rs`, the failure arm of
-   * `maybe_issue_turn`): the phase change the re-buffer persists right after
-   * it — `issuing_turn → turn_completed` — is the only signal a client that
-   * fetched the row during the pending `turn/start` gets, and without this key
-   * it kept showing the row until an unrelated event. (P1 puts the same key
-   * here for its turn-outcome row; the line is shared, the reasons are two.)
-   */
   'harness.transcript.cleared': plan((event) => result([
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
   ])),
@@ -283,39 +180,14 @@ function policies(): PolicyMap {
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
     ...conversationLists(event.data.track_id),
   ])),
-  /*
-   * #1505 PR2 — the queue region reads `['planner-run', card_id]`, so that key
-   * is the one this event exists for.
-   *
-   * `harness-items` is here for `change: 'steered'` (#1625 P3): the kernel
-   * writes the steered entry's transcript row once codex has taken it and
-   * announces both — this event and the row's own `harness.item.added` — so
-   * a client that sees the entry leave the queue fetches the row that
-   * replaces it in the same round; and for `'restored'` (review round 1),
-   * whose completion-sweep emitter deletes that row again. The three other
-   * values do not need it. One plan that over-invalidates by a single key on
-   * three of five values is cheaper than two that can drift apart.
-   */
+  /* `harness-items` is here for `steered` (the kernel writes its transcript row once codex has
+   * taken it) and `restored` (whose completion sweep deletes that row again). */
   'harness.queue.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationLists(event.data.track_id),
   ])),
-  /*
-   * #1253 §6 — four keys, and the last two are why the Today trigger visibly
-   * does anything.
-   *
-   * `['today-launchpad']` carries `report_has_noninitial_content`, which is the
-   * server-side predicate Today decides its empty state with: without it the
-   * first summary an agent ever writes leaves the page reading "Nothing written
-   * today yet." until a reload. `['track', id]` is the track detail the document
-   * is read out of (`readTrackReport` locates the report card by kind), so
-   * without it the region keeps drawing the previous body.
-   *
-   * **Nothing generated protects either line.** `PolicyMap` is exhaustive over
-   * event *kinds*, not over query keys, so deleting one adds no missing kind
-   * and no golden notices. The literal key list in
-   * `invalidation-plan.contract.test.ts` is the only guard there is.
-   */
+  /* `['today-launchpad']` carries `report_has_noninitial_content` (Today's empty-state predicate) and
+   * `['track', id]` is where the document is read from; nothing generated protects either line. */
   'track.report_edited': plan((event) => result([
     ['track-files', event.data.track_id], ['track-report'], ['track-backlinks'],
     ['today-launchpad'], ['track', event.data.track_id],
@@ -343,8 +215,7 @@ function policies(): PolicyMap {
   'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'plugin.state': noop('No plugin list query exists.'),
   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),
-  /* Workspace only — a hook writes no `tasks` row, and it fires per tool call.
-     See `taskVerdictInvalidatingKinds` for what that key would have cost. */
+  /* Workspace only — a hook writes no `tasks` row, and it fires per tool call. */
   'codex.hook': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),
   'claude.hook': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),
   'codex.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),

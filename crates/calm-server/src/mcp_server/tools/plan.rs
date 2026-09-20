@@ -1,39 +1,5 @@
-//! `calm.plan.*` — the planner card's durable per-track task plan
-//! (issue #644, PR-A).
-//!
-//! Task declarations live in report `task` blocks; the `tasks` table is
-//! their scheduler projection. The kernel claims ready rows, emits
-//! `task.dispatched`, and drives worker operations.
-//!
-//! ## Tool surface
-//!
-//! * `calm.plan.upsert` — hidden, zero-write compatibility shim for old
-//!   threads. New declarations use `calm.report.blocks.upsert`.
-//! * `calm.plan.cancel` — Planner-only, pending-only (`§3.1`): canceling
-//!   an already-`canceled` task is idempotent success; an in-flight
-//!   task returns the 409-style refusal.
-//! * `calm.plan.list` — Planner-only read. Gate **commands are not
-//!   echoed** (only `{present, steps: [names]}`) — workers must never
-//!   see gate bodies, and the listing layer enforces that shape even
-//!   for planner callers so a future role widening can't leak them (§6.7).
-//!
-//! ## Template-to-block mapping — gone
-//!
-//! `plan_template_task_block_payload` converted the old manifest template
-//! vocabulary (`PlanTaskInput`) into report `task` blocks. Its last production
-//! caller was the built-in template builder, and #1635 S4 made the built-in
-//! templates files whose `task` fences are data (`templates/builtin/*.md`),
-//! so the converter is deleted. `PlanTaskInput` survives only as the
-//! `#[cfg(test)]` input shape of the retired batch-validation rules below
-//! (`normalize_task_input`), which #985 kept as tests when `calm.plan.upsert`
-//! became a zero-write shim.
-//!
-//! ## Scope construction
-//!
-//! Track identity is implicit from the calling card (same resolve chain
-//! as `track_state.rs`); it is never a parameter. The `plan.updated`
-//! event is track-scoped with actor `AiPlanner`; the in-tx role gate
-//! refuses it from worker actors (`role_gate.rs` section 2.5).
+//! `calm.plan.*` — the planner card's durable per-track task plan.
+//! `calm.plan.list` never echoes gate commands, only `{present, steps: [names]}`.
 
 use crate::db::sqlite::{task_cancel_tx, task_get_tx};
 use crate::db::write_with_actor_events_typed;
@@ -71,9 +37,7 @@ pub const TOOL_PLAN_CANCEL: &str = "calm.plan.cancel";
 pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
 pub const TOOL_PLAN_RECOVER: &str = "calm.plan.recover";
 
-/// Gate timeout defaults/caps (design §4.1 rule 7). The task-verify
-/// adapter re-clamps defensively at run time
-/// (`task_verify_adapter::GateSpec::timeout_secs_clamped`).
+/// Gate timeout defaults/caps; the task-verify adapter re-clamps at run time.
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(plan_upsert_descriptor(), wrap(plan_upsert));
     registry.register(plan_cancel_descriptor(), wrap(plan_cancel));
@@ -81,8 +45,6 @@ pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(plan_recover_descriptor(), wrap(plan_recover));
 }
 
-/// Common wrapper that turns a typed async fn into the boxed-future
-/// `ToolHandler` the registry expects. Mirrors `emit::wrap`.
 fn wrap<F, Fut>(f: F) -> ToolHandler
 where
     F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
@@ -97,10 +59,6 @@ where
         })
     })
 }
-
-// ---------------------------------------------------------------------------
-// Input shapes + per-task validation (design §4.1)
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[derive(Debug, Clone, Deserialize)]
@@ -125,8 +83,6 @@ pub struct PlanTaskInput {
     pub no_gate_reason: Option<String>,
 }
 
-/// A transitional manifest entry after field-level validation and
-/// normalization.
 #[cfg(test)]
 #[derive(Debug, Clone)]
 struct NormalizedTask {
@@ -138,16 +94,12 @@ struct NormalizedTask {
     /// Sorted + deduped — dependency order is set semantics.
     depends_on: Vec<String>,
     priority: i64,
-    /// Canonical gate serialization (rule 7 shape, validated; wire
-    /// shape = `task_verify_adapter::GateSpec`). Deterministic per
-    /// input, so the rule-5 idempotency check covers gates too.
+    /// Canonical gate serialization; deterministic per input so the idempotency check covers gates.
     gate_json: Option<String>,
-    /// Rule 6 escape hatch was supplied.
     has_no_gate_reason: bool,
 }
 
-/// Rule 7 cwd shape: absolute, non-empty, no ASCII control characters
-/// (same check as `codex_adapter::normalize_codex_create_request`).
+/// Absolute, non-empty, no ASCII control characters.
 #[cfg(test)]
 fn validate_abs_path(field: &str, key: &str, raw: &str) -> Result<String, String> {
     if raw.chars().any(|c| c.is_ascii_control()) {
@@ -169,8 +121,6 @@ fn validate_abs_path(field: &str, key: &str, raw: &str) -> Result<String, String
     Ok(trimmed.to_string())
 }
 
-/// Field-level validation for one batch entry (rules 1 partial, 2, 7,
-/// 8). Returns the normalized form the resolver + row writer consume.
 #[cfg(test)]
 fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> {
     let key = input.key;
@@ -181,8 +131,6 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
         ));
     }
 
-    // Rule 2 — kind vocabulary. Anything outside the supported worker
-    // kinds is a typo.
     let kind = match input.kind.as_str() {
         "codex" => TaskKind::Codex,
         "claude" => TaskKind::Claude,
@@ -199,24 +147,15 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
         return Err(format!("task {key}: `goal` must be non-empty"));
     }
 
-    // Rule 7 — cwd absolute when present.
     let cwd = match input.cwd.as_deref() {
         None => None,
         Some(raw) => Some(validate_abs_path("cwd", &key, raw)?),
     };
 
-    // Rule 7 — gate shape, normalized to the canonical `gate_json`
-    // the task-verify runner deserializes (rule 8's reject-all slice
-    // guard is deleted in the same change that activates rule 6 —
-    // design §6.6/§9).
     let gate_json = match &input.gate {
         None => None,
         Some(gate) => Some(normalize_gate(&key, gate)?),
     };
-    // Round-3 review F2 — `no_gate_reason` is the ONLY escape hatch
-    // for skipping a verification gate under `require_task_gates`, so
-    // an empty/whitespace reason is rejected loudly instead of
-    // becoming a `true` flag with a blank audit note. Recorded trimmed.
     let no_gate_reason = match input.no_gate_reason {
         None => None,
         Some(raw) => {
@@ -232,8 +171,6 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
     };
     let has_no_gate_reason = no_gate_reason.is_some();
 
-    // Preserve the transitional field-shape contract: a reason may only
-    // accompany object context (or omitted context).
     let context = input.context.unwrap_or(Value::Null);
     if no_gate_reason.is_some() {
         match context {
@@ -265,11 +202,7 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
     })
 }
 
-/// Rule 7 + canonicalization: validate the gate shape and render the
-/// canonical `gate_json` (a pure function of the input — `None` fields
-/// omitted, fixed key insertion order — so rule-5 byte-identical
-/// idempotency covers gates). The wire shape matches
-/// `task_verify_adapter::GateSpec`.
+/// Canonical `gate_json` is a pure function of the input (`None` omitted, fixed key order) so byte-identical idempotency covers gates.
 #[cfg(test)]
 fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
     validate_gate_shape(key, gate)?;
@@ -295,13 +228,8 @@ fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
     serde_json::to_string(&Value::Object(obj)).map_err(|e| format!("task {key}: gate: {e}"))
 }
 
-// ---------------------------------------------------------------------------
-// Transitional manifest batch validation (rules 1, 3, 4)
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 fn validate_new_batch(batch: &[NormalizedTask]) -> Result<(), String> {
-    // Rule 1 (uniqueness half) — duplicate keys within the batch.
     let batch_declarations: Vec<TaskDeclaration> = batch
         .iter()
         .map(declaration_from_normalized)
@@ -310,8 +238,6 @@ fn validate_new_batch(batch: &[NormalizedTask]) -> Result<(), String> {
         return Err(format!("duplicate key `{key}` in batch"));
     }
 
-    // Transitional manifest templates are fresh batches, so every dependency
-    // must name a sibling in this same batch.
     if let Some((key, dependency)) = unknown_deps(&batch_declarations, &[]).first() {
         return Err(format!(
             "task {key}: unknown dependency `{dependency}` (must name an existing track \
@@ -367,8 +293,6 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
     })
 }
 
-/// Build the legacy fresh-row form of a normalized batch entry for validation
-/// tests. Production declarations are projected from report task blocks.
 #[cfg(test)]
 fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Task {
     Task {
@@ -400,10 +324,6 @@ fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Tas
         finished_at_ms: None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// calm.plan.upsert
-// ---------------------------------------------------------------------------
 
 fn plan_upsert_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -497,10 +417,6 @@ async fn plan_upsert(
     }))
 }
 
-// ---------------------------------------------------------------------------
-// calm.plan.cancel
-// ---------------------------------------------------------------------------
-
 fn plan_cancel_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_CANCEL.into(),
@@ -561,27 +477,13 @@ where
 
     let task_id = task.id.clone();
 
-    // A `lifecycle` equal to the track's current state is the same-state
-    // idempotency shortcut: `validate_transition` blesses it for
-    // lifecycle-authorized actors (planner-only tool, so always here) and
-    // `apply_requested_transition_in_tx` would emit nothing — for
-    // short-circuit purposes it is equivalent to no lifecycle at all
-    // (#656 round 3, F2).
+    // A `lifecycle` equal to the track's current state is the same-state idempotency shortcut: it would apply nothing.
     let lifecycle_is_noop = write_args
         .lifecycle
         .is_none_or(|target| target == track.lifecycle);
 
     match task.status {
-        // §3.1 — already-canceled is idempotent success, no write, no
-        // event (a retry must not re-trigger the scheduler). Mirror of
-        // the upsert all-`unchanged` short-circuit: only when no
-        // effective `lifecycle` rode along — a real lifecycle request
-        // must not be silently dropped, so that path falls through into
-        // the tx (which applies the lifecycle and skips the
-        // `plan.updated`). A same-state lifecycle short-circuits too:
-        // it would apply nothing, and an all-no-op tx would hand
-        // `write_with_actor_events` an empty event batch (rejected as
-        // an internal error).
+        // Already-canceled is idempotent success: no write, no event (a retry must not re-trigger the scheduler). A real lifecycle request still falls through into the tx.
         TaskStatus::Canceled if lifecycle_is_noop => {
             return Ok(json!({ "ok": true }));
         }
@@ -607,8 +509,7 @@ where
         }
     }
 
-    // Deterministic fixtures can advance the row here to exercise the real
-    // guarded UPDATE below. Production supplies a zero-cost no-op future.
+    // Fixtures advance the row here to exercise the guarded UPDATE; production supplies a no-op future.
     after_pre_read().await;
 
     let actor = identity.to_actor_id();
@@ -634,9 +535,7 @@ where
             let scope = scope.clone();
             let message = message.clone();
             Box::pin(async move {
-                // Guarded flip — re-checked in-tx so a task that left
-                // `pending` between the pre-read and this write rolls
-                // back instead of canceling an in-flight run.
+                // Re-checked in-tx so a task that left `pending` between the pre-read and this write rolls back instead of canceling an in-flight run.
                 let current =
                     crate::db::sqlite::task_current_get_tx(tx, track_id_typed.as_str(), &key)
                         .await?;
@@ -647,11 +546,7 @@ where
                 }
                 let rows = task_cancel_tx(tx, &task_id, now_ms()).await?;
                 if rows == 0 {
-                    // Disambiguate the 0-row flip with an in-tx re-read:
-                    // a concurrent (or pre-read-visible) `canceled` is
-                    // the §3.1 idempotent path — no row changed, so no
-                    // `plan.updated` below — while anything else is a
-                    // real concurrent state change.
+                    // Disambiguate the 0-row flip: a concurrent `canceled` is the idempotent path (no `plan.updated`); anything else is a real concurrent state change.
                     let now_canceled = task_get_tx(tx, &task_id)
                         .await?
                         .is_some_and(|t| t.status == TaskStatus::Canceled);
@@ -687,9 +582,7 @@ where
                             .map(|event| (actor.clone(), scope.clone(), event)),
                     );
                 }
-                // Idempotent re-cancel changed nothing — suppress the
-                // `plan.updated` so a retry can't re-trigger the
-                // scheduler; the lifecycle events above still land.
+                // Idempotent re-cancel changed nothing — suppress `plan.updated` so a retry can't re-trigger the scheduler.
                 if rows > 0 {
                     events.push((
                         actor,
@@ -701,15 +594,7 @@ where
                         },
                     ));
                 }
-                // Race-only guard: the pre-read short-circuit already
-                // returns deterministic no-ops (already-canceled +
-                // same-state lifecycle) before this tx, so an empty
-                // batch here means a concurrent writer turned the
-                // request into a no-op mid-flight. The tx wrote nothing
-                // (0-row flip, no lifecycle change), and
-                // `write_with_actor_events` rejects empty batches as an
-                // internal error — surface a retryable conflict
-                // instead; the retry resolves via the short-circuit.
+                // An empty batch means a concurrent writer turned the request into a no-op mid-flight; `write_with_actor_events` rejects empty batches, so surface a retryable conflict.
                 if events.is_empty() {
                     return Err(CalmError::Conflict(format!(
                         "task {key} or track changed state concurrently; retry"
@@ -742,10 +627,6 @@ where
 {
     plan_cancel_impl(ctx, identity, args, after_pre_read).await
 }
-
-// ---------------------------------------------------------------------------
-// calm.plan.list
-// ---------------------------------------------------------------------------
 
 fn plan_list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -834,12 +715,7 @@ async fn plan_list(
                     entry["status"] = json!(current.status);
                     entry["blocking_reason"] = json!(current.blocking_reason);
                     entry["recovery"] = serde_json::to_value(view.recovery)?;
-                    // #1727 S1 — the worker's lease path / slice branch /
-                    // kernel-made commit sha, now that `workspace.leased`
-                    // and `worktree.committed` no longer wake the planner.
                     // Absent (no key) when the attempt never held a lease.
-                    // Read once: `recovery.guidance.retained` below is the
-                    // same facts under the Planner prompt's names (PR-C N3).
                     let worktree_facts = match task
                         .as_ref()
                         .and_then(|task| task.worker_card_id.as_deref())
@@ -856,10 +732,7 @@ async fn plan_list(
                     if let Some(facts) = &worktree_facts {
                         entry["worktree"] = serde_json::to_value(facts)?;
                     }
-                    // MCP-only: a refused recovery names its way out. The REST
-                    // wire type is unchanged; `guidance` exists only here. The
-                    // refusal carries the Track admission read in this tx; the
-                    // `track` resolved before the tx is never consulted here.
+                    // MCP-only: `guidance` exists only here; the REST wire type is unchanged.
                     if let (Some(refused), Some(task)) = (&refusal, &task) {
                         entry["recovery"]["guidance"] =
                             recovery_guidance::guidance_tx(tx, task, refused, worktree_facts)
@@ -879,10 +752,7 @@ async fn plan_list(
     .map_err(|error| map_plan_error("plan_list", error))
 }
 
-/// One `calm.plan.list` entry. Deliberately a projection, not the row:
-/// gate commands are stripped to `{present, steps: [names]}` (§6.7) and
-/// the gate bookkeeping columns (`gate_pid*`, `gate_attempt`) never
-/// leave the kernel.
+/// A projection, not the row: gate commands are stripped to `{present, steps: [names]}` and gate bookkeeping columns never leave the kernel.
 fn task_list_entry(t: &Task) -> Value {
     let gate = match t
         .gate_json
@@ -933,10 +803,6 @@ fn task_list_entry(t: &Task) -> Value {
     entry[instruction_field] = json!(t.goal);
     entry
 }
-
-// ---------------------------------------------------------------------------
-// calm.plan.recover
-// ---------------------------------------------------------------------------
 
 fn plan_recover_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -991,10 +857,6 @@ async fn plan_recover(
     )
     .await
     .map_err(|error| map_plan_error("plan_recover", error))?;
-    // Receipt fields stay top-level for existing readers; the executor is
-    // stated from the recovered attempt's actual route so the Planner never
-    // expects an isolated envelope from a legacy re-run, or a different one
-    // from an isolated recovery.
     let statement =
         crate::task_recovery::executor_statement_for_receipt(ctx.repo.as_ref(), &receipt)
             .await
@@ -1006,14 +868,6 @@ async fn plan_recover(
     Ok(response)
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Map tx-layer errors onto the MCP error vocabulary: validation that
-/// only the in-tx resolve could catch → `-32602`, concurrent-state
-/// conflicts → `-32409`, role-gate refusals → `-32403`, everything
-/// else → internal.
 fn map_plan_error(tool: &str, e: CalmError) -> RpcError {
     match e {
         CalmError::BadRequest(m) => RpcError::invalid_params(format!("{tool}: {m}")),
@@ -1023,10 +877,7 @@ fn map_plan_error(tool: &str, e: CalmError) -> RpcError {
     }
 }
 
-/// Look up the track the calling card belongs to. Mirrors
-/// `track_state::resolve_track_for_identity`: the thread-mapped card must
-/// exist while its daemon is active; a missing row is a
-/// delete-while-active race surfaced loud as `InternalError`.
+/// A missing thread-mapped card while its daemon is active is a delete-while-active race, surfaced as `InternalError`.
 async fn resolve_track_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
@@ -1086,8 +937,6 @@ mod tests {
         task_row_from_normalized("track-1", &normalized(key, deps), 1)
     }
 
-    // -------------------------------------------------------- rule 1: key
-
     #[test]
     fn key_regex_accepts_and_rejects_per_design() {
         for ok in [
@@ -1119,8 +968,6 @@ mod tests {
         let err = validate_new_batch(&batch).expect_err("dup key");
         assert!(err.contains("duplicate key `a`"), "err = {err}");
     }
-
-    // -------------------------------------------------------- rule 2: kind
 
     #[test]
     fn kind_claude_normalizes_to_taskkind_claude() {
@@ -1211,8 +1058,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------- rule 3: deps
-
     #[test]
     fn unknown_dep_rejected_and_same_batch_dep_accepted() {
         let err = validate_new_batch(&[normalized("a", &["ghost"])]).expect_err("unknown dep");
@@ -1221,8 +1066,6 @@ mod tests {
         validate_new_batch(&[normalized("a", &["b"]), normalized("b", &[])])
             .expect("same-batch sibling dependency");
     }
-
-    // -------------------------------------------------------- rule 4: cycles
 
     #[test]
     fn cycle_rejected_with_path_in_error() {
@@ -1233,7 +1076,6 @@ mod tests {
         ];
         let err = validate_new_batch(&batch).expect_err("cycle");
         assert!(err.contains("dependency cycle:"), "err = {err}");
-        // The path names every participant and closes the loop.
         for k in ["a", "b", "c"] {
             assert!(err.contains(k), "cycle path misses `{k}`: {err}");
         }
@@ -1251,10 +1093,7 @@ mod tests {
         use calm_types::report_blocks::tasks::project_task_declarations;
         use calm_types::track_report::ReportBlock;
 
-        // Exhaust the 4^3 dependency graphs over three keys (none, or
-        // one edge to a/b/c). This is a small property test for the
-        // document-local cycle rule; DB-backed unknown dependencies and
-        // rule-2/non-pending mutability are intentionally out of scope.
+        // Exhaust the 4^3 dependency graphs over three keys.
         let choices: [Option<&str>; 4] = [None, Some("a"), Some("b"), Some("c")];
         for a in choices {
             for b in choices {
@@ -1303,8 +1142,6 @@ mod tests {
         assert!(error.contains("invalid normalized gate_json"), "{error}");
     }
 
-    // -------------------------------------------------------- goal
-
     #[test]
     fn empty_or_whitespace_goal_rejected() {
         for bad in ["", "   ", "\t\n"] {
@@ -1317,8 +1154,6 @@ mod tests {
             );
         }
     }
-
-    // -------------------------------------------------------- rule 7: cwd + gate shape
 
     #[test]
     fn relative_cwd_rejected_absolute_accepted() {
@@ -1358,38 +1193,31 @@ mod tests {
 
     #[test]
     fn gate_shape_violations_rejected() {
-        // Empty steps.
         let err = validate_gate_shape("a", &gate(vec![], None, None)).expect_err("empty steps");
         assert!(err.contains("gate.steps must be non-empty"), "err = {err}");
 
-        // Empty cmd.
         let err = validate_gate_shape("a", &gate(vec![step("fmt", "  ")], None, None))
             .expect_err("empty cmd");
         assert!(err.contains("cmd must be non-empty"), "err = {err}");
 
-        // Control characters in cmd (same check as codex_adapter).
         let err = validate_gate_shape("a", &gate(vec![step("fmt", "cargo\u{7}fmt")], None, None))
             .expect_err("control char");
         assert!(err.contains("ASCII control"), "err = {err}");
 
-        // Timeout over the cap.
         let err = validate_gate_shape("a", &gate(vec![step("t", "true")], Some(7201), None))
             .expect_err("timeout cap");
         assert!(err.contains("1..=7200"), "err = {err}");
 
-        // Timeout at or below zero.
         for bad in [0, -1] {
             let err = validate_gate_shape("a", &gate(vec![step("t", "true")], Some(bad), None))
                 .expect_err("non-positive timeout");
             assert!(err.contains("1..=7200"), "timeout {bad}: err = {err}");
         }
 
-        // Relative gate cwd.
         let err = validate_gate_shape("a", &gate(vec![step("t", "true")], None, Some("rel/path")))
             .expect_err("relative gate cwd");
         assert!(err.contains("absolute path"), "err = {err}");
 
-        // A well-shaped gate passes shape validation.
         validate_gate_shape(
             "a",
             &gate(vec![step("t", "cargo test")], Some(600), Some("/repo")),
@@ -1397,12 +1225,6 @@ mod tests {
         .expect("valid shape");
     }
 
-    // ------------------------------------- gate acceptance (rule 8 deleted, PR-C)
-
-    /// PR-C deleted the rule-8 slice guard: a well-shaped gate is now
-    /// ACCEPTED and stored canonically. The stored bytes must parse as
-    /// the task-verify runner's `GateSpec` wire shape, and the
-    /// canonicalization must be deterministic (rule-5 idempotency).
     #[test]
     fn declared_gate_accepted_and_stored_canonically() {
         let mut t = raw_task("a");
@@ -1421,7 +1243,6 @@ mod tests {
         assert_eq!(parsed.steps[0].name, "test");
         assert_eq!(parsed.steps[0].cmd, "cargo test");
 
-        // Deterministic: the same input normalizes to the same bytes.
         let mut t2 = raw_task("a");
         t2.gate = Some(gate(
             vec![step("test", "cargo test"), step("fmt", "cargo fmt --check")],
@@ -1431,7 +1252,6 @@ mod tests {
         let n2 = normalize_task_input(t2).expect("normalize");
         assert_eq!(n2.gate_json.as_deref(), Some(gate_json.as_str()));
 
-        // Optional fields stay off the canonical bytes when absent.
         let mut t3 = raw_task("a");
         t3.gate = Some(gate(vec![step("test", "cargo test")], None, None));
         let n3 = normalize_task_input(t3).expect("normalize");
@@ -1442,14 +1262,11 @@ mod tests {
             "absent timeout omitted: {bytes}"
         );
 
-        // A malformed gate still fails loudly at the shape layer.
         let mut t4 = raw_task("a");
         t4.gate = Some(gate(vec![], None, None));
         let err = normalize_task_input(t4).expect_err("empty steps");
         assert!(err.contains("gate.steps must be non-empty"), "err = {err}");
     }
-
-    // -------------------------------------------------------- no_gate_reason
 
     #[test]
     fn no_gate_reason_requires_object_or_omitted_context() {
@@ -1462,7 +1279,6 @@ mod tests {
         t.no_gate_reason = Some("r".into());
         normalize_task_input(t).expect("omitted context");
 
-        // Non-object context cannot carry the reason — rejected loud.
         let mut t = raw_task("a");
         t.context = Some(json!("a string"));
         t.no_gate_reason = Some("r".into());
@@ -1473,10 +1289,6 @@ mod tests {
         );
     }
 
-    /// Round-3 review F2 — the rule-6 escape hatch must be a real
-    /// reason: empty/whitespace is rejected (it would otherwise count
-    /// as "present" and skip the gate with a blank audit note); a
-    /// valid reason is accepted.
     #[test]
     fn no_gate_reason_blank_rejected_valid_reason_trimmed() {
         for blank in ["", " ", "  \t\n "] {
@@ -1494,8 +1306,6 @@ mod tests {
         let n = normalize_task_input(t).expect("normalize");
         assert!(n.has_no_gate_reason);
     }
-
-    // -------------------------------------------------------- normalization
 
     #[test]
     fn depends_on_sorted_and_deduped_for_manifest_validation() {

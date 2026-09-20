@@ -42,7 +42,7 @@ export function LoginPage({ login, reload, onBackToPairing }: LoginPageProps) {
       void login(username, password, attempt.signal).then((result) => {
         if (attempt.signal.aborted) return;
         if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }
-        // A reload resets every persisted and in-memory cache under the new identity (#189).
+        // A reload resets every persisted and in-memory cache under the new identity.
         reload();
       }).catch((cause: unknown) => {
         if (attempt.signal.aborted) return;

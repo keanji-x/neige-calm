@@ -265,8 +265,7 @@ async fn issued_text_or_fail(handle: &PlannerHarness, daemon: &SharedCodexAppSer
 }
 
 async fn assert_exact_fallback(fx: &Fixture, text: &str) {
-    // The exact-interface notice is recognised by its own fragment's opening,
-    // up to the bound reason (#1635 S1c).
+    // The exact-interface notice is recognised by its own fragment's opening, up to the bound reason.
     let notice = include_str!("../../prompts/recovery-briefing/exact-interface.md")
         .split_once("{reason}")
         .unwrap()

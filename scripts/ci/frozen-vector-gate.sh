@@ -25,11 +25,7 @@ commit_has_rationale() {
   esac
 }
 
-# Return success when COMMIT's state for one literal PATH either matches the
-# trusted event-base state or was established by a marker-bearing transition
-# outside the event base. Following the actual equal-state parent chain
-# prevents a discarded marked change elsewhere in the DAG from laundering an
-# unrelated stale state.
+# Success when COMMIT's state for PATH matches the trusted event-base state or was established by a marker-bearing transition outside it. Following the equal-state parent chain stops a discarded marked change elsewhere in the DAG from laundering an unrelated stale state.
 path_state_has_accepted_provenance() {
   local commit="$1"
   local path="$2"
@@ -58,12 +54,7 @@ path_state_has_accepted_provenance() {
   set -e
   case "$reachable_rc" in
     0)
-      # Pull-request checks use the current default-branch commit as their
-      # event base, while push checks use the previously accepted main tip.
-      # A nested branch merge may therefore adopt an unmarked path state that
-      # is already present at the trusted base (for example after merging main
-      # into the branch). Trust only that exact per-path state; an ancestor
-      # carrying any other state still cannot provide provenance.
+      # PR checks use the default-branch commit as event base, push checks the previously accepted main tip; a nested merge may adopt an unmarked state already present at the base. Trust only that exact per-path state.
       set +e
       git -C "$repo_root" --literal-pathspecs diff --quiet --ignore-submodules=none \
         "$commit" "$base_sha" -- "$path"
@@ -257,13 +248,7 @@ while IFS= read -r sha; do
     fi
     [ -s "$merge_paths_file" ] || continue
 
-    # A merge may adopt vector changes already justified on another parent;
-    # that ordinary composition does not need a duplicate marker. For every
-    # path changed from parent 1, require both (a) a non-first parent with the
-    # same resulting path state and (b) provenance from either the trusted
-    # event-base state or a marker-bearing change to that literal path outside
-    # the event base. Without both, the merge itself is introducing or
-    # restoring the path state.
+    # A merge may adopt vector changes already justified on another parent. Require both a non-first parent with the same resulting state and provenance for it; without both the merge itself introduces or restores the state.
     if ! commit_has_rationale "$sha"; then
       merge_has_provenance=1
       while IFS= read -r -d '' path; do

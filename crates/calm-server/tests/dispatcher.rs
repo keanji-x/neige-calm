@@ -1,16 +1,4 @@
-//! Dispatcher integration tests.
-//!
-//! Coverage:
-//!
-//!   1. **`SubscribeFilter` over `EventBus::subscribe_filtered`** — emit
-//!      three events of mixed kinds + scopes, assert the filter delivers
-//!      only the requested ones (and that the receiver outlives extra
-//!      lifecycle activity around it).
-//!   2. Pending shared-spec thread binding.
-//!   3. Scheduler trigger wiring: `track.updated` pokes the plan scheduler.
-//!
-//! Tests run against an in-memory `SqlxRepo` and stubbed worker spawn
-//! dependencies.
+//! Dispatcher integration tests against an in-memory `SqlxRepo` and stubbed worker spawn dependencies.
 
 mod support;
 
@@ -322,10 +310,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// 1. SubscribeFilter integration.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn subscribe_filtered_delivers_only_matching_kinds() {
     let events = EventBus::new();
@@ -336,7 +320,6 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
         kinds: Some(vec!["codex.worker_requested".into()]),
     };
 
-    // Emit three events: matching kind, non-matching kind, matching kind again.
     events.emit(ActorId::User, codex_req("k1", "g1"));
     events.emit(
         ActorId::User,
@@ -350,7 +333,6 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
     events.emit(ActorId::User, codex_req("k3", "g3"));
 
     let mut matched = Vec::new();
-    // Drain everything the channel has + a small grace window.
     for _ in 0..6 {
         if let Ok(Ok(env)) = tokio::time::timeout(Duration::from_millis(80), rx.recv()).await {
             if filter.matches(&env) {
@@ -371,10 +353,7 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
     }
 }
 
-/// `subscribe_filtered` returns the raw bus receiver — verifying that
-/// the receiver lives long enough across `recv()` calls and behaves
-/// like the bare `subscribe()` API. The in-module `event::filter_tests`
-/// pin the scope-match predicate exhaustively.
+/// `subscribe_filtered` returns the raw bus receiver; the scope-match predicate is pinned in the in-module `event::filter_tests`.
 #[tokio::test]
 async fn subscribe_filtered_returns_live_receiver() {
     let events = EventBus::new();
@@ -389,17 +368,13 @@ async fn subscribe_filtered_returns_live_receiver() {
 
 #[tokio::test]
 async fn subscribe_filtered_skips_lagged_without_panic() {
-    // Provoke a Lagged frame by oversubscribing the bus capacity
-    // (BUS_CAPACITY = 1024). We don't have a public knob to shrink
-    // capacity, so 1100 emits exceeds the channel's queue against a
-    // receiver that hasn't drained.
+    // Provoke a Lagged frame by exceeding BUS_CAPACITY (1024) against a receiver that hasn't drained.
     let events = EventBus::new();
     let mut rx = events.subscribe_filtered();
     for i in 0..1100u32 {
         events.emit(ActorId::User, codex_req(&format!("k{i}"), "g"));
     }
 
-    // Drain until either RecvError::Lagged surfaces or we exhaust.
     let mut saw_lag = false;
     let mut saw_ok = 0usize;
     for _ in 0..1200 {
@@ -407,9 +382,7 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
             Ok(Ok(_)) => saw_ok += 1,
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
                 saw_lag = true;
-                // Continue draining — the channel is still alive after
-                // a lag and should yield events that came after the
-                // dropped frames.
+                // The channel is still alive after a lag and yields events that came after the dropped frames.
             }
             Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
             Err(_) => break, // Timeout — nothing more pending.
@@ -422,10 +395,7 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
     assert!(saw_ok > 0, "expected to see ok recvs after Lagged");
 }
 
-/// A dispatcher lag is a lost-edge recovery path. The context verdict must
-/// land before the scheduler can resume the same dispatched row; otherwise
-/// the worker crosses the admission point and §5.3.3 deliberately leaves it
-/// alone afterward.
+/// The context verdict must land before the scheduler can resume the same dispatched row; after admission the worker is deliberately left alone.
 #[tokio::test(flavor = "current_thread")]
 async fn lagged_context_sweep_precedes_scheduler_resume() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
@@ -599,15 +569,9 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Issue #644 round-2 review F4 — `track.updated` is a scheduler trigger.
-// ---------------------------------------------------------------------------
-
 const CARD_SPAWN_ADAPTER_PHASES: &[PhaseTag] = &[];
 
-/// Successful worker-spawn stub (mirror of the scheduler suite's):
-/// `prepare_tx` returns a card-shaped result — the scheduler reads
-/// `result["id"]` for the running stamp — and the spawn is a no-op.
+/// Successful worker-spawn stub: `prepare_tx` returns a card-shaped result (the scheduler reads `result["id"]`) and the spawn is a no-op.
 struct CardSpawnAdapter {
     kind: &'static str,
     card_id: String,
@@ -759,12 +723,7 @@ impl ProviderAdapter for CardSpawnAdapter {
     }
 }
 
-/// Round-2 review F4: a Working track held at `task_budget = 0` with a
-/// pending plan task must dispatch when `PATCH /api/tracks` raises the
-/// budget — that PATCH emits ONLY `track.updated` (no lifecycle event,
-/// no plan.updated), so the dispatcher's subscriber must treat
-/// `track.updated` as a scheduler poke instead of waiting for the
-/// periodic reconcile tick (300s default — far beyond this test).
+/// The budget-raise PATCH emits ONLY `track.updated`, so the dispatcher must treat it as a scheduler poke rather than wait for the 300s reconcile tick.
 #[tokio::test]
 async fn track_updated_budget_raise_pokes_scheduler() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
@@ -862,8 +821,7 @@ async fn track_updated_budget_raise_pokes_scheduler() {
         4,
     );
 
-    // A track.updated while the budget is still 0 pokes the scheduler
-    // but the §5.2 budget gate holds the task.
+    // A track.updated while the budget is still 0 pokes the scheduler, but the budget gate holds the task.
     let track = repo.track_get(track_id.as_str()).await.unwrap().unwrap();
     repo.log_pure_event(
         ActorId::User,
@@ -883,9 +841,7 @@ async fn track_updated_budget_raise_pokes_scheduler() {
         "budget 0 must keep holding the task"
     );
 
-    // The budget-raise PATCH shape: row update + ONLY a track.updated
-    // event (mirror of routes/tracks.rs `update_track` with no lifecycle
-    // change).
+    // The budget-raise PATCH shape: row update + ONLY a track.updated event.
     repo.track_update(
         track_id.as_str(),
         TrackPatch {

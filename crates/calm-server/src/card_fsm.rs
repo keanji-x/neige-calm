@@ -1,60 +1,6 @@
-//! Per-card FSM projector.
-//!
-//! A long-running background task subscribes to `EventBus` and projects
-//! incoming events onto a per-card 6-state FSM:
-//!
-//!   `Starting / Idle / Working / AwaitingInput / Errored / Done`
-//!
-//! Whenever a card's state changes, the task writes a kernel-owned
-//! `Overlay { plugin_id="kernel", entity_kind="card", entity_id=<card_id>,
-//! kind="status", payload={ state } }`. The codex card head consumes this
-//! overlay directly.
-//!
-//! Track-level lifecycle is owned by the [`TrackLifecycle`](crate::model::TrackLifecycle)
-//! enum stamped on the `tracks` row (driven by the Planner Agent) — this projector
-//! deliberately does NOT write that column. The two responsibilities stay split
-//! cleanly: Planner Agent owns the track's lifecycle stage, the FSM owns per-card
-//! status, and the two get OR'd at the UI layer for the sidebar "Waiting on
-//! you" grouping (see issue #254).
-//!
-//! On top of the per-card overlay, the projector ALSO writes a single
-//! track-scoped boolean overlay
-//! `{kind:"any_card_needs_input", payload:{value: bool}}` whenever any card
-//! under the track is in `AwaitingInput` or `Errored`. This is **not** the old
-//! `recompute_track` projection that #248 deleted: that one re-projected the
-//! whole 6-state FSM union onto the track (a dual source of truth with
-//! `TrackLifecycle`). This new overlay is one bool with explicit semantics —
-//! "does any card under this track currently need a human?" — and is
-//! complementary to lifecycle, not redundant with it (#254).
-//!
-//! ## Scope (phase 1)
-//!
-//! Only **codex cards** participate. Two-line rationale:
-//!   - **Terminal cards** have no event surface that maps cleanly onto the
-//!     six FSM states; that needs a new daemon-side event and is deferred to
-//!     phase 2.
-//!   - **Plugin cards** can't be driven directly from `Event::PluginState`
-//!     because `plugin_id` is independent of `card_id` — a plugin may back
-//!     zero or many cards. Driving plugin-card FSM correctly needs either
-//!     callback-level signal or a registry walk; also phase 2.
-//!
-//! Cards that don't have an entry in the FSM map are silently skipped —
-//! the projector only owns the per-card overlay row.
-//!
-//! ## Throttle / debounce
-//!
-//! State changes are filtered through a tiny debouncer:
-//!   - **Upgrades** (more severe) emit immediately.
-//!   - **Downgrades** (less severe) are held for `DOWNGRADE_QUIET_MS`. If a
-//!     new event lands inside the window, the timer resets (or the upgrade
-//!     fires through immediately, replacing the pending downgrade).
-//!
-//! ## In-memory only
-//!
-//! The map is `Mutex<HashMap<card_id, State>>`. On restart it starts empty;
-//! the first hook event for each codex card re-populates it. Persisted state
-//! lives on the overlay rows the FSM writes, so the UI is correct as soon as
-//! cards re-attach.
+//! Per-card FSM projector: a background task subscribes to `EventBus` and projects hook events onto a per-card 6-state FSM (`Starting / Idle / Working / AwaitingInput / Errored / Done`),
+//! writing a kernel-owned card `status` overlay and a track-scoped `any_card_needs_input` boolean overlay. It never writes `TrackLifecycle` (owned by the Planner Agent).
+//! Upgrades commit immediately, downgrades are held for `DOWNGRADE_QUIET_MS`. In-memory only: the map starts empty on restart and the first hook per card re-populates it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,27 +20,16 @@ use crate::validation::{
     OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION, OVERLAY_STATUS_SCHEMA_VERSION,
 };
 
-/// Actor stamped on every event the FSM produces. Kernel-internal
-/// projector — distinct from [`ActorId::User`] / [`ActorId::Plugin`] /
-/// [`ActorId::AiCodex`]. PR2 of #136 typed this from the legacy
-/// `"kernel"` string.
+/// Actor stamped on every event the FSM produces.
 const fn fsm_actor() -> ActorId {
     ActorId::Kernel
 }
 
-/// Plugin id stamped on the FSM-authored overlays. The kernel uses a
-/// reserved `"kernel"` namespace — plugins can't write under it (their
-/// callback path requires `plugin_id == self.id`), so these rows are
-/// unambiguously kernel-owned.
+/// Plugin id stamped on the FSM-authored overlays; plugins cannot write under the reserved `"kernel"` namespace.
 const KERNEL_PLUGIN_ID: &str = "kernel";
 
-/// How long to hold a downgrade (less-severe → more-calm) before committing
-/// it. Upgrades are emitted immediately. Matches design doc §"Throttle".
+/// How long to hold a downgrade before committing it; upgrades are emitted immediately.
 const DOWNGRADE_QUIET_MS: u64 = 750;
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -118,10 +53,7 @@ impl State {
         }
     }
 
-    /// Severity ordering used both for "is this an upgrade?" and for the
-    /// track-union pick.
-    ///
-    /// `AwaitingInput > Errored > Working > Starting > Idle > Done`
+    /// Severity ordering: `AwaitingInput > Errored > Working > Starting > Idle > Done`.
     fn severity(self) -> u8 {
         match self {
             Self::AwaitingInput => 5,
@@ -134,17 +66,10 @@ impl State {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Codex hook → State projection
-// ---------------------------------------------------------------------------
-
 pub(crate) struct CodexWorkerHook {
-    /// PascalCase event name, used verbatim as the key in
-    /// docker/codex-requirements.toml.
+    /// PascalCase event name, used verbatim as the key in docker/codex-requirements.toml.
     pub event_name: &'static str,
-    /// Worker FSM state this hook projects the card onto. `None` keeps the
-    /// row in the table as event-name vocabulary only (#1722): the hook is
-    /// still registered and recognised, but the FSM leaves the card alone.
+    /// `None` keeps the row as vocabulary only: registered and recognised, but the FSM leaves the card alone.
     pub state: Option<State>,
 }
 
@@ -175,9 +100,7 @@ pub(crate) const CODEX_WORKER_HOOKS: &[CodexWorkerHook] = &[
     },
 ];
 
-/// Project a codex hook `kind` (e.g. `hook.codex.pre_tool_use`) onto the FSM
-/// transition target. Returns `None` for hooks we don't model — the FSM
-/// leaves the card's state alone in that case.
+/// Returns `None` for hooks we don't model — the FSM leaves the card's state alone.
 fn codex_kind_to_state(kind: &str) -> Option<State> {
     let bare = kind.strip_prefix("hook.codex.")?;
     CODEX_WORKER_HOOKS
@@ -186,43 +109,15 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
         .and_then(|h| h.state)
 }
 
-// ---------------------------------------------------------------------------
-// Claude hook → State projection
-// ---------------------------------------------------------------------------
-
-/// Single source of truth for the Claude Code worker hooks the kernel
-/// subscribes to and projects onto worker FSM state.
-///
-/// `build_claude_settings_json` (routes::claude_cards) iterates this to emit
-/// the generated `--settings` file's `hooks` map, and `claude_kind_to_state`
-/// projects each onto a worker `State`. Driving both paths from one table is
-/// the #364 fix: previously the settings list and the projection match arms
-/// were maintained separately and drifted — six hooks the FSM recognized
-/// (`SubagentStart`/`SubagentStop`, `TaskCreated`/`TaskCompleted`,
-/// `PermissionDenied`, `Elicitation`) were never registered, so Claude never
-/// fired them and those transitions were unreachable.
-///
-/// Event names + matcher applicability verified against
-/// https://code.claude.com/docs/en/hooks (2026-05).
+/// Single source of truth for the Claude Code worker hooks: `build_claude_settings_json` emits the settings `hooks` map from it and `claude_kind_to_state` projects from it, so the two cannot drift.
+/// Event names + matcher applicability verified against https://code.claude.com/docs/en/hooks.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ClaudeWorkerHook {
-    /// PascalCase event name, used verbatim as the key in the settings
-    /// `hooks` map (exactly what Claude Code reads).
+    /// PascalCase event name, used verbatim as the key in the settings `hooks` map.
     pub event_name: &'static str,
-    /// Whether we register a `"matcher": "*"` for this hook. Mirrors the
-    /// pre-existing convention: only the tool-name-scoped hooks (the
-    /// PreToolUse family plus the two permission hooks) carry a matcher;
-    /// subagent / task / elicitation / lifecycle hooks omit it. Omission is
-    /// equivalent to match-all, which is what the FSM wants (every
-    /// occurrence) — so this flag only keeps us faithful to how the existing
-    /// settings were written; it never filters anything out.
+    /// Whether we register a `"matcher": "*"` for this hook. Omission is equivalent to match-all, so this only keeps the generated settings faithful to convention; it never filters anything out.
     pub matcher: bool,
-    /// Worker FSM state this hook projects the card onto. `None` keeps the
-    /// row in the table as event-name vocabulary only (#1722): it is still
-    /// registered in the generated settings, still a legal terminal signal
-    /// (`terminal_hooks::parse_terminal_signal`), but the FSM leaves the card
-    /// alone. `Notification` additionally gates on the payload, see
-    /// [`notification_needs_input`].
+    /// `None` keeps the row as vocabulary only (still registered, still a legal terminal signal). `Notification` additionally gates on the payload.
     pub state: Option<State>,
 }
 
@@ -252,11 +147,7 @@ pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
         matcher: true,
         state: Some(State::Working),
     },
-    // #1722 — the four sub-agent / task hooks are vocabulary only: a
-    // `SubagentStop` or `TaskCompleted` after `Stop` used to lift the card
-    // back to `Working` until the next hook, so they no longer move the FSM.
-    // They stay in the table because the settings file registers every row
-    // and `terminal_hooks` names `SubagentStop` as a Planner terminal signal.
+    // The four sub-agent / task hooks are vocabulary only: after `Stop` they would lift the card back to `Working`. They stay registered, and `terminal_hooks` names `SubagentStop` as a Planner terminal signal.
     ClaudeWorkerHook {
         event_name: "SubagentStart",
         matcher: false,
@@ -287,9 +178,7 @@ pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
         matcher: true,
         state: Some(State::AwaitingInput),
     },
-    // Projects only when the payload's `notification_type` is in
-    // `NOTIFICATION_NEEDS_INPUT_TYPES` (`claude_kind_to_state`); every other
-    // subtype — `idle_prompt` above all — is a no-op.
+    // Projects only when the payload's `notification_type` is in `NOTIFICATION_NEEDS_INPUT_TYPES`; every other subtype — `idle_prompt` above all — is a no-op.
     ClaudeWorkerHook {
         event_name: "Notification",
         matcher: false,
@@ -310,10 +199,7 @@ pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
         matcher: false,
         state: Some(State::Errored),
     },
-    // Documented `SessionEnd.reason` values are `clear`, `resume`, `logout`,
-    // `prompt_input_exit`, `bypass_permissions_disabled`, and `other`; none
-    // indicates an error, so a session ending projects to `Done`, never
-    // `Errored`. Verified against https://code.claude.com/docs/en/hooks.
+    // No documented `SessionEnd.reason` indicates an error, so a session ending projects to `Done`, never `Errored`.
     ClaudeWorkerHook {
         event_name: "SessionEnd",
         matcher: false,
@@ -321,14 +207,8 @@ pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
     },
 ];
 
-/// The `Notification.notification_type` values that mean the worker is
-/// blocked on a human (#1722 §4.6, Claude Code hooks reference read
-/// 2026-09-18). Every other documented subtype — `idle_prompt`,
-/// `auth_success`, `elicitation_complete`, `elicitation_response`,
-/// `agent_completed`, `quota_auto_resume_*` — and any undocumented or
-/// missing value is NOT attention: `idle_prompt` in particular arrives
-/// ~60 s after every `Stop`, and projecting it would undo `Stop → Idle`
-/// for every Claude worker.
+/// The `Notification.notification_type` values that mean the worker is blocked on a human. Every other or missing value is NOT attention:
+/// `idle_prompt` in particular arrives ~60 s after every `Stop`, and projecting it would undo `Stop → Idle`.
 const NOTIFICATION_NEEDS_INPUT_TYPES: &[&str] = &[
     "permission_prompt",
     "elicitation_dialog",
@@ -336,10 +216,7 @@ const NOTIFICATION_NEEDS_INPUT_TYPES: &[&str] = &[
     "agent_needs_input",
 ];
 
-/// Whether a `Notification` hook payload names a subtype in
-/// [`NOTIFICATION_NEEDS_INPUT_TYPES`]. The key is the hook body's top-level
-/// `notification_type` — the same field `terminal_hooks::parse_terminal_signal`
-/// reads. Absent or non-string ⇒ `false`.
+/// Reads the hook body's top-level `notification_type` (the same field `terminal_hooks::parse_terminal_signal` reads); absent or non-string ⇒ `false`.
 fn notification_needs_input(payload: &serde_json::Value) -> bool {
     payload
         .get("notification_type")
@@ -347,11 +224,7 @@ fn notification_needs_input(payload: &serde_json::Value) -> bool {
         .is_some_and(|t| NOTIFICATION_NEEDS_INPUT_TYPES.contains(&t))
 }
 
-/// Project a Claude hook `kind` (e.g. `hook.claude.pre_tool_use`) onto the
-/// worker-card FSM. This intentionally stays separate from
-/// `codex_kind_to_state`.
-///
-/// Claude Code hook names verified against https://code.claude.com/docs/en/hooks.
+/// Project a Claude hook `kind` onto the worker-card FSM; intentionally separate from `codex_kind_to_state`.
 fn claude_kind_to_state(kind: &str, payload: &serde_json::Value) -> Option<State> {
     let bare = kind.strip_prefix("hook.claude.")?;
     let hook = CLAUDE_WORKER_HOOKS
@@ -363,19 +236,7 @@ fn claude_kind_to_state(kind: &str, payload: &serde_json::Value) -> Option<State
     hook.state
 }
 
-// ---------------------------------------------------------------------------
-// Background task entry point
-// ---------------------------------------------------------------------------
-
-/// Spawn the FSM task. Subscribes to `bus`, owns its own state map.
-///
-/// Takes the narrow `Arc<dyn RepoEventWrite>` rather than the full
-/// `Arc<dyn Repo>` — the projector only does eventized writes (overlay
-/// upserts via `write_with_event_typed`) plus reads (`card_get`,
-/// `cards_by_track`) inherited from the `RepoRead` supertrait. Raw
-/// sync-domain writes like `overlay_upsert` / `card_update` are
-/// deliberately unreachable here so a future contributor can't quietly
-/// bypass the event-log invariant (PR #41).
+/// Spawn the FSM task. Takes the narrow `Arc<dyn RepoEventWrite>` so raw sync-domain writes are unreachable here and the event-log invariant cannot be quietly bypassed.
 pub fn spawn(repo: Arc<dyn RepoEventWrite>, bus: EventBus, write: WriteContext) {
     let mut rx = bus.subscribe();
     let bus_clone = bus.clone();
@@ -393,18 +254,11 @@ pub fn spawn(repo: Arc<dyn RepoEventWrite>, bus: EventBus, write: WriteContext) 
     });
 }
 
-// ---------------------------------------------------------------------------
-// Inner — shared mutable state
-// ---------------------------------------------------------------------------
-
 struct Inner {
     repo: Arc<dyn RepoEventWrite>,
     bus: EventBus,
     write: WriteContext,
-    /// `card_id → (committed_state, pending_downgrade_deadline)`.
-    ///
-    /// `pending_downgrade_deadline` is `Some(deadline)` only when a downgrade
-    /// is being held. A landing upgrade clears it.
+    /// `card_id → (committed_state, pending_downgrade_deadline)`; a landing upgrade clears the pending deadline.
     map: Mutex<HashMap<CardId, CardEntry>>,
 }
 
@@ -463,25 +317,8 @@ impl Inner {
         }
     }
 
-    /// #1722 §4.6 fix 3 — the narrow stale-session fence.
-    ///
-    /// The hook ingest route resolves the payload's `session_id` against the
-    /// ACTIVE worker sessions and, when it finds one, stamps the envelope with
-    /// a session actor (`AiCodexSession(ws)` / `AiClaudeSession(ws)`). If that
-    /// session is not the card's current one (`cards.session_id`), the hook
-    /// came from a session the card has already moved off — provably stale —
-    /// and must not move the FSM.
-    ///
-    /// Card-level actors (`AiCodex(card)` / `AiClaude(card)`) are the route's
-    /// fallback when the payload has no `session_id` or it resolves to no
-    /// active session, and they are deliberately NOT treated as stale: a
-    /// Claude `/clear` ends the current native session and starts a new one
-    /// under a new session id, after which every hook from the still-running
-    /// worker degrades to the card-level actor. Dropping those would make
-    /// every later permission prompt invisible. They project exactly as they
-    /// did before this fence existed.
-    ///
-    /// A lookup error is not proof of anything, so it also projects.
+    /// The narrow stale-session fence: a hook stamped with a session actor whose session is not the card's current `cards.session_id` is provably stale and must not move the FSM.
+    /// Card-level actors are deliberately NOT stale: after a Claude `/clear` every hook from the still-running worker degrades to the card-level actor, and dropping those would hide every later permission prompt. A lookup error also projects.
     async fn hook_is_provably_stale(&self, card_id: &CardId, actor: &ActorId) -> bool {
         let session_id = match actor {
             ActorId::AiCodexSession(ws) | ActorId::AiClaudeSession(ws) => ws,
@@ -518,18 +355,14 @@ impl Inner {
     /// Decides upgrade-vs-downgrade and (synchronously) commits or schedules.
     async fn observe(self: &Arc<Self>, card_id: CardId, target: State) {
         let mut map = self.map.lock().await;
-        // Distinguish "first observation of this card" from "already-tracked
-        // card landing in its current state again". The first observation
-        // MUST commit (we have no prior overlay row to derive state from),
-        // even if it happens to be `Idle`.
+        // The first observation of a card MUST commit (no prior overlay row), even if it happens to be `Idle`.
         let (cur, first_observation) = match map.get(&card_id) {
             Some(e) => (e.committed, false),
             None => (State::Done, true), // placeholder; severity-floor so anything is an upgrade
         };
 
         if first_observation || target.severity() >= cur.severity() {
-            // Upgrade, same, or first observation: commit immediately. Drop
-            // any pending downgrade.
+            // Upgrade, same, or first observation: commit immediately and drop any pending downgrade.
             let changed = first_observation || target != cur;
             map.insert(
                 card_id.clone(),
@@ -582,14 +415,9 @@ impl Inner {
         });
     }
 
-    /// Commit a card state change: write the card-level overlay and
-    /// recompute the track-scoped `any_card_needs_input` aggregate. Both
-    /// writes emit `Event::OverlaySet` so the WS bridge invalidates the
-    /// right queries. The track-level `TrackLifecycle` column is owned by
-    /// the Planner Agent — this projector still does not touch it.
+    /// Commit a card state change: write the card-level overlay and recompute the track-scoped `any_card_needs_input` aggregate; never touches `TrackLifecycle`.
     async fn commit(&self, card_id: &CardId, state: State) {
-        // Look up the owning track so the audit row carries the full
-        // ancestor chain.
+        // Look up the owning track so the audit row carries the full ancestor chain.
         let card = match self.repo.card_get(card_id.as_ref()).await {
             Ok(Some(c)) => c,
             Ok(None) => {
@@ -602,13 +430,7 @@ impl Inner {
             }
         };
 
-        // 1. Card overlay. Goes through write_with_event so the overlay
-        //    row and the events row land in the same transaction; the bus
-        //    broadcast (with `_id` stamped) is emitted on commit success.
-        // `schemaVersion` is the Tier A persistence contract from
-        // `docs/upgrade-stability.md` — kernel-owned overlay payloads
-        // stamp the version explicitly so an older binary can refuse a
-        // v2 row from a newer one rather than silently mis-interpreting.
+        // Card overlay through write_with_event so the overlay row and the events row land in one transaction; `schemaVersion` is stamped so an older binary can refuse a newer row.
         let card_payload = json!({
             "schemaVersion": OVERLAY_STATUS_SCHEMA_VERSION,
             "state": state.wire_name(),
@@ -620,11 +442,7 @@ impl Inner {
             kind: "status".to_string(),
             payload: card_payload,
         };
-        // Resolve `track → area` so the audit row carries the full
-        // ancestor chain (PR2 of #136). On lookup failure fall back to
-        // `EventScope::System` — we'd rather emit a less-scoped event
-        // than refuse the FSM commit, since the projection itself is
-        // best-effort.
+        // On lookup failure fall back to `EventScope::System`: a less-scoped event beats refusing a best-effort projection.
         let scope = match self.repo.track_get(card.track_id.as_str()).await {
             Ok(Some(w)) => EventScope::Card {
                 card: card_id.clone(),
@@ -652,39 +470,14 @@ impl Inner {
             tracing::warn!(card_id = %card_id, error = %e, "card_fsm: card overlay_upsert failed");
         }
 
-        // 2. Track-scoped `any_card_needs_input` aggregate. Issue #254 —
-        //    OR'd at the UI layer with `TrackLifecycle` for the sidebar
-        //    "Waiting on you" grouping. Does NOT touch the lifecycle
-        //    column, so Planner Agent stays the single source of truth for
-        //    track-level state.
+        // Track-scoped `any_card_needs_input` aggregate, OR'd at the UI layer with `TrackLifecycle`; the lifecycle column itself is untouched.
         self.recompute_track_needs_input(&card.track_id).await;
     }
 
-    /// Aggregate every card under `track_id` into a single boolean
-    /// `any_card_needs_input` overlay on the track. Idempotent: if the
-    /// computed value matches what's already on disk, no write fires
-    /// (and no event is emitted). Issue #254.
-    ///
-    /// Pulls the canonical card set from `repo.cards_by_track` rather
-    /// than scanning the global FSM map. Two reasons:
-    ///   - **No lock-across-IO.** The previous shape held `self.map.lock()`
-    ///     across a `card_get` round-trip per entry, blocking every other
-    ///     FSM handler for the duration. Reading the track's cards out of
-    ///     the repo first, then taking the map lock once for an in-memory
-    ///     lookup, keeps the critical section sub-microsecond.
-    ///   - **Future-proof for phase 2.** Once terminal / plugin cards
-    ///     start populating the FSM map they'll be scoped to *their* track
-    ///     automatically — the aggregator can't accidentally pick up a
-    ///     card from a sibling track that happens to share the map.
-    ///
-    /// Concurrent `commit()` callers can race the read-then-write
-    /// idempotency check below; the final write resolves via
-    /// `overlay_upsert_tx`'s `ON CONFLICT DO UPDATE` (last writer wins,
-    /// no lost writes — see `db/sqlite.rs::overlay_upsert_tx`).
+    /// Aggregate every card under `track_id` into one boolean `any_card_needs_input` overlay; idempotent (no write, no event when unchanged).
+    /// Cards come from `repo.cards_by_track`, and the map lock is taken once for an in-memory lookup — never across IO. Concurrent commits race the idempotency check; `overlay_upsert_tx`'s `ON CONFLICT DO UPDATE` resolves it (last writer wins).
     async fn recompute_track_needs_input(&self, track_id: &TrackId) {
-        // 1. Snapshot the canonical card set for this track. This is the
-        //    source of truth for "what cards belong to this track" — the
-        //    FSM map is just our live state cache for those cards.
+        // 1. The canonical card set for this track; the FSM map is only a live cache for those cards.
         let cards = match self.repo.cards_by_track(track_id.as_str()).await {
             Ok(cs) => cs,
             Err(e) => {
@@ -697,12 +490,7 @@ impl Inner {
             }
         };
 
-        // 2. Lock the map briefly for an in-memory lookup only — no awaits
-        //    inside the critical section. Cards that don't have an entry
-        //    in the FSM map (terminal/plugin cards in phase 1, or codex
-        //    cards we haven't yet observed an event for) contribute
-        //    nothing — they can't be in `AwaitingInput` / `Errored`
-        //    without first showing up in the map.
+        // 2. Lock the map briefly for an in-memory lookup only — no awaits inside the critical section. Cards without an entry contribute nothing.
         let needs_input = {
             let map = self.map.lock().await;
             cards.iter().any(|c| {
@@ -714,10 +502,7 @@ impl Inner {
             })
         };
 
-        // 3. Idempotency: read the existing track overlay and skip the write
-        //    when the boolean is unchanged. Without this the projector
-        //    would churn an overlay event on every per-card transition,
-        //    even when the track-level answer didn't move.
+        // 3. Idempotency: skip the write when the boolean is unchanged, or every per-card transition would churn a track overlay event.
         let existing = match self.repo.overlays_for("track", track_id.as_str()).await {
             Ok(rows) => rows
                 .into_iter()
@@ -737,9 +522,7 @@ impl Inner {
             return; // unchanged — skip the write
         }
 
-        // Resolve area for the event scope. On failure, fall back to
-        // `EventScope::System` — same defensive policy as the per-card
-        // overlay write above.
+        // On failure fall back to `EventScope::System`, as for the per-card overlay write.
         let scope = match self.repo.track_get(track_id.as_str()).await {
             Ok(Some(w)) => EventScope::Track {
                 track: w.id,
@@ -807,7 +590,7 @@ mod tests {
             codex_kind_to_state("hook.codex.post_tool_use"),
             Some(State::Working)
         );
-        // #1722: a finished turn is quiet, not "waiting on you".
+        // A finished turn is quiet, not "waiting on you".
         assert_eq!(codex_kind_to_state("hook.codex.stop"), Some(State::Idle));
         assert_ne!(
             codex_kind_to_state("hook.codex.stop"),
@@ -820,8 +603,7 @@ mod tests {
         assert_eq!(codex_kind_to_state("hook.codex.something_else"), None);
     }
 
-    /// #1722 §6 — `Stop` is `Idle` in BOTH tables; only the permission /
-    /// elicitation hooks (and whitelisted notifications) are attention.
+    /// `Stop` is `Idle` in BOTH tables; only the permission / elicitation hooks (and whitelisted notifications) are attention.
     #[test]
     fn claude_stop_is_idle_not_attention() {
         assert_eq!(
@@ -845,9 +627,6 @@ mod tests {
         assert_eq!(codex_stop.state, Some(State::Idle));
     }
 
-    /// #1722 §6 — positive twin of the `Notification` whitelist: the four
-    /// human-blocking subtypes project `AwaitingInput`; everything else, and
-    /// a missing / non-string subtype, is a no-op.
     #[test]
     fn notification_permission_prompt_is_awaiting_input() {
         for t in [
@@ -994,9 +773,7 @@ mod tests {
         );
     }
 
-    /// Every table row projects exactly its `state` (with a whitelisted
-    /// payload for `Notification`, the one payload-gated row), and exactly
-    /// the four sub-agent / task rows are `None` (#1722 §4.6 fix 1).
+    /// Every table row projects exactly its `state`, and exactly the four sub-agent / task rows are `None`.
     #[test]
     fn every_registered_hook_projects_to_its_table_state() {
         let mut none_rows: Vec<&str> = Vec::new();
@@ -1039,7 +816,7 @@ mod tests {
             assert_eq!(codex_kind_to_state(&kind), h.state);
             assert!(h.state.is_some(), "codex row {} projects", h.event_name);
         }
-        // The two #364 attention hooks are still projected.
+        // The two attention hooks are still projected.
         for name in ["PermissionDenied", "Elicitation"] {
             let kind = format!("hook.claude.{}", crate::routes::codex::to_snake_case(name));
             assert_eq!(
@@ -1069,12 +846,7 @@ mod tests {
         assert_eq!(State::Done.wire_name(), "Done");
     }
 
-    // ----- end-to-end behavior tests against an in-memory repo --------------
-
-    // Tests seed fixtures via raw sync-domain writes (`area_create`,
-    // `track_create`, `card_create`), so they need the full `Repo`. Production
-    // `spawn` takes the narrowed `Arc<dyn RepoEventWrite>` — the call below
-    // relies on stable trait-object coercion at the function-argument site.
+    // Tests seed via raw sync-domain writes, so they need the full `Repo`; `spawn` takes the narrowed `Arc<dyn RepoEventWrite>` via trait-object coercion.
     use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
     use crate::ids::TrackId;
@@ -1120,14 +892,7 @@ mod tests {
         (repo, bus, track.id, card.id)
     }
 
-    // Overlay-poll ceiling for the FSM tests. 25ms * 600 = ~15s, matching the
-    // repo's other wait-for helpers (e.g. planner_harness_track_vcs). The old 80
-    // (2s) ceiling was below the real settle floor for DOWNGRADE assertions —
-    // a downgrade is held `DOWNGRADE_QUIET_MS` (750ms) on a detached timer
-    // before its commit even starts, so under CI scheduler starvation the 2s
-    // budget could be exhausted before the projection arrived (issue #694).
-    // The poll returns the instant the value matches, so a generous ceiling
-    // only changes how long a genuinely-stuck test waits before failing.
+    // Overlay-poll ceiling, ~15s: a downgrade is held `DOWNGRADE_QUIET_MS` on a detached timer before its commit even starts, so a short budget flakes under CI starvation. The poll returns as soon as the value matches.
     const OVERLAY_POLL_ATTEMPTS: usize = 600;
 
     async fn wait_for_track_needs_input(repo: &Arc<dyn Repo>, track_id: &TrackId, want: bool) {
@@ -1169,13 +934,7 @@ mod tests {
     #[tokio::test]
     async fn upgrade_commits_immediately() {
         let (repo, bus, track_id, card_id) = setup().await;
-        // A sentinel card driven to Working AFTER the card under test, used as
-        // an order-based barrier. By the FSM's strict in-order processing
-        // (single subscriber, each `handle().await` fully awaited before the
-        // next `recv` — see `spawn`), the sentinel cannot be handled until the
-        // card under test has been handled in FULL — card `status` AND
-        // `recompute_track_needs_input`. Working leaves the aggregate false, so
-        // the sentinel writes no track overlay of its own.
+        // A sentinel card driven to Working AFTER the card under test, as an order-based barrier: the FSM handles events strictly in order, so the sentinel cannot be handled until the card under test is handled in full.
         let card_b = repo
             .card_create(NewCard {
                 track_id: track_id.clone(),
@@ -1211,33 +970,8 @@ mod tests {
             );
         }
 
-        // Read overlay events IN ORDER until the sentinel's status. This checks
-        // three things deterministically (no wall-clock budget, so it is
-        // immune to CPU starvation — issue #698):
-        //   1. IMMEDIACY (the test's namesake): a first-observation `Working`
-        //      upgrade commits inline, so card A's `status=Working` event must
-        //      arrive BEFORE the sentinel's. If the upgrade were wrongly
-        //      scheduled behind the 750ms downgrade timer, A's status would be
-        //      emitted by a detached task AFTER the sentinel — `seen_a_working`
-        //      would be false when B's status arrives.
-        //      NOTE on scope: this order-based check catches an *asymmetric*
-        //      deferral (the realistic regression — the card under test routed
-        //      to the timer while a sibling commits inline). It would NOT catch
-        //      a regression that defers EVERY upgrade uniformly (A and B both
-        //      delayed preserve their relative order). The only deterministic
-        //      way to catch that is a paused virtual clock asserting elapsed <
-        //      DOWNGRADE_QUIET_MS — but `tokio::time::pause` is incompatible
-        //      with this test's sqlx in-memory pool (its connect/acquire path
-        //      uses real timers and panics under a paused clock), and a
-        //      wall-clock budget would reintroduce the #698 starvation flake.
-        //      We accept the asymmetric-only coverage rather than reintroduce
-        //      flakiness for an unlikely uniform regression.
-        //   2. #248 guard: the per-card commit must NOT write a track-level
-        //      `kind == "status"` overlay (the deleted dual-source-of-truth
-        //      projection; the narrower `any_card_needs_input` from #254 is
-        //      fine). Because A's recompute runs before B's status (in-order),
-        //      a reintroduced track-status write is observed here, not missed.
-        //   3. The card under test reaches `Working` (not some other state).
+        // Read overlay events IN ORDER until the sentinel's status (no wall-clock budget): card A's `status=Working` must arrive BEFORE the sentinel's (an inline commit, not the downgrade timer),
+        // and no track-level `kind == "status"` overlay may appear. Only an asymmetric deferral is caught; a uniform one preserves order (a paused clock is incompatible with the sqlx pool).
         let timed = tokio::time::timeout(StdDuration::from_secs(15), async {
             let mut seen_a_working = false;
             loop {
@@ -1321,15 +1055,13 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        // BUG-FIX BASELINE: permission_request → AwaitingInput, not Idle.
+        // permission_request → AwaitingInput, not Idle.
         wait_for_card_status(&repo, &card_id, "AwaitingInput").await;
     }
 
     #[tokio::test]
     async fn post_tool_use_stays_working() {
-        // post_tool_use now maps to Working, not Idle: between tool calls
-        // the agent is still actively reasoning, so the card should not
-        // briefly flicker to Idle. Only `stop` truly ends the turn.
+        // post_tool_use maps to Working: between tool calls the agent is still reasoning, so the card must not flicker to Idle.
         let (repo, bus, _track_id, card_id) = setup().await;
         spawn(
             repo.clone(),
@@ -1361,7 +1093,7 @@ mod tests {
             },
         );
 
-        // Past the old debounce window — still Working, never flickers.
+        // Past the debounce window — still Working, never flickers.
         tokio::time::sleep(StdDuration::from_millis(900)).await;
         wait_for_card_status(&repo, &card_id, "Working").await;
 
@@ -1378,8 +1110,6 @@ mod tests {
         );
         wait_for_card_status(&repo, &card_id, "Idle").await;
     }
-
-    // ----- #254 track-scoped `any_card_needs_input` aggregator ----------------
 
     #[tokio::test]
     async fn needs_input_overlay_fires_on_awaiting_input() {
@@ -1442,9 +1172,7 @@ mod tests {
         // Sanity: overlay is true.
         wait_for_track_needs_input(&repo, &track_id, true).await;
 
-        // pre_tool_use is an upgrade from AwaitingInput? No — Working
-        // has lower severity than AwaitingInput. The 750ms downgrade
-        // window holds it.
+        // Working has lower severity than AwaitingInput, so the 750ms downgrade window holds it.
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1460,17 +1188,8 @@ mod tests {
     #[tokio::test]
     async fn needs_input_overlay_is_idempotent() {
         let (repo, bus, track_id, card_id) = setup().await;
-        // Two more codex cards under the same track, used as deterministic
-        // sentinels (see below). Created BEFORE the FSM spawns so the track's
-        // canonical card set already contains them.
-        //   * card B exercises the recompute idempotency path (its
-        //     AwaitingInput leaves the already-true track aggregate unchanged,
-        //     so a correct `recompute_track_needs_input` writes nothing).
-        //   * card C is the terminal marker: by in-order processing, C's
-        //     card-`status` overlay cannot appear until B has been handled in
-        //     full — INCLUDING B's recompute — so the count is finalized only
-        //     after the recompute-idempotency path has had its chance to (and
-        //     must not) emit a duplicate track write.
+        // Two more codex cards as deterministic sentinels, created BEFORE the FSM spawns: B exercises the recompute idempotency path (true → true writes nothing),
+        // and C is the terminal marker — by in-order processing its status overlay cannot appear until B has been handled in full, recompute included.
         let new_codex_card = || NewCard {
             track_id: track_id.clone(),
             title: None,
@@ -1480,8 +1199,7 @@ mod tests {
         };
         let card_b = repo.card_create(new_codex_card()).await.unwrap();
         let card_c = repo.card_create(new_codex_card()).await.unwrap();
-        // Subscribe BEFORE spawn so we capture every overlay event from
-        // the moment the FSM is live.
+        // Subscribe BEFORE spawn so every overlay event is captured.
         let mut rx = bus.subscribe();
         spawn(
             repo.clone(),
@@ -1493,8 +1211,7 @@ mod tests {
         );
         tokio::task::yield_now().await;
 
-        // First emit → card A goes AwaitingInput, track overlay flips to true
-        // (false → true is a VALUE CHANGE → exactly ONE track write).
+        // First emit → card A AwaitingInput, track overlay flips false → true: exactly ONE track write.
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1505,10 +1222,7 @@ mod tests {
             },
         );
 
-        // Second emit → card A STILL AwaitingInput (same severity, no actual
-        // transition), track aggregate is unchanged (true → true). The
-        // idempotency guard in `recompute_track_needs_input` must suppress the
-        // track write (no value change → no OverlaySet).
+        // Second emit → same state, track aggregate unchanged (true → true): the idempotency guard must suppress the track write.
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1519,21 +1233,8 @@ mod tests {
             },
         );
 
-        // SENTINEL emits → drive card B then card C to AwaitingInput. Because
-        // the FSM processes events strictly in arrival order (single
-        // subscriber, each `handle().await` fully awaited before the next
-        // `recv` — see `spawn`), neither can be handled until card A's two
-        // emits are fully processed, and card C cannot be handled until card B
-        // is fully processed. A first-observation upgrade ALWAYS writes a
-        // card-level `status` overlay; the track aggregate is already true (from
-        // card A), so B's and C's commits each leave it unchanged.
-        //
-        // We finalize the count on card C's status — NOT B's — on purpose:
-        // `commit()` writes the card `status` overlay BEFORE calling
-        // `recompute_track_needs_input`, so B's recompute (the true→true
-        // idempotency path this test guards) runs AFTER B's status event.
-        // Breaking on C's status guarantees B's recompute has already run and
-        // any duplicate track write it might (wrongly) emit is counted first.
+        // Sentinels: drive B then C to AwaitingInput. Neither is handled until A's two emits are fully processed, and C not until B is.
+        // The count is finalized on C's status, not B's: `commit()` writes the card status BEFORE the recompute, so B's recompute has run only once C's status is seen.
         for sentinel in [&card_b, &card_c] {
             bus.emit(
                 ActorId::AiCodex(sentinel.id.clone()),
@@ -1546,25 +1247,13 @@ mod tests {
             );
         }
 
-        // Block-recv until we observe card C's status overlay, counting
-        // track-scoped `any_card_needs_input` OverlaySet events along the way.
-        // By in-order processing, every event card A's two emits AND card B's
-        // full handling (status + recompute) produced is already received
-        // before C's status arrives, so the count is complete and free of
-        // phantoms. There must be EXACTLY ONE (card A's first-emit false→true
-        // flip; the second emit and B's recompute are both idempotent no-ops).
-        //
-        // Bounded by an outer timeout so a broken assumption fails as a clean
-        // panic instead of hanging the test forever (there is no per-test
-        // timeout). 15s matches the repo's other wait-for bounds.
+        // Count track-scoped `any_card_needs_input` writes until card C's status overlay; there must be EXACTLY ONE. Bounded by an outer timeout so a broken assumption panics instead of hanging.
         let track_overlay_writes = tokio::time::timeout(StdDuration::from_secs(15), async {
             let mut writes = 0usize;
             loop {
                 let env = match rx.recv().await {
                     Ok(env) => env,
-                    // A lagged broadcast receiver dropped frames; the count
-                    // would be unreliable, so fail loudly rather than assert a
-                    // wrong number.
+                    // A lagged receiver dropped frames, so the count would be unreliable; fail loudly.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         panic!("overlay event receiver lagged ({n} frames) before sentinel");
                     }
@@ -1580,11 +1269,7 @@ mod tests {
                     {
                         writes += 1;
                     }
-                    // Terminal marker: card C's status overlay. By in-order
-                    // processing this only appears once card A's two emits AND
-                    // card B (status + recompute) are fully handled, so the
-                    // count above already includes any duplicate write B's
-                    // recompute would (wrongly) emit. Stop counting here.
+                    // Terminal marker: card C's status overlay; the count already includes anything B's recompute emitted.
                     Event::OverlaySet(o)
                         if o.kind == "status"
                             && o.entity_kind == "card"
@@ -1609,9 +1294,7 @@ mod tests {
 
     #[tokio::test]
     async fn needs_input_overlay_ors_multiple_cards() {
-        // Two codex cards under the same track. Driving ONE to
-        // AwaitingInput should light up the track overlay even while the
-        // other stays Working; flipping both to Working should clear it.
+        // Driving ONE of two cards to AwaitingInput lights the track overlay while the other stays Working; both Working clears it.
         let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let bus = EventBus::new();
         let area = repo
@@ -1700,8 +1383,6 @@ mod tests {
         wait_for_track_needs_input(&repo, &track.id, false).await;
     }
 
-    // ----- #1722 §4.6 — Stop → Idle, Notification whitelist, stale fence ------
-
     fn spawn_fsm(repo: &Arc<dyn Repo>, bus: &EventBus) {
         spawn(
             repo.clone(),
@@ -1722,10 +1403,7 @@ mod tests {
         }
     }
 
-    /// Read card-`status` overlay states for `card_id` off `rx`, in order,
-    /// until `until` is observed (bounded by a 15 s outer timeout, matching
-    /// the repo's other wait-for ceilings). Returns every state seen for the
-    /// card, `until` included.
+    /// Card-`status` overlay states for `card_id` off `rx`, in order, until `until` is observed (15 s outer timeout); returns every state seen, `until` included.
     async fn card_status_sequence_until(
         rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
         card_id: &CardId,
@@ -1760,13 +1438,7 @@ mod tests {
         .unwrap_or_else(|_| panic!("timed out waiting for card status `{until}`"))
     }
 
-    /// §6 S1a row 1: `user_prompt_submit → stop → notification{idle_prompt}
-    /// → subagent_stop` ends `Idle` once the 750 ms downgrade window has
-    /// elapsed, and the card is never lifted back to `Working` nor to
-    /// `AwaitingInput` along the way. Reddened by `SubagentStop` projecting
-    /// `Working` again (the same-state re-observation clears the pending
-    /// `Idle` downgrade, F2.9) or by the `Notification` whitelist going
-    /// away (`idle_prompt` would commit `AwaitingInput`).
+    /// `user_prompt_submit → stop → notification{idle_prompt} → subagent_stop` ends `Idle` and never lifts the card back to `Working` or `AwaitingInput` along the way.
     #[tokio::test]
     async fn stop_then_idle_prompt_then_subagent_stop_ends_idle() {
         let (repo, bus, _track_id, card_id) = setup().await;
@@ -1790,15 +1462,11 @@ mod tests {
         );
         bus.emit(actor, claude_hook(&card_id, "subagent_stop", Value::Null));
 
-        // `Idle` is a downgrade from `Working`, so it can only land after
-        // DOWNGRADE_QUIET_MS; the sequence read is what proves nothing else
-        // was committed in between.
+        // `Idle` is a downgrade from `Working`, so it lands only after DOWNGRADE_QUIET_MS; the sequence read proves nothing else was committed in between.
         let seen = card_status_sequence_until(&mut rx, &card_id, "Idle").await;
         assert_eq!(seen, ["Working", "Idle"], "card status sequence");
         wait_for_card_status(&repo, &card_id, "Idle").await;
     }
-
-    // ----- fence fixtures: real `worker_sessions` rows + `cards.session_id` --
 
     fn claude_session(
         id: &str,
@@ -1839,8 +1507,7 @@ mod tests {
         }
     }
 
-    /// Insert `session` and, when `link` is set, point `cards.session_id`
-    /// at it (the production `card_session_link_tx` shape, F2.6).
+    /// Insert `session` and, when `link` is set, point `cards.session_id` at it.
     async fn insert_session(
         repo: &SqlxRepo,
         session: calm_types::worker::WorkerSession,
@@ -1935,11 +1602,7 @@ mod tests {
         }
     }
 
-    /// §6 S1a row 3: a hook whose envelope actor names an active session
-    /// that is NOT the card's current one (`s1 ≠ cards.session_id = s2`) is
-    /// provably stale and produces no overlay; so is one from the card's
-    /// exited predecessor. The card-level `stop` sentinel emitted afterwards
-    /// must therefore be the FIRST status overlay the card ever gets.
+    /// A hook whose actor names an active session that is NOT the card's current one, or the card's exited predecessor, produces no overlay; the card-level `stop` sentinel must be the FIRST status overlay.
     #[tokio::test]
     async fn hook_from_other_active_session_is_ignored() {
         use calm_types::worker::WorkerSessionId;
@@ -1970,10 +1633,7 @@ mod tests {
         );
     }
 
-    /// Twin of the fence: the card-level fallback actor (`AiClaude(card)`,
-    /// what the ingest route stamps when the payload has no resolvable
-    /// `session_id`) still projects — dropping it would hide permission
-    /// prompts after a `/clear` rotates the native session id.
+    /// The card-level fallback actor still projects — dropping it would hide permission prompts after a `/clear` rotates the native session id.
     #[tokio::test]
     async fn card_level_hook_still_projects() {
         let f = fence_fixture().await;
@@ -1987,8 +1647,7 @@ mod tests {
         wait_for_card_status(&f.repo, &f.card, "AwaitingInput").await;
     }
 
-    /// The card's CURRENT session (`s2 == cards.session_id`) passes the
-    /// fence: the positive shape of `hook_from_other_active_session_is_ignored`.
+    /// The card's CURRENT session passes the fence.
     #[tokio::test]
     async fn hook_from_current_session_projects() {
         use calm_types::worker::WorkerSessionId;

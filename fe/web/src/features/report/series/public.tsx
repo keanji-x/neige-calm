@@ -1,26 +1,5 @@
-// The `chart.series` block (#1628 S4).
-//
-// A series block names its data — a plugin tool and up to eight asset ids —
-// and the kernel resolves the points on the read path. This block draws what
-// the kernel resolved: `line`, `normalized` (every series rebased to 100 at
-// its first point), `bar` and `candles` (the same drawing `chart.candles`
-// uses, `../candles/figure.tsx`). It fetches nothing itself. The data comes
-// through `resolve`, injected by `app/router` the way a live table's overlay
-// resolver is: `features/**` must not import `app/**`, and the query — its
-// key, its poll, its 409-is-a-wait rule — is the app's.
-//
-// SVG, for the reasons the candles block gives: tokens work (`currentColor`,
-// `var(--…)`), no dependency and no lazy chunk, and the lines are markup. Up
-// to eight series are told apart by hue, and the eight hues are the app's
-// own identity ring (`--area-1` … `--area-8`): the only eight-step,
-// theme-aware, pairwise-distinct palette the tokens offer, and "which line
-// is which" is an identity question — the job that ring does for areas — not
-// a state one. No literal colour appears here or in the stylesheet.
-//
-// What the figure says about itself — `range`, `period`, `as_of`, the
-// currencies, whether a frozen block is pinned — is the kernel's own account
-// of the row, printed so a number in the prose can be checked against the
-// data it was written from.
+// The `chart.series` block: draws what the kernel resolved (line, normalized, bar, candles).
+// It fetches nothing itself; the data comes through `resolve`, injected by `app/router`.
 
 import type { ChartSeriesPayload } from '../../../../../core/domain/report.ts';
 import {
@@ -49,11 +28,7 @@ export function ReportSeriesBlock({ payload, blockId, rev, resolve }: {
   payload: ChartSeriesPayload;
   blockId: string;
   rev: number;
-  /**
-   * The app's query for this block, read by `(blockId, rev)`. Absent ⇒ the
-   * surface does not carry resolved data (Today, the file viewer) and the
-   * block says so instead of drawing.
-   */
+  /** The app's query for this block, read by `(blockId, rev)`. Absent ⇒ the surface carries no resolved data and the block says so. */
   resolve?: (blockId: string, rev: number) => SeriesResolution | undefined;
 }) {
   const caption = payload.caption;
@@ -83,11 +58,7 @@ export function ReportSeriesBlock({ payload, blockId, rev, resolve }: {
   }
 }
 
-/**
- * The same shape a live table uses while it waits (`LiveTableNotice`): the
- * caption plus one line of prose, never nothing. A chart that silently
- * disappears is indistinguishable from a report that never had one.
- */
+/** The caption plus one line of prose, never nothing: a chart that silently disappears looks like a report that never had one. */
 function SeriesNotice({ caption, text }: { caption?: string | null; text: string }) {
   return (
     <div className={styles.wrap}>
@@ -109,8 +80,7 @@ function SeriesFigure({ payload, resolved }: { payload: ChartSeriesPayload; reso
         <span className={styles.meta}>{resolved.range} {resolved.period} {resolved.view}</span>
         <span className={styles.meta}>{resolved.field}</span>
         {currencies.length > 0 && <span className={styles.meta}>{currencies.join(' / ')}</span>}
-        {/* Live: `as_of` is the kernel's (yesterday UTC), printed on its own.
-            Frozen: the status line carries it, so it is not printed twice. */}
+        {/* Frozen: the status line carries `as_of`, so it is not printed twice. */}
         {!frozen && <span className={styles.meta}>as of {resolved.as_of}</span>}
         {frozen
           ? (resolved.pinned === true
@@ -132,8 +102,6 @@ function SeriesFigure({ payload, resolved }: { payload: ChartSeriesPayload; reso
     </figure>
   );
 }
-
-/* ── Lines ───────────────────────────────────────────────────────────── */
 
 type DrawnLine = Readonly<{
   index: number;
@@ -238,8 +206,6 @@ function LinesFigure({ series, normalized, overlays }: {
   );
 }
 
-/* ── Bars ────────────────────────────────────────────────────────────── */
-
 function BarsFigure({ series }: { series: readonly SeriesEntry[] }) {
   const rows = classify(series, false);
   const lines = rows.flatMap((row) => (row.kind === 'drawn' ? [row.line] : []));
@@ -297,8 +263,6 @@ function BarsFigure({ series }: { series: readonly SeriesEntry[] }) {
   );
 }
 
-/* ── Candles ─────────────────────────────────────────────────────────── */
-
 /** `[ts, open, high, low, close, volume?]` rows, or `null` if any row is shorter. */
 function toCandleRows(points: readonly SeriesPoint[]): CandleRow[] | null {
   const rows: CandleRow[] = [];
@@ -333,8 +297,6 @@ function CandlesView({ series, overlays }: {
     </>
   );
 }
-
-/* ── Legend ──────────────────────────────────────────────────────────── */
 
 function signed(value: number | null): string {
   if (value === null) return 'n/a';

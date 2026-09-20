@@ -29,15 +29,7 @@ function sourceFilesUnder(root: string): string[] {
 }
 
 // Independent contract tables: never derive these shapes from checker implementation.
-/*
- * Each `directory-picker-*` case runs the sweep against its own registry, so the
- * pair isolates one variable: within a case the registry is fixed and only the
- * fixture source differs. The three evasion cases carry an empty registry —
- * their positive side renders no picker at all, so the negative's single
- * problem is "renders a picker but is not registered", which is exactly the
- * fail-open each one used to walk through. The stale case inverts it: the
- * registry names a host, and the negative stops rendering.
- */
+/* Each case runs the sweep against its own registry, so only the fixture source varies within a case. */
 const directoryPickerRegistries: Record<string, Readonly<Record<string, string>>> = {
   'directory-picker-alias': {},
   'directory-picker-create-element': {},
@@ -46,13 +38,7 @@ const directoryPickerRegistries: Record<string, Readonly<Record<string, string>>
   'directory-picker-default-export': {},
   'directory-picker-module-moved': {},
 };
-/*
- * Which module paths each case holds up the no-default-export premise for. The
- * real roster (`PICKER_MODULES`) does not exist inside a fixture tree, so every
- * case but the one that owns that premise passes an empty list; naming it here
- * rather than defaulting keeps a fixture from silently exercising the wrong
- * half of the checker.
- */
+/* Named per case rather than defaulted, so a fixture cannot silently exercise the wrong half of the checker. */
 const directoryPickerModules: Record<string, readonly string[]> = {
   'directory-picker-alias': [],
   'directory-picker-create-element': [],
@@ -280,14 +266,8 @@ describe('architecture fixtures', () => {
     ['directory-picker-module-moved', 'and no file is there'],
   ]);
 
-  // Timeout rationale (measured, not guessed): every case that routes through `cruise` into an
-  // ESLint branch constructs a fresh `new ESLint(...)` and re-resolves the whole flat config, so the
-  // first such case in a run absorbs that cold start. Measured on an idle machine:
-  // `markdown-micromark-attributes-import` (the first micromark case) 2090ms, while its already-warm
-  // siblings `markdown-micromark-import` 400ms and `markdown-micromark-template-import` 284ms.
-  // 2090ms is 42% of vitest's 5000ms default, which leaves no room once CI runs this file under
-  // parallel load. 30000ms gives ~14x headroom over the measured worst case. This only widens the
-  // clock; no assertion below is relaxed and no retry is configured.
+  // The first ESLint-backed case in a run absorbs a ~2 s cold start (fresh `new ESLint`, full flat-config
+  // resolve); 30 s widens only the clock, no assertion is relaxed.
   const fixtureCaseTimeoutMs = 30_000;
   for (const caseName of readdirSync(fixtures)) {
     if (caseName === '_syntax-shapes') continue;

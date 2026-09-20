@@ -1,33 +1,6 @@
-//! `track_recipes` storage (#1292).
-//!
-//! A recipe is a saved report a user can instantiate into new tracks. The
-//! table is deliberately plain: an id, the title, the body, and a
-//! `revision` that is the optimistic-lock anchor.
-//!
-//! # `revision`, not `updated_at`
-//!
-//! Every write validates and bumps `revision` **in the same statement**
-//! (`UPDATE ... WHERE id = ?1 AND revision = ?2`), so a stale writer's
-//! `UPDATE` matches zero rows and the caller learns it lost. Doing this with
-//! `updated_at` would be wrong twice over: two writes inside one millisecond
-//! are indistinguishable, and a clock that steps backwards makes a stale
-//! write look current.
-//!
-//! # Normalization is not here
-//!
-//! The privilege-field normalization a recipe body needs lives at the write
-//! boundary in `calm-server` (`routes::track_recipes`), next to the body
-//! parsing it depends on. This module stores what it is handed.
-//!
-//! # Only the writers are here
-//!
-//! `get` and `list` are plain SELECTs on the pool in
-//! `out_of_domain.rs`, with no transaction: #930 requires a writing
-//! transaction to be `BEGIN IMMEDIATE`, and wrapping a single read in one
-//! would take the write lock to read. The one `_tx` reader that remains
-//! ([`track_recipe_get_tx`]) exists because [`track_recipe_update_tx`] needs
-//! to read *inside* its own transaction — to tell a stale revision from a
-//! missing row, and to read the row back.
+//! `track_recipes` storage. `revision` is the optimistic-lock anchor: every
+//! write validates and bumps it in the same statement, so a stale writer
+//! matches zero rows.
 
 use sqlx::Sqlite;
 use sqlx::Transaction;
@@ -63,13 +36,9 @@ pub async fn track_recipe_create_tx(
     })
 }
 
-/// Replace a recipe's content iff `if_revision` still matches.
-///
-/// Returns `Conflict` when the row exists at a different revision and
-/// `NotFound` when it does not exist at all. The two are distinguished by a
-/// follow-up read rather than by the `UPDATE`'s row count alone, because
-/// "zero rows changed" cannot tell them apart and the caller must answer
-/// 404 and 409 differently.
+/// Replace a recipe's content iff `if_revision` still matches. `Conflict` for
+/// a stale revision, `NotFound` for a missing row — told apart by a follow-up
+/// read, since a zero row count cannot distinguish them.
 pub async fn track_recipe_update_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -100,9 +69,8 @@ pub async fn track_recipe_update_tx(
             None => CalmError::NotFound(format!("track recipe {id}")),
         });
     }
-    // Read the row back rather than reconstructing it: `created_at` is not
-    // in scope here, and a hand-built return value is exactly where a future
-    // column silently gets a wrong default.
+    // Read the row back rather than reconstructing it: a hand-built return value
+    // is where a future column silently gets a wrong default.
     track_recipe_get_tx(tx, id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track recipe {id}")))

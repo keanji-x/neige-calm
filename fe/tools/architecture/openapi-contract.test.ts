@@ -5,24 +5,12 @@ type JsonObject = Record<string, unknown>;
 
 const METHODS = new Set(['delete', 'get', 'head', 'options', 'patch', 'post', 'put', 'trace']);
 const PATH_ITEM_FIELDS = new Set([...METHODS, 'summary', 'description', 'servers', 'parameters']);
-/*
- * Response schemas that have no `wire.ts` counterpart, and cannot have one.
- *
- * `npm run gen:api` exports ts-rs bindings from **calm-types only**
- * (`cargo test -p calm-types export_bindings_`), so a DTO declared in
- * calm-server's own route module is structurally out of reach of that
- * generator — every entry below is one of those, and the frontend types it
- * with a hand-written zod schema in `core/domain/**` instead. Adding a name
- * here is only legitimate for that reason; a type that calm-types could export
- * belongs in the generator, not in this list.
- */
+/* Response schemas with no `wire.ts` counterpart: `gen:api` exports from calm-types only, so a DTO
+ * declared in a calm-server route module is typed by a hand-written zod schema in `core/domain/**` instead. */
 const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ErrorBody', 'GetPlannerRunResponse', 'GitDiffResponse', 'GitStatusResponse',
   'InterruptPlannerCardResponse', 'ListdirResponse', 'ModelsResponse', 'PluginDetail', 'PluginListItem',
   'PlannerInputMutationResponse', 'PlannerInputStaleBody',
-  // calm-server/routes/planner_input.rs (#1625 P3); core/domain/conversation.ts
-  // owns `plannerSteerSchema`, and the two zod decoders behind
-  // `plannerQueueWriteFailure` read the 409 union's members by `code`.
   'PlannerSteerResponse', 'PlannerSteerConflictBody',
   'RatifyCardResponse', 'ReadFileResponse', 'ReportBlockWriteResponse',
   'ResetPlannerCardResponse', 'SendPlannerInputResponse', 'SetPlannerModelResponse',
@@ -30,16 +18,10 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadReportReset', 'TodayLaunchpadResolved',
   'TodaySummaryStarted',
   'VersionInfo',
-  // calm-server/routes/isolated_tasks.rs DTOs; core/domain/independent-task.ts
-  // owns their strict Zod decoders. calm-types cannot export these (#1501).
   'StartIsolatedTaskResponse', 'TaskAttemptReportResponse',
-  // calm-server/routes/task_artifacts.rs is outside calm-types' wire generator;
-  // core/domain/task-artifact-file.ts owns the strict response decoder (#1501).
   'TaskArtifactFileResponse',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
   'TrackReportReadResponse', 'TrackTemplate',
-  // calm-server/routes/track_report_series.rs DTOs (#1628 S4);
-  // core/domain/report-series.ts owns the zod decoders for both.
   'ReportSeriesResolved', 'ReportSeriesRevConflict',
 ]);
 

@@ -1,30 +1,6 @@
-//! `/api/tracks/{track_id}/conversations` — a track's assistant conversations and
-//! its "mint on first message" creation endpoint (#1189 slice 3).
-//!
-//! A conversation here is a headless codex card carrying the persisted
-//! `harness_profile: "assistant"` marker and `CardRole::Assistant`, parked on
-//! an ordinary, user-visible track. Pressing `+` in the UI creates nothing at
-//! all; the card, its session and its codex thread are all minted by the first
-//! message, which is what this module's POST does in one operation.
-//!
-//! The list predicate is intentionally exact: a Track also carries a planner card,
-//! a report card and dispatched worker cards, none of which are conversations.
-//!
-//! # One track is treated differently, and it is named (#1343)
-//!
-//! A conversation created on **Today's launchpad track** is opened with the
-//! day's activity window ahead of the user's first message; see
-//! [`activity_window::launchpad_opening_briefing`]. Every other track gets
-//! exactly the behaviour
-//! it always had. That is the only track-dependent branch in this module, and
-//! it exists because the launchpad is where the user asks "what happened
-//! today?" — the projection that answers it is server-side by design
-//! (`activity_window`, D4), so nothing but the server can put it in front of
-//! the agent. Since #1314 this module only *rules* on it — see
-//! [`OpeningBriefing`] — and the rendering happens inside the mint
-//! transaction.
-//!
-//! [`activity_window::launchpad_opening_briefing`]: crate::activity_window::launchpad_opening_briefing
+//! `/api/tracks/{track_id}/conversations` — a track's assistant conversations and its
+//! "mint on first message" creation endpoint. A conversation created on Today's
+//! launchpad track is opened with the day's activity window ahead of the first message.
 
 use axum::{
     Json, Router,
@@ -67,9 +43,8 @@ pub fn router() -> Router<AppState> {
 /// Body of `POST /api/tracks/{track_id}/conversations`: the first message.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct NewTrackConversationBody {
-    /// The first message. Validated exactly like `POST /api/cards/{id}/planner/input`
-    /// (non-blank after trim, at most 32768 chars) and validated *before*
-    /// anything is minted, so a rejected message leaves no card behind.
+    /// The first message. Validated exactly like `POST /api/cards/{id}/planner/input`, and
+    /// before anything is minted, so a rejected message leaves no card behind.
     pub text: String,
     /// Explicit choice for the first turn; omitted/null follows the installation default.
     #[serde(default)]
@@ -120,28 +95,10 @@ pub(crate) async fn list_track_conversations(
         (status = 503, description = "Shared codex app-server not running — retry shortly", body = ErrorBody),
     ),
 )]
-/// Mint a track assistant conversation and deliver its first message.
-///
-/// #1314 — the message is folded INTO the mint operation. `first_message`
-/// travels in the `planner-harness-start` payload and
-/// `PlannerHarnessStartAdapter::prepare_tx` seeds the
-/// `Observation::UserMessage` and writes `harness.user_message.enqueued` in the
-/// same transaction that mints the card and its session. There is no
-/// post-operation send here, and consequently no first-message claim: the two
-/// #1098 gaps this handler used to document — a claim that asked "has this CARD
-/// ever had a user message enqueued?" instead of "has THIS request's message
-/// landed?", and evidence written outside the transaction that carried the
-/// message — are gone with the code that had them.
-///
-/// **Nothing on this path may read that evidence row back.** A failed attempt
-/// is compensated by deleting the card, but its `harness.user_message.enqueued`
-/// row survives (`events` is append-only and compensation only marks the
-/// runtime failed), while the retry re-derives the very same card id from the
-/// same `Idempotency-Key`. So the row means "a delivery was attempted", never
-/// "a delivery happened", and treating it as a delivered-marker would turn
-/// every retry-after-failure into a silently dropped message.
-/// `a_retry_after_a_failed_attempt_still_delivers_the_message` pins that, and a
-/// persisted marker that could answer the question honestly is #1384.
+/// Mint a track assistant conversation and deliver its first message, folded into one
+/// `planner-harness-start` operation. Nothing on this path may read the
+/// `harness.user_message.enqueued` row back: a failed attempt's row survives compensation
+/// while the retry re-derives the same card id, so the row means "attempted", never "delivered".
 pub(crate) async fn create_track_conversation(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
@@ -162,12 +119,8 @@ pub(crate) async fn create_track_conversation(
     .await
 }
 
-/// `create_track_conversation`, plus the caller's ruling on opening material.
-///
-/// Server-internal callers go through here rather than through the route
-/// handler so that the mint, the derived-id guard, the retry arms and the
-/// in-transaction first-message delivery are still the ones production uses —
-/// the only thing that varies is [`OpeningBriefing`].
+/// `create_track_conversation`, plus the caller's ruling on opening material; the only
+/// thing that varies for server-internal callers is [`OpeningBriefing`].
 pub(crate) async fn create_track_conversation_inner(
     s: RouteState,
     w: WorkerState,
@@ -177,18 +130,16 @@ pub(crate) async fn create_track_conversation_inner(
     body: NewTrackConversationBody,
     briefing: OpeningBriefing,
 ) -> Result<(StatusCode, Json<TrackConversationSummary>)> {
-    // Required, not optional. The deterministic card id and the operation
-    // idempotency key are both derived from this header; without it a retried
-    // POST would mint a second conversation, and `validate`'s derived-id guard
-    // has nothing to recompute from.
+    // Required, not optional: the card id and the operation idempotency key are both
+    // derived from this header; without it a retried POST would mint a second conversation.
     let idempotency_key = parse_idempotency_key_header(&headers)?.ok_or_else(|| {
         CalmError::BadRequest(
             "Idempotency-Key header is required so a retried conversation create cannot mint a second card"
                 .into(),
         )
     })?;
-    // Validate the message before minting anything: an empty first message
-    // must not leave a conversation behind.
+    // Validate the message before minting anything, so an empty first message leaves no
+    // conversation behind.
     if body.model.is_some() || body.reasoning_effort.is_some() {
         super::track_report_blocks::require_rest_user_actor_for(
             &actor,
@@ -217,11 +168,8 @@ pub(crate) async fn create_track_conversation_inner(
         .track_get(&track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
-    // Retired Area-chat tracks are hidden legacy scaffolding. Narrowing, not
-    // the guard `validate` relies on:
-    // the mint's actual wall is the derived-id recomputation, which does not
-    // care what kind of track this is. This keeps new Track conversations off
-    // rows that no user-visible Track list can reach.
+    // Retired Area-chat tracks are hidden legacy scaffolding; keep new conversations off
+    // rows no user-visible Track list can reach.
     if track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
         return Err(CalmError::Forbidden(format!(
             "track {} is retired area-chat scaffolding and cannot accept conversations",
@@ -238,9 +186,8 @@ pub(crate) async fn create_track_conversation_inner(
         report_card_id: None,
         sort: None,
         cwd: track.workspace.path.clone(),
-        // No goal. A seeded `Observation::TrackGoal` would make the assistant
-        // open the conversation by talking about the track title before the
-        // user has said anything.
+        // No goal: a seeded `Observation::TrackGoal` would make the assistant open by talking
+        // about the track title before the user has said anything.
         goal: None,
         reset_harness_items: false,
         force_new_thread: true,
@@ -248,31 +195,20 @@ pub(crate) async fn create_track_conversation_inner(
         create_card: Some(LazyMintCardSeed {
             title: None,
             sort: None,
-            // The adapter re-derives the card id from this and refuses any id
-            // it did not compute itself (§4.3). Passing the raw header rather
-            // than the derived id is the whole point: a derived id sent along
-            // with itself would prove nothing.
+            // The adapter re-derives the card id from this and refuses any id it did not compute
+            // itself; a derived id sent along with itself would prove nothing.
             idempotency_key: Some(idempotency_key.clone()),
             model: body.model,
             reasoning_effort: body.reasoning_effort,
         }),
-        // #1343's ruling, carried into the transaction that acts on it. The
-        // caller decides; `prepare_tx` renders. `None` is not spelled out for
-        // any caller here — both arms are explicit — but it is what every
-        // payload written before #1343 deserializes to, and it means "no
-        // briefing", which is what those payloads meant.
+        // The caller decides; `prepare_tx` renders. `None` (what older payloads deserialize
+        // to) means "no briefing".
         opening_briefing: Some(briefing),
-        // #1314 — the text itself, so the adapter can enqueue the actual bytes
-        // inside the mint transaction. This is the whole change: before it, the
-        // message was sent by a second, non-transactional call after the
-        // operation had already committed.
-        //
-        // It also binds the body into `payload_hash`, which is what makes "same
-        // key, different text" a 409 instead of a silent replay: `submit`
-        // compares that hash before anything else runs.
+        // The text itself, so the adapter enqueues the actual bytes inside the mint
+        // transaction. It also binds the body into `payload_hash`, which makes "same key,
+        // different text" a 409 instead of a silent replay.
         first_message: Some(text),
-        // #1384 — bound only by `POST /api/tracks`; this route mints no track,
-        // so it has no create request to hash.
+        // This route mints no track, so it has no create request to hash.
         create_request_sha256: None,
     };
     let payload = serde_json::to_value(payload)?;
@@ -308,20 +244,10 @@ pub(crate) async fn create_track_conversation_inner(
         }
     }
 
-    // No send, no per-card first-message claim, and no briefing call out here;
-    // none of the three is an omission. The message was enqueued by
-    // `prepare_tx` inside the operation above, and the operation is what
-    // serializes concurrent POSTs under one key: two of them share ONE
-    // operation row, so the second is a collision that replays the first's
-    // success rather than a second mint with a second delivery. The claim used
-    // to exist only because the send happened out here, after that
-    // serialization point.
-    //
-    // #1343's opening briefing moved with it. What travels in the payload is
-    // the caller's RULING (`opening_briefing`), never the briefing TEXT; the
-    // adapter renders the text inside the transaction. See
-    // `PlannerHarnessStartOperationPayload::opening_briefing` for why the text
-    // must not enter `payload_hash`.
+    // No send, no per-card first-message claim, and no briefing call out here: the message
+    // was enqueued by `prepare_tx` inside the operation, and the operation row is what
+    // serializes concurrent POSTs under one key. The payload carries the caller's RULING,
+    // never the briefing TEXT, which must not enter `payload_hash`.
 
     let summary = load_track_conversation_summaries(&w, track.id.as_str(), Some(&derived.card_id))
         .await?
@@ -335,26 +261,10 @@ pub(crate) async fn create_track_conversation_inner(
     Ok((StatusCode::CREATED, Json(summary)))
 }
 
-/// Read the assistant conversation rows of one track.
-///
-/// An ordinary track is populated with a planner card, a report card, and every codex
-/// worker card the dispatcher has spawned for the plan (#1149). Widen this
-/// predicate to "a codex card" and the conversation list fills up with the
-/// track's workers.
-///
-/// `role = 'assistant'` is the primary discriminator: the role
-/// column is what the authorization gate reads, so a row that is listed here is
-/// by construction a row that holds the assistant tool surface.
-///
-/// The marker conjunct is kept as the second half because nothing stops a future card from being created with the
-/// assistant role by some other path, and a conversation the user can open must
-/// be one this endpoint knows how to mint.
-///
-/// `cards` is the driving table and the session is LEFT JOINed: a conversation
-/// card with no live session row is still one the user owns and must see (that
-/// is the whole reason `state` is nullable). Driving from `worker_sessions`
-/// instead would silently hide every card between its mint and its first live
-/// session, plus every card whose harness has since been shut down.
+/// Read the assistant conversation rows of one track. `role = 'assistant'` AND the
+/// profile marker: widening to "a codex card" would list the track's workers. `cards`
+/// drives and the session is LEFT JOINed, so a card with no live session row is still
+/// listed (`state` is nullable for that reason).
 async fn load_track_conversation_summaries(
     w: &WorkerState,
     track_id: &str,
@@ -363,12 +273,8 @@ async fn load_track_conversation_summaries(
     let pool = w.repo.sqlite_pool().ok_or_else(|| {
         CalmError::Internal("track conversations require a sqlite-backed repo".into())
     })?;
-    // #1722 S1b — `last_turn_completed_at` is the same correlated subquery the
-    // card-runtime projection evaluates for `CardRuntimeView.last_turn_completed_ms`
-    // (`LAST_TURN_COMPLETED_MS_SUBQUERY`, bound to this statement's `c`), so the
-    // planner row the client injects from the card and the assistant rows this
-    // list serves read one definition of "the last turn ended". It is a new
-    // column, not a new meaning for `updated_at`: that one still orders the list.
+    // `last_turn_completed_at` is the same correlated subquery the card-runtime projection
+    // evaluates, so planner and assistant rows read one definition of "the last turn ended".
     let sql = format!(
         r#"SELECT c.id                                   AS id,
                   c.track_id                              AS track_id,

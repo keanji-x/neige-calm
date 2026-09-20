@@ -1,14 +1,5 @@
-//! PR7a.1 (#136 followup) — integration tests for `neige-mcp-stdio-shim`.
-//!
-//! The shim is a line pump: stdin -> UDS, UDS -> stdout, reconnecting
-//! when the kernel goes away (#1699, `reconnect.rs`). These tests boot a
-//! stub UDS server, spawn the shim binary with `NEIGE_MCP_SOCKET` pointed
-//! at the stub, then drive bytes in each direction and assert they land
-//! on the other side.
-//!
-//! Test budget: 5 seconds per case. The pump classifies every line but
-//! forwards non-JSON lines unchanged (`Frame::Other`), so both
-//! directions are exercised with simple line-delimited payloads.
+//! Integration tests for `neige-mcp-stdio-shim`: a stub UDS server, the spawned shim
+//! binary, and bytes driven in each direction.
 
 #![cfg(unix)]
 
@@ -26,11 +17,8 @@ use tokio::time::timeout;
 const SHIM_BIN: &str = env!("CARGO_BIN_EXE_neige-mcp-stdio-shim");
 const TEST_BUDGET: Duration = Duration::from_secs(5);
 
-/// Spawn a UDS listener at `socket_path`. Returns the listener; the
-/// caller `accept()`s once when the shim connects.
+/// Spawn a UDS listener at `socket_path`.
 fn listen(socket_path: &std::path::Path) -> UnixListener {
-    // #1439: socket 路径由 `calm_test_sockets` 发放短路径；这里再断言一次，
-    // 越限时把路径和它的字节数一起打出来。
     calm_test_sockets::assert_fits(socket_path);
     UnixListener::bind(socket_path).unwrap_or_else(|e| {
         panic!(
@@ -47,10 +35,6 @@ async fn stdin_to_socket_forwards_bytes() {
     let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
 
-    // Spawn the shim with the env vars pointing at our stub socket
-    // and a dummy token. Issue #236 followup made `NEIGE_MCP_TOKEN`
-    // mandatory at boot — see the `missing_token_env_exits_nonzero`
-    // test below for the failure shape when it's absent.
     let mut child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
         .env_remove("NEIGE_MCP_DAEMON_TOKEN")
@@ -61,7 +45,6 @@ async fn stdin_to_socket_forwards_bytes() {
         .spawn()
         .expect("spawn shim");
 
-    // Accept the shim's connection.
     let (server_stream, _addr) = timeout(TEST_BUDGET, listener.accept())
         .await
         .expect("shim connected within budget")
@@ -69,13 +52,7 @@ async fn stdin_to_socket_forwards_bytes() {
     let (server_rd, server_wr) = server_stream.into_split();
     let mut server_reader = BufReader::new(server_rd);
 
-    // Write a non-JSON line to the shim's stdin. The first-frame
-    // injector tries to parse it as JSON, falls through on the parse
-    // error, and forwards the line unchanged. We assert exactly that:
-    // a non-initialize / non-JSON first frame is byte-pumped verbatim
-    // (the inject path is exercised by the unit tests in
-    // `src/frames.rs` and the `initialize_first_frame_gets_token_injected`
-    // test below).
+    // A non-JSON first frame is byte-pumped verbatim.
     let mut child_stdin = child.stdin.take().expect("stdin piped");
     child_stdin
         .write_all(b"hello-from-stdin\n")
@@ -90,11 +67,8 @@ async fn stdin_to_socket_forwards_bytes() {
         .expect("read line ok");
     assert_eq!(received, "hello-from-stdin\n");
 
-    // Cleanup. On stdin EOF the pump half-closes the socket and keeps
-    // reading it until the kernel hangs up (pump.rs, the stdin-EOF arm
-    // of `drive`), so closing stdin alone isn't enough. Drop the
-    // server-side write half too so the shim reads EOF on the socket;
-    // with both ends closed the shim exits and we reap it.
+    // On stdin EOF the pump half-closes the socket and keeps reading it until the
+    // kernel hangs up, so the server-side write half must be dropped too.
     drop(child_stdin);
     drop(server_wr);
     let _ = timeout(TEST_BUDGET, child.wait()).await;
@@ -110,11 +84,8 @@ async fn socket_to_stdout_forwards_bytes() {
         .env("NEIGE_MCP_SOCKET", &socket_path)
         .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env("NEIGE_MCP_TOKEN", "test-byte-pump-token")
-        // `Stdio::null()` for stdin is the natural "no inbound bytes
-        // from codex" shape for this direction-isolated test. The pump
-        // keeps reading the socket after stdin EOF (it only half-closes
-        // its write side), so the post-accept socket write does not
-        // race a shim that is already gone.
+        // The pump keeps reading the socket after stdin EOF (it only half-closes its
+        // write side), so the post-accept socket write does not race a shim that is gone.
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -127,18 +98,12 @@ async fn socket_to_stdout_forwards_bytes() {
         .expect("accept ok");
     let (_server_rd, mut server_wr) = server_stream.into_split();
 
-    // Write a line on the socket. The shim should pipe it back out
-    // through its stdout.
     server_wr
         .write_all(b"hello-from-socket\n")
         .await
         .expect("write socket");
     server_wr.flush().await.expect("flush socket");
 
-    // Read one line from the shim's stdout. We read line-by-line
-    // (rather than `read_to_end`) so the assert lands as soon as the
-    // shim flushes the byte forward, no matter when the process
-    // actually exits.
     let child_stdout = child.stdout.take().expect("stdout piped");
     let mut reader = BufReader::new(child_stdout);
     let mut line = String::new();
@@ -148,28 +113,12 @@ async fn socket_to_stdout_forwards_bytes() {
         .expect("read_line ok");
     assert_eq!(line, "hello-from-socket\n");
 
-    // Drop the server-side write half so the shim reads EOF on the
-    // socket; stdin (`Stdio::null()`) is already at EOF, so this is the
-    // clean order and the shim exits 0 without reconnecting.
     drop(server_wr);
     let _ = timeout(TEST_BUDGET, child.wait()).await;
 }
 
-/// Regression test for the PR #221 race fix.
-///
-/// Before that fix, the shim exited as soon as EITHER direction
-/// completed. With `Stdio::null()` on stdin, the stdin direction
-/// resolved within microseconds of spawn, the shim closed the
-/// connection, and any kernel write arriving after that point would
-/// EPIPE. Today's pump (#1699) treats stdin EOF as a half-close: it
-/// shuts down its socket write side and keeps reading the socket until
-/// the kernel hangs up.
-///
-/// This test simulates the production race directly: spawn the shim
-/// with `Stdio::null()` stdin, wait long enough for the buggy version
-/// to have exited, THEN write a frame on the socket and assert it
-/// lands on the shim's stdout. Under the buggy shape this fails with
-/// EPIPE on the socket write or EOF on the stdout read.
+/// Stdin EOF is a half-close: the shim shuts down its socket write side and keeps
+/// reading the socket until the kernel hangs up, so a late kernel frame still lands.
 #[tokio::test]
 async fn shim_stays_alive_after_stdin_eof_until_socket_closes() {
     let tmp = calm_test_sockets::socket_dir("shim");
@@ -192,16 +141,9 @@ async fn shim_stays_alive_after_stdin_eof_until_socket_closes() {
         .expect("accept ok");
     let (_server_rd, mut server_wr) = server_stream.into_split();
 
-    // Sleep long enough that the buggy `select!`-shaped shim would
-    // have already noticed the null stdin EOF, called shutdown on
-    // its socket write half, and exited. 100 ms is overkill for the
-    // microsecond-scale race window but gives CI under load room.
+    // Long enough for a shim that exits on stdin EOF to be gone already.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Now write a frame on the socket. Under the buggy shape the
-    // shim is gone, the kernel has lost its peer, and the write
-    // either returns EPIPE here or strands the bytes on the
-    // closed socket.
     server_wr
         .write_all(b"late-frame-from-socket\n")
         .await
@@ -223,19 +165,12 @@ async fn shim_stays_alive_after_stdin_eof_until_socket_closes() {
         "shim must forward socket frames that arrive after stdin EOF"
     );
 
-    // Cleanup. Closing the socket write half lets the shim read EOF on
-    // the socket; with stdin already at EOF that is the clean order and
-    // the shim exits.
     drop(server_wr);
     let _ = timeout(TEST_BUDGET, child.wait()).await;
 }
 
 #[tokio::test]
 async fn missing_socket_env_exits_nonzero() {
-    // No `NEIGE_MCP_SOCKET` env → shim exits 2 with a stderr message.
-    // The production binary is launched by codex, which the kernel
-    // controls; this test pins the "operator misconfigured the env"
-    // error path so a future refactor doesn't silently swallow it.
     let child = Command::new(SHIM_BIN)
         .env_remove("NEIGE_MCP_SOCKET")
         .env_remove("NEIGE_MCP_DAEMON_TOKEN")
@@ -263,18 +198,9 @@ async fn missing_socket_env_exits_nonzero() {
 
 #[tokio::test]
 async fn missing_token_env_exits_nonzero() {
-    // Issue #236 followup — the shim now also requires
-    // `NEIGE_MCP_TOKEN` so it can stamp `_meta["dev.neige/auth"]
-    // .token` into the codex `initialize` frame. Without it the
-    // handshake would fail at the kernel anyway; failing fast at
-    // shim boot gives a clear stderr line instead of an opaque
-    // JSON-RPC error on stdout.
     let tmp = calm_test_sockets::socket_dir("shim");
     let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
-    // Bind a stub UDS so the shim wouldn't fail on the `connect`
-    // step — the missing-token check runs BEFORE connect, so this
-    // is mostly defensive against a future refactor that swaps
-    // the env-check order.
+    // The missing-token check runs before connect; the listener is only defensive.
     let _listener = listen(&socket_path);
 
     let child = Command::new(SHIM_BIN)
@@ -304,11 +230,6 @@ async fn missing_token_env_exits_nonzero() {
 
 #[tokio::test]
 async fn initialize_first_frame_gets_token_injected() {
-    // Issue #236 followup — end-to-end check that the shim's
-    // first-frame interceptor stamps `params._meta["dev.neige/auth"]
-    // .token` from the `NEIGE_MCP_TOKEN` env. Boots a stub UDS,
-    // feeds an `initialize` request on stdin with no `_meta`, and
-    // asserts the bytes that land on the socket carry the auth slot.
     let tmp = calm_test_sockets::socket_dir("shim");
     let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
@@ -330,7 +251,6 @@ async fn initialize_first_frame_gets_token_injected() {
     let (server_rd, server_wr) = server_stream.into_split();
     let mut server_reader = BufReader::new(server_rd);
 
-    // Feed an `initialize` frame on the shim's stdin.
     let mut child_stdin = child.stdin.take().expect("stdin piped");
     let init_frame = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\"}}\n";
     child_stdin
@@ -339,8 +259,6 @@ async fn initialize_first_frame_gets_token_injected() {
         .expect("write stdin");
     child_stdin.flush().await.expect("flush stdin");
 
-    // The kernel side (our stub) should see a frame whose body parses
-    // as JSON and carries the auth-slot token.
     let mut received = String::new();
     timeout(TEST_BUDGET, server_reader.read_line(&mut received))
         .await
@@ -355,7 +273,6 @@ async fn initialize_first_frame_gets_token_injected() {
         .expect("shim stamped token slot");
     assert_eq!(token, "e2e-shim-token-xyz");
 
-    // Cleanup: drop both ends so the shim winds down.
     drop(child_stdin);
     drop(server_wr);
     let _ = timeout(TEST_BUDGET, child.wait()).await;
@@ -409,11 +326,6 @@ async fn daemon_token_env_takes_precedence_over_legacy_token() {
     let _ = timeout(TEST_BUDGET, child.wait()).await;
 }
 
-/// #1699 — the kernel restarts underneath a live shim (preserving
-/// upgrade: codex and its threads survive, only calm-server is
-/// replaced). The shim must reconnect on the same path, replay the
-/// cached token-injected `initialize` (same id), swallow that second
-/// handshake response, and then forward the request codex sent.
 #[tokio::test]
 async fn kernel_restart_reconnects_and_replays_initialize() {
     let (_tmp, socket_path) = common::socket();
@@ -422,7 +334,6 @@ async fn kernel_restart_reconnects_and_replays_initialize() {
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
 
-    // First life of the kernel: normal handshake.
     let mut conn = common::accept(&listener, "first connection").await;
     common::write_stdin(&mut stdin, &common::initialize_line(1)).await;
     let init = conn.read_frame("initialize on first connection").await;
@@ -431,28 +342,22 @@ async fn kernel_restart_reconnects_and_replays_initialize() {
     let resp = common::read_stdout(&mut stdout, "initialize response").await;
     assert_eq!(resp["id"], serde_json::json!(1));
 
-    // Kernel goes away: accepted stream and listener both dropped, socket
-    // file removed, then the new kernel binds the same path.
     drop(conn);
     drop(listener);
     let listener = common::rebind(&socket_path);
 
-    // codex sends the next tool call through the (still alive) shim.
     common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
 
-    // The new kernel must first see the replayed initialize ...
     let mut conn = common::accept(&listener, "reconnect after kernel restart").await;
     let replayed = conn.read_frame("replayed initialize").await;
     common::assert_replayed_initialize(&replayed, 1);
     conn.reply_ok(&replayed["id"]).await;
-    // ... and only then the tools/call.
     let call = conn.read_frame("tools/call after replay").await;
     assert_eq!(call["method"], "tools/call", "got {call}");
     assert_eq!(call["id"], serde_json::json!(2));
     conn.reply_ok(&call["id"]).await;
 
-    // codex sees exactly the tools/call response; the replayed handshake
-    // response was swallowed by the shim.
+    // The replayed handshake response was swallowed by the shim.
     let resp = common::read_stdout(&mut stdout, "tools/call response").await;
     assert_eq!(
         resp["id"],
@@ -461,7 +366,6 @@ async fn kernel_restart_reconnects_and_replays_initialize() {
     );
     common::assert_alive(&mut child);
 
-    // Cleanup: close both ends so the shim winds down.
     drop(stdin);
     drop(conn);
     let _ = timeout(TEST_BUDGET, child.wait()).await;

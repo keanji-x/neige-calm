@@ -1,20 +1,5 @@
-//! PR6 (#136) — atomic planner card binding on track create.
-//!
-//! Coverage:
-//!   * `POST /api/tracks` atomically mints a single `CardRole::Planner`
-//!     codex card under the track.
-//!   * Two events emit in order: `Event::TrackUpdated` (track-scoped),
-//!     then `Event::CardAdded` (card-scoped). No spurious
-//!     `card.updated`.
-//!   * The card_role_cache carries `Planner` for the auto-minted card.
-//!   * `enforce_role` permits the planner card to emit `TrackUpdated`
-//!     (via direct CardRoleCache lookup + `enforce_role` call).
-//!   * With a broken shared codex daemon, track create still returns
-//!     201 and commits an inert planner card with no terminal row.
-//!
-//! Strategy mirrors `tests/codex_card_endpoint.rs`: build a real Axum
-//! router with `AppState::from_parts`, hit it with `tower::ServiceExt`,
-//! and assert on the persisted state + the event broadcast stream.
+//! Atomic planner card binding on track create: a real Axum router via `AppState::from_parts`, driven with
+//! `tower::ServiceExt`, asserting persisted state + the event broadcast stream.
 
 #![cfg(unix)]
 
@@ -50,9 +35,7 @@ struct Boot {
     _tmp: TempDir,
 }
 
-/// Boot a router pointing at a non-existent codex bin. The shared daemon
-/// start fails, but `POST /api/tracks` still commits the track/planner/report
-/// rows and returns 201 with an inert planner card.
+/// Boot a router pointing at a non-existent codex bin: the shared daemon start fails, but `POST /api/tracks` still commits and returns 201 with an inert planner card.
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
     let repo: Arc<dyn Repo> = Arc::new(
@@ -94,11 +77,7 @@ async fn boot() -> Boot {
             ),
         )),
         {
-            // Deterministically-broken codex bin (absolute, absent) so the
-            // planner-push app-server boot fails fast regardless of PATH. Track
-            // create tolerates this (#293 / PR #311) and returns 201; the
-            // commit-time events still broadcast before the boot attempt,
-            // which is what this test asserts.
+            // Deterministically-broken codex bin (absolute, absent) so the app-server boot fails fast regardless of PATH.
             let mut codex = CodexClient::new_stub();
             codex.codex_bin = "/nonexistent-codex-bin-planner-card-test".into();
             Arc::new(codex)
@@ -141,13 +120,9 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     (status, json)
 }
 
-/// Drain at least `n` envelopes from a broadcast subscriber, with a
-/// short deadline. Returns the collected envelopes (or panics if the
-/// timeout elapses).
+/// Drain at least `n` envelopes from a broadcast subscriber, panicking if the deadline elapses.
 async fn collect_envelopes(events: &EventBus, n: usize) -> Vec<BroadcastEnvelope> {
     let mut rx = events.subscribe_filtered();
-    // The caller subscribes *before* triggering the emit; here we
-    // pump until we have n.
     let mut out = Vec::with_capacity(n);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while out.len() < n {
@@ -168,28 +143,16 @@ async fn collect_envelopes(events: &EventBus, n: usize) -> Vec<BroadcastEnvelope
     out
 }
 
-// ---------------------------------------------------------------------------
-// Planner card binding.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn post_api_tracks_mints_planner_card_atomically() {
     let boot = boot().await;
 
-    // Subscribe before firing so we catch both envelopes the route
-    // produces (commit-then-emit invariant). The daemon spawn will
-    // fail (binary doesn't exist) — that errors *after* the events
-    // already broadcast, so the test still sees them.
-    // Issue #229 PR B — track create now emits four envelopes in one
-    // tx: `TrackUpdated`, `CardAdded(planner)`, `CardAdded(report)`,
-    // `OverlaySet(layout)`. Order in the bus matches the order the
-    // closure pushes them. The two CardAdded envelopes are
-    // distinguishable by `card.kind` ("codex" vs "track-report").
+    // Subscribe before firing: the daemon spawn fails *after* the events already broadcast. The two CardAdded
+    // envelopes are distinguishable by `card.kind` ("codex" vs "track-report").
     let subscription = {
         let events = boot.events.clone();
         tokio::spawn(async move { collect_envelopes(&events, 4).await })
     };
-    // Tiny pause so the subscribe-before-emit ordering is reliable.
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let (status, body) = post(
@@ -198,24 +161,18 @@ async fn post_api_tracks_mints_planner_card_atomically() {
         json!({"area_id": boot.area_id, "title": "first track", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    // Issue #293 / PR #311: the planner-push app-server boot is non-fatal.
-    // With a broken codex bin the boot fails, but the route still returns
-    // 201 (inert track). The persisted rows (track + planner card + terminal)
-    // and the events that emitted at commit-time — which is what this test
-    // asserts — survive regardless of the boot outcome.
+    // The app-server boot is non-fatal: with a broken codex bin the route still returns 201.
     assert_eq!(
         status,
         StatusCode::CREATED,
         "broken codex bin → 201 (boot is non-fatal, #293/#311); persisted rows + events still survive; body={body}",
     );
 
-    // Drain the envelope subscription with a generous deadline.
     let envelopes = tokio::time::timeout(Duration::from_secs(3), subscription)
         .await
         .expect("collector finished")
         .expect("collector task ok");
 
-    // First envelope: TrackUpdated, track-scoped, actor=User.
     assert!(
         matches!(&envelopes[0].event, Event::TrackUpdated(_)),
         "first envelope must be TrackUpdated; got: {:?}",
@@ -228,7 +185,6 @@ async fn post_api_tracks_mints_planner_card_atomically() {
     );
     assert_eq!(envelopes[0].actor, ActorId::User);
 
-    // Second envelope: CardAdded (planner), card-scoped, actor=User.
     assert!(
         matches!(&envelopes[1].event, Event::CardAdded(_)),
         "second envelope must be CardAdded(planner); got: {:?}",
@@ -241,7 +197,6 @@ async fn post_api_tracks_mints_planner_card_atomically() {
     );
     assert_eq!(envelopes[1].actor, ActorId::User);
 
-    // Third envelope: CardAdded (track-report — PR B), card-scoped.
     assert!(
         matches!(&envelopes[2].event, Event::CardAdded(_)),
         "third envelope must be CardAdded(track-report); got: {:?}",
@@ -265,23 +220,18 @@ async fn post_api_tracks_mints_planner_card_atomically() {
         _ => unreachable!(),
     }
 
-    // Fourth envelope: OverlaySet(layout) — kernel-seeded layout
-    // overlay positioning the track-report card at the top of the grid.
     assert!(
         matches!(&envelopes[3].event, Event::OverlaySet(_)),
         "fourth envelope must be OverlaySet(layout); got: {:?}",
         envelopes[3].event,
     );
 
-    // Cache write-through invariant: CardRole::Planner is visible.
     assert_eq!(
         boot.card_role_cache.get(&planner_card_id),
         Some(CardRole::Planner),
         "planner card's role must be Planner in the cache",
     );
 
-    // DB invariants: planner + track-report cards under the track, kind=codex
-    // for the planner, and no terminal row for the inert planner card.
     let track_id = match &envelopes[0].event {
         Event::TrackUpdated(w) => w.id.clone(),
         _ => unreachable!(),
@@ -314,15 +264,11 @@ async fn post_api_tracks_mints_planner_card_atomically() {
 
 #[tokio::test]
 async fn planner_card_can_emit_track_updated_via_enforce_role() {
-    // The planner card minted by `POST /api/tracks` must satisfy
-    // `enforce_role`'s `TrackUpdated`-from-AiPlanner rule. We don't
-    // actually go through the route here — we mint the card directly
-    // via the cache + call the gate to lock in the contract.
+    // The card is minted directly via the cache and the gate is called, without going through the route.
     let cache = CardRoleCache::new();
     let planner_id = CardId::from("planner-card-pr6");
     cache.insert(planner_id.clone(), CardRole::Planner, TrackId::from("w"));
 
-    // A TrackUpdated event from AiPlanner(planner_id) under Track scope.
     let evt = Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
         calm_server::model::Track {
             id: "w".into(),
@@ -365,10 +311,6 @@ async fn planner_card_can_emit_track_updated_via_enforce_role() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// `write_with_events_typed` plural helper coverage.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
     use calm_server::db::sqlite::{area_create_tx, track_create_tx};
@@ -386,8 +328,6 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
 
     let mut rx = events.subscribe_filtered();
 
-    // The closure emits two distinct events: AreaUpdated under
-    // EventScope::Area, and TrackUpdated under EventScope::Track.
     let event_ids: Vec<i64> = write_with_events_typed(
         repo.as_ref(),
         ActorId::User,
@@ -456,7 +396,6 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
         "event ids monotonically increasing: {event_ids:?}",
     );
 
-    // Both broadcasts hit the subscription, in declared order.
     let env1 = tokio::time::timeout(Duration::from_secs(1), rx.recv())
         .await
         .expect("first envelope arrives")
@@ -487,11 +426,8 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
     let cache = CardRoleCache::new();
     let wcc = calm_server::track_area_cache::TrackAreaCache::new();
 
-    // Pre-check: no areas exist.
     assert!(repo.areas_list().await.unwrap().is_empty());
 
-    // Closure writes an area then explodes — the area row must vanish
-    // and no event must broadcast.
     let mut rx = events.subscribe_filtered();
     let res = write_with_events_typed::<(), _>(
         repo.as_ref(),
@@ -521,7 +457,6 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
         repo.areas_list().await.unwrap().is_empty(),
         "area row must be rolled back",
     );
-    // No envelope should be in flight.
     assert!(
         rx.try_recv().is_err(),
         "rolled-back tx must not broadcast any envelope",
@@ -542,10 +477,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
     let events = EventBus::new();
     let cache = CardRoleCache::new();
 
-    // Actor is `AiCodex(known-worker)` — *cannot* emit TrackUpdated
-    // per enforce_role. Closure returns two events; the second is
-    // the TrackUpdated that will trip the gate. Everything must
-    // roll back.
+    // `AiCodex(known-worker)` cannot emit TrackUpdated per enforce_role; the second event trips the gate and everything must roll back.
     let worker_id = CardId::from("worker-card-id");
     cache.insert(
         worker_id.clone(),
@@ -604,9 +536,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                 Ok((
                     (),
                     vec![
-                        // First event passes the gate (AreaUpdated +
-                        // Area scope — section 2 of enforce_role only
-                        // gates TrackUpdated). Second one violates.
+                        // The first event passes the gate (enforce_role only gates TrackUpdated); the second violates.
                         (area_scope, Event::AreaUpdated(area)),
                         (
                             track_scope,
@@ -622,14 +552,11 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
     .await;
 
     assert!(res.is_err(), "role violation must surface as Err");
-    // No rows survive — the violation rolled back BOTH the area
-    // and the track even though the area emit itself was legal.
     assert!(
         repo.areas_list().await.unwrap().is_empty(),
         "area must be rolled back when any later event in the batch trips the gate",
     );
-    // No broadcast either — commit-then-emit means the rollback
-    // suppresses every event, not just the violating one.
+    // Commit-then-emit means the rollback suppresses every event, not just the violating one.
     assert!(
         rx.try_recv().is_err(),
         "rolled-back tx must not broadcast any envelope",

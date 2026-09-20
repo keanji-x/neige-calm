@@ -1,24 +1,4 @@
-//! Issue #1211 S3 — `calm.track.rename`, the planner agent's naming write.
-//!
-//! Same shape as `mcp_track_state`: an in-memory repo + a directly-constructed
-//! `AppContext`, tools driven through the registry the way the transport
-//! drives them. What is under test here is the *guard*, not the prompt — the
-//! planner prompt tells the agent to name the track, and the golden in
-//! `plugin_host::manifest` pins that text, but a prompt is advice. These tests
-//! pin the refusals a misbehaving (or merely confused) agent runs into.
-//!
-//! Covered:
-//!
-//!   1. Happy path — an unnamed track gets its name, the row changes, and the
-//!      `TrackUpdated` event is attributed to the **planner session**, not to the
-//!      user.
-//!   2. Name-once — a track that already has a title refuses with
-//!      `already_named` and does not change the row or emit anything.
-//!   3. Role gate — Worker / Assistant / ReportCard identities are refused by
-//!      `require_role` before any write.
-//!   4. Area-chat tracks refuse (`chat_track`).
-//!   5. Whitespace-only / missing titles are argument errors, and a title is
-//!      stored trimmed.
+//! `calm.track.rename`, the planner agent's naming write; these tests pin the guard's refusals.
 
 use std::sync::Arc;
 
@@ -116,10 +96,6 @@ async fn seed_track_root_session(
     .expect("seed track root session");
 }
 
-/// `title` is a parameter because the whole contract turns on whether the track
-/// is already named; `purpose` is one because the area-chat track is created
-/// through `track_create_tx`'s purpose argument in production
-/// (`routes::tracks`), not by patching the column afterwards.
 async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -286,16 +262,6 @@ async fn track_title(boot: &Boot) -> String {
         .title
 }
 
-// ---------------------------------------------------------------------------
-// Happy path
-// ---------------------------------------------------------------------------
-
-/// The write lands on the row AND the audit row says the agent did it.
-///
-/// The actor assertion is the load-bearing half. A rename implemented through
-/// the user-facing PATCH would work perfectly and still be wrong: "who named
-/// this track" is exactly the question a user asks when a name surprises them,
-/// and an `ActorId::User` row answers it with a lie.
 #[tokio::test]
 async fn planner_names_an_unnamed_track_and_the_event_is_attributed_to_the_planner_session() {
     let boot = boot_unnamed().await;
@@ -341,9 +307,6 @@ async fn planner_names_an_unnamed_track_and_the_event_is_attributed_to_the_plann
         other => panic!("expected TrackUpdated, got {other:?}"),
     }
 
-    // And the persisted `events.actor` column carries the same attribution,
-    // not just the in-process broadcast. The column is the durable half of
-    // the claim; the bus envelope above is derived from the same value.
     let actors: Vec<String> =
         sqlx::query_scalar("SELECT actor FROM events WHERE kind = 'track.updated' ORDER BY id")
             .fetch_all(boot.pool())
@@ -365,12 +328,6 @@ async fn planner_names_an_unnamed_track_and_the_event_is_attributed_to_the_plann
     );
 }
 
-// ---------------------------------------------------------------------------
-// Name-once
-// ---------------------------------------------------------------------------
-
-/// The core guard. A named track refuses structurally — not a panic, not a
-/// 500, and above all not a silent overwrite of a name the user chose.
 #[tokio::test]
 async fn already_named_track_refuses_structurally_and_changes_nothing() {
     let boot = boot_with("the user's own name", None).await;
@@ -394,8 +351,6 @@ async fn already_named_track_refuses_structurally_and_changes_nothing() {
     assert!(no_event.is_err(), "refusal emitted an event: {no_event:?}");
 }
 
-/// Name-once means once. The second call refuses even though the first call
-/// is the thing that made the track named.
 #[tokio::test]
 async fn a_second_rename_by_the_same_planner_refuses() {
     let boot = boot_unnamed().await;
@@ -425,9 +380,6 @@ async fn a_second_rename_by_the_same_planner_refuses() {
     assert_eq!(track_title(&boot).await, "first");
 }
 
-/// A whitespace-only title never counted as "named" for the guard, so it must
-/// not count as "named" for the refusal either — otherwise a track created with
-/// `"   "` would be permanently unnameable.
 #[tokio::test]
 async fn whitespace_only_existing_title_still_counts_as_unnamed() {
     let boot = boot_with("   ", None).await;
@@ -443,14 +395,7 @@ async fn whitespace_only_existing_title_still_counts_as_unnamed() {
     assert_eq!(track_title(&boot).await, "a real name");
 }
 
-// ---------------------------------------------------------------------------
-// Role gate
-// ---------------------------------------------------------------------------
-
-/// The prompt is not the guard. Every non-Planner role is refused by
-/// `require_role` before the handler reaches a write, and the message is
-/// checked because a malformed-arguments rejection carries the same
-/// `-32602` code.
+/// The message is checked because a malformed-arguments rejection carries the same `-32602` code.
 #[tokio::test]
 async fn non_planner_roles_are_forbidden() {
     for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
@@ -474,16 +419,7 @@ async fn non_planner_roles_are_forbidden() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The track class whose name is not the agent's to write
-//
-// #1318 S2 removed the second one: `template_track` refused renames on tracks
-// carrying the kernel view/template overlay, and that overlay no longer has a
-// writer or a reader anywhere in the kernel.
-// ---------------------------------------------------------------------------
-
-/// The per-area chat track's name is kernel-owned — the same reason its
-/// lifecycle is not user-drivable (`routes::tracks::update_track`).
+/// The per-area chat track's name is kernel-owned.
 #[tokio::test]
 async fn area_chat_track_refuses_rename() {
     let boot = boot_with("", Some(calm_server::AREA_CHAT_PURPOSE)).await;
@@ -501,10 +437,6 @@ async fn area_chat_track_refuses_rename() {
     );
     assert_eq!(track_title(&boot).await, "");
 }
-
-// ---------------------------------------------------------------------------
-// Argument validation
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn empty_or_missing_title_is_an_argument_error() {

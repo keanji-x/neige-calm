@@ -208,21 +208,16 @@ async fn outline_labels_live_and_tombstone_tasks_at_the_mcp_boundary() {
     assert_eq!(blocks[3]["heading"], "chart.candles: symbol=KEEP.US");
 }
 
-/// The real skeleton every track is born with — the kernel's own bytes, not a
-/// transcription (#1185 §4.4 E). Since S2 that is one leading HTML comment
-/// block (multi-line, spanning blank lines — a CommonMark HTML block of type 2
-/// does not end at one) plus the four H1 sections the comment declares, so
-/// depending on it measures exactly what ships. A hand-written stand-in would
-/// only prove the outline can handle *a* contract-bearing report.
+/// The real skeleton every track is born with: one leading multi-line HTML comment block (a
+/// CommonMark type-2 HTML block does not end at a blank line) plus the four H1 sections.
 fn contract_body() -> String {
     TrackReportPayload::initial().body
 }
 
 #[tokio::test]
 async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
-    // #1185 §5.8 — the contract renders as nothing, so it may not become a
-    // block title; but the entry stays, because this outline is the only
-    // source of block ids for deep links.
+    // The contract renders as nothing, so it may not become a block title; but the entry stays,
+    // because this outline is the only source of block ids for deep links.
     let boot = boot().await;
     let track = add_track(&boot, boot.area_id.as_str(), "Carrier", contract_body()).await;
 
@@ -254,26 +249,9 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
 
 #[tokio::test]
 async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_the_caps() {
-    /*
-     * What this measures, exactly: an area at the realistic ceiling — 51 tracks,
-     * every one carrying the maintenance contract plus four sections — still
-     * fits the outline response comfortably, and the only degradation is the
-     * track cap, reported.
-     *
-     * What it does NOT measure, so nobody reads it as coverage it lacks: the
-     * `MAX_RESPONSE_BYTES` truncation branch and the `MAX_BLOCKS_PER_TRACK`
-     * branch are both untaken here, and by construction. 51 tracks × 5 blocks
-     * serializes to about 17 KB against a 32 KiB cap, and 5 is well under the
-     * 40-block cap. The assertions below therefore say "nothing was dropped",
-     * which is the claim worth pinning for the carrier: adding a contract block
-     * to every report does not cost an area its outline. A test of the *drop*
-     * paths would need a fixture built to blow the caps, it would be about the
-     * degradation logic rather than about the contract, and it is not this one.
-     *
-     * Empty-report inclusion is pinned by the cheap one-track case above. This
-     * fixture owns the expensive 50-track cap assertion as well as realistic
-     * payload headroom, so the suite does not seed the same ceiling twice.
-     */
+    // An area at the realistic ceiling — 51 tracks, each with the contract plus four sections —
+    // still fits the outline response; only the track cap degrades, reported. The
+    // `MAX_RESPONSE_BYTES` and `MAX_BLOCKS_PER_TRACK` branches are untaken here by construction.
     let boot = boot().await;
     let mut seeded = Vec::new();
     for index in 0..50 {
@@ -292,37 +270,28 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
         .await
         .unwrap();
     let bytes = serde_json::to_vec(&value).unwrap().len();
-    // Measured at 17029 bytes when this was written. The upper bound is the cap
-    // itself; the lower bound is there so the day someone breaks the fixture
-    // into emptiness this stops passing for the wrong reason.
+    // Measured at 17029 bytes; the lower bound catches a fixture broken into emptiness.
     assert!(
         (10 * 1024..=32 * 1024).contains(&bytes),
         "expected a real, capped payload for 51 contract-bearing tracks; got {bytes} bytes"
     );
 
-    // The track cap IS taken here — 51 tracks against `MAX_TRACKS = 50` — and it
-    // is reported rather than silent.
+    // The track cap IS taken (51 against `MAX_TRACKS = 50`) and reported.
     let tracks = value["tracks"].as_array().unwrap();
     assert_eq!(tracks.len(), 50);
     assert_eq!(value["truncated"]["tracks"], 1);
-    // Stated rather than implied: the byte-truncation branch did not fire.
+    // The byte-truncation branch did not fire.
     assert!(value["truncated"]["bytes"].is_null());
 
-    // No block was dropped from ANY track — not just from the ones this loop
-    // happens to recognise. `truncated.blocks` is omitted entirely when the map
-    // is empty, so asserting the whole key absent also rules out truncation
-    // metadata parked under some other track id.
+    // `truncated.blocks` is omitted entirely when empty, so the whole key must be absent.
     assert!(
         value["truncated"]["blocks"].is_null(),
         "nothing was dropped, so `truncated.blocks` must be absent entirely; got {}",
         value["truncated"]["blocks"]
     );
 
-    // Every block of every seeded track is listed. This is the carrier's actual
-    // claim — a contract block in every report costs the area nothing in
-    // outline coverage — so the loop must also prove it actually looked at the
-    // seeded tracks: a fixture whose ids stopped matching would otherwise skip
-    // every iteration and still pass.
+    // The loop must also prove it looked at the seeded tracks: ids that stopped matching would
+    // skip every iteration and still pass.
     let mut verified = 0usize;
     let mut foreign = Vec::new();
     for track in tracks {
@@ -338,10 +307,8 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
             "every block of a seeded track is listed ({id})"
         );
     }
-    // The area holds 51 tracks — 50 seeded plus the boot track — and `MAX_TRACKS`
-    // lists the 50 lowest ids, so exactly one falls off, and which one depends
-    // on where the random ids sort. Hence: nothing but the boot track may show
-    // up unrecognised, and at most one seeded track may be missing.
+    // 51 tracks (50 seeded + boot) and `MAX_TRACKS` lists the 50 lowest ids, so exactly one falls
+    // off, and which one depends on where the random ids sort.
     assert!(
         (seeded.len() - 1..=seeded.len()).contains(&verified),
         "expected to have checked all {} seeded tracks (at most one displaced by the track cap); \

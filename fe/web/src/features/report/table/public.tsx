@@ -1,10 +1,4 @@
 // The `table` block — a comparables table, in the editorial register.
-//
-// No outer frame: the breakout to `--measure-doc` *is* the visual event, and
-// §6.5's boundary ladder stops at "hairline per row" long before a box. The
-// header is small, uppercase and tracked; numeric columns are right-aligned
-// and `tabular-nums` so digits line up down the column, which is the only
-// reason a table beats a list.
 
 import type { ReactNode } from 'react';
 
@@ -22,22 +16,7 @@ function cellText(value: string | number | null | undefined): string {
   return value === null || value === undefined ? '' : String(value);
 }
 
-/**
- * The one piece of Markdown a table cell understands (#1687): a cell whose
- * whole text is a single `[label](neige://source/…)` citation, as
- * `parseSourceCitationCell` reads it with the prose's own parser. The
- * template asks every figure to carry its source and every source to be a
- * `neige://source/…` link, so the 「来源」 column of a table is where the
- * two rules meet; the prose beside it already paints these as citations, and
- * a cell showing the raw link syntax was the one unclickable citation in
- * the report.
- *
- * Deliberately not a Markdown renderer. Cells are strings on the wire and
- * stay strings; anything else — a link with prose around it, two links, a
- * link under another scheme, markup — is text, as before. A cell that wants
- * a citation puts one link in it and nothing else, and the template says
- * so.
- */
+/** A cell whose whole text is a single `[label](neige://source/…)` citation paints as the prose's citation; anything else stays text — this is not a Markdown renderer. */
 function Cell({ value, onOpenSourceLink }: {
   value: string | number | null | undefined;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
@@ -52,27 +31,11 @@ function Cell({ value, onOpenSourceLink }: {
   );
 }
 
-/**
- * A live table's rows come from a plugin-written overlay, so this component
- * has three states the inline form never has: the source names something that
- * has not pushed yet, the source resolved but to a payload that is not a
- * table, and no resolver was supplied at all (a surface that does not carry
- * overlays, e.g. the Today document).
- *
- * All three render the caption plus one line of prose rather than nothing: a
- * live block that silently disappears is indistinguishable from a report that
- * never had one, which is precisely the reading a reader must not be given
- * about a number they came here to check.
- */
+/** A live table's rows come from a plugin-written overlay; its three unresolved states render the caption plus one line rather than nothing. */
 export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink }: {
   payload: TableBlockPayload;
   resolveLive?: (source: string) => unknown;
-  /**
-   * A cell that is one `neige://source/…` citation was activated (#1687).
-   * The same handler the document gives its prose; absent ⇒ the cell is the
-   * badge-plus-label form, exactly as the prose is on a surface with no
-   * panel.
-   */
+  /** A cell that is one `neige://source/…` citation was activated; absent ⇒ the cell is the badge-plus-label form. */
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
 }) {
   if (isLiveTablePayload(payload)) {
@@ -90,9 +53,6 @@ export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink }: {
       return <LiveTableNotice caption={payload.caption}
         text={`${payload.source} holds something this build cannot read as a table.`} />;
     }
-    // The live payload's own caption wins when it has one: it is written by
-    // whoever produced these exact rows (a timestamp, a "priced in USDT"), and
-    // the block's caption is the document author's standing description.
     return <InlineTable payload={decoded.data} fallbackCaption={payload.caption} onOpenSourceLink={onOpenSourceLink} />;
   }
   return <InlineTable payload={payload} onOpenSourceLink={onOpenSourceLink} />;
@@ -114,13 +74,10 @@ function InlineTable({ payload, fallbackCaption, onOpenSourceLink }: {
 }) {
   const { columns, rows, highlight } = payload;
   const caption = payload.caption ?? fallbackCaption;
-  // A row is addressed by its first column's value — the natural identity of a
-  // row in a comparables table, and the only key the payload offers.
   const keyColumn = columns[0]?.key;
 
   return (
-    // Its own scroll container: a wide table may not make the page scroll
-    // sideways (§3.2).
+    // Its own scroll container: a wide table may not make the page scroll sideways.
     <div className={styles.wrap}>
       <table className={styles.table}>
         {caption != null && caption !== '' && <caption className={styles.caption}>{caption}</caption>}

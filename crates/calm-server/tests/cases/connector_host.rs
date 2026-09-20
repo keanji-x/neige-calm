@@ -1,42 +1,4 @@
-//! #1164 P1 — external connector host (`kind: mcp-http` / `cli-query`).
-//!
-//! Covers the design doc's §4 acceptance list, minus the items that belong to
-//! later slices:
-//!
-//! * **#1** install + enable → Running, and still Running after a full service
-//!   restart (simulated by rebuilding host + registry from disk over the same
-//!   repo, which is exactly what boot does).
-//! * **#4** a `cli-query` connector resolves + pins its command, comes up
-//!   Running with its declared tool visible, executes it on `tools/call`, and
-//!   reports a non-zero exit as `isError` rather than as a transport failure.
-//! * **#3** a real `tools/call` returns real upstream data — against a local
-//!   stub HTTP MCP server that reproduces the recorded wire shape from §1.1
-//!   (single `event: message` frame, one `data:` line, no session header).
-//!   Never the real network.
-//! * **#5** `secrets.json` values appear in no API response.
-//! * **#6** stopping an `app` plugin makes its tools invisible immediately
-//!   (anti-relaxation regression for `process: Option<…>`).
-//! * **#7** the boot audit's `PluginToolRegistered` read sees connector tools,
-//!   which is only possible if materialization happens BEFORE the live
-//!   `Running` publication (§2.7(1)).
-//! * **#8** `rotate-token` on a connector is a 4xx AND has no side effects —
-//!   including when the registry has no entry at all, where the guard must fail
-//!   CLOSED rather than fall through to the delete + restart.
-//! * **#10** a hung upstream does not block boot; the connector lands
-//!   `Unavailable`.
-//! * **#11** `set_exposes_tools` no-ops for an absent id: an uninstall that
-//!   completes while a spawn is in flight must not resurrect the entry.
-//!
-//! Plus two things §4 does not enumerate but a review found missing:
-//! the API key must appear in NO error sink (`Unavailable` reason, `/enable`
-//! body, `tools_call` error) for either a refused connection or a hung
-//! upstream; and a connector's card-creation refusal is asserted by driving
-//! the REAL `POST /api/tracks/{id}/cards` route, not its two accessors.
-//!
-//! §4 #2 and #9 (discovery + underscore routing) are unit tests against the
-//! production projection/route functions in `mcp_server::transport`. §4 #4 —
-//! `cli-query` execution — landed in #1164 P3 and is covered at the bottom of
-//! this file, against a script the test writes and pins by absolute path.
+//! External connector host (`kind: mcp-http` / `cli-query`) integration tests.
 
 #![cfg(unix)]
 
@@ -72,60 +34,32 @@ const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
 const CONNECTOR_ID: &str = "mcp-wisburg";
 const SECRET_NAME: &str = "WISBURG_API_KEY";
 const SECRET_VALUE: &str = "sk-super-secret-do-not-leak-8213";
-/// Underscores on purpose (§4 #9): the id↔tool boundary is `_`.
+/// Underscores on purpose: the id↔tool boundary is `_`.
 const ALLOWED_TOOL: &str = "list_institutional_reports";
 const ALLOWED_TOOL_2: &str = "get_report_detail";
 /// Served upstream but NOT in `tools_allow` — must never materialize.
 const DENIED_TOOL: &str = "admin_purge";
 
-/// How many characters of the API key sit past the truncation boundary in the
-/// `EchoAuthIn4xx` fixture — i.e. exactly how long a prefix the clamp-first
-/// order would leak. Kept well above "a couple of characters" so the assertion
-/// is about a usable credential fragment, not a coincidence.
+/// How far past the truncation boundary the API key sits in the `EchoAuthIn4xx` fixture.
 const KEY_STRADDLE_TAIL: usize = 16;
 
-// ===========================================================================
-// Stub upstream MCP server
-//
-// Mimics the shape recorded in design §1.1: `content-type: text/event-stream`
-// with a single `event: message` + one `data:` line and no `Mcp-Session-Id`.
-// Deliberately hand-rolled HTTP/1.1 — the point is to reproduce THAT wire
-// shape, and a framework would normalize it away.
-// ===========================================================================
+// Stub upstream MCP server, hand-rolled so it reproduces the exact recorded SSE wire shape.
 
 #[derive(Clone, Copy, PartialEq)]
 enum StubMode {
     /// Answer everything promptly.
     Normal,
-    /// Accept the connection, read the request, then never write. This is the
-    /// failure that would otherwise hang boot (§2.2).
+    /// Accept the connection, read the request, then never write.
     Hang,
-    /// Healthy, but slow on `initialize` only: never answer that one (so the
-    /// client pays its full PER-REQUEST timeout), then answer `tools/list`
-    /// promptly. `initialize` is explicitly best-effort, so this upstream is
-    /// perfectly usable — it must come up Running. It cannot when the outer
-    /// bring-up bound equals ONE request's timeout.
+    /// Never answer `initialize` (best-effort), then answer `tools/list` promptly; must come up Running.
     HangInitialize,
-    /// Answer every request with a 4xx whose body **echoes the request's own
-    /// `Authorization` header**, padded so the API key inside it straddles the
-    /// kernel's `MAX_UPSTREAM_DETAIL_CHARS` truncation boundary. This is the
-    /// upstream behaviour the scrub-before-truncate rule exists for, and the
-    /// only way to reach the production expression pair end-to-end.
-    ///
-    /// It echoes the HEADER since #1194: the credential no longer rides in the
-    /// query string, so a query-echoing fixture would put nothing to redact on
-    /// the wire and the test would pass vacuously. `{"error":"Invalid API key:
-    /// sk-…"}` is a common real upstream shape and this is its 4xx analogue.
+    /// Answer every request with a 4xx whose body echoes the request's own `Authorization`
+    /// header, padded so the key straddles the truncation boundary.
     EchoAuthIn4xx,
-    /// Healthy bring-up, then a `tools/call` that takes
-    /// [`SLOW_TOOLS_CALL`] to answer — far longer than any bring-up budget a
-    /// manifest is allowed to ask for. This is the report-generating tool the
-    /// call timeout exists for; it must succeed.
+    /// Healthy bring-up, then a `tools/call` that takes [`SLOW_TOOLS_CALL`] to answer.
     SlowToolsCall,
-    /// Healthy, but echoes the request's own `Authorization` header (API key
-    /// and all) into every `tools/list` description and every `tools/call`
-    /// result. The success-path leak the scrub layer exists for — and the one
-    /// header auth does NOT close, which is why `scrub_value` survives #1194.
+    /// Healthy, but echoes the request's own `Authorization` header into every
+    /// `tools/list` description and `tools/call` result.
     EchoAuthInResults,
     /// Split the catalog over two pages. The second page carries a tool that
     /// no first-page-only implementation can materialize.
@@ -146,25 +80,15 @@ const SLOW_TOOLS_CALL: Duration = Duration::from_millis(1_500);
 
 struct StubServer {
     addr: std::net::SocketAddr,
-    /// Query strings seen. Since #1194 the kernel appends nothing to the URL,
-    /// so this is what proves the key is NOT there.
+    /// Query strings seen.
     seen_queries: Arc<std::sync::Mutex<Vec<String>>>,
-    /// `Authorization` header values seen, in order — the slot the credential
-    /// rides in since #1194. Empty string when the header was absent.
+    /// `Authorization` header values seen, in order; empty string when absent.
     seen_auth: Arc<std::sync::Mutex<Vec<String>>>,
     seen_tenants: Arc<std::sync::Mutex<Vec<String>>>,
-    /// `(JSON-RPC method, Authorization value)` for each request, recorded as
-    /// ONE push from the connection task that knows both.
-    ///
-    /// `seen_methods` and `seen_auth` are two vectors filled from concurrent
-    /// per-connection tasks, so zipping them is not sound — and the pairing is
-    /// exactly what an auth assertion needs, because the client spends two
-    /// different `Phase`s and a defect can live in only one of them. See
-    /// `Self::auth_by_method`.
+    /// `(JSON-RPC method, Authorization value)` per request, pushed together by the connection
+    /// task; zipping `seen_methods` with `seen_auth` is not sound.
     seen_auth_by_method: Arc<std::sync::Mutex<Vec<(String, String)>>>,
-    /// Whole request targets (path AND query), so #1284 S3b can prove a
-    /// configured PATH reached the wire — `seen_queries` drops the path, which
-    /// is exactly the half the url slots fill.
+    /// Whole request targets (path AND query).
     seen_targets: Arc<std::sync::Mutex<Vec<String>>>,
     /// Methods seen, in order.
     seen_methods: Arc<std::sync::Mutex<Vec<String>>>,
@@ -175,10 +99,6 @@ struct StubServer {
 }
 
 /// A first-hop MCP endpoint that always redirects to another server.
-///
-/// Kept separate from [`StubServer`]: the security regression needs two
-/// independently observable hosts so "the redirect failed" cannot be mistaken
-/// for "the client followed it without the credential".
 struct RedirectServer {
     addr: std::net::SocketAddr,
     requests: Arc<std::sync::atomic::AtomicUsize>,
@@ -257,10 +177,7 @@ impl StubServer {
         let auth_by_method = Arc::clone(&seen_auth_by_method);
         let methods = Arc::clone(&seen_methods);
         let received = Arc::clone(&tools_list_received);
-        // Wrapped so each per-connection task can take it. Connections are
-        // served CONCURRENTLY: a mode that stalls one request must not stop
-        // the stub from answering the client's next connection, which is the
-        // whole point of `HangInitialize`.
+        // Connections are served concurrently: a mode that stalls one request must not stop the next connection.
         let gate = Arc::new(tokio::sync::Mutex::new(gate));
 
         let task = tokio::spawn(async move {
@@ -313,10 +230,7 @@ impl StubServer {
                     }
 
                     if mode == StubMode::EchoAuthIn4xx {
-                        // Place the key so it STARTS `KEY_STRADDLE_TAIL` chars
-                        // before the cap and runs past it: clamp-first leaves
-                        // exactly that many characters of a live credential in
-                        // the message, scrub-first leaves none.
+                        // Place the key so it starts `KEY_STRADDLE_TAIL` chars before the cap and runs past it.
                         let echoed = format!("Authorization: {auth}; tenant={tenant}");
                         let key_at = echoed.find(SECRET_VALUE).unwrap_or(0);
                         let pad = MAX_UPSTREAM_DETAIL_CHARS - KEY_STRADDLE_TAIL - key_at;
@@ -344,8 +258,6 @@ impl StubServer {
                         sleep(SLOW_TOOLS_CALL).await;
                     }
 
-                    // What an upstream that quotes our own request back looks
-                    // like on the SUCCESS path. Includes the API key verbatim.
                     let echo = if mode == StubMode::EchoAuthInResults {
                         format!(" [upstream saw Authorization: {auth}; tenant={tenant}]")
                     } else {
@@ -427,7 +339,6 @@ impl StubServer {
                     };
                     let payload =
                         json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
-                    // §1.1's exact framing: one `event:` line, one `data:` line.
                     let sse = format!("event: message\ndata: {payload}\n\n");
                     let head = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
@@ -471,8 +382,6 @@ impl StubServer {
         self.seen_auth.lock().unwrap().clone()
     }
 
-    /// `(method, Authorization)` per request — the pairing an auth assertion
-    /// needs in order to say anything about one named `Phase`.
     fn auth_by_method(&self) -> Vec<(String, String)> {
         self.seen_auth_by_method.lock().unwrap().clone()
     }
@@ -491,11 +400,6 @@ impl StubServer {
 }
 
 /// Read one HTTP/1.1 request, returning `(request-target, head, body)`.
-///
-/// The head is returned raw so a test can assert on the credential HEADER —
-/// since #1194 that is the slot the API key rides in, and a fixture that only
-/// sees the target could not tell "sent as `Authorization: Bearer …`" from
-/// "sent nowhere".
 async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<(String, String, String)> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 2048];
@@ -553,13 +457,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-// ===========================================================================
-// On-disk fixtures
-// ===========================================================================
-
-/// The two budgets a connector manifest carries, kept together so a test that
-/// cares about only one still has to say what the other is (round-4 finding A:
-/// they are separate constraints and conflating them is the whole defect).
+/// The two budgets a connector manifest carries; they are separate constraints.
 #[derive(Clone, Copy)]
 struct Budgets {
     /// `mcp_http.request_timeout_ms` — the steady-state `tools/call` budget.
@@ -570,7 +468,6 @@ struct Budgets {
 }
 
 impl Budgets {
-    /// The pre-split shape: one number, and the bring-up budget derived from it.
     fn uniform(ms: u64) -> Self {
         Self {
             call_ms: ms,
@@ -605,9 +502,8 @@ fn connector_manifest_base(url: &str, timeout_ms: u64) -> Value {
     })
 }
 
-/// Write a connector directory INSIDE `plugins_dir` (design §0 / D9: the
-/// source must live there so install hits the `src == dst` short-circuit and
-/// lands a real directory, not the symlink `load_from_dir` skips).
+/// Write a connector directory INSIDE `plugins_dir`, so install hits the `src == dst`
+/// short-circuit and lands a real directory.
 fn write_connector(plugins_dir: &Path, url: &str, timeout_ms: u64, secret_mode: u32) -> PathBuf {
     write_connector_with(plugins_dir, url, Budgets::uniform(timeout_ms), secret_mode)
 }
@@ -635,9 +531,6 @@ fn write_connector_with(
     dir
 }
 
-/// Write an all-tools manifest directly for runtime error-path fixtures. The
-/// successful path below deliberately uses the install API instead, so the
-/// persistence contract is not proved by this helper.
 fn write_all_tools_connector(plugins_dir: &Path, url: &str) -> PathBuf {
     let dir = write_connector(plugins_dir, url, 5_000, 0o600);
     let mut manifest = connector_manifest_json(url, Budgets::uniform(5_000));
@@ -676,17 +569,9 @@ fn write_app_plugin(plugins_dir: &Path, id: &str) -> PathBuf {
     dir
 }
 
-// ===========================================================================
-// Host / AppState boot helpers
-// ===========================================================================
-
 struct Boot {
     repo: Arc<dyn Repo>,
-    /// The same store as [`Self::repo`], typed, so a test can reach past the
-    /// `Repo` trait and break it on purpose — see
-    /// `a_cli_connector_whose_config_store_is_unreadable_lands_unavailable`.
-    /// `sqlite::memory:` maps to a NAMED shared-cache database, so DDL issued
-    /// through this pool is visible to every connection the host uses.
+    /// The same store as [`Self::repo`], typed, so a test can break it on purpose.
     sqlx: Arc<SqlxRepo>,
     plugins_dir: PathBuf,
     plugins_data_dir: PathBuf,
@@ -717,17 +602,13 @@ async fn boot() -> Boot {
 }
 
 impl Boot {
-    /// Build a `PluginHost` whose registry is hydrated **from disk**, exactly
-    /// like `AppState::new` does at boot. Calling this twice over the same
-    /// `plugins_dir` + repo is our stand-in for a full service restart.
+    /// Build a `PluginHost` hydrated from disk, like boot; calling twice over the same
+    /// `plugins_dir` + repo simulates a restart.
     fn host(&self) -> Arc<PluginHost> {
         self.host_with_disabled(Vec::new())
     }
 
-    /// [`Self::host`] with `config.plugins_disabled` populated — the operator's
-    /// kill switch. #1196 S1 review r5: the rotate regression r4 found was only
-    /// reachable for ids on this list, so an HTTP gate for it needs a host that
-    /// has one.
+    /// [`Self::host`] with `config.plugins_disabled` populated.
     fn host_with_disabled(&self, plugins_disabled: Vec<String>) -> Arc<PluginHost> {
         let (registry, report) = PluginRegistry::load_from_dir(&self.plugins_dir).unwrap();
         assert!(
@@ -863,18 +744,12 @@ async fn boot_audit_tool_names(host: &Arc<PluginHost>) -> Vec<String> {
     out
 }
 
-// ===========================================================================
-// §4 #1 — install + enable → Running, survives a restart
-// ===========================================================================
-
 #[tokio::test]
 async fn connector_installs_enables_and_stays_running_across_restart() {
     let stub = StubServer::start(StubMode::Normal).await;
     let b = boot().await;
     let dir = write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
 
-    // Install through the REAL route (design §0: "install path, zero new
-    // code"). Source is inside plugins_dir, per D9.
     let state = b.state(b.host());
     let (status, body) = post_json(
         &state,
@@ -892,15 +767,12 @@ async fn connector_installs_enables_and_stays_running_across_restart() {
     .await;
     assert_eq!(status, StatusCode::OK, "enable failed: {body}");
     assert_eq!(body.get("state").and_then(|s| s.as_str()), Some("running"));
-    // No child process — that is the whole point of §2.5's `Option<Arc<…>>`.
     assert!(
         body.get("pid").map(|p| p.is_null()).unwrap_or(true),
         "connector must not report a pid: {body}"
     );
 
-    // --- simulated full service restart -------------------------------
-    // Fresh host + registry re-hydrated from disk, same repo (the `enabled`
-    // row persists), then the boot autospawn loop.
+    // Simulated full service restart: fresh host + registry from disk, same repo.
     let host2 = b.host();
     assert!(
         host2.registry().get(CONNECTOR_ID).is_some(),
@@ -923,11 +795,6 @@ async fn connector_installs_enables_and_stays_running_across_restart() {
     );
 }
 
-/// A form-style install with explicit `tools_all: true` is the new all-tools mode. This
-/// drives the complete production path: REST install writes the explicit
-/// manifest, enable discovers every page, the registry exposes the later-page
-/// schema/annotations as an ordinary (non-forge) tool, a real tools/call works,
-/// and boot re-discovers the same mode from disk.
 #[tokio::test]
 async fn default_all_tools_install_discovers_every_page_and_survives_restart() {
     let stub = StubServer::start(StubMode::PaginatedTools).await;
@@ -1086,10 +953,6 @@ async fn endlessly_fresh_tools_cursors_hit_the_page_cap_before_publish() {
     assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 }
 
-// ===========================================================================
-// §4 #3 — a real tools/call returns real upstream data
-// ===========================================================================
-
 #[tokio::test]
 async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -1124,28 +987,8 @@ async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
         Some(&json!(3))
     );
 
-    // #1194 — the API key rode in `Authorization: Bearer <key>`, as
-    // `api_key_in: "bearer"` declares, and the SSE envelope was stripped or
-    // nothing above parsed.
-    //
-    // The assertion is on the header VALUE, not on the header's presence: the
-    // bug `bearer` exists to fix is that `header:<name>` sets the value to the
-    // RAW credential, and a presence-only check passes on exactly that bug.
-    //
-    // **It is `all`, paired with the method, and that is not pedantry.** An
-    // `any` over the recorded values was the first cut, and a review channel
-    // produced the mutation that walks through it: strip the `Bearer ` prefix
-    // in `HttpMcpClient::request` only when `phase == Phase::Call`, leaving
-    // bring-up correct. That mutation was RUN — it survived all 157 tests in
-    // this suite and all 33 `http_mcp` unit tests, because bring-up's two
-    // requests satisfied the `any` on their own and no assertion anywhere
-    // looked at the `tools/call` request's credential. The client spends two
-    // `Phase`s; an assertion that does not name them cannot see a defect in
-    // one of them.
-    //
-    // **Mutation witnesses** — (a) the `ApiKeyIn::Bearer` arm in
-    // `HttpMcpClient::new` sends the bare key: every row goes wrong.
-    // (b) the phase split above: only the `tools/call` row does.
+    // Assert on the header VALUE, paired with the method: bring-up's two requests alone
+    // would satisfy an `any`.
     let by_method = stub.auth_by_method();
     let expected = format!("Bearer {SECRET_VALUE}");
     for (method, auth) in &by_method {
@@ -1154,14 +997,10 @@ async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
             "every request must carry `Bearer <key>`; `{method}` did not: {by_method:?}"
         );
     }
-    // …and the `tools/call` request really is among them, so the loop above is
-    // not quantifying over bring-up alone.
     assert!(
         by_method.iter().any(|(m, _)| m == "tools/call"),
         "the `tools/call` phase must be covered by the assertion above: {by_method:?}"
     );
-    // …and nowhere near the URL. #1194's whole point: the credential is not in
-    // the one string `ureq::Error`'s `Display` prints.
     assert!(
         stub.targets().iter().all(|t| !t.contains(SECRET_VALUE)),
         "the credential must not reach the request target: {:?}",
@@ -1173,7 +1012,6 @@ async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
         stub.queries()
     );
 
-    // Materialization respected the allowlist (§2.2).
     let manifest = host.registry().get(CONNECTOR_ID).unwrap();
     let mut names: Vec<&str> = manifest
         .exposes_tools
@@ -1186,7 +1024,6 @@ async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
         !names.contains(&DENIED_TOOL),
         "a tool outside tools_allow must never materialize"
     );
-    // Materialized entries carry the upstream schema, not a placeholder.
     let listed = manifest
         .exposes_tools
         .iter()
@@ -1203,13 +1040,8 @@ async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
     );
 }
 
-/// #1286 — a connector credential is scoped to the endpoint written in the
-/// manifest. An upstream 302 must not turn that endpoint into an attacker-
-/// selected second host, especially because ureq preserves custom headers such
-/// as `X-API-Key` while following the redirect.
-///
-/// Mutation witness: remove `.redirects(0)` from `HttpMcpClient::new`; the sink
-/// receives both redirected bring-up requests and this test fails.
+/// An upstream 302 must not redirect a keyed connector to another host: ureq preserves
+/// custom headers such as `X-API-Key` while following redirects.
 #[tokio::test]
 async fn an_upstream_redirect_cannot_send_a_header_api_key_to_another_host() {
     let sink = StubServer::start(StubMode::Normal).await;
@@ -1262,10 +1094,6 @@ async fn an_upstream_redirect_cannot_send_a_header_api_key_to_another_host() {
     assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 }
 
-// ===========================================================================
-// §4 #5 — secrets never reach an API response
-// ===========================================================================
-
 #[tokio::test]
 async fn secrets_json_values_never_appear_in_any_plugin_api_response() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -1298,8 +1126,6 @@ async fn secrets_json_values_never_appear_in_any_plugin_api_response() {
         );
     }
 
-    // Belt and braces: the in-memory manifest (which materialization DOES
-    // mutate) must not have grown a secret either.
     let manifest_json = state
         .plugin
         .registry()
@@ -1312,22 +1138,8 @@ async fn secrets_json_values_never_appear_in_any_plugin_api_response() {
     assert!(manifest_json.contains(SECRET_NAME));
 }
 
-/// The happy-path secrets test above walks only successful requests, so it
-/// would stay green with the key leaking through every FAILURE path. This one
-/// drives the two failure shapes an operator actually hits and asserts the
-/// secret appears in NONE of the three sinks a `ureq` transport error reaches:
-/// the `Unavailable` reason (persisted + broadcast as
-/// `Event::PluginState.last_error`), the `POST /enable` 503 body, and the
-/// `tools_call` error that becomes track transcript text.
-///
-/// The leak this pins: `ureq::Error`'s `Display` prints the FULL URL first.
-/// Before #1194 `HttpMcpClient::new` folded the API key into that URL's query
-/// string, which made this the sharpest path from a transport error to an
-/// operator-visible credential. The credential now rides in a header, so the
-/// URL is no longer a carrier the kernel fills — but the rule this test guards
-/// is "format a `ureq::Error` only via `kind()`", and that rule is unchanged:
-/// `mcp_http.url` is an operator-written literal that may carry a secret of its
-/// own. Keeping the test on the header credential still exercises every sink.
+/// The key must appear in none of the three sinks a `ureq` transport error reaches;
+/// `ureq::Error`'s `Display` prints the full URL, so it is only ever formatted via `kind()`.
 #[tokio::test]
 async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
     // ---- case A: connection refused (bind, note the port, then drop) ----
@@ -1357,8 +1169,7 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{label}: install: {body}");
 
-        // Sink 1: the `/enable` response body, read as raw text so we see it
-        // verbatim rather than through a parsed `Value`.
+        // Sink 1: the `/enable` response body, read as raw text.
         let resp = app(state.clone())
             .oneshot(
                 Request::builder()
@@ -1405,15 +1216,10 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
         );
 
         // Sink 4: a `tools_call` failure, which becomes track transcript text.
-        // Build the client the same way `spawn_mcp_http` does, then call it
-        // against the same dead/hung upstream.
         let manifest = state.plugin.registry().get(CONNECTOR_ID).unwrap();
         let credential = calm_server::plugin_host::HttpCredential::parse(SECRET_VALUE)
             .expect("the fixture credential must satisfy the HTTP-credential rules");
         let block = manifest.mcp_http.as_ref().unwrap();
-        // #1284 §2.3(c): the endpoint comes from the real resolver, exactly as
-        // `spawn_mcp_http` gets it — a `&str` is no longer a thing this
-        // constructor accepts.
         let url = calm_server::plugin_host::manifest::resolve_mcp_http_url(
             block,
             &serde_json::Map::new(),
@@ -1434,8 +1240,7 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
             "{label}: the API key leaked into a tools/call error: {}",
             err.message
         );
-        // And a `Debug` of the client itself, which is what a `RunningPlugin`
-        // dump or a `tracing` field would render.
+        // And a `Debug` of the client itself.
         let dbg = format!("{client:?}");
         assert!(!dbg.contains(SECRET_VALUE), "{label}: {dbg}");
 
@@ -1447,14 +1252,7 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
     }
 }
 
-// ===========================================================================
-// §4 #4 — `cli-query` execution (#1164 P3)
-//
-// The connector under test is a shell script the test writes into a temp dir
-// and pins by ABSOLUTE path, which is what an operator does for a real query
-// CLI. Nothing here touches the network and nothing depends on a binary being
-// installed on the runner.
-// ===========================================================================
+// `cli-query` execution: the connector under test is a script the test writes and pins by absolute path.
 
 const CLI_ID: &str = "cli-longbridge";
 const CLI_TOOL: &str = "quote";
@@ -1467,8 +1265,7 @@ fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
     p
 }
 
-/// Install a `cli-query` connector directory inside `plugins_dir` (D9: the
-/// source must live there so install hits the `src == dst` short-circuit).
+/// Install a `cli-query` connector directory inside `plugins_dir`.
 fn write_cli_connector(plugins_dir: &Path, command: &str, args: &[&str]) -> PathBuf {
     let dir = plugins_dir.join(CLI_ID);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1503,8 +1300,6 @@ fn write_cli_connector(plugins_dir: &Path, command: &str, args: &[&str]) -> Path
     dir
 }
 
-/// §4 #1/#4 for `cli-query`: install + enable → Running, with the declared tool
-/// visible through the same boot-audit read every other connector test uses.
 #[tokio::test]
 async fn cli_query_installs_and_enables_and_publishes_its_tool() {
     let b = boot().await;
@@ -1542,8 +1337,7 @@ async fn cli_query_installs_and_enables_and_publishes_its_tool() {
     );
     assert!(state.plugin.running_plugin_ids().await.contains(CLI_ID));
 
-    // The tool materialized BEFORE the live insert (§2.7(1)) — the same
-    // structural witness the mcp-http path is held to.
+    // The tool materialized BEFORE the live insert.
     let order = state
         .plugin
         .connector_spawn_order(CLI_ID)
@@ -1553,19 +1347,14 @@ async fn cli_query_installs_and_enables_and_publishes_its_tool() {
         "materialization must precede the live insert: {order:?}"
     );
 
-    // …and it is visible through the exact read the boot audit performs.
     let tools = boot_audit_tool_names(&state.plugin).await;
     assert!(
         tools.contains(&format!("{CLI_ID}::{CLI_TOOL}")),
         "the declared tool must be visible: {tools:?}"
     );
 
-    // #1744: these tools were materialized with `annotations: None`, which
-    // Codex under `approval_policy: never` refused on every call. cli-query is
-    // read-only by contract (#1164 §2.3), so every published tool carries
-    // `readOnlyHint: true`; the general waiver rule lives at
-    // `mcp_server::registry::role_gated_write_annotations`, and
-    // `report_series::resolver` reads the same hint to admit a series source.
+    // cli-query is read-only by contract, so every published tool carries `readOnlyHint: true`;
+    // Codex under `approval_policy: never` refuses tools with no annotations.
     let manifest = host.registry().get(CLI_ID).expect("registry entry");
     assert!(
         !manifest.exposes_tools.is_empty(),
@@ -1581,7 +1370,6 @@ async fn cli_query_installs_and_enables_and_publishes_its_tool() {
         );
     }
 
-    // The client is the new variant, and the command was pinned absolute.
     let client = state
         .plugin
         .connector_client(CLI_ID)
@@ -1597,14 +1385,11 @@ async fn cli_query_installs_and_enables_and_publishes_its_tool() {
     assert_eq!(client.variant_name(), "cli-query");
 }
 
-/// §4 #4 — calling the materialized tool actually runs the binary and returns
-/// its stdout, with the argument substituted as one whole argv element.
 #[tokio::test]
 async fn cli_query_tools_call_runs_the_binary_and_returns_its_stdout() {
     let b = boot().await;
     let bin = tempfile::tempdir().unwrap();
-    // Prints each argv element on its own line, so the test can see EXACTLY
-    // how the template was rendered — one element, not a shell-split string.
+    // Prints each argv element on its own line, so the test sees exactly how the template was rendered.
     let script = write_script(
         bin.path(),
         "argv.sh",
@@ -1657,10 +1442,7 @@ async fn cli_query_tools_call_runs_the_binary_and_returns_its_stdout() {
     assert!(err.message.contains("symbol"), "{}", err.message);
 }
 
-/// A non-zero exit is the CHILD's verdict, not a transport failure: the call
-/// succeeds and carries `isError: true` plus whatever the command printed.
-/// Reporting it as an `Err` would make "the query found nothing" and "the
-/// kernel could not run the query" indistinguishable to an agent.
+/// A non-zero exit is the child's verdict, not a transport failure: `isError: true` plus the output.
 #[tokio::test]
 async fn cli_query_non_zero_exit_is_is_error_true_with_the_output() {
     let b = boot().await;
@@ -1705,10 +1487,7 @@ async fn cli_query_non_zero_exit_is_is_error_true_with_the_output() {
     assert!(host.running_plugin_ids().await.contains(CLI_ID));
 }
 
-/// Design R5 — an unresolvable bare command is a 503 whose reason names the
-/// service PATH and the directories searched. The case this exists for is a
-/// docker preview stack that simply has no such binary; "command not found"
-/// alone tells the operator nothing about where the kernel looked.
+/// An unresolvable bare command is a 503 whose reason names the service PATH and the directories searched.
 #[tokio::test]
 async fn cli_query_unresolvable_command_is_a_503_naming_the_path() {
     let b = boot().await;
@@ -1753,7 +1532,6 @@ async fn cli_query_unresolvable_command_is_a_503_naming_the_path() {
         "the reason must list the directories searched ({first_dir}): {rendered}"
     );
 
-    // Observable, like every other failed connector.
     let st = state
         .plugin
         .status(CLI_ID)
@@ -1767,8 +1545,6 @@ async fn cli_query_unresolvable_command_is_a_503_naming_the_path() {
     assert!(!state.plugin.running_plugin_ids().await.contains(CLI_ID));
 }
 
-/// A `secret_env` key with no matching secret is a bring-up failure whose
-/// reason names the key and the file — and never the value of any secret.
 #[tokio::test]
 async fn cli_query_missing_secret_is_a_503_that_names_the_key_and_the_file() {
     let b = boot().await;
@@ -1814,9 +1590,7 @@ async fn cli_query_missing_secret_is_a_503_that_names_the_key_and_the_file() {
     assert!(rendered.contains("secrets.json"), "{rendered}");
 }
 
-/// §2.5 — `neige.*` callbacks and forge dispatch stay app-only for the new
-/// variant too. Widening either would hand a manifest-declared local binary the
-/// kernel's inbound callback surface.
+/// `neige.*` callbacks and forge dispatch stay app-only for `cli-query` too.
 #[tokio::test]
 async fn cli_query_connectors_are_refused_app_only_surfaces() {
     let b = boot().await;
@@ -1862,7 +1636,6 @@ async fn cli_query_connectors_are_refused_app_only_surfaces() {
     assert!(!host.running_plugin_ids().await.contains(CLI_ID));
 }
 
-/// §2.4 — a wrongly-permissioned secrets file refuses the enable outright.
 #[tokio::test]
 async fn world_readable_secrets_file_refuses_enable() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -1881,9 +1654,7 @@ async fn world_readable_secrets_file_refuses_enable() {
         matches!(err, HostError::ConnectorUnavailable { .. }),
         "got {err:?}"
     );
-    // The failure must be OBSERVABLE, not just returned to whoever called
-    // `enable`. Boot autospawn swallows the error, so the runtime entry is an
-    // operator's only signal.
+    // Boot autospawn swallows the error, so the runtime entry is an operator's only signal.
     let status = host
         .status(CONNECTOR_ID)
         .await
@@ -1900,14 +1671,8 @@ async fn world_readable_secrets_file_refuses_enable() {
     );
 }
 
-// ===========================================================================
-// §4 #6 — stopping an `app` plugin hides its tools immediately
-//
-// Anti-relaxation regression for §2.5: making `process` optional must not
-// weaken "process gone ⇒ tools gone". Visibility keys off `status` alone, and
-// `running_plugin_ids` is the single gate both discovery
-// (`plugin_tool_descriptors`) and dispatch (`plugin_tool_route`) consult.
-// ===========================================================================
+// Visibility keys off `status` alone; `running_plugin_ids` is the single gate both
+// discovery and dispatch consult.
 
 #[tokio::test]
 async fn stopping_an_app_plugin_removes_it_from_the_running_set_immediately() {
@@ -1935,10 +1700,6 @@ async fn stopping_an_app_plugin_removes_it_from_the_running_set_immediately() {
     );
 }
 
-// ===========================================================================
-// §4 #7 — materialization strictly precedes the live `Running` publication
-// ===========================================================================
-
 #[tokio::test]
 async fn connector_tools_are_materialized_before_the_id_becomes_running() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -1949,13 +1710,8 @@ async fn connector_tools_are_materialized_before_the_id_becomes_running() {
 
     host.spawn(CONNECTOR_ID).await.expect("connector spawns");
 
-    // STRUCTURAL, not sampled. The two production steps are adjacent
-    // SYNCHRONOUS blocks with no `.await` between them, so no concurrent
-    // observer can ever be scheduled in the gap — a sampling test passes just
-    // as green with the two blocks swapped, which makes it not a test of the
-    // ordering at all. `connector_spawn_order` stamps a process-global
-    // monotonic tick as the last action of each block, so swapping the blocks
-    // swaps the ticks and this assertion fails.
+    // Structural, not sampled: the two production steps are adjacent synchronous blocks, so
+    // `connector_spawn_order` stamps a monotonic tick after each.
     let order = host
         .connector_spawn_order(CONNECTOR_ID)
         .expect("a successful connector spawn must record both steps");
@@ -1973,8 +1729,6 @@ async fn connector_tools_are_materialized_before_the_id_becomes_running() {
     );
     assert!(order.materialized_before_live_insert());
 
-    // And the steady state is what the ordering was protecting: Running WITH a
-    // populated catalog.
     assert!(host.running_plugin_ids().await.contains(CONNECTOR_ID));
     assert_eq!(
         host.registry()
@@ -1983,8 +1737,6 @@ async fn connector_tools_are_materialized_before_the_id_becomes_running() {
         Some(2)
     );
 
-    // And the boot audit's own read sees them, so `PluginToolRegistered`
-    // covers external connectors with no audit hole.
     let audited = boot_audit_tool_names(&host).await;
     assert_eq!(
         audited,
@@ -1998,10 +1750,6 @@ async fn connector_tools_are_materialized_before_the_id_becomes_running() {
         .collect::<Vec<_>>(),
     );
 }
-
-// ===========================================================================
-// §4 #8 — rotate-token on a connector is a 4xx with NO side effects
-// ===========================================================================
 
 #[tokio::test]
 async fn rotate_token_on_a_connector_is_rejected_without_side_effects() {
@@ -2022,9 +1770,7 @@ async fn rotate_token_on_a_connector_is_rejected_without_side_effects() {
     )
     .await;
 
-    // Plant a token row so a stray delete would be observable. (Production
-    // never mints one for a connector — the kind branch precedes
-    // `ensure_plugin_token` — which is exactly what makes the delete a bug.)
+    // Plant a token row so a stray delete would be observable.
     b.repo
         .plugin_token_set(CONNECTOR_ID, "planted-hash", i64::MAX)
         .await
@@ -2061,19 +1807,14 @@ async fn rotate_token_on_a_connector_is_rejected_without_side_effects() {
     );
 }
 
-/// §4 #8, the fail-open hole: the kind guard used to be conditional on
-/// `registry.get(id)` returning `Some`, so an id the registry does not know
-/// fell straight THROUGH the guard into the token delete + restart — i.e. the
-/// one case where the kind cannot be proven was also the case that got the
-/// side effects. Acceptance §4 #8 requires no side effect.
+/// An id the registry does not know must fail CLOSED, not fall through the kind guard
+/// into the token delete + restart.
 #[tokio::test]
 async fn rotate_token_with_no_registry_entry_has_no_side_effects() {
     let b = boot().await;
     let state = b.state(b.host());
 
-    // A plugin ROW exists (so the route's own lookup succeeds) but the
-    // registry does not know the id — uninstall-mid-flight, a manifest that
-    // failed to load, a plugins_dir the operator moved.
+    // A plugin ROW exists but the registry does not know the id.
     seed_row(&b, CONNECTOR_ID).await;
     b.repo
         .plugin_token_set(CONNECTOR_ID, "planted-hash", i64::MAX)
@@ -2090,10 +1831,7 @@ async fn rotate_token_with_no_registry_entry_has_no_side_effects() {
         json!({}),
     )
     .await;
-    // #1196 S1 review r5 — the exact code, not just "some 4xx". `is_client_error`
-    // would have stayed green if the id had started answering 400 (or, once the
-    // `plugins_disabled` variant below is in play, anything else in the 4xx
-    // range); the contract this cell owes is specifically 404.
+    // The exact code, not just "some 4xx".
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
@@ -2110,37 +1848,8 @@ async fn rotate_token_with_no_registry_entry_has_no_side_effects() {
     );
 }
 
-// ===========================================================================
-// #1196 S1 review r5 — the rotate error table, driven end to end over HTTP
-// ===========================================================================
-
-/// `POST /api/plugins/{id}/rotate-token` answers the exact documented status for
-/// both cells that are reachable at the HTTP layer, **with the ids on the
-/// operator's kill switch** — which is the combination the r4 regression needed.
-///
-/// Why this test and not the two halves that already existed. `a20`
-/// (`plugin_lifecycle_lock.rs`) pins which `HostError` each cell produces;
-/// `routes::plugins::rotate_error_mapping_tests` pins which status each
-/// `HostError` maps to. Both are real, but the conjunction of two tests is an
-/// argument, not an observation: nothing ran the route. The two tests above in
-/// this file *do* drive the route, but neither has a `plugins_disabled` entry,
-/// so neither could see the r4 defect — the shared pre-lock probe answered
-/// `Disabled` (→ 500) only for ids on that list.
-///
-/// Why only two cells. `a20`'s third rotate cell (a *registered app* on the kill
-/// switch, which legitimately reaches the delete and then 500s) is host-only by
-/// nature, and its GHOST cell is not reachable here in `a20`'s form: with no
-/// `plugins` row the route's own `plugin_get_by_id` answers 404 before the host
-/// is called at all, so the mapping would not be under test. The cell that IS
-/// reachable is "row present, registry absent" — an uninstall mid-flight, a
-/// manifest that failed to load, a moved `plugins_dir` — and that is what this
-/// drives.
-///
-/// Mutation witnesses (each applied alone to `routes::plugins::rotate_error_to_calm`):
-/// * fold the `HostError::NotFound` arm into the `other` catch-all → the ghost
-///   cell goes red (500, owed 404);
-/// * fold the `HostError::UnsupportedForKind` arm into the catch-all → the
-///   connector cell goes red (500, owed 400).
+/// `rotate-token` answers the documented status for the two HTTP-reachable cells, with
+/// the ids on the operator's kill switch.
 #[tokio::test]
 async fn rotate_token_over_http_keeps_its_codes_for_ids_on_the_kill_switch() {
     const GHOST: &str = "test.rotate.ghost";
@@ -2154,8 +1863,7 @@ async fn rotate_token_over_http_keeps_its_codes_for_ids_on_the_kill_switch() {
         1_000,
         0o600,
     );
-    // …and an id with a `plugins` row but no manifest on disk, so the registry
-    // cannot know it.
+    // …and an id with a `plugins` row but no manifest on disk.
     seed_row(&b, CONNECTOR_ID).await;
     seed_row(&b, GHOST).await;
 
@@ -2215,10 +1923,6 @@ async fn rotate_token_over_http_keeps_its_codes_for_ids_on_the_kill_switch() {
     }
 }
 
-// ===========================================================================
-// §4 #10 — a hung upstream does not block boot
-// ===========================================================================
-
 #[tokio::test]
 async fn hung_upstream_lands_unavailable_without_blocking_boot() {
     let stub = StubServer::start(StubMode::Hang).await;
@@ -2232,24 +1936,13 @@ async fn hung_upstream_lands_unavailable_without_blocking_boot() {
     seed_row(&b, "app-echo").await;
 
     let started = Instant::now();
-    // This is the call `AppState::new` awaits INLINE. If it can hang, boot
-    // hangs. The OUTER timeout is what makes this test able to fail fast
-    // instead of wedging the suite; the elapsed assertion below is what makes
-    // it able to fail at all.
+    // This is the call `AppState::new` awaits inline; the outer timeout keeps a hang from wedging the suite.
     tokio::time::timeout(Duration::from_secs(5), host.autospawn_enabled())
         .await
         .expect("boot autospawn never returned against a hung upstream");
     let elapsed = started.elapsed();
 
-    // 400 ms PER REQUEST × 2 round trips + 500 ms slack = a 1.3 s ceiling on
-    // this connector's bring-up. The assertion is 3 s, not 2 s: round 2 raised
-    // the per-connector cap from 400 ms to 1.3 s without moving this number,
-    // which left the co-installed app plugin ~0.7 s of headroom on a loaded
-    // box. What this fails on is an UNBOUNDED bring-up — without the
-    // per-request deadlines a hung upstream never returns at all, and without
-    // the outer `tokio::time::timeout` the parts of the round trip that sit
-    // outside ureq's clock are uncapped — and 3 s still fails loudly for
-    // either, since both are unbounded rather than "a bit slower".
+    // 400 ms per request × 2 round trips + 500 ms slack; what this fails on is an unbounded bring-up.
     assert!(
         elapsed < Duration::from_secs(3),
         "boot autospawn took {elapsed:?} against a hung upstream with a 400ms \
@@ -2270,29 +1963,19 @@ async fn hung_upstream_lands_unavailable_without_blocking_boot() {
     );
     assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 
-    // The rest of boot happened.
     assert!(
         host.running_plugin_ids().await.contains("app-echo"),
         "one unreachable connector must not stop other plugins from starting"
     );
 }
 
-/// Round-2 regression: the fix that introduced the single outer bound set it
-/// to `request_timeout_ms` — ONE request's worth — while `connect_mcp_http`
-/// makes TWO round trips. A healthy upstream that merely stalls on
-/// `initialize` (which is explicitly best-effort, and which the probed server
-/// class does not implement at all) therefore burned the entire budget on a
-/// call whose failure is supposed to be ignored, and landed `Unavailable`.
-///
-/// This upstream serves `tools/list` correctly and must come up **Running**.
+/// A healthy upstream that merely stalls on `initialize` (best-effort) must still come up
+/// Running; the outer bound must cover TWO round trips.
 #[tokio::test]
 async fn a_slow_but_healthy_upstream_still_comes_up_running() {
     let stub = StubServer::start(StubMode::HangInitialize).await;
     let b = boot().await;
-    // `initialize` will consume this whole per-request budget before the
-    // client gives up on it; `tools/list` then answers immediately. Total
-    // wall-clock ≈ 1× timeout, which is over the old (1× timeout) outer bound
-    // and comfortably inside the new one.
+    // `initialize` consumes this whole per-request budget; `tools/list` then answers immediately.
     let timeout_ms = 1_000;
     write_connector(&b.plugins_dir, &stub.url(), timeout_ms, 0o600);
     let host = b.host();
@@ -2322,18 +2005,11 @@ async fn a_slow_but_healthy_upstream_still_comes_up_running() {
         "methods: {:?}",
         stub.methods()
     );
-    // And the tools are really there.
     let tools = boot_audit_tool_names(&host).await;
     assert!(tools.iter().any(|t| t.ends_with(ALLOWED_TOOL)), "{tools:?}");
 }
 
 /// Boot latency must not scale with the number of unreachable connectors.
-///
-/// The per-connector timeout bounds ONE bring-up; `autospawn_enabled` iterates
-/// serially and `AppState::new` awaits it inline, so N dead connectors used to
-/// cost N × that bound. The connector portion of the loop now carries one
-/// overall budget. This drives the loop with several hung connectors and
-/// asserts the total stays near a single connector's cost, not N × it.
 #[tokio::test]
 async fn many_unreachable_connectors_do_not_scale_boot_latency() {
     let stub = StubServer::start(StubMode::Hang).await;
@@ -2360,11 +2036,7 @@ async fn many_unreachable_connectors_do_not_scale_boot_latency() {
     }
     let host = b.host();
 
-    // Drive the REAL loop with a budget small enough to observe it firing.
-    // Production supplies `CONNECTOR_AUTOSPAWN_BUDGET` (30 s) through
-    // `autospawn_enabled`, which is a one-line delegate to this function;
-    // bounding 30 s from outside would make this a 30 s test that could not
-    // tell the loop bound from the per-connector one.
+    // Drive the real loop with a budget small enough to observe it firing; production supplies 30 s.
     let budget = Duration::from_secs(2);
     let started = Instant::now();
     tokio::time::timeout(
@@ -2375,10 +2047,7 @@ async fn many_unreachable_connectors_do_not_scale_boot_latency() {
     .expect("boot autospawn never returned");
     let elapsed = started.elapsed();
 
-    // Serial-and-unbounded is ≈ N × (2 × 900ms + 500ms slack) ≈ 14s. Bounded,
-    // it stops at the budget plus at most one in-flight connector's own cap.
-    // 8 s fails loudly if the loop bound is removed and still passes with the
-    // per-connector bound doing its job.
+    // 8 s fails loudly if the loop bound is removed and still passes with the per-connector bound doing its job.
     assert!(
         elapsed < Duration::from_secs(8),
         "boot autospawn took {elapsed:?} for {N} unreachable connectors with a \
@@ -2407,18 +2076,8 @@ async fn many_unreachable_connectors_do_not_scale_boot_latency() {
     );
 }
 
-/// Round-3 F1: the loop budget and the per-connector cap were two independent
-/// numbers, and `mcp_http.request_timeout_ms` has no upper bound — so a large
-/// enough timeout made the LOOP bound fire first at boot while `POST /enable`
-/// (which has no loop budget) used the connector's own cap. Two answers for
-/// one manifest, and the boot-side reason blamed "earlier connectors" that do
-/// not exist.
-///
-/// The connector here is the ONLY one installed and its own cap
-/// (2 × 400 ms + 500 ms = 1.3 s) is deliberately larger than the loop budget
-/// it is given. Boot must nonetheless refuse it for its own upstream failure,
-/// with the same reason `/enable` gives. Removing the `max(...)` widening in
-/// `autospawn_enabled_within` makes the two reasons differ and fails here.
+/// A lone connector whose own cap exceeds the loop budget must be refused for its own
+/// upstream failure, with the same reason `/enable` gives.
 #[tokio::test]
 async fn boot_and_enable_agree_when_one_connector_outlasts_the_loop_budget() {
     let stub = StubServer::start(StubMode::Hang).await;
@@ -2427,8 +2086,7 @@ async fn boot_and_enable_agree_when_one_connector_outlasts_the_loop_budget() {
     let host = b.host();
     seed_row(&b, CONNECTOR_ID).await;
 
-    // Smaller than this connector's own 1.3 s cap — the shape that used to
-    // guarantee a loop-budget refusal for a lone connector.
+    // Smaller than this connector's own 1.3 s cap.
     tokio::time::timeout(
         Duration::from_secs(20),
         host.autospawn_enabled_within(Duration::from_millis(300)),
@@ -2465,43 +2123,21 @@ async fn boot_and_enable_agree_when_one_connector_outlasts_the_loop_budget() {
     );
 }
 
-/// Round-3 F0: `autospawn_enabled_within` wraps its `tokio::time::timeout`
-/// around the WHOLE spawn — including `spawn_mcp_http`'s live-table insert,
-/// which is what publishes `Running`. A budget elapsing after that insert but
-/// before the trailing `emit_state(Running)` completes used to land in the
-/// timeout arm and unconditionally overwrite the live entry with
-/// `Unavailable`: the connector was genuinely up (client live, tools already
-/// in the registry) yet dropped out of `running_plugin_ids`, every
-/// materialized tool went invisible, and a false failure was broadcast.
-///
-/// Driven deterministically, without racing anything. The stub gates its
-/// `tools/list` reply; the test takes the repo's write transaction before
-/// releasing that gate, so the spawn runs to completion through the live
-/// insert and then parks in `emit_state(Running)`'s `log_pure_event` — the
-/// exact window. The budget is then allowed to elapse inside it.
+/// A boot budget elapsing after the live insert but before `emit_state(Running)` completes
+/// must not overwrite the entry with `Unavailable`. The stub gates `tools/list` and the test
+/// holds the repo's write transaction to park the spawn in exactly that window.
 #[tokio::test]
 async fn a_connector_that_came_up_is_not_overwritten_by_the_elapsing_boot_budget() {
     let (release_gate, gate) = oneshot::channel::<()>();
     let stub = StubServer::start_gated(StubMode::Normal, Some(gate)).await;
     let b = boot().await;
-    // 3 s per bring-up request ⇒ a 6.5 s per-connector cap, which the loop
-    // budget below must exceed: the point of this test is the LOOP bound firing
-    // on a connector that already came up, not the per-connector one.
-    //
-    // **The 3 s is flake headroom, and it is deliberately not milliseconds.**
-    // The stub gates `tools/list` while this clock runs, and between
-    // `wait_for_tools_list()` and `release_gate` the test polls at 5 ms
-    // granularity, spawns a task, checks out a pool connection (running
-    // `after_connect`), executes `BEGIN IMMEDIATE`, and round-trips a oneshot.
-    // At the old 1 s that whole sequence had to finish inside one second on a
-    // loaded box, and blowing it produced a timeout that looked exactly like a
-    // real regression.
+    // 3 s per bring-up request ⇒ a 6.5 s per-connector cap, which the loop budget below must
+    // exceed; 3 s is flake headroom for the gate/lock sequence below, not milliseconds.
     write_connector_with(&b.plugins_dir, &stub.url(), Budgets::uniform(3_000), 0o600);
     let host = b.host();
     seed_row(&b, CONNECTOR_ID).await;
 
-    // > (2 × 3 s + 500 ms slack) + 500 ms, so `autospawn_enabled_within` uses
-    // it verbatim rather than widening it (see the F1 fix).
+    // > (2 × 3 s + 500 ms slack) + 500 ms, so `autospawn_enabled_within` uses it verbatim rather than widening it.
     const BUDGET: Duration = Duration::from_millis(7_500);
     let loop_host = Arc::clone(&host);
     let autospawn = tokio::spawn(async move { loop_host.autospawn_enabled_within(BUDGET).await });
@@ -2569,7 +2205,6 @@ async fn a_connector_that_came_up_is_not_overwritten_by_the_elapsing_boot_budget
         .expect("autospawn never returned")
         .expect("autospawn task panicked");
 
-    // Still Running once everything has drained.
     let status = host.status(CONNECTOR_ID).await.expect("runtime entry");
     assert!(
         matches!(status.status, PluginRuntimeStatus::Running),
@@ -2578,23 +2213,7 @@ async fn a_connector_that_came_up_is_not_overwritten_by_the_elapsing_boot_budget
     );
 }
 
-// ===========================================================================
-// Round-4 finding A — the bring-up budget and the tools/call budget are two
-// knobs with opposite constraints
-// ===========================================================================
-
-/// Boot must stay bounded **however large the operator's `tools/call` budget
-/// is**, without a `min`/`max` juggling act at the spawn site.
-///
-/// Before the split, `connector_bringup_budget` read `request_timeout_ms`, and
-/// `autospawn_enabled_within` then widened the loop budget to fit it — so
-/// `"request_timeout_ms": 600000` against a black-holed upstream stalled
-/// `AppState::new` for 2 × 600 s + slack ≈ 20.5 minutes, during which the
-/// server does not serve. The value here is absurd on purpose.
-///
-/// Mutation witness: point `connector_bringup_budget` back at `timeout_ms()`
-/// and this test stops finishing at all — the outer `tokio::time::timeout`
-/// fires instead of the assertion.
+/// Boot must stay bounded however large the operator's `tools/call` budget is.
 #[tokio::test]
 async fn an_absurd_tools_call_budget_cannot_stall_boot() {
     let stub = StubServer::start(StubMode::Hang).await;
@@ -2635,14 +2254,8 @@ async fn an_absurd_tools_call_budget_cannot_stall_boot() {
     );
 }
 
-/// The bound the test above exercises for one fixture, stated as the invariant
-/// it actually is: **no manifest that loads** can make one connector's bring-up
-/// cap exceed [`MAX_CONNECTOR_BRINGUP_BUDGET`].
-///
-/// This is what "bounded by construction" has to mean after three rounds of
-/// adjusting constants. It drives the real `Manifest::parse` (so a value the
-/// validator refuses cannot be smuggled in) and the real
-/// `connector_bringup_budget` (so the formula and the constant cannot drift).
+/// No manifest that loads can make one connector's bring-up cap exceed
+/// [`MAX_CONNECTOR_BRINGUP_BUDGET`]; drives the real `Manifest::parse` and `connector_bringup_budget`.
 #[test]
 fn no_loadable_manifest_can_exceed_the_bringup_cap() {
     use calm_server::plugin_host::manifest::{
@@ -2690,14 +2303,8 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
     assert!(loaded >= 6, "only {loaded} manifests loaded");
     assert_eq!(refused, 2, "the over-ceiling values must be refused");
 
-    // ---- …and the OTHER connector kind. --------------------------------
-    //
-    // #1164 P3 F9: the claim above is universal ("no manifest that loads"),
-    // but every fixture so far is `mcp_http`, so `connector_bringup_budget`'s
-    // `cli-query` arm was never reached and the quantifier was only asserted
-    // over half its domain. `cli_query.timeout_ms` is the (uncapped) tools/call
-    // budget — a manifest naming a ten-minute one must still yield the fixed
-    // `CLI_QUERY_BRINGUP_BUDGET`.
+    // …and the other connector kind: `cli_query.timeout_ms` is uncapped, yet must still yield
+    // the fixed `CLI_QUERY_BRINGUP_BUDGET`.
     use calm_server::plugin_host::manifest::CLI_QUERY_MAX_OUTPUT_BYTES_CEILING as OUTPUT_CEILING;
     let cli_manifest = |extra: &Value| {
         let mut m = json!({
@@ -2724,10 +2331,7 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
         json!({ "timeout_ms": 600_000 }),
         json!({ "timeout_ms": u32::MAX }),
         json!({ "timeout_ms": u64::MAX }),
-        // r2 G1: `usize::MAX` used to live here and LOAD, which is how the
-        // `cap + 1` overflow reached production. The ceiling itself must still
-        // load — an author is entitled to the maximum — and the refusal of
-        // anything past it is asserted below.
+        // The ceiling itself must load; the refusal of anything past it is asserted below.
         json!({ "timeout_ms": 0, "max_output_bytes": OUTPUT_CEILING }),
         json!({ "search_path_extra": ["/opt/lb/bin"], "env_allow": ["TZ", "no_proxy"] }),
     ] {
@@ -2750,8 +2354,7 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
     }
     assert_eq!(cli_loaded, 6, "the cli-query arm must not be vacuous");
 
-    // …and the values a `cli-query` validator must REFUSE outright, so the
-    // "loads" half above is a real filter and not a formality (r2 G1/G4).
+    // …and the values a `cli-query` validator must REFUSE outright.
     for extra in [
         json!({ "env_allow": ["GH_TOKEN"] }),
         json!({ "env_allow": ["SSH_AUTH_SOCK"] }),
@@ -2763,11 +2366,8 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
         );
     }
 
-    // …while an over-ceiling `max_output_bytes` LOADS and is CLAMPED (r3 H7).
-    // The asymmetry is deliberate: `load_from_dir` re-parses on boot and only
-    // `warn!`s past a failure, so a parse-time refusal makes an installed
-    // connector vanish. A credential denylist has no safe fallback — forwarding
-    // the key is the harm — but an over-large cap has an obviously correct one.
+    // …while an over-ceiling `max_output_bytes` LOADS and is CLAMPED: `load_from_dir` re-parses on
+    // boot and only warns past a failure, so a parse-time refusal would make an installed connector vanish.
     for extra in [
         json!({ "max_output_bytes": OUTPUT_CEILING + 1 }),
         json!({ "max_output_bytes": u64::MAX }),
@@ -2783,12 +2383,6 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
     }
 }
 
-/// The other half of the same split: a `tools/call` that runs far longer than
-/// any legal bring-up budget must still succeed.
-///
-/// Mutation witness: make `tools_call` spend `Phase::Bringup` and this fails
-/// with a transport timeout — 1.5 s of upstream work against a 400 ms bring-up
-/// deadline.
 #[tokio::test]
 async fn a_long_running_tools_call_outlives_the_bringup_budget() {
     let stub = StubServer::start(StubMode::SlowToolsCall).await;
@@ -2831,20 +2425,8 @@ async fn a_long_running_tools_call_outlives_the_bringup_budget() {
     assert!(text.contains(&format!("rows for {ALLOWED_TOOL}")), "{text}");
 }
 
-// ===========================================================================
-// Round-4 finding B — the success path is scrubbed after parsing
-// ===========================================================================
-
-/// An upstream that quotes our own credential back inside `tools/list`
-/// descriptions and `tools/call` results is the success-path leak: those
-/// strings become `ExposedTool` entries agents read and track-transcript
-/// payloads. Nothing here is an error path, so `MAX_UPSTREAM_DETAIL_CHARS` and
-/// the 4xx arm are not involved — this is the JSON-tree scrub.
-///
-/// **This is why `scrub_value` survives #1194.** Moving the credential into a
-/// header changes whether OUR OWN transport errors carry it; it changes nothing
-/// about whether the upstream echoes it back. The fixture echoes the
-/// `Authorization` header precisely to make that concrete.
+/// Success-path leak: echoed credentials in `tools/list` descriptions and `tools/call` results
+/// become `ExposedTool` entries and transcript payloads; this is the JSON-tree scrub, not the 4xx arm.
 #[tokio::test]
 async fn a_success_path_that_echoes_the_credential_never_leaks_the_key() {
     let stub = StubServer::start(StubMode::EchoAuthInResults).await;
@@ -2886,20 +2468,8 @@ async fn a_success_path_that_echoes_the_credential_never_leaks_the_key() {
     assert!(text.contains("<redacted>"), "{text}");
 }
 
-// ===========================================================================
-// Round-4 finding C — the reconcile decision and its emission must agree
-// ===========================================================================
-
-/// `publish_unavailable` returning `false` is a SNAPSHOT taken under the
-/// process-table lock and then released. The old code emitted `Running` after
-/// that release, so a `stop()` landing in the window removed the entry and
-/// emitted `Disabled` — and this stale `Running` then overwrote it. The
-/// persisted and broadcast state said a connector with no client and no tools
-/// was running.
-///
-/// Driven without racing anything: the connector is stopped **before**
-/// `reaffirm_running` is called, so the emission has to notice on its own that
-/// its decision no longer holds.
+/// `publish_unavailable` returning `false` is a snapshot taken under the process-table lock;
+/// a `stop()` landing after the release must not be overwritten by a stale `Running`.
 #[tokio::test]
 async fn the_boot_budget_reconcile_does_not_resurrect_a_stopped_connector() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -2913,8 +2483,7 @@ async fn the_boot_budget_reconcile_does_not_resurrect_a_stopped_connector() {
         "sanity: it is up"
     );
 
-    // The operator disables it. This is the concurrent `stop()` of the race,
-    // resolved to its completed form so the test is deterministic.
+    // The concurrent `stop()` of the race, resolved to its completed form.
     host.stop(CONNECTOR_ID).await.expect("stop");
     assert!(host.status(CONNECTOR_ID).await.is_none());
 
@@ -2934,10 +2503,7 @@ async fn the_boot_budget_reconcile_does_not_resurrect_a_stopped_connector() {
     assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 }
 
-/// The mirror case, so the test above cannot pass by never emitting: a
-/// connector that IS up and not stopping gets its `Running` re-announced, which
-/// is the whole reason the arm exists (the dropped spawn future never reached
-/// its own `emit_state`).
+/// The mirror case, so the test above cannot pass by never emitting.
 #[tokio::test]
 async fn the_boot_budget_reconcile_does_re_emit_for_a_live_connector() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -2954,9 +2520,7 @@ async fn the_boot_budget_reconcile_does_re_emit_for_a_live_connector() {
     assert_eq!(after.last().map(String::as_str), Some("running"));
 }
 
-/// Every `PluginState` state string recorded for [`CONNECTOR_ID`], oldest
-/// first. Reads the persisted log rather than the live table, because the
-/// defect being pinned is about what was PERSISTED and BROADCAST.
+/// Every `PluginState` state string recorded for [`CONNECTOR_ID`], oldest first, from the persisted log.
 async fn plugin_state_events(b: &Boot) -> Vec<String> {
     b.repo
         .events_since(0, 500)
@@ -2972,19 +2536,9 @@ async fn plugin_state_events(b: &Boot) -> Vec<String> {
         .collect()
 }
 
-/// Round-3 F3: the scrub-before-truncate rule had only a unit test over the
-/// two free functions, so swapping the production lines in `request`'s
-/// blocking closure left the suite green. This drives the real `spawn` against
-/// an upstream that answers 4xx with a body echoing the credential HEADER it
-/// was sent, padded so the API key straddles `MAX_UPSTREAM_DETAIL_CHARS`.
-/// Clamp-then-scrub leaves `KEY_STRADDLE_TAIL` characters of a live credential
-/// in `last_error`; scrub-then-clamp leaves none.
-///
-/// The fixture echoes the header rather than the query string since #1194: the
-/// kernel appends nothing to the URL any more, so a query-echoing upstream
-/// would put nothing redactable on the wire and this test would pass vacuously.
-/// The "the fixture must actually put the key on the wire" assertion below is
-/// what keeps that honest.
+/// Drives the real `spawn` against an upstream whose 4xx body echoes the credential header,
+/// padded so the key straddles `MAX_UPSTREAM_DETAIL_CHARS`: clamp-then-scrub leaks
+/// `KEY_STRADDLE_TAIL` chars, scrub-then-clamp none.
 #[tokio::test]
 async fn a_4xx_body_echoing_the_credential_never_leaks_a_partial_key() {
     let stub = StubServer::start(StubMode::EchoAuthIn4xx).await;
@@ -3025,28 +2579,8 @@ async fn a_4xx_body_echoing_the_credential_never_leaks_a_partial_key() {
     assert!(!body.contains(leaked_prefix), "{body}");
 }
 
-// ===========================================================================
-// #1196 acceptance 5 (connector half) — uninstall vs an in-flight spawn
-//
-// Replaces `uninstall_during_an_in_flight_spawn_does_not_resurrect_the_registry_entry`,
-// which reached in and called `registry_remove()` directly and carried the
-// comment "there is no per-plugin lifecycle lock (risk R12)". There is one now,
-// so that comment was about to become a lie and the test was about to stop
-// describing anything a caller can do.
-// ===========================================================================
-
-/// The composite `uninstall` operation, run against a spawn that is on the
-/// wire, must be refused **with nothing done** — and must then succeed on an
-/// explicit retry.
-///
-/// The barrier is named: `StubServer::start_gated` holds the connector's
-/// `tools/list` reply, which pins `spawn_under` inside the guard. Without it
-/// the spawn could simply finish first and the uninstall would succeed on the
-/// first call, and every assertion below would still pass — a test that never
-/// once observed the lock. Hence the explicit `plugin_busy` assertion.
-///
-/// Mutation witness: drop the `try_lock_lifecycle` from `PluginHost::spawn`
-/// and the first `uninstall` returns 204 instead of 409.
+/// The gated `tools/list` reply pins `spawn_under` inside the guard; without it the spawn
+/// could finish first and every assertion would pass without observing the lock.
 #[tokio::test]
 async fn uninstall_is_refused_while_a_connector_spawn_is_in_flight() {
     let (release, gate) = oneshot::channel::<()>();
@@ -3117,20 +2651,8 @@ async fn uninstall_is_refused_while_a_connector_spawn_is_in_flight() {
     assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 }
 
-// ===========================================================================
-// #1196 acceptance 8 — reload vs an in-flight spawn
-// ===========================================================================
-
-/// `reload` landing on a connector whose spawn is on the wire must be refused
-/// with the manifest untouched; the retry must actually re-point the connector
-/// at the new endpoint.
-///
-/// Barrier: the FIRST stub's gated `tools/list`. Terminal assertion: the new
-/// endpoint really received `initialize` / `tools/list`, and the new
-/// allow-list is what materialized — not merely "the reload returned 200".
-///
-/// Mutation witness: drop the `try_lock_lifecycle` from `reload` and the first
-/// call returns 200, having stopped a connector another task believes it owns.
+/// Barrier: the FIRST stub's gated `tools/list`. The terminal assertion is that the new
+/// endpoint really received the handshake and the new allow-list materialized.
 #[tokio::test]
 async fn reload_is_refused_while_a_spawn_is_in_flight_then_repoints_the_connector() {
     let (release, gate) = oneshot::channel::<()>();
@@ -3206,10 +2728,6 @@ async fn reload_is_refused_while_a_spawn_is_in_flight_then_repoints_the_connecto
     );
 }
 
-// ===========================================================================
-// §2.6 — the misleading 404 on card creation via a connector tool
-// ===========================================================================
-
 #[tokio::test]
 async fn connector_card_creation_is_a_4xx_that_names_the_real_reason() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -3221,8 +2739,7 @@ async fn connector_card_creation_is_a_4xx_that_names_the_real_reason() {
     let track_id = b.seed_track().await;
     let state = b.state(Arc::clone(&host));
 
-    // Drive the REAL route. Asserting only on the two accessors would pass
-    // unchanged if `routes/cards.rs` were reverted to the misleading 404.
+    // Drive the REAL route, not the two accessors.
     let resp = cards_app(state.clone())
         .oneshot(
             Request::builder()
@@ -3317,10 +2834,6 @@ async fn connector_card_creation_is_a_4xx_that_names_the_real_reason() {
     assert!(host.connector_client("nope").await.is_none());
 }
 
-// ===========================================================================
-// §2.5 — `neige.*` callbacks are refused for connectors
-// ===========================================================================
-
 #[tokio::test]
 async fn neige_callbacks_are_refused_for_connectors() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -3342,29 +2855,9 @@ async fn neige_callbacks_are_refused_for_connectors() {
     );
 }
 
-// ===========================================================================
-// Round-5 finding 1 — the boot bound must be TOTAL
-// ===========================================================================
-
-/// A slow event store must not hold boot, however many connectors are enabled.
-///
-/// The previous bound wrapped `spawn` only. Everything the loop did *after* it
-/// — `publish_unavailable` for connectors the budget never reached,
-/// `publish_unavailable`/`reaffirm_running` in the timeout arm — was an
-/// unbounded persisted emission, performed serially, once per connector. So a
-/// stalled event store still stalled `AppState::new`, scaling with connector
-/// count, with every "bound" in the file green.
-///
-/// Driven deterministically: a foreign `BEGIN IMMEDIATE` holds the DB writer
-/// for far longer than the ceiling, so EVERY emission the loop attempts parks.
-/// Boot must still return inside the ceiling the loop computes for itself —
-/// `connector_phase_ceiling(widened_connector_budget(budget, widest))`, which
-/// for this fixture is 1.9 s, not the 1.5 s an earlier version of this comment
-/// claimed by forgetting the widening.
-///
-/// Mutation witness: fence only `self.spawn(...)` again (i.e. drop the
-/// `timeout_at(phase_deadline, …)` wrapper) and this returns after the DB
-/// holder releases, ~8 s, not ~2 s.
+/// A slow event store must not hold boot: a foreign `BEGIN IMMEDIATE` holds the DB writer so
+/// every emission the loop attempts parks, and boot must still return inside the ceiling the
+/// loop computes for itself.
 #[tokio::test]
 async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
     use calm_server::plugin_host::{
@@ -3416,16 +2909,8 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
     });
     held_rx.await.expect("write tx never opened");
 
-    // The ceiling asserted below is COMPUTED from the two production
-    // expressions the loop itself evaluates — `widened_connector_budget`, then
-    // `connector_phase_ceiling` — and never restated as a number here.
-    //
-    // Restating it was the defect: this test used to comment that a 1 s budget
-    // "is used as given", derive a 1.5 s ceiling from that, and then allow 3 s.
-    // The loop really adopts `widest per-connector cap + slack` = (2 × 200 ms +
-    // 500 ms) + 500 ms = 1.4 s and fences the phase at 1.9 s, so a run that took
-    // 2.04 s passed a test whose comment claimed it pinned 1.5 s. A second
-    // arithmetic beside production's is how that happens; there is now one.
+    // The ceiling is COMPUTED from the two production expressions the loop evaluates, never
+    // restated as a number here.
     const BUDGET: Duration = Duration::from_millis(1_000);
     let widest = connector_bringup_budget(
         &Manifest::parse(
@@ -3441,14 +2926,7 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
         .expect("the fixture manifest the loop will read must parse"),
     );
     let ceiling = connector_phase_ceiling(widened_connector_budget(BUDGET, widest));
-    // Both assertions are needed, and neither substitutes for the other. The
-    // computed `ceiling` tracks whatever the loop really does, so the timing
-    // assertion below cannot go stale — but a formula-following test cannot
-    // detect a formula that DRIFTS: if `widened_connector_budget` quietly grew
-    // another 500 ms, runtime and expectation would move together and the
-    // timing assertion would still pass. So the composed number is also pinned
-    // as a literal here: any change to the formula has to be acknowledged by
-    // editing this line, rather than being silently absorbed.
+    // The composed number is also pinned as a literal so a drift in the formula has to be acknowledged here.
     assert_eq!(
         ceiling,
         Duration::from_millis(1_900),
@@ -3469,21 +2947,15 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
         "boot took {elapsed:?}, i.e. it waited for the event store to free up — \
          the bound covers the spawn step only, not the emissions after it"
     );
-    // The loop must actually have run out its budget: with four hanging
-    // connectors and a DB writer nobody can take, a run materially faster than
-    // the budget means the fixture stopped exercising the fence, and the upper
-    // bound below would then be satisfied by a loop that did nothing.
+    // The loop must actually have run out its budget, or the upper bound below is satisfied by
+    // a loop that did nothing.
     assert!(
         elapsed >= BUDGET,
         "boot returned in {elapsed:?}, faster than the {BUDGET:?} budget it was \
          given — the hang fixture is no longer in force"
     );
-    // …and the real bound, tightly. The tolerance covers scheduling jitter
-    // around the fence and nothing else: measured overshoot on this box is
-    // ~4 ms (1.9039 s against the 1.9 s ceiling), and the old 1.5 s allowance
-    // is what let a 2.04 s run pass a test claiming a 1.5 s bound. Anything
-    // that widens the phase by a whole step — a re-widened budget, an emission
-    // escaping the fence — moves elapsed by hundreds of ms and fails here.
+    // Tolerance covers scheduling jitter around the fence only (~4 ms measured); a whole extra
+    // step moves elapsed by hundreds of ms.
     const JITTER: Duration = Duration::from_millis(250);
     assert!(
         elapsed < ceiling + JITTER,
@@ -3491,9 +2963,7 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
          (+{JITTER:?} jitter allowance)"
     );
 
-    // Observability is NOT what was given up: every connector still has a
-    // terminal live entry, because that half of the transition is a synchronous
-    // table write with no await in it.
+    // Every connector still has a terminal live entry: that half of the transition is a synchronous table write.
     for i in 0..N {
         let id = format!("dead-connector-{i}");
         let status = host
@@ -3511,24 +2981,8 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
     let _ = holder.await;
 }
 
-/// The ceiling that is *documented* and the ceiling that is *computed* are one
-/// expression. Rounds 1-4 stated 30 s and then 30.5 s in prose while the code
-/// computed something else, because the prose was a second arithmetic.
-///
-/// This pins the composed number, so any change to a constant that feeds it has
-/// to be an explicit decision here rather than a silent drift. Since
-/// `MAX_CONNECTOR_AUTOSPAWN_WALL` is now literally
-/// `connector_phase_ceiling(widened_connector_budget(...))`, the 31.5 s literal
-/// below also pins `widened_connector_budget` itself — previously the constant
-/// inlined its own copy of that `max` and nothing pinned the helper.
-///
-/// **#1196 S1 — the new lifecycle lock does not enter this formula, and that is
-/// not self-evident.** Every acquisition on the boot path happens *inside*
-/// `autospawn_enabled_within`'s `timeout_at` fence: `autospawn_one` takes it (or
-/// waits for it) within the fenced iteration body, and the budget-exhausted arm
-/// uses the **synchronous** `try_lock_lifecycle`, which cannot await and gives
-/// up immediately when the lock is held. So no acquisition can extend the phase
-/// past the fence, and the ceiling below is unchanged.
+/// The documented ceiling and the computed ceiling are one expression; the lifecycle lock does
+/// not enter it because every acquisition on the boot path happens inside the `timeout_at` fence.
 #[test]
 fn the_connector_phase_ceiling_is_the_documented_one() {
     use calm_server::plugin_host::{
@@ -3539,26 +2993,10 @@ fn the_connector_phase_ceiling_is_the_documented_one() {
     // 2 × 15 s (the validated per-request bring-up ceiling) + 500 ms
     // per-connector slack.
     assert_eq!(MAX_CONNECTOR_BRINGUP_BUDGET, Duration::from_millis(30_500));
-    // …widened by the LOOP margin so the per-connector bound fires first, and
-    // then the reconcile tail. This is the number the docs state.
+    // …widened by the LOOP margin, then the reconcile tail. This is the number the docs state.
     assert_eq!(MAX_CONNECTOR_AUTOSPAWN_WALL, Duration::from_millis(31_500));
-    // The wall is exactly the ceiling of the widest budget the loop can adopt,
-    // never a hand-computed constant beside it.
-    //
-    // #1194 residual 3 split one constant into two; the widening term below is
-    // the LOOP one. **Stated honestly: nothing here can enforce that choice.**
-    // `CONNECTOR_LOOP_WIDENING_MARGIN` and `CONNECTOR_BRINGUP_SLACK` are both
-    // 500 ms today, so swapping this line — or `widened_connector_budget`'s
-    // body — to the other constant is a mutation NO test in this repo kills.
-    // It is a human convention that the reference names the constant that
-    // actually feeds the expression, and its whole value is that the day the
-    // two values diverge, this line already points at the right one and the
-    // literal assertions above go red for the right reason.
-    //
-    // Making it machine-checkable would mean giving the two constants different
-    // values purely so a test could tell them apart — production arithmetic bent
-    // to serve a test, which is a worse trade than an honest comment. Do not
-    // upgrade this to a claim the suite does not back.
+    // `CONNECTOR_LOOP_WIDENING_MARGIN` and `CONNECTOR_BRINGUP_SLACK` are both 500 ms today, so no
+    // test can tell them apart; this line must name the constant that actually feeds the expression.
     assert_eq!(
         MAX_CONNECTOR_AUTOSPAWN_WALL,
         connector_phase_ceiling(MAX_CONNECTOR_BRINGUP_BUDGET + CONNECTOR_LOOP_WIDENING_MARGIN)
@@ -3567,38 +3005,9 @@ fn the_connector_phase_ceiling_is_the_documented_one() {
     assert!(MAX_CONNECTOR_AUTOSPAWN_WALL > connector_phase_ceiling(CONNECTOR_AUTOSPAWN_BUDGET));
 }
 
-// ===========================================================================
-// #1196 acceptance 3 — the bad interleaving from the issue, mutation-driven
-//
-// Replaces `two_emitters_for_one_connector_never_interleave`, which asserted
-// `peak_concurrent_state_emits() == 1`. Under the lifecycle lock that probe is
-// vacuous: `stop` is now refused at the *entry*, so it never reaches an
-// emission at all, and the peak would read 1 even with every emission lock
-// deleted. The probe and its accessor have been retired with it.
-// ===========================================================================
-
-/// The #1196 interleaving, driven through two real paths.
-///
-/// The spawn is pinned with its live `Running` entry already published and its
-/// `running` emission not yet committed (gated stub for the first half, a held
-/// DB writer transaction for the second). A real `stop` runs in that window.
-///
-/// * it must be refused with `LifecycleBusy` and change **nothing**;
-/// * on an explicit retry after the spawn completes, the event log's tail must
-///   be `running` → `disabled`, and the live table must be empty.
-///
-/// Mutation witness: delete the `try_lock_lifecycle` line from
-/// `PluginHost::spawn`. The `stop` then succeeds inside the window, commits
-/// `disabled` first, and the parked spawn commits `running` afterwards — the
-/// last word becomes `running` for a connector with no live entry, and the
-/// final assertion fails.
-///
-/// Barrier note: the held `write_in_tx` blocks **every** write in the database,
-/// not just this plugin's — including autocommit writes issued by anything else
-/// in the same fixture. Do not drive a second plugin here, and do not copy this
-/// barrier into a test that needs a row to change during the window (it cannot:
-/// `sqlite::memory:` gives readers no snapshot isolation, so the blocked write
-/// simply never commits and both orderings look identical).
+/// The spawn is pinned with its live `Running` entry published and its `running` emission not
+/// yet committed; a real `stop` in that window must be refused with `LifecycleBusy`. The held
+/// `write_in_tx` blocks EVERY write in the database, so do not drive a second plugin here.
 #[tokio::test]
 async fn a_stop_cannot_split_a_spawn_between_its_table_write_and_its_emission() {
     let (release_gate, gate) = oneshot::channel::<()>();
@@ -3628,9 +3037,8 @@ async fn a_stop_cannot_split_a_spawn_between_its_table_write_and_its_emission() 
     });
     held_rx.await.expect("write tx never opened");
 
-    // Let the spawn finish its network half: it materializes, publishes the
-    // live `Running` entry, and then parks inside its `running` emission —
-    // still holding the lifecycle guard.
+    // Let the spawn finish its network half: it publishes the live `Running` entry, then parks
+    // inside its `running` emission, still holding the lifecycle guard.
     release_gate.send(()).expect("stub gate receiver gone");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -3647,12 +3055,8 @@ async fn a_stop_cannot_split_a_spawn_between_its_table_write_and_its_emission() 
         sleep(Duration::from_millis(5)).await;
     }
 
-    // The operator disables it right there.
-    //
-    // Bounded on purpose. The refusal is non-blocking, so a correct `stop`
-    // answers immediately; a `stop` that got *into* the critical section would
-    // park on the held DB writer instead, and an unbounded `.await` here would
-    // turn the mutation's red into a hang with no message.
+    // Bounded on purpose: a `stop` that got into the critical section would park on the held DB
+    // writer and turn a red into a hang.
     let sh = Arc::clone(&host);
     let stopping = tokio::spawn(async move { sh.stop(CONNECTOR_ID).await });
     let err = tokio::time::timeout(Duration::from_secs(5), stopping)
@@ -3698,25 +3102,8 @@ async fn a_stop_cannot_split_a_spawn_between_its_table_write_and_its_emission() 
     );
 }
 
-// ===========================================================================
-// Round-5 finding 3 — a number-shaped credential is refused at the source
-// ===========================================================================
-
-/// `scrub_value` deliberately does not descend into JSON numbers, so an
-/// upstream that echoes a number-shaped credential back as `{"k": 12345678}` in
-/// `structuredContent` would put it in the tool result and the track transcript
-/// with nothing to redact. Round 4 classified that as an accepted residual;
-/// it is a disclosure. The credential is refused instead.
-///
-/// The rule is the JSON number **grammar**, not the lexical shape "all digits"
-/// it was first written as: `-1234567` is just as unscrubbable and used to be
-/// accepted here. Both spellings are driven through the real `spawn` (and
-/// therefore the real `connect_mcp_http` → `HttpCredential::parse` boundary),
-/// not through the validator in isolation.
-///
-/// Mutation witness: narrow `is_number_shaped` back to
-/// `raw.chars().all(char::is_ascii_digit)` and the `-1234567` case comes up
-/// `Running` with the credential on the wire.
+/// `scrub_value` does not descend into JSON numbers, so a number-shaped credential is refused at
+/// the source; the rule is the JSON number grammar (`-1234567` too), driven through the real `spawn`.
 #[tokio::test]
 async fn a_number_shaped_credential_never_reaches_the_wire() {
     for numeric in ["12345678", "-1234567"] {
@@ -3752,22 +3139,9 @@ async fn a_number_shaped_credential_never_reaches_the_wire() {
     }
 }
 
-// ===========================================================================
-// #1194 round 4 — a credential overlapping the redaction marker is refused at
-// the source
-// ===========================================================================
-
-/// One scrub pass never rescans what it wrote, so a credential that shares text
-/// with `<redacted>` can be re-formed out of its own redaction: with
-/// `redacted>y`, the upstream string `redacted>yy` scrubs to `<redacted>y`,
-/// which carries the credential verbatim into `ExposedTool` and the track
-/// transcript. Round 3 accepted these credentials and recorded the leak as an
-/// open residual; they are refused now.
-///
-/// Driven through the real `spawn` — and therefore the real
-/// `connect_mcp_http` → `HttpCredential::parse` boundary — because the unit
-/// tests in `http_mcp.rs` cannot show that this rule is on the production path
-/// at all. One case per overlap direction.
+/// One scrub pass never rescans what it wrote, so a credential overlapping `<redacted>` (e.g.
+/// `redacted>y`) could be re-formed from its own redaction; such credentials are refused at the
+/// source, through the real `spawn`.
 #[tokio::test]
 async fn a_credential_overlapping_the_redaction_marker_never_reaches_the_wire() {
     for (overlapping, direction) in [
@@ -3810,8 +3184,6 @@ async fn a_credential_overlapping_the_redaction_marker_never_reaches_the_wire() 
     }
 }
 
-// ---------------------------------------------------------------------------
-
 /// Seed the `plugins` row the install route would have written (FK target for
 /// `plugin_tokens`, and the `enabled` flag `autospawn_enabled` reads).
 async fn seed_row(b: &Boot, id: &str) {
@@ -3828,73 +3200,14 @@ async fn seed_row(b: &Boot, id: &str) {
         .expect("seed plugin row");
 }
 
-// ===========================================================================
-// #1284 S3a — configuration actually reaches a `cli-query` connector.
-//
-// The carrier is a real connector: a script the test writes, installed and
-// enabled through the real routes, configured through the real
-// `PATCH /api/plugins/{id}/config`, and called through the real
-// `tools_call`. The script echoes its argv and its environment, so what is
-// asserted is what the CHILD received — not what the kernel intended.
-//
-// Mutation witness table. Every row below was applied to THIS tree, run,
-// observed, and restored (the tree was committed first; restore is
-// `git checkout -- <file>` against that commit, never against uncommitted
-// work). The red column is the OBSERVED set, not the intended one, and where a
-// row is NOT orthogonal that is written down rather than smoothed over.
-//
-// **Selection set.** Every count below is from one and the same set —
-// `test(connector_host) or test(cli_query) or test(manifest) or
-// test(plugin_host::config) or test(plugin_config_delivery) or
-// test(plugin_routes) or test(plugin_lifecycle_lock) or test(plugin_host_smoke)`,
-// **301 tests, all green unmutated**, `--no-fail-fast`.
-//
-// The set is WIDER than the one the pre-rework revision of this table used
-// (S3a's own four predicates, 211 tests over the merged tree). It has to be:
-// the rework merged S2's `app` config gate and S3a's `cli-query` one into a
-// single carrier (`PluginHost::config_for_spawn_or_unavailable`), so a mutation
-// on that carrier is now visible from BOTH slices' suites, and a count taken
-// over only one of them would under-report by construction — see rows 5, 6 and
-// 8, each of which goes red in `plugin_config_delivery` as well. The union with
-// S2's own 101-test set is what makes the two tables' rows comparable.
-//
-// **300 → 301, and no red column moved.** The S3a review's P1 fix split
-// `cli_query::tests::path_cannot_be_overridden_by_allow_or_secrets` into
-// `..._by_env_allow` and `..._by_secret_env` (the combined fixture declared
-// `PATH` in both sources, which §2.3(b)'s duplicate-target rule now refuses —
-// it only stayed green because that fixture never calls `validate`). That is
-// one test becoming two, and the denominator is the re-run count: `301 tests
-// run: 301 passed`. The rows below were NOT re-run for it, and do not need to
-// be: the pre-split test appears in no row's red column, both halves assert
-// only that the pinned PATH survives, and no mutation in this table touches
-// PATH construction — so the split adds a green test to every row and moves no
-// red set. Any row whose mutation DOES reach `build_child_env`'s PATH pinning
-// must be re-run rather than reasoned about this way.
-//
-// | # | mutation | red test | red assertion |
-// |---|---|---|---|
-// | 1 | `render_argv`'s `ArgvSlot::Config` arm resolves against `arguments` under the BARE key instead of against `config` | five of 301: `plugin_host::cli_query::tests::{a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot, an_agent_argument_cannot_displace_a_configuration_slot, an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call}`, `connector_host::{cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace_it, a_manifest_default_reaches_the_child_without_any_operator_write}` | the sharpest one is row 6's test: ``a configuration slot with no configured value must be refused, never back-filled from the agent's arguments: ["quote", "--url", "https://attacker.example"]``. Not orthogonal by construction — one arm feeds every configuration slot in the slice, and the two bring-up tests reach it through their positive-control legs. **Still the weaker of the two namespace rows** for the §4.4 claim: it shows the config arm no longer reading configuration; row 1b shows what an attacker gains. **4 → 5 is a swap, not an addition**: the pre-rework table's `a_configuration_slot_with_no_value_is_refused_by_name` no longer goes red (it asserts only the key name and the "restart" wording, both of which survive this mutation), and TWO tests entered — `a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot` (new in this slice, row 6) and `an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call` (row 7's test, which reaches this arm through its positive-control leg) |
-// | 1b | restore **F18's runtime half**: the `Config` slot resolves from `arguments` under its raw, prefixed name (`config.endpoint`). Parse-time classification is left INTACT on purpose — this row is about the runtime harm, and the true pre-slice shape additionally required the tool to declare `config.endpoint` in `input_schema` to pass the old validator, which this fixture does not do (row 3 is the parse-time half's own witness) | the same five of 301 | `an_agent_argument_cannot_displace_a_configuration_slot`: `left: ["quote", "700.HK", "--url", "https://attacker.example"] / right: [.., "https://operator.example"]`; and end to end, `cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace_it`: `left: "arg:quote\narg:700.HK\narg:--url\narg:https://attacker.example\nenv:LB_ACCOUNT=acct-42\n"`. **This is the §4.4 witness**: under the pre-slice runtime one `tools/call` reaches the child with the agent's endpoint in the operator's slot |
-// | 2 | delete the `config_env` injection loop from `build_child_env` | three of 301: `plugin_host::cli_query::tests::{config_env_carries_the_operators_value_into_a_manifest_declared_key, a_configuration_key_the_manifest_did_not_declare_reaches_the_child_under_no_name}` and `connector_host::cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace_it` | `left: None / right: Some("acct-42")` (twice), and end to end `left: "…\nenv:LB_ACCOUNT=<unset>\n" / right: "…\nenv:LB_ACCOUNT=acct-42\n"`. Not orthogonal: the two unit tests are the positive and negative halves of one loop, and the integration test asserts the same key through the real routes |
-// | 3 | drop the `config.`-prefix refusal on `input_schema` properties from `CliQueryTool::validate` | exactly one of 301: `plugin_host::manifest::connector_kind_tests::an_input_schema_property_may_not_claim_the_config_namespace` | "a tool must not declare an input property in the config namespace" — `Manifest::parse` returns `Ok` for a tool declaring `input_schema.properties["config.endpoint"]`. Orthogonal: every runtime row stays green, which is the point — the parse-time half is what makes the collision unrepresentable, and it needs a witness the runtime cannot supply |
-// | 4 | drop the `env_allow` / `secret_env` / `config_env` duplicate-target refusal | exactly one of 301: `plugin_host::manifest::connector_kind_tests::the_three_env_sources_may_not_name_the_same_target_key` | "config_env ∩ secret_env must be refused" — a manifest naming `LB_TOKEN` in both parses `Ok` |
-// | 5 | drop the consumption-time `missing_required` refusal from the SHARED gate (`config_for_spawn_or_unavailable`) | three of 301: `connector_host::a_cli_connector_missing_required_configuration_lands_unavailable`, `plugin_config_delivery::{a_plugin_missing_a_required_key_does_not_come_up, a_plugin_with_no_stored_row_is_judged_against_its_manifest_defaults}` | "a connector missing required configuration must not come up: ()" and "a plugin missing a required key must not start: ()" — `spawn` returns `Ok(())` for both kinds. **This row is what the dedup bought, made visible**: pre-rework the same mutation had to be applied twice, in two files, to produce these three reds; it is now one edit, and a fix or a regression on either path is a fix or a regression on both |
-// | 6 | **the "no fallback" core claim** (S3a review P2-2): the `Config` arm falls back to `arguments` on a miss — `config.get(key).or_else(\|\| arguments.get(key))`, the implementation `render_argv`'s own doc says is refused | exactly one of 301: `plugin_host::cli_query::tests::a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot` | ``a configuration slot with no configured value must be refused, never back-filled from the agent's arguments: ["quote", "--url", "https://attacker.example"]`` — the agent's value in the operator's argv element. **This row is why the test exists.** Before it, this mutation left all 301 green: every existing negative fed `config.endpoint` (prefixed, which the fallback never reads) or an `arguments` object with no bare key at all, so the fallback was unreachable from the suite. The claim was true of the code and unfalsifiable by the tests |
-// | 7 | delete the argv-slot existence check at bring-up (`refuse_unfillable_argv_config_slots`, S3a review P2-3) | exactly one of 301: `plugin_host::cli_query::tests::an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call` | "an unfillable argv slot must not come up as Running" — `bring_up` returns `Ok` for a manifest declaring `{{config.endpoint}}` with no `default` and no `required` entry, i.e. the connector publishes `Running` and answers every `tools/call` with `invalid_params`. Orthogonal to row 2, which is the deliberate env-side asymmetry: `a_config_env_key_with_no_value_in_force_is_absent_rather_than_a_failure` stays green |
-// | 8 | the shared gate's DB-failure exit stops publishing (`publish_unavailable_under(…)` → plain `drop(guard)`, error unchanged) | two of 301: `connector_host::a_cli_connector_whose_config_store_is_unreadable_lands_unavailable`, `plugin_config_delivery::an_unreadable_config_store_refuses_the_spawn_and_says_so` | "the failure must be observable, not a connector that looks unenabled" / "… not a plugin that looks unenabled" — `status()` is `None` for both kinds. **The mutation reproduces the guard half of the code as `spawn_cli_query` shipped it** — a bare `?` on `plugin_get_by_id`, i.e. the guard dropped un-disarmed with nothing published. It is not the shipped shape in full: the shipped `?` also returned `BadState` (500), while this mutation leaves `ConfigUnreadable` (503) in place, so that half is not reproduced here (row 9 is the error-type half's own witness). What the row proves is the publication half, which is S3a review P2-1: S2 had already closed this hole on the `app` path and the parallel slice reopened it one kind over. The 503 and the message text survive the mutation untouched, which is why the wire error alone was never a sufficient assertion |
-// | 9 | the shared gate's missing-required exit returns `ConnectorUnavailable` instead of `MissingRequiredConfig` — i.e. the two paths' error types diverge again (S3a review P1-1) | exactly one of 301: `connector_host::a_cli_connector_missing_required_configuration_lands_unavailable` | ``got ConnectorUnavailable { plugin_id: "cli-configured", reason: "missing required configuration: LB_ACCOUNT. …" }``. Note what does NOT go red: the wire answer is 503 either way (`spawn_error_to_calm` maps both), so no route test can see this — which is exactly how one failure class came to have two types and nothing complained |
-// | 10 | `missing_required_reason` drops the operator instruction and returns the bare list — the S3a wording, restored (S3a review P1-2) | two of 301: `plugin_host::config::tests::the_missing_required_reason_names_the_keys_and_the_next_step`, `connector_host::a_cli_connector_missing_required_configuration_lands_unavailable` | `left: "missing required configuration: LB_ACCOUNT" / right: "missing required configuration: LB_ACCOUNT. Set it under Settings › Plugins, then start the plugin again."`. `plugin_config_delivery::a_plugin_missing_a_required_key_does_not_come_up` stays **green** under this mutation, and that is the finding: it asserts `contains`, so it could never have caught the two paths saying different things. The exact-equality assertion in this file is what pins the shared sentence |
-// | 11 | `config_scalar` stops refusing an interior NUL (S3a review P3) | exactly one of 301: `plugin_host::cli_query::tests::a_nul_in_a_configured_value_is_refused_by_key_not_at_exec_time` | ``a NUL cannot reach argv or env: {"endpoint": "https://a.example\0evil"}`` — `flatten_config` returns `Ok`, and the failure moves to `Command`'s `CString` conversion, where the error names the program instead of the configuration key |
-// ===========================================================================
+// Configuration reaching a `cli-query` connector: the script echoes its argv and environment,
+// so what is asserted is what the CHILD received.
 
 const CLI_CONFIG_ID: &str = "cli-configured";
 
-/// Install a `cli-query` connector that consumes configuration two ways: an
-/// argv slot (`{{config.endpoint}}`) and an env key (`config_env`).
-///
-/// `required` decides the manifest version: §2.1's conditional bump means a
-/// schema that can lose something on rollback must declare 3, and one that
-/// cannot stays at 2.
+/// Install a `cli-query` connector that consumes configuration two ways: an argv slot
+/// (`{{config.endpoint}}`) and an env key (`config_env`). `required` decides the manifest
+/// version (3 if a rollback could lose something, else 2).
 fn write_configured_cli_connector(plugins_dir: &Path, command: &str, required: bool) -> PathBuf {
     let dir = plugins_dir.join(CLI_CONFIG_ID);
     std::fs::create_dir_all(&dir).unwrap();
@@ -3961,13 +3274,8 @@ async fn patch_json(state: &AppState, path: &str, body: Value) -> (StatusCode, V
     )
 }
 
-/// §4.4 end to end, on a real connector.
-///
-/// **The pair is the point.** One `tools/call` supplies an argument named
-/// exactly `config.endpoint`; the child must receive the OPERATOR's endpoint
-/// (positive) and must not receive the agent's anywhere in its argv
-/// (negative). Either half alone is satisfiable by an implementation that
-/// merges the two sources and happens to order them the tested way.
+/// The pair is the point: either half alone is satisfiable by an implementation that merges
+/// the two sources and happens to order them the tested way.
 #[tokio::test]
 async fn cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace_it() {
     let b = boot().await;
@@ -4040,10 +3348,7 @@ async fn cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace
     );
 }
 
-/// §2.2.4 through the whole chain: a manifest `default` is what the child
-/// runs with when the operator has set nothing — and it is delivered by the
-/// kernel at bring-up, not written into the DB. Without this the slice would
-/// be satisfiable only for keys someone remembered to Save.
+/// A manifest `default` is delivered by the kernel at bring-up, not written into the DB.
 #[tokio::test]
 async fn a_manifest_default_reaches_the_child_without_any_operator_write() {
     let b = boot().await;
@@ -4072,7 +3377,7 @@ async fn a_manifest_default_reaches_the_child_without_any_operator_write() {
         "the manifest default must be in force with no operator write"
     );
 
-    // …and the DB still records that the operator chose nothing (§2.2.4).
+    // …and the DB still records that the operator chose nothing.
     let row = b
         .repo
         .plugin_get_by_id(CLI_CONFIG_ID)
@@ -4082,9 +3387,6 @@ async fn a_manifest_default_reaches_the_child_without_any_operator_write() {
     assert_eq!(row.user_config, json!({}), "defaults must not be persisted");
 }
 
-/// §2.2 v6 + §2.4: `required` is enforced at CONSUMPTION, and a connector that
-/// is missing it does not come up — it lands in the `unavailable` +
-/// `last_error` terminal state, naming the keys.
 #[tokio::test]
 async fn a_cli_connector_missing_required_configuration_lands_unavailable() {
     let b = boot().await;
@@ -4098,10 +3400,7 @@ async fn a_cli_connector_missing_required_configuration_lands_unavailable() {
         .spawn(CLI_CONFIG_ID)
         .await
         .expect_err("a connector missing required configuration must not come up");
-    // S3a review P1-1: the SAME variant the `app` path raises for the same
-    // failure class, because it is now the same code raising it. It used to be
-    // `ConnectorUnavailable` here and `MissingRequiredConfig` there — one
-    // failure with two types, which is what a second copy of a decision buys.
+    // The SAME variant the `app` path raises for the same failure class.
     assert!(
         matches!(err, HostError::MissingRequiredConfig { .. }),
         "got {err:?}"
@@ -4110,9 +3409,7 @@ async fn a_cli_connector_missing_required_configuration_lands_unavailable() {
     let PluginRuntimeStatus::Unavailable { reason } = &status.status else {
         panic!("expected Unavailable, got {:?}", status.status);
     };
-    // S3a review P1-2: the WORDING is shared too, verbatim — §2.5 renders
-    // `last_error` the same way for both kinds, so the operator must not be
-    // told two different things depending on which kind failed.
+    // The wording is shared too, verbatim: `last_error` renders the same way for both kinds.
     assert_eq!(
         reason,
         "missing required configuration: LB_ACCOUNT. Set it under Settings › \
@@ -4134,28 +3431,9 @@ async fn a_cli_connector_missing_required_configuration_lands_unavailable() {
     assert!(host.running_plugin_ids().await.contains(CLI_CONFIG_ID));
 }
 
-/// S3a review P2-1 — the `cli-query` half of the hole S2 closed on the `app`
-/// path, which S3a had reopened by hand-rolling its own config read.
-///
-/// The break is real (`DROP TABLE plugins` through the pool the host holds) and
-/// it lands cleanly, because this read is the first time the `cli-query` spawn
-/// path touches the DB at all: the kind branch, `spawn_admission_check` and the
-/// registry lookup all run before it and consult no store.
-///
-/// Three claims, the same three
-/// `plugin_config_delivery::an_unreadable_config_store_refuses_the_spawn_and_says_so`
-/// makes for `app`, because it is now literally the same code path:
-///   1. the spawn is refused rather than proceeding on `{}` — which would hand
-///      the connector manifest defaults over an operator's real, unread values,
-///      and could make a `required` key look satisfied;
-///   2. the refusal is **observable** through `status()`. This is the assertion
-///      the old shape failed: `plugin_get_by_id(...).map_err(BadState)?` dropped
-///      the `AdmissionGuard` un-disarmed, so no live entry was inserted and no
-///      state event was emitted, and the connector read back as if it had never
-///      been enabled;
-///   3. `last_error` says the store could not be read — not that configuration
-///      is missing, which would send the operator to fix something that may be
-///      perfectly fine.
+/// `DROP TABLE plugins` through the pool the host holds breaks the first DB read on the
+/// `cli-query` spawn path; the spawn must be refused (not proceed on `{}`), the refusal must be
+/// observable through `status()`, and `last_error` must say the store could not be read.
 #[tokio::test]
 async fn a_cli_connector_whose_config_store_is_unreadable_lands_unavailable() {
     let b = boot().await;
@@ -4199,126 +3477,13 @@ async fn a_cli_connector_whose_config_store_is_unreadable_lands_unavailable() {
     assert!(!host.running_plugin_ids().await.contains(CLI_CONFIG_ID));
 }
 
-// ===========================================================================
-// #1284 S3b — configuration actually reaches an `mcp-http` connector's url,
-// and the origin lock that keyed connectors get for it.
-//
-// The carrier is a real connector: a manifest written to disk, installed and
-// enabled through the real routes, configured through the real
-// `PATCH /api/plugins/{id}/config`, and brought up against the local stub
-// upstream at the top of this file. What is asserted is the request the STUB
-// received — not what the kernel intended to send.
-//
-// Mutation witness table (#1284 S3b). Every row below was applied to THIS
-// tree, run, observed, and restored. The tree was committed first (`f56f4d02`,
-// the `main` merge, for this revision; `edaafec5` for the previous one and
-// `0fd7eb26` for the pre-review one). Each row starts by copying a pristine
-// byte-for-byte snapshot of both target files over the working copies, so no
-// mutation can ever be applied on top of another's leftovers, and the script
-// asserts its own edit landed (exact occurrence count, then a non-zero
-// `git diff --numstat`) rather than assuming a `replace` matched — a mutation
-// that silently failed to apply would otherwise read as a green row. Restore
-// is the same byte copy, never `git checkout -- <path>`, which has destroyed
-// uncommitted work in this repo before. `git status` was verified clean at the
-// end. The red column is the OBSERVED set, not the intended one, and where a
-// row is NOT orthogonal — or produces NO red at all — that is written down
-// rather than smoothed over.
-//
-// **Every row below was RE-RUN after the review fix.** The fix changed
-// `lock_origin` and added a parse-time placement of the same check, so the
-// pre-fix numbers were void — a fact about a carrier that no longer exists is
-// not evidence. Where a red set changed membership, the change is stated.
-//
-// **What the review found, and what it costs this table.** Row 7 used to read
-// "the author could not construct a configured value that reaches this
-// comparison and fails it". A reviewer then constructed one — a slot in the
-// USERINFO (`https://user{{config.x}}@h.example/mcp`, value `.evil.example/`),
-// whose probe render parses with host `h.example` and whose configured render
-// has host `user.evil.example` — and the componentwise comparison was the only
-// thing that refused it. So the row was never "unreachable"; it was "not
-// tested", and every zero below is now labelled with which of those two it is.
-//
-// **Selection set.** Every count below is from one and the same set, the one
-// S3a's table above uses:
-// `test(connector_host) or test(cli_query) or test(manifest) or
-// test(plugin_host::config) or test(plugin_config_delivery) or
-// test(plugin_routes) or test(plugin_lifecycle_lock) or test(plugin_host_smoke)`,
-// **329 tests, all green unmutated**, `--no-fail-fast`, `--features
-// calm-server/codex-e2e`. 301 → 322 is this slice's own new tests, and
-// 322 → 326 is the review fix's four (two url ones in `manifest.rs`, two guard
-// ones below). No row of S3a's table was re-run, and none of the mutations
-// below touches argv or env rendering, so S3a's red sets are unmoved by
-// construction.
-//
-// **326 → 329 after merging `main`, and every row below was RE-RUN, not
-// reasoned about.** The merge brought three tests into this filter — and this
-// is the merge that also landed #1286, whose fix lives one function away from
-// this slice's, so "the denominator moved but surely nothing else did" was
-// exactly the assumption not worth making. All fourteen rows were applied to
-// the merged tree and run again. **Every red COUNT below is unchanged; only the
-// denominator moved.** Since the three arrivals are green in all fourteen and
-// the pre-merge 326 are all still present, each row's red set is the same set,
-// not merely the same size.
-//
-// The three, and what each turned out to be worth:
-// * `connector_host::an_upstream_redirect_cannot_send_a_header_api_key_to_another_host`
-//   (#1286) — the only arrival that reaches this slice's code at all: it spawns
-//   a keyed `mcp-http` connector. It is green under **all fourteen**, including
-//   4 and 8, the two rows that fail every other `mcp-http` spawn. The reason is
-//   worth stating because it is a real property of the guard and not an
-//   accident of this fixture: `spawn_admitted` calls `assert_config_gate_ran`
-//   only `if outcome.is_ok()`, and this test's spawn is a **refusal** — the
-//   redirect is rejected during bring-up, so the connector never completes a
-//   spawn and the §4.7 guard, which quantifies over COMPLETED spawns, has
-//   nothing to fire on. A fail-closed bring-up can therefore never join rows 4
-//   or 8, and this test's arrival tells us nothing new about the gate. It is
-//   also inert against rows 1, 2, 3, 7, 9–14: its manifest url is a literal
-//   with no `{{config.*}}` slot, so every url mutation leaves its resolution
-//   byte-identical.
-// * `neige-app::upgrade::tests::{staged_copy_uses_verified_manifest_snapshot,
-//   upgrade_stage_rejects_backslash_filename_alias_of_manifest_path}` (#1357) —
-//   swept in by `test(manifest)` matching the word in their names, nothing more.
-//   They live in the `neige-app` crate; every mutation below is inside
-//   `calm-server`'s `plugin_host`, so they could not go red under any of them,
-//   and they did not.
-//
-// **One noise result, named — and it did not recur.** In the pre-merge run,
-// row 3 also failed
-// `plugin_host::cli_query::tests::the_budget_kill_reaches_the_childs_descendants`,
-// a process-kill timing test that touches nothing this row mutates. Re-run
-// alone on the restored tree it passed (`1 test run: 1 passed`); it is the
-// #1326 load-flake family and was NOT counted in that row's red set. In the
-// post-merge re-run of all fourteen rows it did not appear at all — row 3's
-// observed set was exactly its four members — so the row now needs no
-// exclusion. The note is kept because the flake is a property of the box under
-// load, not of this tree, and a future runner will meet it again.
-//
-// | # | mutation | red test | red assertion |
-// |---|---|---|---|
-// | 1 | delete the origin comparison from `resolve_mcp_http_url` (`if block.api_key_secret.is_some() { lock_origin(…) }` never runs) | three of 329: `plugin_host::manifest::connector_kind_tests::{a_keyed_connector_refuses_a_slot_anywhere_in_the_origin, a_hand_built_block_is_still_refused_at_render_time}`, `connector_host::only_an_unkeyed_connector_may_have_its_host_configured` | ``https://{{config.endpoint}}/mcp resolved to https://evil.example/mcp — a keyed connector's origin is not configurable``; end to end, "a keyed connector's host is not a configurable field: ()" — `spawn` returns `Ok` and the connector comes up pointed at the configured host. This is the F19 class: `validate_mcp_http_url` passes every one of these, so nothing else in the tree refuses them. **Membership moved with the fix**: `an_unkeyed_connector_may_have_its_entire_url_configured` left the set (its keyed half, a whole-url template, is now refused earlier — at manifest-parse time — so deleting the render-time lock no longer shows), and `a_hand_built_block_is_still_refused_at_render_time` entered it. That new test exists precisely because the parse-time placement would otherwise mask this row: it builds an `McpHttpBlock` directly, which is the only way to reach `resolve_mcp_http_url` without passing `Manifest::parse` — and is what `ResolvedMcpUrl` claims to make safe |
-// | 2 | delete the post-render `validate_mcp_http_url` call (the tier check and the origin lock stay) | three of 329 (unchanged by the review fix, same three tests): `plugin_host::manifest::connector_kind_tests::{a_configured_value_is_refused_by_the_real_url_validator, a_configured_value_needing_encoding_is_refused_not_encoded}`, `connector_host::a_configured_url_value_is_refused_by_the_manifests_own_validator` | ``"mcp\\evil.example" must be refused``; ``a space would have to be encoded: ResolvedMcpUrl("https://mcp.example.com/a b")``; end to end, "a backslash retargets the request under WHATWG parsing: ()". Orthogonal to row 1: the origin lock stays intact and does NOT catch these, which is the point — a backslash in the PATH keeps the origin identical while retargeting the request |
-// | 3 | invert the tier discriminant: `api_key_secret.is_none()` locks the origin, `is_some()` does not | **four of 329**: row 1's three plus `plugin_host::manifest::connector_kind_tests::an_unkeyed_connector_may_have_its_entire_url_configured` | same assertions, from the other side: the keyed fixture resolves `https://evil.example/mcp`, and the unkeyed one — which nothing should lock — is refused with "…origin is locked…". Not orthogonal to row 1 by construction (one boolean feeds both); it is the row that shows the discriminant is `McpHttpBlock.api_key_secret` and nothing else. The unkeyed test rejoins here where it left row 1, because inverting the boolean is the one mutation that makes the UNKEYED tier refuse |
-// | 4 | **delete the shared gate call from `spawn_mcp_http`** (`config_for_spawn_or_unavailable` → a bare empty map) | **twenty of 329**, the same twenty as before the review fix. Four assert configuration behaviour: `connector_host::{mcp_http_configuration_fills_the_path_and_query_of_a_keyed_connector, a_configured_url_value_is_refused_by_the_manifests_own_validator, an_mcp_http_connector_missing_required_configuration_lands_unavailable, only_an_unkeyed_connector_may_have_its_host_configured}`. One is the §4.7 meta test. **The other fifteen are pre-existing `mcp-http` tests that assert nothing about configuration at all** — `connector_installs_enables_and_stays_running_across_restart`, `connector_tools_call_returns_upstream_data_and_sends_the_api_key`, `secrets_json_values_never_appear_in_any_plugin_api_response`, `rotate_token_on_a_connector_is_rejected_without_side_effects`, … | the fifteen all die on the production guard: ``#1284 §4.7: plugin `mcp-wisburg` (kind `mcp-http`) completed a spawn without passing `config_for_spawn_or_unavailable` — its effective configuration and its `required` verdict came from somewhere else, or from nowhere``. **This row is the answer to "how would you catch the fourth kind"**: `mcp-http` was routed by `spawn_admitted`'s exhaustive match since #1164 and consumed no configuration until this slice, and the entire suite stayed green. Under this guard it cannot |
-// | 5a | **neuter the guard** — `assert_config_gate_ran` returns immediately, so no spawn is ever checked | **two of 329**: `connector_host::{the_config_gate_guard_panics_when_the_witness_is_absent, a_config_gate_breach_is_counted_not_only_logged}` | ``a debug build must still fail loudly`` / the panic these `should_panic` on never arrives. **This row is the review fix.** The guard's own MISS branch is what needed testing, and no spawn in a correctly-wired suite produces one — so the two tests call the guard directly with an id that never spawned. The zero this row used to record was "nobody tested the branch", not "the branch cannot fire" |
-// | 5b | delete only the CALL SITE (`spawn_admitted` stops calling the guard), guard body intact | **none of 329 — 329 passed** | Still a zero, and now a precise one: the guard is a conditional over spawns, and with every spawn path wired there is no violation for any spawn to hit. The tests from 5a keep passing because they bypass `spawn_admitted` on purpose. What the call site buys is measured by row 6, not here |
-// | 6 | rows 4 + 5a together — the gate call gone AND the guard gone | **seven of 329**: the four configuration assertions, the §4.7 meta test, and 5a's two guard tests | e.g. ``the same variant the other two kinds raise: got ConnectorUnavailable { … }`` and ``` `mcp-http` spawned without passing the shared configuration gate ``` . **Read 20 → 5 correctly** (the five that are about the gate, setting aside 5a's two, which are about the guard in isolation): an unwired kind is ALREADY caught by five tests without the guard, so the guard does not buy "otherwise this would be missed". What it buys is **breadth and proximity** — every one of the twenty `mcp-http` spawns fails at the moment of the violation, instead of five failing later on a downstream symptom. And the class it uniquely covers is not this one at all: it is **a second spawn path growing inside an already-wired kind**, which the meta test cannot see because it drives exactly one fixture per kind. (The meta test is red in both worlds — it reads the witness directly rather than through the guard — which is itself the reason the guard is not redundant with it) |
-// | 7 | delete only the componentwise `(scheme, host, port)` comparison inside `lock_origin`, keeping the probe-position refusal | **none of 329 — 329 passed** | A zero, and the label is now **"covered upstream", not "unreachable"** — the distinction this review fix was written to restore. Every value the tests reach with is refused before it gets here: by the probe-position check, by `validate_mcp_http_url` on the probe render, or by the same validator on the rendered url. What the pre-review table claimed instead was that no such value COULD exist, and the reviewer produced one (a userinfo slot) that this comparison alone stopped. The comparison stays; row 14 is the run that shows why |
-// | 8 | delete the witness stamp from `config_for_spawn_or_unavailable` (the gate still runs; it just stops recording that it did) | **seventy of 329**, unchanged by the review fix, across all three kinds: every `connector_host` and `plugin_config_delivery` spawn plus the meta test | ``#1284 §4.7: plugin `cli-configured` (kind `cli-query`) completed a spawn without passing …`` / same for `mcp-wisburg` and the `app` fixtures. The row's purpose is the converse of row 5b: it shows the guard is armed on EVERY spawn of EVERY kind, not only on the path this slice touched — 70 reds is what "quantified over spawns" looks like |
-// | 9 | delete the **parse-time** probe check (`McpHttpBlock::validate` stops calling `probe_literal_url` for the keyed tier) | **one of 329**: `plugin_host::manifest::connector_kind_tests::a_keyed_url_template_is_refused_at_install_time` | ``a keyed template must be refused at manifest-parse time`` for `https://user{{config.endpoint}}@h.example/mcp`. Only one red, and that is the honest shape: the render-time placement still refuses every one of these templates, so what this row proves is exactly what the placement is FOR — the author hears about it at install instead of at bring-up |
-// | 10 | keep both call sites, but delete `validate_mcp_http_url(&probe)` from inside `probe_literal_url` | **one of 329**: the same install-time test | same assertion. The two placements call one function, so gutting the function has the same visible effect as removing its earliest caller — which is the point of the fix: it is `validate_mcp_http_url`, called, not a second spelling of its rules |
-// | 11 | rows 9 + 10 together — no probe validation anywhere | **one of 329**: still only the install-time test | The userinfo cases in `a_keyed_connector_refuses_a_slot_anywhere_in_the_origin` stay GREEN here, and that is worth reading twice: with the validator gone, the probe lands in `username`, and the probe-position check (row 12) catches it. The two mechanisms overlap on the userinfo family by design — that family is why both exist |
-// | 12 | delete the probe-position refusal from `lock_origin` ("a slot sits inside the origin"), keeping the componentwise comparison | **none of 329 — 329 passed** | A zero labelled "covered downstream", the mirror of row 7: with the position check gone, a host slot makes the probe render's host `neige-config-slot` while the configured render's is `evil.example`, and the comparison refuses on the difference. Neither half is dead; each is the other's backstop |
-// | 13 | delete ONLY the `username`/`password` arms of the probe-position check | **none of 329 — 329 passed** | A zero with a structural explanation, not an empirical one: `validate_mcp_http_url` runs on the probe two lines earlier and refuses userinfo outright, so a probe can never be observed in `username` or `password` while that call stands. The arms are kept as a fail-closed statement of the whole rule (see row 11 for the world where they carry the weight), and this row is the measurement that says so rather than an assumption |
-// | 14 | **rows 7 + 12 together** — both halves of the origin lock deleted, `validate_mcp_http_url` untouched | **two of 329**: `plugin_host::manifest::connector_kind_tests::a_keyed_connector_refuses_a_slot_anywhere_in_the_origin`, `connector_host::only_an_unkeyed_connector_may_have_its_host_configured` | ``https://{{config.endpoint}}/mcp resolved to https://evil.example/mcp — a keyed connector's origin is not configurable``; end to end, "a keyed connector's host is not a configurable field: ()". **This is the row rows 7 and 12 owe their existence to.** Each half alone is covered by the other, so each alone is a zero; together they are the whole of §2.3(c)'s origin lock, and the suite says so loudly. A pair of zeros that sum to a red is a mechanism, not two dead checks — but only a run can tell those apart, which is what the pre-review "unreachable" claim skipped |
-// ===========================================================================
+// Configuration reaching an `mcp-http` connector's url, and the origin lock keyed connectors
+// get for it. What is asserted is the request the STUB received.
 
 const HTTP_CONFIG_ID: &str = "mcp-configured";
 
-/// Write an `mcp-http` connector whose url carries `{{config.*}}` slots.
-///
-/// `keyed` decides the §2.3(c) tier — it writes `api_key_secret` +
-/// `secrets.json` — and is the ONLY difference between the two halves of the
-/// tiering pair, so a difference in outcome can only be the tier.
+/// Write an `mcp-http` connector whose url carries `{{config.*}}` slots; `keyed` is the ONLY
+/// difference between the two halves of the tiering pair.
 fn write_configured_http_connector(
     plugins_dir: &Path,
     url: &str,
@@ -4396,8 +3561,6 @@ async fn unavailable_reason(host: &Arc<PluginHost>, id: &str) -> String {
     }
 }
 
-/// §4.6 positive half — a configuration value fills the PATH and the QUERY of a
-/// keyed connector's url, and the upstream receives exactly that.
 #[tokio::test]
 async fn mcp_http_configuration_fills_the_path_and_query_of_a_keyed_connector() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -4445,20 +3608,16 @@ async fn mcp_http_configuration_fills_the_path_and_query_of_a_keyed_connector() 
     let targets = stub.targets();
     assert!(!targets.is_empty(), "the stub was never contacted");
     for target in &targets {
-        // #1194 — the request target is now EXACTLY the rendered url, with
-        // nothing appended. Before it, this asserted the `?api_key=` the client
-        // folded on after the configured query; a `starts_with` would still
-        // pass on a client that appended something else, so the equality is the
-        // stronger statement and the one the retirement earns.
+        // The request target is EXACTLY the rendered url, with nothing appended; `starts_with` would
+        // pass on a client that appended something else.
         assert_eq!(
             target, "/v2/mcp?rev=7",
             "the configured path and query must be what reached the upstream, \
              and nothing may be appended to them"
         );
     }
-    // The credential still went — in the header, where #1194 put it. Without
-    // this the test above would pass just as well on a connector that sent no
-    // credential at all.
+    // The credential still went, in the header; without this the test would pass on a connector
+    // that sent no credential at all.
     let auths = stub.auth_headers();
     assert!(
         auths.iter().all(|a| a == &format!("Bearer {SECRET_VALUE}")),
@@ -4466,14 +3625,8 @@ async fn mcp_http_configuration_fills_the_path_and_query_of_a_keyed_connector() 
     );
 }
 
-/// §4.6 negative half + the v5 tiering, as ONE test so the two halves cannot
-/// drift into two fixtures that differ in more than the tier.
-///
-/// Same url template, same configured value, same everything: one manifest
-/// holds `api_key_secret` and one does not. The keyed one must refuse before
-/// any request leaves this process — the credential must not reach the
-/// configured host even once — and the unkeyed one must come up, because with
-/// no credential to divert the argument for locking the origin does not exist.
+/// Negative half + tiering as ONE test: same url template, same configured value, one manifest
+/// holds `api_key_secret` and one does not.
 #[tokio::test]
 async fn only_an_unkeyed_connector_may_have_its_host_configured() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -4533,10 +3686,8 @@ async fn only_an_unkeyed_connector_may_have_its_host_configured() {
     );
 }
 
-/// §4.6 — one of `manifest.rs`'s own WHATWG retargeting cases, injected as a
-/// CONFIGURATION VALUE. It must be refused exactly as hard as it is in a
-/// manifest, which is only true if the rendered url goes through
-/// `validate_mcp_http_url` itself rather than through a restatement of it.
+/// A WHATWG retargeting case injected as a CONFIGURATION VALUE must be refused as hard as in a
+/// manifest, which requires the rendered url to go through `validate_mcp_http_url` itself.
 #[tokio::test]
 async fn a_configured_url_value_is_refused_by_the_manifests_own_validator() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -4565,8 +3716,6 @@ async fn a_configured_url_value_is_refused_by_the_manifests_own_validator() {
     assert!(stub.targets().is_empty(), "nothing may have been sent");
 }
 
-/// §2.2 v6 + §2.4 for the third kind: `required` is enforced at consumption,
-/// through the shared gate, with the shared wording.
 #[tokio::test]
 async fn an_mcp_http_connector_missing_required_configuration_lands_unavailable() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -4609,23 +3758,8 @@ async fn an_mcp_http_connector_missing_required_configuration_lands_unavailable(
     assert!(host.running_plugin_ids().await.contains(HTTP_CONFIG_ID));
 }
 
-// ===========================================================================
-// #1284 §4.7 — the meta guard: EVERY spawn path goes through the ONE
-// configuration gate.
-// ===========================================================================
-
-/// Every `ConnectorKind` variant, taken from **serde's own derived variant
-/// list** rather than from a list a human keeps up to date.
-///
-/// The `#[derive(Deserialize)]` on `ConnectorKind` generates
-/// `unknown variant ..., expected one of `app`, `mcp-http`, `cli-query`` from
-/// the enum itself, so a variant added tomorrow appears here with nobody
-/// touching this file. That is what makes the assertion below set equality and
-/// not a sample of three.
-///
-/// If serde ever changes that message, this function returns something that
-/// does not contain the three known kinds and the caller fails loudly — the
-/// failure direction is closed.
+/// Every `ConnectorKind` variant, taken from serde's own derived error message so a new variant
+/// appears here with nobody touching this file; if serde changes the message the caller fails loudly.
 fn all_connector_kinds() -> Vec<String> {
     let err = serde_json::from_value::<calm_server::plugin_host::ConnectorKind>(json!(
         "__no_such_kind__"
@@ -4642,26 +3776,9 @@ fn all_connector_kinds() -> Vec<String> {
         .collect()
 }
 
-/// §4.7 — the guard the design asked for and the tree never had.
-///
-/// **What it asserts.** For every `ConnectorKind` there is a real spawn, driven
-/// through `PluginHost::spawn`, and every one of those spawns passed through
-/// `PluginHost::config_for_spawn_or_unavailable` — the single `defaults ⊕
-/// user_config` seam. The universe of kinds is serde's (see
-/// [`all_connector_kinds`]), so this is set equality; a kind with no fixture
-/// here fails with an instruction rather than being silently skipped.
-///
-/// **Why this and not "I counted three call sites".** `mcp-http` is the
-/// standing proof that counting does not work: it has been routed by
-/// `spawn_admitted`'s exhaustive match since #1164 and consumed no
-/// configuration at all until this slice, and no test noticed. The compiler
-/// forces a new kind to be ROUTED; nothing forced it to be WIRED.
-///
-/// **This test is the positive witness; the fail-closed half is in production**
-/// — `spawn_admitted` checks the same stamp after every successful spawn of
-/// every kind and `debug_assert!`s on a miss, so any test in the suite that
-/// spawns a plugin that skipped the gate panics, whether or not anyone
-/// remembered to list its kind here.
+/// For every `ConnectorKind` there is a real spawn through `PluginHost::spawn`, and every one
+/// passed through `config_for_spawn_or_unavailable`; the universe is serde's, so this is set
+/// equality. The fail-closed half is `spawn_admitted`'s `debug_assert!`.
 #[tokio::test]
 async fn every_connector_kind_spawns_through_the_shared_config_gate() {
     let stub = StubServer::start(StubMode::Normal).await;
@@ -4708,18 +3825,8 @@ async fn every_connector_kind_spawns_through_the_shared_config_gate() {
     assert_eq!(driven, kinds, "every kind must have been driven");
 }
 
-/// §4.7 — the guard's **miss** branch, which nothing else in the suite reaches.
-///
-/// The guard is a conditional, so with every spawn path correctly wired there
-/// is no violation for it to catch: deleting it outright leaves the whole
-/// selection green (mutation row 5). The branch that matters is therefore
-/// tested head-on — an id that never spawned, so the witness is absent — rather
-/// than inferred from a table row that measures the guard's breadth instead of
-/// its teeth.
-///
-/// `cfg(debug_assertions)` because the teeth ARE `debug_assert!`: in a release
-/// build the same call logs and counts instead of panicking, which is the
-/// documented trade-off, not a second behaviour to assert here.
+/// The guard's miss branch, which no correctly-wired spawn reaches; `cfg(debug_assertions)`
+/// because the teeth ARE `debug_assert!`.
 #[cfg(debug_assertions)]
 #[tokio::test]
 #[should_panic(expected = "§4.7")]
@@ -4733,15 +3840,8 @@ async fn the_config_gate_guard_panics_when_the_witness_is_absent() {
     );
 }
 
-/// The release build's half of the same trade-off: a breach is COUNTED, not
-/// only logged.
-///
-/// Read together with the test above — one asserts the panic, this one asserts
-/// the durable record the panic is not — this is the whole of what
-/// `assert_config_gate_ran` does on a miss. It runs the guard through
-/// `catch_unwind` because in a debug build the record is written and then the
-/// process is told to die; the record must survive that ordering, since the
-/// ordering is what makes the release build's evidence exist at all.
+/// The release build's half of the same trade-off: a breach is COUNTED, not only logged. Runs
+/// through `catch_unwind` because in a debug build the record is written and then the process panics.
 #[cfg(debug_assertions)]
 #[tokio::test]
 async fn a_config_gate_breach_is_counted_not_only_logged() {

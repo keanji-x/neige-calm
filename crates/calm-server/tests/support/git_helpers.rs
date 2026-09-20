@@ -5,18 +5,8 @@ pub fn init_bare_origin(origin: &Path, seed: &Path) {
     init_bare_origin_with_files(origin, seed, &[("README.md", "initial\n".to_string())]);
 }
 
-/// #840 capstone (P2): seed the bare origin with a REAL (non-toy) Rust
-/// micro-crate: `src/lib.rs` with one existing `pub fn` + a passing `#[test]`,
-/// and a hermetic `e2e-gate.sh` that compiles-and-runs the crate's unit tests
-/// with a direct `rustc` invocation. Deliberately NO `Cargo.toml` anywhere —
-/// that removes every cargo invocation surface (gate AND worker shell), the
-/// #863-B recursive-suite amplifier. `RUSTC_WRAPPER`/sccache is cargo-mediated,
-/// so direct rustc is immune to the sandbox sccache flake.
-///
-/// Fixture-boot preflight (#840 capstone pin d): the kernel's task-verify gate
-/// wrapper runs `/bin/sh` with a CLEARED environment (task_verify_adapter
-/// `env_clear()`), so this fails fast at seed time if the baked rustc cannot
-/// run under those exact conditions.
+/// Seed the bare origin with a real Rust micro-crate and a hermetic `e2e-gate.sh` that runs its
+/// tests via direct `rustc`; deliberately NO `Cargo.toml`, so nothing invokes cargo.
 pub fn seed_rust_micro_crate(origin: &Path, seed: &Path) {
     let rustc = resolve_hermetic_rustc();
     preflight_env_cleared_rustc(&rustc);
@@ -30,8 +20,7 @@ pub fn seed_rust_micro_crate(origin: &Path, seed: &Path) {
     );
 }
 
-/// The gate cmd the #840 capstone patches into the git-forge template
-/// descriptor in place of the production `cargo test` (design P1).
+/// The gate cmd patched into the git-forge template descriptor in place of the production `cargo test`.
 pub const CAPSTONE_GATE_CMD: &str = "sh ./e2e-gate.sh";
 
 const RUST_MICRO_CRATE_LIB: &str = r#"/// Greets `name`.
@@ -50,11 +39,8 @@ mod tests {
 }
 "#;
 
-/// The seeded hermetic gate script. The kernel gate wrapper runs env-cleared,
-/// so PATH is pinned here (linker discovery for `rustc --test`) and rustc is a
-/// baked absolute toolchain path (a `~/.cargo/bin` rustup shim would need
-/// `$HOME`, which the cleared env does not have). The output binary is
-/// pid-suffixed: gates of concurrently-verifying tasks share `tracks.cwd`.
+/// The seeded hermetic gate script. The kernel gate wrapper runs env-cleared, so PATH is pinned and
+/// rustc is an absolute path; the output binary is pid-suffixed because concurrent gates share `tracks.cwd`.
 fn capstone_gate_script(rustc: &Path) -> String {
     format!(
         "#!/bin/sh\n\
@@ -71,9 +57,7 @@ fn capstone_gate_script(rustc: &Path) -> String {
     )
 }
 
-/// Absolute path to the real toolchain `rustc` (HOME-independent):
-/// `{sysroot}/bin/rustc`. Resolved with the test process's full env; the
-/// resolved binary itself then works under the gate wrapper's cleared env.
+/// Absolute path to the real toolchain `rustc` (`{sysroot}/bin/rustc`), HOME-independent so it works under the gate wrapper's cleared env.
 pub fn resolve_hermetic_rustc() -> PathBuf {
     let out = Command::new("rustc")
         .args(["--print", "sysroot"])
@@ -94,9 +78,7 @@ pub fn resolve_hermetic_rustc() -> PathBuf {
     rustc
 }
 
-/// #840 capstone pin (d): replicate the task-verify gate wrapper's execution
-/// conditions — `/bin/sh` with a fully CLEARED environment — and fail fast if
-/// `rustc` cannot even print its version there.
+/// Replicate the task-verify gate wrapper's conditions — `/bin/sh` with a fully cleared environment — and fail fast if `rustc` cannot run there.
 pub fn preflight_env_cleared_rustc(rustc: &Path) {
     let out = Command::new("/bin/sh")
         .arg("-c")
@@ -238,58 +220,22 @@ pub fn is_hex_sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// #1147 S3 — a real Git work tree at a stable, name-derived path, for
-/// fixtures that need an **attached** track and do not care where it points.
-///
-/// `POST /api/tracks` now validates an attached `cwd` (absolute, exists, is a
-/// Git work tree) instead of accepting any string, because the FE entry point
-/// this slice adds is the first way a user can name one — and a path that only
-/// fails later, as a worker's `spawn-failed`, is the defect #1147 was opened
-/// on. Dozens of fixtures predate that check and pass literals like
-/// `/tmp/issue-250-pr2-test`, which were never valid workspaces; this makes
-/// them what they always claimed to be.
-///
-/// Idempotent and safe to share *within one run*: the directory is keyed by
-/// `name` under [`fixture_root`], and re-init is a no-op, which matches how
-/// those literals were already shared across tests within a file.
-///
-/// Sharing has to survive *concurrent* first use, not just repeated use. The
-/// literals this replaces were shared across tests, and nextest runs every
-/// test in its own process with several binaries in flight at once, so two
-/// processes reach the un-initialized branch for the same key at the same
-/// time. Two `git init`s in one directory race on `.git/config`'s lock and one
-/// of them dies with `不能锁定配置文件 … 文件已存在`. So the repository is built
-/// off to the side and its `.git` is *renamed* into place: the winner's rename
-/// is atomic, the loser's fails because the destination is a non-empty
-/// directory, and the loser's repository is discarded — the winner's is
-/// identical, and no caller ever observes a half-initialized `.git`.
-///
-/// That protocol is only sound while the destination can be nothing but a
-/// peer's freshly built `.git`. Making the root per-run (#1433, see
-/// [`fixture_root`]) is what keeps that true.
+/// A real Git work tree at a stable, name-derived path, for fixtures that need an attached track.
+/// Concurrent first use is expected: the repo is built aside and its `.git` renamed into place, so only the winner's rename lands.
 pub fn attached_repo_fixture(name: &str) -> String {
     let root = fixture_root();
     let path = root.join(name);
     std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("create {path:?}: {e}"));
     if !is_git_work_tree(&path) {
-        // The staging path must be unique per *call*, not per process. Under
-        // `cargo test`'s thread model one pid runs every test in a binary, so a
-        // pid-only name collides whenever two threads reach this branch for the
-        // same `name` — and each would then `remove_dir_all` the other's
-        // staging mid-`git init`. pid + a monotonic counter is unique across
-        // both models: the counter separates threads within a process, the pid
-        // separates nextest's processes.
+        // The staging path must be unique per *call*: under `cargo test` one pid runs every test, so pid alone collides across threads.
         static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let staging = root.join(format!(".init-{name}-{}-{nonce}", std::process::id()));
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).unwrap_or_else(|e| panic!("create {staging:?}: {e}"));
         run_git(&staging, ["init", "-b", "main"]);
-        // Losing this rename is the expected outcome for every process but the
-        // first; the assertion that matters is made below, after the race. The
-        // error is kept rather than dropped: when the assertion does fire it is
-        // the single most informative fact about why (#1433 was an `ENOTEMPTY`
-        // here, invisible for a day behind a `let _ =`).
+        // Losing this rename is expected for every process but the first; the error is kept because it is
+        // the most informative fact when the assertion below fires.
         let renamed = std::fs::rename(staging.join(".git"), path.join(".git"));
         let _ = std::fs::remove_dir_all(&staging);
         assert!(
@@ -302,32 +248,8 @@ pub fn attached_repo_fixture(name: &str) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// The root [`attached_repo_fixture`] builds under: one directory per *run*,
-/// not one directory per `$TMPDIR`.
-///
-/// `$TMPDIR` is not scratch space on the self-hosted CI runner. The workflow
-/// points it at `RUNNER_TEMP`, which outlives the job and is swept by the
-/// runner's own post-job cleanup — a sweep that deletes every *file*
-/// underneath and leaves the *directory tree* standing. Measured on the
-/// `neige-calm-main` runner on 2026-09-04: 0 files and 1407 directories left
-/// under `_work/_temp`, and 102 of the 103 `neige-attached-fixtures/<name>`
-/// entries holding a `.git` made only of `branches/ hooks/ info/ objects/
-/// refs/` — no `HEAD`, no `config`.
-///
-/// A later run then finds `<name>/.git` present but hollow. `git rev-parse`
-/// refuses it, so the init branch runs, and renaming the freshly built `.git`
-/// onto that husk fails with `ENOTEMPTY` — for every process, in every
-/// subsequent run, until someone deletes the directory by hand. That is
-/// #1433: `main` red all day, ~74 fixtures failing at once from the first
-/// test that touched one, with nothing actually racing.
-///
-/// Keying the root by run is what removes it: a run only ever reads
-/// directories it created itself. `NEXTEST_RUN_ID` is a single UUID for a
-/// whole nextest run, exported into every test process nextest spawns, which
-/// is exactly the sharing scope these fixtures need — same key inside a run,
-/// never the same key across runs. Under a plain `cargo test` there is no run
-/// id; a per-process root is used instead, which costs nothing because the
-/// fixtures are only ever shared inside one test binary.
+/// The root [`attached_repo_fixture`] builds under: one directory per *run*, keyed by `NEXTEST_RUN_ID`.
+/// `$TMPDIR` on the CI runner outlives the job, and its cleanup leaves hollow `.git` trees that a later run must never read.
 fn fixture_root() -> PathBuf {
     let base = std::env::temp_dir().join("neige-attached-fixtures");
     let token = std::env::var("NEXTEST_RUN_ID")
@@ -340,14 +262,7 @@ fn fixture_root() -> PathBuf {
     root
 }
 
-/// Per-run roots would otherwise accumulate forever on the persistent runner
-/// (the cleanup above empties files but keeps directories, so nothing else
-/// ever reclaims them). Best effort by design: a failure here must not fail a
-/// test, and a concurrent sweeper removing the same directory is fine.
-///
-/// The age threshold is what keeps a *live* run's root out of reach. A root
-/// is written to whenever its run builds another fixture, and the Rust suite
-/// this serves runs for minutes, not hours.
+/// Best effort: per-run roots would otherwise accumulate forever on the persistent runner. The age threshold keeps a live run's root out of reach.
 fn sweep_finished_runs(base: &Path, keep: &Path) {
     const FINISHED_RUN_AGE: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
     let Ok(entries) = std::fs::read_dir(base) else {
@@ -371,13 +286,7 @@ fn sweep_finished_runs(base: &Path, keep: &Path) {
     }
 }
 
-/// Everything the failed [`attached_repo_fixture`] assertion needs to name the
-/// step that broke, in one string: git's own words plus what is on disk.
-///
-/// The message it feeds used to say only "is not a Git work tree", which is
-/// true of a lost race, of a hollow leftover, and of git refusing a directory
-/// owned by another user alike — #1433 sat in `main` for a day partly because
-/// the panic could not tell those apart.
+/// Everything the failed [`attached_repo_fixture`] assertion needs to name the step that broke: git's own words plus what is on disk.
 fn work_tree_diagnosis(path: &Path) -> String {
     let output = rev_parse_git_dir(path);
     let mut report = format!(
@@ -406,28 +315,8 @@ fn describe_dir(dir: &Path) -> String {
     }
 }
 
-/// "Does `path` already own a working repository?" — asked of git, not of the
-/// filesystem.
-///
-/// The predicate gates whether the fixture gets (re)built, and what the callers
-/// need is what the server's `validate_attached_workspace` will ask: can git
-/// resolve a repository here. A `.git` directory left half-populated by an
-/// interrupted init satisfies `is_dir()` while failing that, so the old
-/// directory test would hand back a path the route then 400s on. Asking git
-/// means such a leftover is *rejected* rather than trusted — #1433 is the
-/// reminder that rejecting it is not the same as repairing it: nothing here
-/// can rename a fresh `.git` onto a non-empty husk, which is why
-/// [`fixture_root`] keeps husks out of a run's path in the first place.
-///
-/// Two refinements over a bare `rev-parse`:
-///
-///   * the repository-redirecting environment is scrubbed, the same set
-///     `neige_git_command` removes — an inherited `GIT_DIR` would otherwise
-///     make every path look initialized;
-///   * the answer must be *this* directory's own `.git`. `rev-parse` walks
-///     upward, so on a box whose `TMPDIR` happens to sit inside a repository a
-///     bare success would skip the init and leave the fixtures sharing their
-///     ancestor's repository.
+/// Asked of git, not the filesystem: a half-populated `.git` satisfies `is_dir()` but git refuses it.
+/// The repository-redirecting env is scrubbed, and the answer must be *this* directory's own `.git` (rev-parse walks upward).
 fn is_git_work_tree(path: &Path) -> bool {
     let output = rev_parse_git_dir(path);
     if !output.status.success() {
@@ -441,9 +330,6 @@ fn is_git_work_tree(path: &Path) -> bool {
     }
 }
 
-/// The one `git rev-parse` [`is_git_work_tree`] answers from, so that
-/// [`work_tree_diagnosis`] reports on the same invocation rather than a
-/// paraphrase of it.
 fn rev_parse_git_dir(path: &Path) -> std::process::Output {
     const HOSTILE_GIT_ENV: [&str; 8] = [
         "GIT_DIR",

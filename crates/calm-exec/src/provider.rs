@@ -35,9 +35,7 @@ impl SpawnCtx {
 
 /// Owns a worker session after spawn: liveness, exit interpretation, and resume.
 ///
-/// Probes and interpretation must run outside the write lock; only the final
-/// CAS transition is committed under it. `interpret_exit` is the sole exit
-/// authority for every observation source.
+/// Probes and interpretation run outside the write lock; only the final CAS transition commits under it.
 #[async_trait]
 pub trait WorkerProvider: Send + Sync {
     fn kind(&self) -> &'static str;
@@ -45,7 +43,6 @@ pub trait WorkerProvider: Send + Sync {
     fn session_mode(&self) -> SessionMode;
 
     /// One observation round against a live-or-unknown session.
-    ///
     async fn probe_liveness(
         &self,
         session: &WorkerSession,
@@ -60,9 +57,7 @@ pub trait WorkerProvider: Send + Sync {
         ctx: &SpawnCtx,
     ) -> Result<ExitInterpretation, CoreError>;
 
-    /// Re-attach a [`SessionMode::Resumable`] session whose exit was ruled
-    /// [`ExitInterpretation::ResumeEligible`]. Default errors — ephemeral
-    /// providers never override it.
+    /// Re-attach a resumable session ruled `ResumeEligible`; the default errors and ephemeral providers never override it.
     async fn resume(
         &self,
         _session: &WorkerSession,

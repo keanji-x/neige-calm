@@ -1,11 +1,5 @@
-// The file card. Kernel kind `'file-viewer'`, payload `{ path }`. Owns a
-// surface; owns no runtime.
-//
-// That last part is what makes it the one built-in with a `generic` create:
-// there is no daemon to spawn, so the row *is* the card and
-// `POST /api/tracks/:id/cards` writes it verbatim. `buildPayload` is therefore
-// the whole create — and it takes only `path`, because `title` is a column on
-// the row rather than a member of the payload.
+// The file card. Kernel kind `'file-viewer'`, payload `{ path }`. Owns a surface; owns no runtime, so its create is `generic`.
+// `buildPayload` takes only `path`: `title` is a column on the row, not a member of the payload.
 
 import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry.js';
 import { FileViewer } from '../../fs-viewers/public.tsx';
@@ -26,12 +20,7 @@ export type FileViewerCard = Readonly<{
   path: string;
 }>;
 
-/**
- * The payload's one required field. A card with no readable `path` is not a
- * degraded file card, it is a card with nothing to show — so it resolves to
- * `null` and lands in the board's `unknown` branch, where a reader can at least
- * delete it.
- */
+/** A card with no readable `path` resolves to `null` and lands in the board's `unknown` branch, where a reader can at least delete it. */
 function pathFromPayload(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null) return null;
   const value = (payload as { path?: unknown }).path;
@@ -47,14 +36,7 @@ function FileViewerCardView({ card, host, onRemove }: CardComponentProps<FileVie
         onClose={onRemove}
         closeAriaLabel={`Delete card ${card.title ?? 'file'}`}
       />
-      {/*
-        The theme is read at render from `<html data-theme>` rather than
-        subscribed to: `systems/**` may not reach `app/theme`, and the editor
-        re-reads it on every render anyway because the card re-renders when the
-        board does. A theme toggle while a card is open therefore repaints on
-        the next render rather than instantly — the same trade `readHostThemeRgb`
-        already makes at the create call, and for the same reason (#177).
-      */}
+      {/* The theme is read at render from `<html data-theme>` rather than subscribed to: `systems/**` may not reach `app/theme`. A toggle while a card is open repaints on the next render. */}
       <FileViewer path={card.path} files={host.files} theme={readHostTheme()} slots={host.slots} />
     </div>
   );

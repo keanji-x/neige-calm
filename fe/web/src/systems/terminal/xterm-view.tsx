@@ -1,5 +1,4 @@
-// Terminal protocol, rendering and connection lifecycle. Reconnect replaces
-// only the WebSocket; retained output is replaced by the next full replay.
+// Terminal protocol, rendering and connection lifecycle. Reconnect replaces only the WebSocket.
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -26,8 +25,7 @@ import type {
 } from './generated-terminal.ts';
 import { LIGHT_THEME_RGB, DARK_THEME_RGB } from './theme-rgb.ts';
 
-// Cool-neutral light xterm theme matching Calm's palette. Same numbers as
-// the previous useTerminalCore-backed version; only the wire below changed.
+// Cool-neutral light xterm theme matching Calm's palette.
 const LIGHT_THEME: ITheme = {
   background: '#ffffff00',
   foreground: '#2a2f3a',
@@ -60,12 +58,7 @@ const DARK_THEME: ITheme = {
   selectionBackground: 'rgba(140, 180, 255, 0.22)',
 };
 
-/**
- * #306 — child exit info surfaced by the daemon. `exit_code != null`
- * means the child returned via `exit()` / main-return; `signal_killed`
- * means it was killed by a signal. Mutually exclusive at the source.
- * `null` clears any prior badge (used on `reconnect()`).
- */
+/** Child exit info from the daemon; `exit_code` and `signal_killed` are mutually exclusive at the source. `null` clears a prior badge. */
 export interface ExitChange {
   exit_code: number | null;
   signal_killed: boolean;
@@ -73,37 +66,14 @@ export interface ExitChange {
 
 interface XtermViewProps {
   recovery?: RecoveryAccess | null;
-  /** `Terminal.id` from the kernel. */
   terminalId: string;
   theme?: 'light' | 'dark';
-  /**
-   * Lift the daemon-assigned role (from `ServerHello.client_role`) out to the
-   * parent card so the role indicator can live in `<CardHead>`'s status slot
-   * instead of as a corner overlay inside the xterm view. `null` is reported
-   * on reconnect / disconnect so the parent can clear any badge. Owners are
-   * the common single-user case and intentionally don't render a badge there
-   * — the parent decides what (if anything) to show per role.
-   */
+  /** The daemon-assigned role, or `null` on reconnect/disconnect so the parent can clear a badge. */
   onRoleChange?: (role: Role | null) => void;
-  /**
-   * #306 — lift child-exit info out to the parent card so the header can
-   * render a small badge (`exit 0` / `exit 137` / `signal`) without
-   * overlaying the terminal buffer. Fired with `{ exit_code, signal_killed }`
-   * when the terminal emits `TerminalExited` or the WS
-   * closes with `1000 + reason=child-exited`, and with `null` on
-   * reconnect to clear any prior badge. Idempotent: the parent may
-   * receive the same payload twice (once from the JSON frame, once
-   * from the WS close handler) and should treat the second call as a
-   * no-op state-equality. Parent reads the seed value off the
-   * terminal row's REST response so a refreshed page renders the
-   * badge immediately without waiting for the WS attach.
-   */
+  /** Child-exit info lifted to the parent; idempotent — the same payload may arrive twice (JSON frame, then WS close). `null` on reconnect. */
   onExitChange?: (exit: ExitChange | null) => void;
   onStatusChange?: (status: TerminalConnectionStatus) => void;
-  /**
-   * Overlay visibility. The view stays mounted after the first open
-   * (keep-alive). Hidden cards must not ResizeCommit or accept OSC 52.
-   */
+  /** The view stays mounted after first open; hidden cards must not ResizeCommit or accept OSC 52. */
   visible?: boolean;
 }
 
@@ -112,23 +82,13 @@ export interface XtermViewHandle {
   getWheelTarget(): XtermWheelTarget | null;
 }
 
-/** Last close info, surfaced in the gray "disconnected" overlay so the user
- *  (and we) can tell at a glance whether it was a proxy cut (1006), a
- *  server-side heartbeat trip (1011), a clean server close (1001), etc. */
+/** Last close info, surfaced in the disconnected overlay. */
 interface CloseInfo {
   code: number;
   reason: string;
 }
 
-/** Wire version the frontend speaks. Must match
- *  `crates/calm-session/src/lib.rs::PROTOCOL_VERSION`. A mismatch surfaces
- *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below.
- *  Bumped 2 → 3 in #177 for the `ClientMsg::TerminalThemeUpdate` variant
- *  the daemon uses to update its OSC 10/11 defaults and nudge a
- *  focus-aware TUI to re-query on host theme toggles.
- *  Bumped 3 → 4 in #388 (Phase 3c): chat-mode wire variants removed
- *  alongside daemon binary retirement; the bincode discriminants shift
- *  so `FRAME_VERSION` + `PROTOCOL_VERSION` move in lockstep. */
+/** Must match `crates/calm-session/src/lib.rs::PROTOCOL_VERSION`. */
 const PROTOCOL_VERSION = 4;
 
 // Four-plus rows/cols worth of host surface avoids xterm/FitAddon
@@ -144,18 +104,7 @@ function isNonDegenerateMountSize(width: number, height: number): boolean {
   return width >= MIN_MOUNT_WIDTH_PX && height >= MIN_MOUNT_HEIGHT_PX;
 }
 
-/**
- * UI status for the v2 terminal protocol. Slimmed-down state machine
- * compared to v1: a clean break is fine (compat is gated by
- * `WEB_COMPAT_VERSION`) so we don't carry transitional states.
- *
- *   connecting    — WebSocket opening
- *   handshaking   — WebSocket open, awaiting `ServerHello`
- *   connected     — `ServerHello` received, streaming
- *   closed        — WS closed (or errored) before exit
- *   exited        — daemon sent `TerminalExited` (terminal mode child exited)
- *   protocol-error — daemon sent `ProtocolError`; connection terminated
- */
+/** UI status for the terminal protocol. */
 export type TerminalConnectionStatus =
   | 'connecting'
   | 'handshaking'
@@ -173,22 +122,7 @@ interface ExitInfo {
   code: number | null;
 }
 
-/**
- * Direct bridge to calm-server's `/api/terminals/:id` WS endpoint, speaking
- * the v2 terminal protocol (issue #44). Frames are JSON-encoded `ClientMsg`
- * / `DaemonMsg` from the `calm-session` Rust crate (TS types regenerated
- * via `npm run gen:api`). `Vec<u8>` rides as a plain JS `Array<number>`.
- *
- * Roles: this component always sends `role_hint: 'Owner'` — the browser is
- * the user's primary interaction surface. The daemon's `OwnerRegistry` may
- * still assign `Observer` (e.g. another client already holds owner), in
- * which case `Input` frames are rejected with `NotOwner`. The assigned role
- * is reported up to the parent card via `onRoleChange` so the
- * `<CardHead>` status slot can render an `observing` pill when relevant;
- * owners (the common single-user case) render no badge at all.
- * `kernel_originated_input` would never apply to a browser tab so we leave
- * it out of the capability set.
- */
+/** Bridge to calm-server's `/api/terminals/:id` WS endpoint; frames are JSON `ClientMsg`/`DaemonMsg` from `calm-session`, `Vec<u8>` riding as `Array<number>`. */
 export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
   terminalId,
   recovery = null,
@@ -198,12 +132,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   onStatusChange,
   visible = true,
 }, ref) {
-  // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
-  // production users never carry the side effect. A real mount bumps
-  // `window.__xtermMounts__` by 1; unmount decrements. The e2e
-  // regression test (`web/e2e/a11y-177-theme-toggle-no-remount.spec.ts`)
-  // reads this between theme-toggle steps to pin "no remount on theme
-  // toggle" as a contract.
+  // Playwright instrumentation, gated on `?testMounts=1`: counts real mounts in `window.__xtermMounts__`.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
@@ -217,16 +146,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // Live ref to the active xterm.js Terminal instance so a sibling effect
-  // can re-apply the theme without tearing down the WebSocket + replay
-  // state. xterm.js reads `term.options.theme` lazily on every render
-  // cycle, so reassigning it triggers an immediate repaint at the next
-  // flush. See the theme-apply effect below.
+  // Live ref so the theme effect can re-theme without tearing down the WebSocket.
   const termRef = useRef<Terminal | null>(null);
-  // Latest theme prop, captured into a ref so the main bridge-mount effect
-  // (which omits `theme` from its deps on purpose — see the theme-apply
-  // effect below) can still read the *current* theme when constructing
-  // the Terminal on (re)mount or after a reconnect.
+  // The bridge-mount effect omits `theme` from its deps on purpose; it reads the current value here.
   const latestThemeRef = useRef<'light' | 'dark'>(theme);
   latestThemeRef.current = theme;
   const visibleRef = useRef(visible);
@@ -243,26 +165,13 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   const [protocolError, setProtocolError] = useState<ProtocolError | null>(null);
   const [exitInfo, setExitInfo] = useState<ExitInfo | null>(null);
   void exitInfo;
-  // #306 — live mirror of `exitInfo` for the `ws.onclose` handler. The
-  // close-frame backstop below must NOT fire when a prior
-  // `TerminalExited` JSON frame already delivered the real exit code
-  // (typically 137 / signal-encoded). The setState `setExitInfo` above
-  // is asynchronous, so reading `exitInfo` directly from the closure
-  // would still see `null` on the very next tick. The ref keeps a
-  // synchronously-current copy so the close handler can branch on
-  // "already delivered? skip the backstop".
+  // Synchronous mirror of `exitInfo` so the `ws.onclose` backstop can skip when a `TerminalExited` frame already delivered the code.
   const exitInfoRef = useRef<ExitInfo | null>(null);
-  // Role lives entirely in the parent now (via `onRoleChange`) so the badge
-  // can sit in `<CardHead>`'s status slot instead of overlaying the terminal.
-  // We capture the latest callback into a ref so the heavy bridge-mount
-  // effect doesn't need it in its deps — a callback identity flip from the
-  // parent shouldn't tear down the WebSocket.
+  // Captured in a ref so a callback identity flip from the parent does not tear down the WebSocket.
   const onRoleChangeRef = useRef<XtermViewProps['onRoleChange']>(onRoleChange);
   onRoleChangeRef.current = onRoleChange;
   // Matches the hardcoded `role_hint: 'Owner'` in ClientHello.
   const wantedOwnerRef = useRef<boolean>(true);
-  // #306 — same ref-capture pattern as `onRoleChange`: a parent identity
-  // flip on the callback shouldn't tear down the WebSocket effect.
   const onExitChangeRef = useRef<XtermViewProps['onExitChange']>(onExitChange);
   onExitChangeRef.current = onExitChange;
   // Reconnect only the browser transport. The mounted xterm and its output
@@ -288,47 +197,12 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   const [geometryDeferred, setGeometryDeferred] = useState(false);
   const lastFailedMountSizeRef = useRef<{ w: number; h: number } | null>(null);
 
-  // #177 — live `send` from the WS-mount effect, captured so the
-  // theme-effect can post `TerminalThemeUpdate` without owning the
-  // WebSocket itself. Cleared back to `null` on teardown.
+  // Live `send` from the WS-mount effect so the theme effect can post without owning the socket.
   const sendRef = useRef<((msg: ClientMsg) => void) | null>(null);
-  // #177 — buffer for a `TerminalThemeUpdate` produced before the WS
-  // effect populates `sendRef`. On a fresh mount the theme-effect can
-  // fire before the bridge-mount effect runs (React effects execute in
-  // declaration order, but the bridge-mount effect bails early on
-  // `!container` during the strict-mode double-invoke), so without this
-  // buffer the dispatch would no-op. The WS-mount effect drains this
-  // right after assigning `sendRef.current = send`.
+  // A `TerminalThemeUpdate` produced before the WS effect installed `sendRef`; drained there.
   const pendingThemeRef = useRef<ClientMsg | null>(null);
 
-  // Live-apply theme changes without rebuilding the Terminal + WS.
-  // xterm.js exposes `term.options` as a mutable bag; assigning
-  // `term.options.theme = ...` is the official re-theming path. Putting
-  // this in its own effect keeps the (heavy) bridge-mount effect's deps
-  // small and lets us drop `theme` from there.
-  //
-  // #177 — also dispatch `TerminalThemeUpdate` over the WS on every
-  // run of this effect, including the initial mount. We deliberately
-  // do NOT gate on a "did theme change since last run?" check: a
-  // remount (Suspense flash, persist-query hydration, anything else
-  // that re-runs the lazy chunk) resets any per-component `prev`
-  // bookkeeping and would skip the dispatch — exactly the bug we're
-  // closing. The unconditional POST is safe because suppression lives
-  // on the daemon side, not here: (a) the session state machine drops
-  // the update when fg/bg already equal the current defaults (the
-  // mount-time no-op case), and (b) the daemon's only mid-session
-  // write is `ESC[I`, gated on whether the PTY child has opted into
-  // DECSET 1004 (focus event reporting). A focus-aware TUI like codex
-  // enables 1004 and treats `ESC[I` as `FocusGained`, re-querying OSC
-  // 10/11 — the daemon then synthesizes the reply from the updated
-  // defaults. An interactive shell at its prompt drives the line via
-  // a raw-mode editor (zsh's ZLE) but never enables 1004, so without
-  // the gate a stray `ESC[I` would land in its line buffer. (Pre-#305
-  // the daemon also wrote unsolicited `OSC 10;rgb:… OSC 11;rgb:…`
-  // pairs; that double-belt was dropped in #305 in favor of the
-  // solicited-only loop.) See crates/calm-session `on_client_frame`
-  // TerminalThemeUpdate + daemon `Effect::TerminalThemeUpdate`, gated
-  // on `RenderPlane::focus_event_tracking`.
+  // Live-apply theme without rebuilding the Terminal + WS. The `TerminalThemeUpdate` dispatch is deliberately unconditional: a remount resets any per-component bookkeeping, and suppression lives on the daemon side.
   useEffect(() => {
     const term = termRef.current;
     if (term) {
@@ -341,11 +215,6 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     if (sendRef.current) {
       sendRef.current(msg);
     } else {
-      // WS effect hasn't installed `send` yet. Buffer here; the
-      // WS-mount effect drains immediately after assigning
-      // `sendRef.current` so the frame still reaches the daemon
-      // (via the `pendingFrames` queue inside `send` when readyState
-      // is CONNECTING, or directly once OPEN).
       pendingThemeRef.current = msg;
     }
   }, [theme]);
@@ -404,11 +273,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         latestThemeRef.current === 'dark' ? DARK_THEME : LIGHT_THEME,
       fontFamily: MONO_STACK,
       fontSize: 12.5,
-      // Mirrors `SCROLLBACK_MAX_LINES` in
-      // `crates/calm-server/src/terminal_renderer/mod.rs` — must be kept in
-      // lockstep so this local ring isn't smaller than the server cap on
-      // ServerHello.snapshot.scrollback. If we ever bump one side, bump
-      // the other.
+      // Mirrors `SCROLLBACK_MAX_LINES` in `crates/calm-server/src/terminal_renderer/mod.rs`; keep in lockstep.
       scrollback: 2000,
       convertEol: true,
       allowProposedApi: true,
@@ -416,18 +281,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       disableStdin: true,
     });
     termRef.current = term;
-    // OSC-echo regression instrumentation. Gated on `?testMounts=1` (so
-    // production never carries it) exactly like `__xtermMounts__` above.
-    // Registers a per-terminal buffer serializer keyed by `terminalId`,
-    // so the e2e test (`web/e2e/new-terminal-osc-echo.spec.ts`) can dump
-    // the rendered grid of a SPECIFIC card (a track can have several
-    // xterm-backed cards — e.g. the auto-minted codex planner card plus an
-    // AddPanel New-terminal card — and only the cooked-shell terminal
-    // can manifest the echo bug). The test asserts no OSC 10/11 reply
-    // bytes land in the grid as literal caret text (`]10;rgb:` /
-    // `]11;rgb:`). We read the buffer rather than the DOM
-    // because xterm's canvas/webgl renderer doesn't mirror glyphs into
-    // navigable DOM nodes.
+    // OSC-echo e2e instrumentation, gated on `?testMounts=1`: a per-terminal buffer serializer, read from the buffer because the canvas renderer mirrors no glyphs into the DOM.
     if (typeof window !== 'undefined') {
       const url = new URL(window.location.href);
       if (url.searchParams.get('testMounts') === '1') {
@@ -449,16 +303,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
-    // #177 — suppress xterm.js's built-in OSC 10/11/12 auto-reply.
-    // The daemon is the sole authoritative responder (it knows the
-    // host browser's *real* surface color via `--terminal-fg/-bg`
-    // and the `TerminalThemeUpdate` stream below); xterm.js's local
-    // reply would race a wrong value back (its `clearColor` is the
-    // transparent `#ffffff00` we configure above, which serializes
-    // to `rgb:ffff/ffff/ffff/0000` and codex parses as pure white).
-    // Returning `true` from the OSC handler short-circuits xterm's
-    // default behavior — the bytes are consumed, no reply is sent,
-    // and the daemon's reply is the only thing on the wire.
+    // Suppress xterm.js's OSC 10/11/12 auto-reply: the daemon is the sole responder, and xterm's transparent `clearColor` would race back as pure white.
     term.parser.registerOscHandler(10, () => true);
     term.parser.registerOscHandler(11, () => true);
     term.parser.registerOscHandler(12, () => true);
@@ -468,15 +313,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         osc52HostMayWrite(container, visibleRef.current),
       ),
     );
-    // #554 — port VS Code's default Mac sendSequence keybindings.
-    // VS Code ships `registerSendSequenceKeybinding('\x01', { mac: Cmd+Left })`
-    // (and ^E/^U for Cmd+Right / Cmd+Backspace) in
-    // terminalContrib/sendSequence/browser/terminal.sendSequence.contribution.ts:240-253,
-    // dispatched through their keybindingService → sendText → PTY write. We don't
-    // have that whole infrastructure, so this handler is the byte-equivalent shortcut:
-    // keydown → preventDefault → term.input(seq, true) → existing onData → WS Input
-    // frame → PTY. Guard `!metaKey || ctrlKey || altKey` ⇒ pure-Cmd only;
-    // non-Mac and modifier-combo cases pass through untouched, so zero regression.
+    // VS Code's default Mac sendSequence keybindings (Cmd+Left/Right/Backspace → ^A/^E/^U); pure-Cmd only.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
       if (e.isComposing) return true;
@@ -511,19 +348,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       }
       return true;
     });
-    // Tab-trap mitigation — issue #236 followup. xterm.js creates a
-    // `<textarea class="xterm-helper-textarea" tabindex="0">` inside the
-    // container; once focus lands on it, xterm's keydown handler captures
-    // every Tab (forwarded to the PTY as `\t`) so the browser never moves
-    // focus off the terminal. That's fine for users who clicked into the
-    // terminal deliberately — but it turns the terminal into a one-way
-    // focus trap during plain Tab navigation across the track page, which
-    // breaks keyboard-only nav (`web/e2e/a11y-keyboard.spec.ts`) the
-    // moment a track has any xterm-backed card. Demote the textarea out
-    // of the natural Tab order; users still engage the terminal by
-    // clicking (xterm.js's mousedown handler focuses it), and once
-    // focused all keys (including Tab → tab-completion) still flow to
-    // the PTY.
+    // xterm's helper textarea captures every Tab once focused, making the terminal a focus trap during page Tab navigation; demote it out of the Tab order (clicking still focuses it).
     const helperTextarea = container.querySelector<HTMLTextAreaElement>(
       '.xterm-container textarea.xterm-helper-textarea',
     );
@@ -585,13 +410,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         if (current()) { handshakeTimedOut = true; ws.close(); }
       }, 15_000) : null;
 
-      // #177 — queue frames produced before the WS finishes its handshake.
-      // The theme-effect (sibling below) can fire between `new WebSocket(…)`
-      // and `ws.onopen` — the pre-#177 `send()` silently dropped such
-      // frames and the daemon never learned about the toggle. Buffer here
-      // and flush in `ws.onopen` (after the ClientHello). On WS close /
-      // teardown the queue is GC'd along with the closure, so there's no
-      // zombie-message risk.
+      // Frames produced between `new WebSocket(…)` and `ws.onopen` are queued and flushed after the ClientHello.
       const pendingFrames: ClientMsg[] = [];
       const send = (msg: ClientMsg) => {
         if (!current()) { pendingFrames.length = 0; return; }
@@ -601,56 +420,25 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           pendingFrames.push(msg);
         }
       };
-      // #177 — surface `send` so the theme-effect (above) can post
-      // `TerminalThemeUpdate` without owning a WebSocket of its own.
-      // Cleared in the teardown below.
       sendRef.current = send;
-      // #177 — drain a `TerminalThemeUpdate` buffered by the theme-effect
-      // before this WS effect ran. `send()` itself handles the
-      // not-yet-OPEN case via `pendingFrames`, so this works on a cold
-      // mount (where readyState is CONNECTING and the message rides the
-      // `pendingFrames` queue until `ws.onopen` drains it) AND on a
-      // reconnect (same path).
+      // Drain a `TerminalThemeUpdate` buffered before this effect ran.
       if (pendingThemeRef.current) {
         send(pendingThemeRef.current);
         pendingThemeRef.current = null;
       }
 
-      // Per-connection client id. The daemon's `OwnerRegistry` keys on this
-      // so the same browser tab survives WS reconnects without losing
-      // ownership. We can't call `crypto.randomUUID()` directly: it is
-      // restricted to secure contexts (https + localhost), so the LAN-http
-      // case (http://192.168.x.x:4040) hits `TypeError: crypto.randomUUID
-      // is not a function`. `makeUuid()` falls back to a v4 synthesized
-      // from `crypto.getRandomValues`, which is always available — see
-      // `util/uuid.ts`.
+      // Per-connection client id; the daemon's `OwnerRegistry` keys on it so a tab survives WS reconnects without losing ownership.
       const clientId = makeUuid();
-      // Monotonic resize epoch. Bumped on every `ResizeCommit` so a
-      // `ResizeApplied` echo can be matched to its request (and stale
-      // applies from a previous epoch ignored).
+      // Monotonic resize epoch so a `ResizeApplied` echo can be matched and stale applies ignored.
       let resizeEpoch = 0;
-      // Geometry captured by the successful mount-time fit. Keep it separate
-      // from `term.cols/rows`: ServerHello may resize the local xterm back to
-      // the authoritative PTY geometry before we decide whether first attach
-      // can be synchronized safely.
+      // Kept separate from `term.cols/rows`: ServerHello may resize the local xterm before first-attach sync is decided.
       const mountDesired = { cols: term.cols, rows: term.rows };
       let lastCols = term.cols;
       let lastRows = term.rows;
-      // Track the latest render_rev / pty_seq the daemon emitted. Future
-      // PRs use these to send `RenderAck` for back-pressure; today we just
-      // keep them current for the (unimplemented) resume path.
       let renderRev = 0;
       let ptySeq = 0;
 
-      // Liveness detection is owned server-side (ws/terminal.rs: 10s ping,
-      // 30s pong_timeout — closes with 1011 on timeout). The browser's WS
-      // impl handles TCP-level death itself and fires onclose/onerror. We
-      // previously kept a 40s client-side timer too, but it only observed
-      // JS-level `onmessage` (Text/Binary), NOT browser auto-pongs — so a
-      // healthy WS attached to an idle codex prompt (no PTY output for 40s)
-      // would false-positive close as code 1006. Server-side heartbeat
-      // already covers the real failure modes; the client-side timer was
-      // redundant and harmful.
+      // Liveness detection is server-side (10s ping / 30s pong timeout → 1011); a client-side timer cannot see browser auto-pongs and false-positives on an idle PTY.
 
       ws.onopen = () => {
         if (!current()) { ws.close(); return; }
@@ -667,36 +455,22 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
               pixel_height: null,
             },
             cell_size: null,
-            // 'All' restores daemon-retained scrollback on remount (track nav
-            // remounts XtermView); server bound is SCROLLBACK_MAX_LINES so
-            // this is not unbounded.
+            // 'All' restores daemon-retained scrollback on remount; bounded by the server's SCROLLBACK_MAX_LINES.
             initial_scrollback: 'All',
             resume_from: null,
-            // The browser is the user's primary interaction surface, so we
-            // hint Owner. The daemon may still hand us Observer if someone
-            // else (CLI client, another tab) already owns the session.
+            // The daemon may still hand us Observer if another client owns the session.
             role_hint: 'Owner',
             capabilities: {
               render_encodings: ['Vt'],
               supports_scrollback: true,
               supports_sixel: false,
               supports_images: false,
-              // Browser is an untrusted ingress; the WS bridge force-strips
-              // this to false on every ClientHello regardless of what we
-              // send, but we declare false here to match the trust model
-              // documented on the field (see crates/calm-session/src/lib.rs).
+              // The WS bridge force-strips this to false for browser ingress regardless; declared false to match.
               kernel_originated_input: false,
             },
           },
         });
-        // #177 — flush frames queued before the WS finished its handshake.
-        // Typical culprit: a theme toggle in the brief window between
-        // `new WebSocket(…)` and `ws.onopen`. Without this drain, the
-        // toggle would be silently dropped at the readyState check in
-        // `send()` and the daemon's OSC 10/11 defaults would never
-        // update to match the new host theme. Drains via `ws.send`
-        // directly (bypasses the queueing branch — we're definitely
-        // OPEN inside `onopen`).
+        // Flush frames queued before the handshake; we are OPEN inside `onopen`.
         while (pendingFrames.length > 0) {
           const queued = pendingFrames.shift()!;
           send(queued);
@@ -712,9 +486,6 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           return;
         }
         if ('ProtocolError' in msg || 'TerminalExited' in msg) automaticAllowed = false;
-        // Dispatch over the externally-tagged enum. Each branch narrows the
-        // payload via TypeScript's discriminated-union rules; this is why
-        // `DaemonMsg` is sourced from `generated-terminal.ts`.
         if ('ServerHello' in msg) {
           if (handshakeTimer !== null) clearTimeout(handshakeTimer);
           const sh = msg.ServerHello;
@@ -731,9 +502,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             // instead of waiting for the first owner-gated frame to fail.
             send('OwnerClaim');
           }
-          // Snapshot may be bigger or smaller than the viewport we opened
-          // with; resize the local terminal to match before writing the
-          // replay so the cursor lines up.
+          // Resize the local terminal to the snapshot before writing the replay so the cursor lines up.
           if (sh.snapshot.cols !== term.cols || sh.snapshot.rows !== term.rows) {
             term.resize(sh.snapshot.cols, sh.snapshot.rows);
             lastCols = sh.snapshot.cols;
@@ -741,20 +510,13 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           }
           if (sh.snapshot.scrollback) {
             term.write(Uint8Array.from(sh.snapshot.scrollback));
-            // Flush viewport into xterm's scrollback ring before the next
-            // write: snapshot.data leads with ED 2 (`\x1b[2J`), which would
-            // otherwise erase the tail of replayed history still sitting in
-            // the visible viewport.
+            // snapshot.data leads with ED 2 (`\x1b[2J`); flush the viewport into the scrollback ring first or it erases the replayed tail.
             term.write('\r\n'.repeat(term.rows));
           }
           term.write(Uint8Array.from(sh.snapshot.data), () => {
             if (current() && termRef.current === term) term.scrollToBottom();
           });
-          // A pure expansion cannot clip the authoritative recovery model, so
-          // it is safe to apply after the snapshot write is queued. This keeps
-          // a fresh 80x24 renderer in sync with a larger first mount while
-          // refusing remount-time shrink or mixed-axis changes, either of which
-          // can destroy history and must wait for stable ResizeObserver intent.
+          // A pure expansion cannot clip the recovery model; a shrink or mixed-axis change can destroy history and must wait for stable ResizeObserver intent.
           const mountIsPureExpansion =
             mountDesired.cols >= sh.pty_size.cols &&
             mountDesired.rows >= sh.pty_size.rows &&
@@ -784,10 +546,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           return;
         }
         if ('RenderSnapshot' in msg) {
-          // Standalone snapshot — daemon decided we need a hard re-sync
-          // (typically because a `ResizeCommit` triggered a model reframe, or
-          // because the client lagged on the broadcast channel and the server
-          // pump issued a fresh snapshot — see calm-server client_pump.rs).
+          // Standalone snapshot: the daemon decided we need a hard re-sync.
           const s = msg.RenderSnapshot;
           if (s.cols !== term.cols || s.rows !== term.rows) {
             term.resize(s.cols, s.rows);
@@ -796,14 +555,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           }
           if (s.scrollback) {
             term.clear();
-            // xterm clear() keeps the current cursor column; ServerHello uses a
-            // fresh Terminal, but lag-recovery snapshots replay into an existing
-            // session and need to start restored history at column 0.
+            // `clear()` keeps the cursor column; restored history must start at column 0.
             term.write('\x1b[H');
             term.write(Uint8Array.from(s.scrollback));
-            // Same ED 2 erasure guard as ServerHello: snapshot.data leads with
-            // `\x1b[2J`, which would otherwise erase the tail of just-replayed
-            // history still sitting in the viewport.
+            // Same ED 2 erasure guard as ServerHello.
             term.write('\r\n'.repeat(term.rows));
           }
           term.write(Uint8Array.from(s.data), () => {
@@ -815,9 +570,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         }
         if ('ResizeApplied' in msg) {
           const r = msg.ResizeApplied;
-          // Stale-epoch guard: a `ResizeApplied` from a previous request
-          // (out-of-order on a slow network) shouldn't clobber the now-newer
-          // local geometry. We track epoch monotonically below.
+          // Stale-epoch guard: an out-of-order `ResizeApplied` must not clobber newer local geometry.
           if (r.epoch < resizeEpoch) return;
           lastCols = r.cols;
           lastRows = r.rows;
@@ -826,8 +579,6 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           return;
         }
         if ('SnapshotRequired' in msg) {
-          // Daemon is about to send a fresh snapshot. Clear local state and
-          // wait — the `RenderSnapshot` will arrive next.
           term.clear();
           return;
         }
@@ -839,15 +590,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           awaitingOwner = false;
           connectionReady = false;
           term.options.disableStdin = true;
-          // #306 — fire `onExitChange` so the parent renders the header
-          // badge (`exit N` / `signal`). The JSON `TerminalExited` frame
-          // doesn't carry a signal flag (the daemon's wire enum predates
-          // signal awareness — `code` here is whatever
-          // `ExitStatus::exit_code()` returned, which is 128+sig for a
-          // signal-killed child on POSIX). For v1 we surface that as the
-          // numeric code; the more reliable signal_killed flag arrives
-          // via the sidecar / REST seed (see parent's terminal-card
-          // builtin). Idempotent against the duplicate `onclose` fire.
+          // The JSON frame carries no signal flag (`code` is 128+sig for a signal-killed child); the reliable `signal_killed` arrives via the REST seed. Idempotent against the duplicate `onclose` fire.
           onExitChangeRef.current?.({
             exit_code: t.code,
             signal_killed: false,
@@ -896,11 +639,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
               setStatus('connected');
               setProtocolError(null);
             }
-            // A ResizeCommit sent while we were Observer may have been
-            // rejected, leaving the PTY at the previous owner's geometry.
-            // Our local terminal is already fitted, so resend its current
-            // dimensions when ownership transfers to this client, unless
-            // the current geometry is clearly too small to be a real PTY.
+            // A ResizeCommit sent while Observer may have been rejected; resend the fitted geometry on ownership transfer.
             if (term.cols >= MIN_COMMIT_COLS && term.rows >= MIN_COMMIT_ROWS) {
               resizeEpoch += 1;
               send({
@@ -926,9 +665,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           return;
         }
         if ('Backpressure' in msg) {
-          // Wire shape only in this PR — the daemon never emits it yet, but
-          // log if it ever shows up so we can debug. Future work: implement
-          // policy-aware throttling.
+          // The daemon never emits this yet; logged for debugging.
           dlog('XtermView', 'Backpressure', msg.Backpressure);
           return;
         }
@@ -940,15 +677,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         awaitingOwner = false;
         connectionReady = false;
         term.options.disableStdin = true;
-        // Keep the buffer visible, lift connection truth to the header, and
-        // retain technical close details in the recovery disclosure.
-        // 1000 + `child-exited` reason = daemon's clean child-exit close
-        //   (see ws/terminal.rs::CLOSE_REASON_CHILD_EXITED). We map this
-        //   to the `exited` state even if the prior `TerminalExited`
-        //   JSON frame got dropped on a slow link.
-        // 1006 = abnormal closure (network / proxy cut, no Close frame).
-        // 1011 = server-side heartbeat trip (see ws/terminal.rs PONG_TIMEOUT).
-        // 1001 = endpoint going away (server restart, page navigation).
+        // 1000 + `child-exited` = daemon's clean child-exit close (mapped to `exited` even if the `TerminalExited` frame was dropped); 1006 abnormal; 1011 server heartbeat trip; 1001 going away.
         setCloseInfo({ code: e.code, reason: e.reason || '' });
         dlog('XtermView', 'WS close', {
           code: e.code,
@@ -964,26 +693,13 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           retryTimer = setTimeout(() => { retryTimer = null; if (automaticAllowed && permitted()) reconnect(); }, retryDelay * (0.75 + Math.random() * 0.5));
           retryDelay = Math.min(8000, retryDelay * 2);
         }
-        // Don't clobber a more-specific terminal state (`exited`,
-        // `protocol-error`) — those carry richer information than the
-        // generic close code. A `child-exited` close promotes us to
-        // `exited` even if the JSON exit frame never arrived.
+        // Don't clobber a more-specific state (`exited`, `protocol-error`); a `child-exited` close promotes to `exited`.
         setStatus((prev) => {
           if (prev === 'exited' || (prev === 'protocol-error' && !wasAwaitingOwner)) return prev;
           if (isChildExitClose) return 'exited';
           return 'closed';
         });
-        // #306 — backstop for the parent's exit badge. Fires ONLY when no
-        // prior `TerminalExited` JSON frame already
-        // delivered an exit code on this connection. The parent's
-        // `onExitChange` callback (terminal.tsx) is a plain setState
-        // with no dedupe / no "fill-if-null" semantic, so firing
-        // unconditionally here would clobber a live `{exit_code: 137,…}`
-        // back to `{exit_code: null,…}` on the normal happy path
-        // (TerminalExited frame followed by code-1000 child-exited
-        // close). The `exitInfoRef` mirror tracks the latest JSON-frame
-        // delivery synchronously so this gate is race-free against the
-        // setState in the JSON branches above.
+        // Backstop for the parent's exit badge, only when no `TerminalExited` frame delivered a code: the parent's callback is a plain setState and would be clobbered back to `null`.
         if (isChildExitClose && exitInfoRef.current === null) {
           onExitChangeRef.current?.({
             exit_code: null,
@@ -1008,29 +724,16 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       const dataSub = term.onData((d) => {
         if (!connectionReady) return;
         const bytes = Array.from(new TextEncoder().encode(d));
-        // Browser typing path: `input_seq: 0` means "no ack requested"
-        // (option (b) from issue #115). The daemon writes the bytes and
-        // stays silent — no `DaemonMsg::InputAck` frame is emitted on the
-        // hot typing path. Only kernel-originated transient clients
-        // (DaemonClient::inject_stdin) use non-zero seqs to await
-        // deterministic delivery confirmation.
+        // `input_seq: 0` means no ack requested; only kernel-originated transient clients use non-zero seqs.
         send({ Input: { data: bytes, input_seq: 0 } });
       });
 
-      // Batch resize work to one tick per animation frame and skip cases
-      // where fit() didn't actually change the grid. RGL's resize handle
-      // fires the ResizeObserver on every mousemove; without the rAF guard
-      // the terminal re-fits and re-renders constantly, which shows up as a
-      // 1-2px shake on the inner canvas.
+      // One fit per animation frame: RGL's resize handle fires the ResizeObserver on every mousemove, which shows as a 1-2px shake.
       let pending = false;
       let resizeFrame: number | null = null;
       let sawInitialResizeObservation = false;
       const onResize = () => {
-        // ResizeObserver always delivers an initial observation. Mount-time
-        // fit already supplied ClientHello.desired_size, and ServerHello may
-        // meanwhile have restored xterm to a wider authoritative PTY size.
-        // Treating this first notification as user intent would immediately
-        // narrow the PTY again and recreate the remount data-loss bug.
+        // ResizeObserver always delivers an initial observation; treating it as user intent would narrow the PTY that ServerHello just restored.
         if (!sawInitialResizeObservation) {
           sawInitialResizeObservation = true;
           return;
@@ -1042,11 +745,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           pending = false;
           if (!connectionReady) return;
           if (!visibleRef.current) return;
-          // Don't fit() against a collapsed container — fit() mutates the local
-          // xterm in-place, so even if we suppress the daemon ResizeCommit the
-          // local buffer would be left at e.g. 2x1 and interpret incoming
-          // RenderPatch bytes at the wrong geometry until the next observer fire.
-          // Mirrors the mount-path MIN_MOUNT_WIDTH_PX / MIN_MOUNT_HEIGHT_PX floor.
+          // fit() mutates the local xterm in place, so a collapsed container would leave the buffer at e.g. 2x1 interpreting RenderPatch bytes at the wrong geometry.
           if (
             !isNonDegenerateMountSize(container.offsetWidth, container.offsetHeight)
           ) {
@@ -1063,11 +762,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           } catch {
             return;
           }
-          // Belt-and-suspenders: even with the pixel-floor pre-gate, fit() can
-          // land on a marginal grid (e.g. very narrow column or 1-row card).
-          // fit() has already mutated the local xterm in-place; restore it to
-          // last-known-good so RenderPatch bytes don't render against a degenerate
-          // grid until the next observer fire. Mirrors the mount-path floor.
+          // fit() can still land on a marginal grid; restore last-known-good so RenderPatch bytes don't render against it.
           if (term.cols < MIN_COMMIT_COLS || term.rows < MIN_COMMIT_ROWS) {
             dlog('XtermView', 'resize → fit DEGENERATE — restore last good', {
               cols: term.cols,
@@ -1087,11 +782,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
               containerW: container.offsetWidth,
               containerH: container.offsetHeight,
             });
-            // Bump epoch on every commit so the daemon can ignore stale
-            // applies. `lastCols/Rows` stay at their previous value until
-            // `ResizeApplied` confirms — otherwise a debounce / coalesce
-            // could swallow a subsequent intentional resize back to the
-            // same size.
+            // `lastCols/Rows` stay at their previous value until `ResizeApplied` confirms, else a coalesce could swallow a resize back to the same size.
             resizeEpoch += 1;
             send({
               ResizeCommit: {
@@ -1107,8 +798,6 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       const ro = new ResizeObserver(onResize);
       ro.observe(container);
 
-      // Surface ack ref so future tests / devtools can inspect; unused at
-      // runtime so the variable doesn't trip TS's no-unused warning.
       void renderRev;
       void ptySeq;
 
@@ -1128,17 +817,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         } catch {
           /* already closed */
         }
-        // #177 — symmetric guard for `sendRef`. Same strict-mode
-        // double-invoke risk as `termRef`: a teardown that runs after
-        // the next mount installed its own `send` would null out the
-        // new value. Only clear if we still own it.
+        // Strict-mode double-invoke: a teardown that runs after the next mount installed its own `send` must not null it out.
         if (sendRef.current === send) {
           sendRef.current = null;
         }
-        // Parent should reset any role pill when the bridge tears down — the
-        // next mount will re-emit on `ServerHello`. Sync here (not via
-        // onclose) so a strict-mode unmount or a `terminalId` change clears
-        // the parent state even if no close frame fires.
+        // Sync here rather than via onclose so a strict-mode unmount or `terminalId` change clears the parent even with no close frame.
         onRoleChangeRef.current?.(null);
         // Revoking the transport does not revoke authoritative exit/error facts.
         // A new attach resets them in connect(); disposal clears the parent below.
@@ -1183,25 +866,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
 
   return (
     <div ref={rootRef} className="xterm-view" data-nc-terminal-id={terminalId}>
-      {/* The xterm container is the canvas-style render surface xterm.js
-       *  paints into — `.xterm-rows` / `.xterm-fg-*` spans the library
-       *  emits per-cell are presentational decoration, not navigable
-       *  text. Marking the wrapper `aria-hidden` (with `role=presentation`
-       *  for older AT) excludes the entire xterm DOM subtree from axe
-       *  scans and screen-reader content trees. The interactive surface
-       *  (typing, paste, accessibility tree) is the `xterm-helper-textarea`
-       *  xterm.js mounts inside the container — that node carries its
-       *  own ARIA wiring and bypasses `aria-hidden` because it's the
-       *  focusable input. Issue #236 followup: PR #239's sync-spawn
-       *  makes the daemon's bold-green `runner@runner` shell prompt
-       *  visible the moment the track-list snapshot is taken, which
-       *  triggered a `.xterm-fg-10.xterm-bold` color-contrast 2.81:1
-       *  violation. Bumping xterm's palette to clear 4.5:1 would break
-       *  parity with the user's terminal expectations (and would still
-       *  flag the next palette index that happens to be brighter); the
-       *  semantically-correct path is to scope axe (and AT) to the real
-       *  text content, which lives outside the canvas render. The a11y
-       *  input surface. */}
+      {/* xterm's per-cell spans are presentational, not navigable text; `aria-hidden` scopes axe and AT to the helper textarea, which carries its own ARIA wiring. */}
       <div
         ref={containerRef}
         className="xterm-container"

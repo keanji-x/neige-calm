@@ -8,44 +8,17 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::net::UnixStream;
 
-/// Liveness upper bound for "read the next frame / wait for the expected
-/// state". Anti-hang guard only — no case here claims the supervisor reacts
-/// within this budget, so a slow-but-correct run must still pass. Costs
-/// nothing on the happy path (each wait returns as soon as its frame lands).
-/// The 1-2s budgets this replaces are the same shape that flaked on CI's
-/// 2-core runner under `retries = 0`. 120s is the `slow-timeout` of nextest
-/// `profile.ci`; the local `profile.default` warns at 60s. Both are warn-only,
-/// so neither kills the test — past this point nextest's slow-test report is the
-/// signal, not a hand-picked deadline.
-/// To assert promptness, measure elapsed and assert on it instead.
+/// Anti-hang guard only; no case claims the supervisor reacts within this budget, so a slow-but-correct run must still pass.
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
-/// Number of chunks the child emits, one every [`CHUNK_INTERVAL`]. The
-/// product is the width of the window during which the attach below must
-/// land: long enough that a scheduling hiccup on the test task cannot
-/// push the attach past the end of production (which would silently turn
-/// this back into a replay-only case), short enough to stay a cheap test.
+/// The product with [`CHUNK_INTERVAL_SECS`] is the window the attach must land in: a scheduling hiccup must not push it past the end of production.
 const CHUNKS: usize = 100;
 /// Wall-clock gap the child shell sleeps between chunks.
 const CHUNK_INTERVAL_SECS: &str = "0.05";
-/// How long the test waits before attaching. Only a couple of chunks are
-/// in the ring by then, so the overwhelming majority of the byte stream
-/// is produced *after* the attach request is written — which is the point.
+/// Only a couple of chunks are in the ring by then, so most of the byte stream is produced after the attach — which is the point.
 const ATTACH_AFTER: Duration = Duration::from_millis(50);
 
-/// The attach must lose no bytes and duplicate none **while the child is
-/// actively writing**. The child therefore emits its chunks spread over
-/// several seconds and the test attaches near the start, so the seam
-/// between the replay snapshot and the live broadcast subscription is
-/// crossed with output genuinely in flight. (This case previously let the
-/// child write every chunk before the attach and then sleep, so every
-/// asserted byte came out of the replay buffer and the handoff window was
-/// never open at all — a widened window in `handle_attach` could not have
-/// failed it.)
-///
-/// The race is asserted, not assumed: the `AttachOk` replay snapshot must
-/// be missing the final chunk, which is only true if production was still
-/// running when the attach registered.
+/// The race is asserted, not assumed: the `AttachOk` replay snapshot must be missing the final chunk, which is only true if production was still running when the attach registered.
 #[tokio::test]
 async fn attach_race_no_byte_loss() {
     let supervisor = InProcessProcSupervisor::start()
@@ -58,10 +31,7 @@ async fn attach_race_no_byte_loss() {
         "/bin/sh",
         &[
             "-c",
-            // The trailing sleep must outlast `LIVENESS_BUDGET`: the loop below
-            // treats any non-`Output` frame as a hard error, so a child that
-            // exits inside the budget turns a lost-bytes failure into a
-            // misleading "unexpected attach frame: Exited" panic.
+            // The trailing sleep must outlast `LIVENESS_BUDGET`: the loop below treats any non-`Output` frame as a hard error.
             &format!(
                 "i=1; while [ $i -le {CHUNKS} ]; do printf \"chunk-%d-\" \"$i\"; \
                  i=$((i+1)); sleep {CHUNK_INTERVAL_SECS}; done; sleep 600"

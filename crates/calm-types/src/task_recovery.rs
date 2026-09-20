@@ -1,7 +1,4 @@
-//! Durable execution identity for a continuing, Track + key scoped task.
-//!
-//! These types grant no authority. The service admits recovery against the
-//! report declaration and caller; storage fences allocation and replay.
+//! Durable execution identity for a continuing, Track + key scoped task. These types grant no authority.
 
 use crate::event::TaskContextRef;
 use crate::ids::ActorId;
@@ -14,8 +11,7 @@ use utoipa::ToSchema;
 pub const TASK_IN_TRACK_ROUTE: &str = "in-wave";
 pub const TASK_CHILD_TRACK_ROUTE: &str = "sub-wave";
 
-/// Released task-root hash field partition. Reused by initial claim freezing
-/// and recovery checks; changing this would reinterpret historical evidence.
+/// Released task-root hash field partition; changing this would reinterpret historical evidence.
 pub const TASK_ROOT_HASH_FIELDS: &[&str] = &[
     "kind",
     "goal",
@@ -29,9 +25,8 @@ pub const TASK_ROOT_HASH_FIELDS: &[&str] = &[
     "context",
 ];
 
-/// Canonical preimage of the released root hash (including terminal goal alias).
-/// The caller hashes these bytes with SHA-256; keeping the projection IO-free
-/// lets declaration projection and the server claim fence share one definition.
+/// Canonical preimage of the released root hash (including terminal goal alias); the caller hashes
+/// these bytes with SHA-256.
 pub fn task_root_hash_preimage(payload: &serde_json::Value) -> String {
     let mut projected = serde_json::Map::new();
     if let Some(object) = payload.as_object() {
@@ -112,9 +107,8 @@ pub struct TaskRecoveryView {
     pub recovery: TaskRecoveryCapability,
 }
 
-/// Evidence carried into a recovery. Never synthesize this from today's report
-/// when the failed execution has no claim freeze. Historical hash semantics are
-/// unchanged; route and attribution are explicit because the root hash omits them.
+/// Evidence carried into a recovery. Never synthesize this from today's report when the failed
+/// execution has no claim freeze.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "version", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskRecoveryConstraint {

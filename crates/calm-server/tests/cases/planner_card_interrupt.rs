@@ -1,22 +1,4 @@
-//! Issue #668 — `POST /api/cards/{id}/planner/interrupt` route tests.
-//!
-//! Contract under test:
-//! - a running turn gets an interrupt dispatched at it (asserted via the
-//!   fake shared app-server's `interrupted_turns_for_test` hook) and the
-//!   route answers `200 { stopped: true }`;
-//! - stopping when no turn is running is a graceful no-op:
-//!   `200 { stopped: false }`, nothing dispatched;
-//! - stopping while a `turn/start` is still in flight (`IssuingTurn`)
-//!   answers `stopped: false` — the interrupt is dispatched best-effort
-//!   (it lands only when the app-server already knows the active turn),
-//!   so the route must not promise the turn was stopped;
-//! - no active runtime row, or an active row with no registered harness,
-//!   is the typed 409 `planner_harness_dormant` (same code as `/planner/input`).
-//!
-//! Also covers the read sibling `GET /api/cards/{id}/planner/run` (#668 fix):
-//! same guard chain, but dormancy is a normal `{runtime_id: null,
-//! phase: null}` answer instead of a 409 — the client uses it to seed its
-//! initial phase when a page opens mid-turn.
+//! `POST /api/cards/{id}/planner/interrupt` and `GET /api/cards/{id}/planner/run` route tests.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -114,11 +96,8 @@ async fn boot() -> Boot {
         Some(card_role_cache),
         Some(track_area_cache),
     );
-    // Swap in the fixture fake shared app-server: it records
-    // `turn/interrupt` calls (`interrupted_turns_for_test`) instead of
-    // talking to a real daemon, and `with_shared_codex_appserver` rebuilds
-    // the operation runtime so the `planner-harness-interrupt` adapter shares
-    // this state's harness registry.
+    // The fixture fake shared app-server records `turn/interrupt` calls (`interrupted_turns_for_test`), and
+    // `with_shared_codex_appserver` rebuilds the operation runtime so the interrupt adapter shares this state's harness registry.
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let state = state.with_shared_codex_appserver(shared);
     let app = routes::router()
@@ -221,8 +200,7 @@ async fn seed_active_planner_runtime_row(boot: &Boot, card: &Card) -> (String, S
     (runtime_id, thread_id)
 }
 
-/// Seed a live planner harness (idle) registered under an active runtime row,
-/// mirroring `planner_card_reset.rs::seed_live_planner_harness`.
+/// Seed a live planner harness (idle) registered under an active runtime row.
 async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, PlannerHarness) {
     let card = seed_codex_card_with_role(boot, CardRole::Planner).await;
     let (runtime_id, thread_id) = seed_active_planner_runtime_row(boot, &card).await;
@@ -258,9 +236,6 @@ async fn shutdown_seeded_harness(boot: &Boot, runtime_id: &str, harness: Planner
     }
 }
 
-/// Interrupt while a turn is running: the route dispatches the
-/// `planner-harness-interrupt` operation, which issues `turn/interrupt` at the
-/// running turn, and answers `stopped: true`.
 #[tokio::test]
 async fn interrupt_running_turn_issues_interrupt() {
     let boot = boot().await;
@@ -296,11 +271,7 @@ async fn interrupt_running_turn_issues_interrupt() {
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
-/// Interrupt while a `turn/start` is still in flight (`IssuingTurn`) and
-/// the shared app-server does NOT yet know the active turn: the harness's
-/// `issue_interrupt` resolves no target and no-ops, so the route must
-/// answer `stopped: false` — a `stopped: true` here would narrate a false
-/// "Turn stopped" while the turn keeps running.
+/// During `IssuingTurn` the app-server does not yet know the active turn, so `issue_interrupt` no-ops; `stopped: true` would narrate a false "Turn stopped".
 #[tokio::test]
 async fn interrupt_issuing_turn_window_reports_not_stopped() {
     let boot = boot().await;
@@ -332,9 +303,7 @@ async fn interrupt_issuing_turn_window_reports_not_stopped() {
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
-/// Interrupt during `IssuingTurn` when the shared app-server already knows
-/// the active turn: the interrupt is still dispatched best-effort, but the
-/// route keeps `stopped: false` — only `TurnRunning` guarantees a target.
+/// The interrupt is dispatched best-effort, but only `TurnRunning` guarantees a target, so the route keeps `stopped: false`.
 #[tokio::test]
 async fn interrupt_issuing_turn_dispatches_best_effort() {
     let boot = boot().await;
@@ -371,10 +340,7 @@ async fn interrupt_issuing_turn_dispatches_best_effort() {
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
-/// Interrupt while the harness is idle: graceful no-op — 200 with
-/// `stopped: false`, no `turn/interrupt` dispatched, NOT an error. The
-/// harness's own `issue_interrupt` ignores interrupts with no active turn,
-/// so an error here would only punish a harmless Esc press.
+/// The harness's own `issue_interrupt` ignores interrupts with no active turn, so an error here would only punish a harmless Esc press.
 #[tokio::test]
 async fn interrupt_idle_harness_is_a_200_noop() {
     let boot = boot().await;
@@ -400,8 +366,7 @@ async fn interrupt_idle_harness_is_a_200_noop() {
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
-/// No active runtime row at all → typed 409 `planner_harness_dormant`, same
-/// contract as `/planner/input` (steer the user to Reset, don't 404).
+/// Same contract as `/planner/input`: steer the user to Reset, don't 404.
 #[tokio::test]
 async fn interrupt_without_runtime_409_dormant() {
     let boot = boot().await;
@@ -427,9 +392,7 @@ async fn interrupt_without_runtime_409_dormant() {
     );
 }
 
-/// Active runtime row but no registered harness (post-restart shape) →
-/// 409 dormant too. Unlike `/planner/input` there is no lazy recovery here: a
-/// freshly recovered harness has no running turn to stop.
+/// Unlike `/planner/input` there is no lazy recovery here: a freshly recovered harness has no running turn to stop.
 #[tokio::test]
 async fn interrupt_registry_miss_409_dormant() {
     let boot = boot().await;
@@ -450,9 +413,6 @@ async fn interrupt_registry_miss_409_dormant() {
     );
 }
 
-/// `GET /planner/run` with a running turn reports the live phase
-/// (`turn_running`) and the active runtime id — the production wire value
-/// the frontend gates Stop/typing on.
 #[tokio::test]
 async fn get_planner_run_running_turn_reports_phase() {
     let boot = boot().await;
@@ -478,8 +438,7 @@ async fn get_planner_run_running_turn_reports_phase() {
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
-/// `GET /planner/run` with no active runtime row: dormancy is not an error
-/// for a read — 200 with null `runtime_id`/`phase`.
+/// Dormancy is not an error for a read.
 #[tokio::test]
 async fn get_planner_run_without_runtime_returns_nulls() {
     let boot = boot().await;
@@ -493,8 +452,6 @@ async fn get_planner_run_without_runtime_returns_nulls() {
     assert_eq!(body["phase"], json!(null), "body={body}");
 }
 
-/// `GET /planner/run` with an active runtime row but no registered harness
-/// (post-restart shape) is the same dormant nulls answer.
 #[tokio::test]
 async fn get_planner_run_registry_miss_returns_nulls() {
     let boot = boot().await;
@@ -508,8 +465,6 @@ async fn get_planner_run_registry_miss_returns_nulls() {
     assert_eq!(body["phase"], json!(null), "body={body}");
 }
 
-/// `GET /planner/run` refuses non-planner codex cards with 403, mirroring the
-/// write routes' guard chain.
 #[tokio::test]
 async fn get_planner_run_non_planner_card_403() {
     let boot = boot().await;
@@ -526,7 +481,6 @@ async fn get_planner_run_non_planner_card_403() {
     );
 }
 
-/// Non-planner codex cards are refused with 403, mirroring `/planner/input`.
 #[tokio::test]
 async fn interrupt_non_planner_card_403() {
     let boot = boot().await;

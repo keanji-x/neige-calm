@@ -1,33 +1,5 @@
-//! The class-level audit for `planner_attachments`: no file in it except
-//! `dir.rs` may NAME a path-resolving filesystem function.
-//!
-//! # Why this is a grep and not a review checklist
-//!
-//! Three review rounds fixed call sites. Each fix was right and each was an
-//! enumeration — *these* sites now resolve safely — and the next round found
-//! the next site in the same class: `resolve()`, then the read open, then the
-//! bind's destination, then the sweep's `read_dir`/`remove_file` and the whole
-//! upload write path. The defect was never a call site; it was that
-//! `std::fs::read_dir`, `File::create`, `fs::rename`, `create_dir_all` and
-//! `remove_file` on a JOINED PATH were expressible in a module whose threat
-//! model is an agent that can write the workspace.
-//!
-//! So the question this file asks is not "did we get every call site this
-//! time" — which has been answered wrong three times — but "does this module
-//! name any of those functions at all", which is decidable, cheap, and stays
-//! true as the module grows.
-//!
-//! # What it does not establish
-//!
-//! It matches NAMES. Code reaching the same syscalls through an alias, a
-//! re-export under a different name, or raw `libc` would not be matched. The
-//! banned list therefore covers the module prefixes and the `use` forms that
-//! bring them in unqualified, which closes the ordinary ways of writing it; a
-//! deliberate rename is outside its reach and it does not claim otherwise.
-//! What makes the safe path the easy one is the type discipline in
-//! `planner_attachments::dir` — no path-taking entry point, no accessor that
-//! yields a `Path` or a `RawFd` — and this file is the backstop for that, not
-//! a substitute.
+//! Class-level audit for `planner_attachments`: no file in it except `dir.rs` may NAME a path-resolving
+//! filesystem function. It matches names only; an alias, re-export or raw `libc` would not be matched.
 
 use std::path::{Path, PathBuf};
 
@@ -36,29 +8,14 @@ fn module_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/planner_attachments")
 }
 
-/// The one file allowed to perform filesystem operations, and the reason it is
-/// allowed: everything it does is a descriptor plus a single name.
+/// The one file allowed to perform filesystem operations: everything it does is a descriptor plus a single name.
 const GUARDED: &str = "dir.rs";
 
-/// Test code builds fixtures on disk — planting the symlink an attacker would
-/// plant is the point — so it is out of scope. Production code is what the
-/// audit is about.
+/// Test code plants the symlink an attacker would plant, so it is out of scope.
 const TEST_FILE: &str = "tests.rs";
 
-/// Every spelling that resolves a caller-supplied path.
-///
-/// This is `std::fs`'s free-function surface plus the path-taking `File` and
-/// `OpenOptions` constructors, which is the whole of the standard library's
-/// path-based filesystem API; `tokio::fs` mirrors the same names, so matching
-/// the bare identifiers covers both. It deliberately does NOT list
-/// `std::fs::File` or `tokio::fs::File` themselves: those are the TYPE, and
-/// `File::from_raw_fd` / `File::from_std` take a descriptor somebody else
-/// already resolved — which is exactly what `dir` hands out.
-///
-/// `PathBuf::join` is not here either. Joining builds a string; it resolves
-/// nothing. `bound_file_path` builds the absolute path a queue entry records
-/// for codex to open in its own process, and that is a name handed onward, not
-/// a call this module makes.
+/// Every spelling that resolves a caller-supplied path: `std::fs` free functions plus the path-taking `File`/`OpenOptions`
+/// constructors (`tokio::fs` mirrors the names). `File` itself and `PathBuf::join` are deliberately absent: they resolve nothing.
 const BANNED: &[&str] = &[
     "read_dir",
     "read_link",
@@ -78,10 +35,7 @@ const BANNED: &[&str] = &[
     "fs::rename",
     "fs::copy",
     "fs::write",
-    // `fs::read(` and not the bare `fs::read`: `routes::fs::
-    // read_file_raw_response_from_handle` takes an ALREADY-OPEN descriptor and
-    // is the vetted response builder this module is supposed to call. A needle
-    // that caught it would be a needle the next reader learns to work around.
+    // `fs::read(` and not the bare `fs::read`: `read_file_raw_response_from_handle` takes an already-open descriptor and must stay callable.
     "fs::read(",
     "fs::metadata",
     "fs::exists",
@@ -104,10 +58,7 @@ fn no_file_outside_the_guarded_one_names_a_path_resolving_filesystem_call() {
         audited.push(name.clone());
         let source = std::fs::read_to_string(entry.path()).expect("a source file is readable");
         for (number, line) in source.lines().enumerate() {
-            // A line that only TALKS about the hazard is documentation, and
-            // this module's docs name these functions constantly — on purpose,
-            // because saying which operations are forbidden is how the next
-            // reader learns the rule.
+            // A line that only talks about the hazard is documentation; this module's docs name these functions on purpose.
             let code = line.trim_start();
             if code.starts_with("//") || code.starts_with("/*") || code.starts_with('*') {
                 continue;
@@ -139,13 +90,7 @@ fn no_file_outside_the_guarded_one_names_a_path_resolving_filesystem_call() {
     );
 }
 
-/// The guarded file has to actually BE guarded: it is exempt from the list
-/// above, so nothing else may be.
-///
-/// Without this, moving a path-based call into `dir.rs` would silence the
-/// audit while changing nothing — the exemption is for the file that resolves
-/// through `openat2` and descriptors, not for any file that happens to be
-/// named `dir.rs`.
+/// Without this, moving a path-based call into `dir.rs` would silence the audit while changing nothing.
 #[test]
 fn the_guarded_file_reaches_the_filesystem_only_through_descriptors() {
     let source =
@@ -164,8 +109,7 @@ fn the_guarded_file_reaches_the_filesystem_only_through_descriptors() {
             named.join("\n")
         );
     }
-    // And the positive half: it really is the file that holds the descriptor
-    // operations, so the exemption is buying something.
+    // The positive half: it really holds the descriptor operations, so the exemption is buying something.
     for required in ["openat", "renameat", "unlinkat", "mkdirat", "fstatat"] {
         assert!(
             source.contains(required),

@@ -1,9 +1,4 @@
-//! Read-only MCP file views for the current track.
-//!
-//! `calm.track.ls` and `calm.track.cat` expose a small path-based view
-//! rooted at the track bound to the caller's MCP connection. The track is
-//! always derived from [`ToolCallIdentity`]; callers never provide a
-//! `track_id`.
+//! Read-only MCP file views (`calm.track.ls`, `calm.track.cat`) rooted at the track bound to the caller's MCP connection.
 
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -38,9 +33,7 @@ where
     })
 }
 
-/// Return-shape contract consumed by `neige`: `calm.track.ls` returns a bare
-/// JSON array of `{ name, kind, ... }` entries; `calm.track.cat` returns an
-/// object `{ content, content_type }`.
+/// Return-shape contract consumed by `neige`: `ls` returns a bare JSON array; `cat` returns `{ content, content_type }`.
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LS.into(),
@@ -101,11 +94,7 @@ async fn track_cat(
     require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let path = parse_path_arg(&args, true)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
-    // Issue #644 PR-C — `plan/<key>/gate.log` is enabled only here (MCP
-    // carries a card identity); the view enforces the planner-only role
-    // gate at read time (§6.5/§6.7). The gate-logs dir is the
-    // CONFIGURED one threaded through `AppContext` (PR #685 F3), never
-    // recomputed from env.
+    // `plan/<key>/gate.log` is enabled only here (MCP carries a card identity); the gate-logs dir is the configured one, never recomputed from env.
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)
         .with_gate_log_access(identity.role, ctx.gate_logs_dir.clone());
     let content = view

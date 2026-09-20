@@ -1,33 +1,4 @@
-// The file card's body: a folder on the left, and one file — or one file's two
-// sides — on the right.
-//
-// Ported from `web/src/cards/builtins/file-viewer.tsx`, with three deliberate
-// differences, all recorded here rather than left to be discovered:
-//
-//  1. **Its reads arrive as a port.** The old card imported the API module
-//     directly. A card here is rendered inside `systems/**`, which holds no
-//     transport, so the reads come in as `CardFilesPort` — built once at the
-//     composition layer against the same transport and 401 channel as every
-//     other read (see `core/domain/fs.ts`). `files === null` is a real state
-//     and is rendered as one.
-//
-//  2. **Its navigation lives in the card's slots, not in a server overlay.**
-//     The old card persisted `{tab, folderPath, selectedPath, diffSelected}` as
-//     a kernel overlay, so a reload came back where you left off. Slots keep it
-//     for the life of the mounted card, which covers what the board actually
-//     does to a card (hide it, show it, resize it) and costs no round-trip. A
-//     reload starts at the card's own path again. That is a real reduction and
-//     the honest place to record it is here.
-//
-//  3. **Markdown renders as text, not as a preview.** The old card ran
-//     `react-markdown` + `remark-gfm` in a second pane, with its own TOC. This
-//     repo deleted that dependency on purpose — `core/markdown` is the one
-//     markdown path (INV-DUP-004 / INV-DUP-005) — so re-adding it to render a
-//     file would be standing up the second implementation the invariant exists
-//     to forbid. A `.md` file therefore opens in the code pane, highlighted as
-//     markdown. Rendering it through `core/markdown` is a real follow-up; it is
-//     not a line of glue, because the report renderer that consumes that AST
-//     lives in `features/report` and a system may not import a feature.
+// The file card's body: a folder on the left, and one file — or one file's two sides — on the right.
 
 import { Suspense, lazy, useCallback, useEffect, useRef, type ReactNode } from 'react';
 
@@ -68,7 +39,6 @@ function seedNav(path: string): Nav {
   return { tab: 'code', folderPath: path, selectedPath: path, diffSelected: null };
 }
 
-/** `null` at the filesystem root, where there is no parent to climb to. */
 function parentPath(path: string): string | null {
   const trimmed = path.replace(/\/+$/, '');
   const index = trimmed.lastIndexOf('/');
@@ -80,7 +50,6 @@ function messageOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
 
-/** The kernel's status word, as the one letter a list column has room for. */
 function statusLabel(status: string): string {
   switch (status) {
     case 'added': return 'A';
@@ -91,28 +60,16 @@ function statusLabel(status: string): string {
   }
 }
 
-/**
- * The slice of the card host's slot store this viewer uses.
- *
- * Declared here rather than imported from `systems/cards`: the card system is
- * reachable only through its public entry (`cards-public-entry-only`), and
- * importing that entry from a module the entry's own built-ins import would be
- * a cycle. Structural typing is what makes the real `CardSlotStore` assignable
- * to it — and stating only the two methods used is also the honest declaration
- * of what a viewer is allowed to do with a card's slots.
- */
+/** Declared here rather than imported from `systems/cards`: importing the public entry from a module its built-ins import would be a cycle. */
 export interface ViewerSlots {
   get<Value>(key: string, initial: Value | (() => Value)): Value;
   set<Value>(key: string, value: Value): void;
 }
 
 export type FileViewerProps = Readonly<{
-  /** The card's own path: the folder it opens in, and what "reset" means. */
   path: string;
-  /** The reads, or `null` on a host assembled without them. */
   files: CardFilesPort | null;
   theme: PaneTheme;
-  /** The mounted card's slots, so navigation survives hide/show. */
   slots: ViewerSlots;
 }>;
 
@@ -142,25 +99,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
   const [diff, setDiff] = useState<GitDiffWire | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
 
-  /*
-   * The listing — and exactly one climb, from the card's own path only.
-   *
-   * A card can be created on a *file*. `seedNav` puts that path in `folderPath`
-   * as well as in `selectedPath`, and `listDirectory` answers 400 for a file, so
-   * the card's own path is the one place a listing failure is expected rather
-   * than informative: the parent is the folder that file lives in, which is what
-   * the left column is for. `selectedPath` is deliberately left alone in that
-   * branch — the file stays selected, and the effect below reads it into the
-   * pane beside the listing, which is the whole content of a file card. The
-   * other reason a card's own folder fails to list is that it was moved or
-   * deleted under a card that outlived it, and the nearest folder that does
-   * exist is the useful answer there too.
-   *
-   * Anything else shows the error instead. A folder the reader navigated *into*
-   * deserves to be told why it could not be read, and because only the card's
-   * own path may climb, a chain of unreadable ancestors stops after one step
-   * rather than walking the card up to `/`.
-   */
+  /* A card can be created on a file, and `listDirectory` answers 400 for one — so the card's own path (and only it) climbs to its parent once. */
   useEffect(() => {
     if (files === null) return;
     let cancelled = false;
@@ -193,11 +132,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `setNav` is rebuilt every render by design; re-running the read on it would loop.
   }, [files, folderPath, path, listingRetry]);
 
-  /*
-   * A card opened on a *folder* selects that folder, and a folder is not a file
-   * to read — so the selection only becomes a read once it names something the
-   * listing did not just report as the folder itself.
-   */
+  /* A folder is not a file to read; the selection becomes a read only once it names something other than the listed folder itself. */
   const selectedCodePath = selectedPath === folderPath
     && (listingLoading || listing === null || listing.path === selectedPath)
     ? null
@@ -225,36 +160,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
     return () => { cancelled = true; };
   }, [files, selectedCodePath, tab, fileRetry]);
 
-  /*
-   * The changed-file list, and the selection inside it. A selection that no
-   * longer appears in the status falls back to the first row rather than
-   * leaving the pane pointed at a file that is no longer changed.
-   *
-   * ── Nothing from the previous folder may outlive the move ────────────────
-   *
-   * `folderPath` is a dependency here, so the moment it changes, everything the
-   * previous folder produced describes a repository the card has already left —
-   * and showing one repository's changed files under another's path is the
-   * defect. Three things prevent it — two are lines in this effect and the
-   * third is elsewhere — which is why they are named rather than restated as
-   * belt-and-braces assignments that no test could tell apart:
-   *
-   *   1. `diffSelected` is dropped *before* the read (below). That is the line
-   *      that matters most, and it is under test — the diff effect keys on the
-   *      selection, so clearing it empties the pane in the same tick.
-   *   2. `setDiffListLoading(true)`, also a line in this effect (below), makes
-   *      the list render its loading branch until the new status answers, so
-   *      the previous folder's rows are off screen regardless of what
-   *      `changedFiles` still holds. This one is under test too.
-   *   3. the one that is not a line here: `gitRoot` cannot be read while there
-   *      is no selection, because the diff effect returns early on
-   *      `diffSelected === null`.
-   *
-   * An earlier revision also cleared `gitRoot`, `changedFiles` and `diff` here.
-   * Deleting all three left the whole suite green — they were unreachable
-   * state, not protection — so they are gone rather than standing as
-   * unfalsifiable insurance.
-   */
+  /* `diffSelected` is dropped before the read and the loading flag raised, so nothing from the previous folder outlives the move. */
   useEffect(() => {
     if (files === null || tab !== 'diff') return;
     let cancelled = false;
@@ -365,13 +271,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
 
       <section className="fv-main">
         <div className="fv-toolbar">
-          {/*
-            Two tabs over one folder: what a file *is*, and what changed in it.
-            `role="tablist"` with no `tabpanel` id wiring, exactly as the panes
-            below are swapped wholesale rather than kept mounted — the pane is
-            the panel, and pointing at it by id would be a promise that the
-            hidden one still exists.
-          */}
+          {/* No `tabpanel` id wiring: the panes are swapped wholesale, so the hidden one does not exist. */}
           <div className="fv-tabs" role="tablist" aria-label="File viewer mode">
             <button
               type="button"
@@ -456,19 +356,7 @@ function CodeTab({ state, selectedPath, theme, rawUrl, onRetry, onImageError }: 
   return <LoadedFile path={state.path} text={state.text} truncated={state.truncated} theme={theme} />;
 }
 
-/**
- * One file, and the find bar over it.
- *
- * The bar is React's and the matching is CodeMirror's: they meet at
- * `PaneSearchAdapter`, which the pane hands over once it has an editor. The
- * handshake is what lets the bar exist at all without this file importing
- * CodeMirror — and what lets a future pane of a different kind (a rendered
- * markdown preview, say) drive the same bar.
- *
- * `/` opens it, from inside the editor, which is why the pane needs
- * `onSlashOpen` rather than this component listening for a key it would never
- * receive: focus is inside CodeMirror while you are reading.
- */
+/** One file and the find bar over it; the bar is React's and the matching CodeMirror's, meeting at `PaneSearchAdapter`. `/` opens it from inside the editor, where focus is. */
 function LoadedFile({ path, text, truncated, theme }: {
   path: string; text: string; truncated: boolean; theme: PaneTheme;
 }) {
@@ -488,14 +376,11 @@ function LoadedFile({ path, text, truncated, theme }: {
     adapterRef.current?.setQuery('');
   }, []);
 
-  /* A new file is a new document: leaving the previous file's query live would
-     report a count against text nobody is looking at. */
   useEffect(() => { closeBar(); }, [closeBar, path]);
 
   const onAdapter = useCallback((adapter: PaneSearchAdapter | null) => {
     adapterRef.current = adapter;
-    // The pane can remount under a live query; re-running it is what keeps the
-    // highlights from disappearing while the bar still says "3/12".
+    // The pane can remount under a live query; re-running it keeps the highlights.
     if (adapter !== null && queryRef.current !== '') adapter.setQuery(queryRef.current);
   }, []);
 
@@ -506,8 +391,6 @@ function LoadedFile({ path, text, truncated, theme }: {
 
   return (
     <div className="fv-code-wrap">
-      {/* The cap is the kernel's, and a viewer that did not say so would be
-          showing a prefix as though it were the file. */}
       {truncated && <p className="fv-banner">Showing the first 2 MiB of this file.</p>}
       <Suspense fallback={<p className="fv-state">Loading editor…</p>}>
         <LazyCodePane
@@ -549,8 +432,6 @@ function SearchBar({ query, current, total, onChange, onNext, onPrev, onClose }:
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
-  /* Nothing typed says nothing at all — `0/0` on an empty box would be a count
-     of a search that has not happened. */
   const countLabel = total === 0
     ? (query === '' ? '' : 'no match')
     : `${current === 0 ? 1 : current}/${total}`;
@@ -611,9 +492,6 @@ function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme
                 title={`${file.status} ${file.path}`}
                 onClick={() => onSelect(file.path)}
               >
-                {/* The letter is a shorthand for the word, never the only
-                    carrier of it: the row's own title says `modified src/x.rs`
-                    in full, so a reader who cannot tell M from R has the word. */}
                 <span className="fv-status" data-nc-fs-status={file.status}>
                   {statusLabel(file.status)}
                 </span>

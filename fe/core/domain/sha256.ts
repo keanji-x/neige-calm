@@ -1,34 +1,7 @@
 /**
- * SHA-256 over a UTF-8 string, as lowercase hex (FIPS 180-4).
- *
- * # Why this is not `crypto.subtle.digest`
- *
- * Two reasons, and the first one is not a preference:
- *
- * 1. `crypto.subtle` exists **only in a secure context**. This app is served
- *    over plain http on a LAN (`docker/nginx.conf` listens on 8080 with no
- *    TLS, the server binds a plain `TcpListener`, and the reader opens
- *    `http://<lan-ip>:<port>/calm/` from another machine), so
- *    `window.isSecureContext` is false and `crypto.subtle` is `undefined` —
- *    the one hashing API the platform offers is simply absent exactly where
- *    the app runs.
- *
- *    The same gate applies to `crypto.randomUUID`, which is `[SecureContext]`
- *    in the same IDL. An earlier version of this comment claimed otherwise and
- *    the draft key was minted with it; `mintIdempotencyKey` in
- *    `web/src/app/router/public.tsx` now builds the key from
- *    `crypto.getRandomValues`, which is the one member of `Crypto` that is
- *    *not* secure-context gated.
- * 2. It is asynchronous, and its only caller wants an id it can compare a list
- *    against; a promise there would make a synchronous branch async for no
- *    reason.
- *
- * Nothing here is a secret and nothing is authenticated by it: the only use is
- * recomputing a **public, deterministic** card id the server derives the same
- * way, so the client can recognise its own row in a list. A hand-written digest
- * would be the wrong answer for a signature; for "agree with the server on a
- * pure function of two strings", the golden vectors below are the whole
- * contract.
+ * SHA-256 over a UTF-8 string, as lowercase hex (FIPS 180-4). Not `crypto.subtle.digest`: that
+ * exists only in a secure context, and this app is served over plain http on a LAN. Nothing
+ * here is a secret; the only use is recomputing a public, deterministic card id.
  */
 
 const K = Object.freeze([
@@ -51,30 +24,8 @@ function rotateRight(value: number, bits: number): number {
 }
 
 /**
- * UTF-8 bytes of a string, written out rather than taken from `TextEncoder`.
- *
- * `core` is the platform-independent layer and compiles with `lib: ["ES2023"]`
- * and `types: []` — `TextEncoder` belongs to the DOM and to Node, neither of
- * which is in scope here. Twenty lines of well-defined encoding is the price of
- * the layer boundary.
- *
- * Lone surrogates (an unpaired half of a surrogate pair, which a JS string may
- * legally hold) become U+FFFD, which is what `TextEncoder` does — and
- * `TextEncoder` is the encoder this hand-written one stands in for, so that is
- * the whole claim. It is **not** a claim about the server: Rust's `String`
- * guarantees valid UTF-8 and performs no such substitution.
- *
- * Nor does the question ever reach the server on this endpoint. What gets
- * hashed here is the Track-conversation namespace together with a server-minted
- * Track id and a client-minted UUID, none of which holds a surrogate. A lone
- * surrogate in the message *text* is a different path
- * entirely: the draft counts it as one code point (`Array.from(text).length`
- * against `CONVERSATION_TEXT_MAX`) and then it dies on the wire —
- * `JSON.stringify` escapes it as `\ud800`, and `serde_json` refuses a lone
- * surrogate escape when deserialising into a `String`
- * (`LoneLeadingSurrogateInHexEscape`, classified as a syntax error, so axum's
- * `Json` extractor answers 400 before `create_track_conversation` runs). The
- * server never sees one.
+ * UTF-8 bytes of a string, written out because `core` compiles with `types: []` and `TextEncoder`
+ * is not in scope. Lone surrogates become U+FFFD, as `TextEncoder` does.
  */
 function utf8Bytes(text: string): Uint8Array {
   const out: number[] = [];
@@ -95,19 +46,14 @@ function utf8Bytes(text: string): Uint8Array {
   return new Uint8Array(out);
 }
 
-/** The padded message: the bytes, a `0x80`, zeros, then the bit length as a
- *  64-bit big-endian integer — so the total is a whole number of 64-byte
- *  blocks. */
+/** The padded message: the bytes, a `0x80`, zeros, then the bit length as a 64-bit big-endian integer. */
 function padded(bytes: Uint8Array): Uint8Array {
   const blocks = Math.floor((bytes.length + 8) / 64) + 1;
   const out = new Uint8Array(blocks * 64);
   out.set(bytes);
   out[bytes.length] = 0x80;
   const view = new DataView(out.buffer);
-  /* Two 32-bit halves rather than a BigInt: the high half is the byte length
-     shifted right by 29 (×8 ÷ 2³²), which no realistic input makes non-zero,
-     but writing it keeps the padding correct by construction instead of by
-     assumption. */
+  /* Two 32-bit halves rather than a BigInt: the high half is the byte length shifted right by 29. */
   view.setUint32(out.length - 8, Math.floor(bytes.length / 0x20000000), false);
   view.setUint32(out.length - 4, (bytes.length << 3) >>> 0, false);
   return out;

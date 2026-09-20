@@ -44,55 +44,35 @@ pub use snapshot::{
 pub use state::{HarnessState, IssuingKind, run_status_for};
 pub use token_usage::{BASELINE_TOKENS, TokenUsage};
 
-/// Shared fence type required by direct harness-recovery entry points. Normal
-/// runtime starts are serialized by `OperationRuntime`; recovery callers must
-/// explicitly provide the single-track deletion fence they coordinate with.
+/// Recovery callers must explicitly provide the single-track deletion fence they coordinate with.
 pub type TrackDeleteLocks = KeyedLocks;
 
 pub fn new_track_delete_locks() -> TrackDeleteLocks {
     crate::per_card_lock::new_keyed_locks()
 }
 
-/// #953 §5 — how [`spawn_recovered_harness`] claims the registry slot.
+/// How [`spawn_recovered_harness`] claims the registry slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimMode {
-    /// Boot recovery + user resume: today's shutdown-replace semantics via
-    /// [`HarnessRegistry::reserve_replacing`] — an existing Live harness is
-    /// shut down, an in-flight reservation is superseded. Carries NO daemon
-    /// eligibility gate: user resume semantics are unchanged.
+    /// Boot recovery + user resume: an existing Live harness is shut down, an in-flight
+    /// reservation is superseded. No daemon eligibility gate.
     Replace,
-    /// Deferred (post-heal) recovery: [`HarnessRegistry::try_reserve`] as
-    /// the claim — an occupied slot (Live OR Reserved) means the user
-    /// already touched this runtime, so skip without shutting anything
-    /// down. Shutdown-replace is unreachable from this mode by construction.
-    ///
-    /// PR2 review D1(a) — `expected_generation` is the Running incarnation
-    /// the deferred pass acted on: the replay between eligibility and claim
-    /// can be long, so eligibility (readiness still `running` with this
-    /// generation) is re-checked at the claim boundary, immediately before
-    /// `try_reserve`. On mismatch nothing is reserved and the pass reports
-    /// [`RecoveryOutcome::DaemonIneligible`].
+    /// Deferred (post-heal) recovery: an occupied slot means the user already touched this runtime,
+    /// so skip without shutting anything down. `expected_generation` is re-checked at the claim
+    /// boundary because the replay before it can be long.
     SkipIfClaimed { expected_generation: u64 },
 }
 
-/// Outcome of [`spawn_recovered_harness`].
 pub enum RecoveryOutcome {
-    /// A harness was built and installed under the claim.
     Installed(PlannerHarness),
-    /// Nothing installed: the runtime is not recoverable (missing card /
-    /// snapshot), the slot was already claimed ([`ClaimMode::SkipIfClaimed`]),
-    /// or the install lost against a newer claim (stale-install shutdown).
+    /// Nothing installed: not recoverable, slot already claimed, or the install lost against a newer claim.
     Skipped,
-    /// [`ClaimMode::SkipIfClaimed`] only: the claim-boundary daemon re-check
-    /// failed — the daemon left Running or changed generation during replay.
-    /// Nothing was reserved or installed; the deferred pass must abandon and
-    /// re-arm on the readiness watch.
+    /// [`ClaimMode::SkipIfClaimed`] only: the daemon left Running or changed generation during
+    /// replay; nothing was reserved, the deferred pass must re-arm.
     DaemonIneligible,
 }
 
 impl RecoveryOutcome {
-    /// The installed handle, if any ([`ClaimMode::Replace`] callers keep
-    /// their old `Option` semantics through this).
     pub fn installed(self) -> Option<PlannerHarness> {
         match self {
             Self::Installed(handle) => Some(handle),
@@ -101,9 +81,8 @@ impl RecoveryOutcome {
     }
 }
 
-/// #953 §5 — install the just-built harness under the reservation, or shut
-/// it down if the reservation went stale (superseded / slot re-claimed):
-/// a failed install must never leak the handle's run loop (test 14 iv).
+/// Install under the reservation, or shut the just-built harness down if the reservation went
+/// stale: a failed install must never leak the handle's run loop.
 async fn install_or_shutdown(
     reservation: HarnessReservation,
     handle: PlannerHarness,
@@ -132,10 +111,8 @@ pub(crate) fn effective_runtime_thread_id(runtime: &WorkerSessionProjection) -> 
         })
 }
 
-// The boot/user/deferred callers already thread these independently-owned
-// AppState parts. The explicit delete fence is load-bearing: a caller cannot
-// accidentally recover a runtime without choosing which server instance's
-// destructive boundary it coordinates with.
+// The explicit delete fence is load-bearing: a caller cannot recover a runtime without choosing
+// which server instance's destructive boundary it coordinates with.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_recovered_harness(
     repo: Arc<dyn Repo>,
@@ -183,22 +160,8 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     }
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
-    // #1189 — the catch-up replay is a PLANNER-push catch-up, and it belongs to
-    // the planner card alone. `replay_harness_events_since` filters with
-    // `event_warrants_planner_push_with_role`, i.e. task completions, gate
-    // verdicts, report edits, forge/workspace notifications — the stream the
-    // live dispatcher pushes only to the track's planner harness. A conversation
-    // harness (area chat or track assistant) is never a live recipient of any of
-    // it, so replaying it here would not be "catching up": it would inject a
-    // backlog the conversation was never meant to see, starting from watermark
-    // 0 on a freshly minted assistant, and hard-fire a turn before the user has
-    // said anything.
-    //
-    // Dispatch on the persisted role rather than on a payload marker: the role
-    // is what the live push path itself resolves, and an unknown/absent role
-    // falls into the no-replay arm, which is the fail-closed direction (a
-    // missed catch-up is a stale planner, an unwanted one is a conversation
-    // talking about somebody else's tasks).
+    // Catch-up is a PLANNER-push catch-up: replaying it into a conversation harness would inject
+    // a backlog it was never meant to see. Unknown/absent role falls into the no-replay arm (fail-closed).
     if role == Some(CardRole::Planner) {
         let catch_up_watermark = snapshot.push_watermark;
         replay_harness_events_since(
@@ -212,10 +175,8 @@ pub async fn spawn_recovered_harness(
     }
     let runtime_id = runtime.id.clone();
     let track_id = card.track_id.clone();
-    // Recovery replay may be long, so claim the lifecycle fence only at the
-    // installation boundary and then revalidate every row DELETE can remove.
-    // If deletion won while replay ran, recovery abstains instead of installing
-    // a harness for a stale runtime whose workspace has moved to trash.
+    // Replay may be long, so claim the lifecycle fence only at the installation boundary and then
+    // revalidate every row DELETE can remove.
     let _track_delete_guard = lock_key(track_delete_locks, track_id.as_str()).await;
     let Some(current_card) = repo.card_get(&runtime.card_id).await? else {
         return Ok(RecoveryOutcome::Skipped);
@@ -235,10 +196,7 @@ pub async fn spawn_recovered_harness(
     ) {
         return Ok(RecoveryOutcome::Skipped);
     }
-    // #953 §5 placement invariant: the reservation sits exactly where the
-    // old `remove()` sat — after recovery replay, immediately before handle
-    // construction/install — so the accepted reserve→install residual is
-    // provably no wider than the old remove-vs-insert window.
+    // The reservation sits after recovery replay, immediately before handle construction/install.
     let reservation = match claim_mode {
         ClaimMode::Replace => {
             let (reservation, previous_live) = registry.reserve_replacing(runtime_id.clone());
@@ -250,14 +208,8 @@ pub async fn spawn_recovered_harness(
         ClaimMode::SkipIfClaimed {
             expected_generation,
         } => {
-            // #953 PR2 review D1(a) — claim-boundary daemon re-check: the
-            // replay above can be long, so re-verify the eligibility the
-            // deferred pass acted on IMMEDIATELY before the claim. Consults
-            // the readiness watch (never the daemon core lock — no core
-            // acquisition near registry entry ops); transition ENTRY
-            // publishes `running: false`, so a transitional daemon is
-            // rejected here too. No reservation exists yet, so there is
-            // nothing to release on failure.
+            // Re-verify eligibility IMMEDIATELY before the claim via the readiness watch (never the daemon
+            // core lock); transition entry publishes `running: false`, so a transitional daemon is rejected too.
             let readiness = *daemon.readiness_receiver().borrow();
             if !readiness.running || readiness.generation != expected_generation {
                 tracing::info!(
@@ -285,10 +237,8 @@ pub async fn spawn_recovered_harness(
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id,
         card_id: CardId::from(runtime.card_id.clone()),
-        // Normalize blank/whitespace thread IDs to `None` before the
-        // fallback chain: a row with `thread_id = ''` would otherwise win as
-        // `Some("")` over the snapshot's valid `last_thread_id`, and the
-        // recovered harness would issue turns against an empty thread.
+        // A row with `thread_id = ''` would otherwise win as `Some("")` over the snapshot's valid
+        // `last_thread_id`, and the recovered harness would issue turns against an empty thread.
         thread_id: effective_runtime_thread_id(&runtime),
         repo,
         events,
@@ -316,23 +266,8 @@ async fn replay_harness_events_since(
     let mut replayed = 0usize;
     let mut entries: VecDeque<queue::QueueEntry> = snapshot.pending_entries().into();
     for (event_id, obs) in observations {
-        // #1505 PR1 — a dispatcher observation can never be a `UserMessage`
-        // (`harness_observation_from_event` has no arm that builds one), and
-        // `QueueEntry::system` is the runtime fence that says so. That is also
-        // why a replayed entry needs no #1449 message id: it has no instance to
-        // identify, and `QueueEntry::system` gives it an empty set by
-        // construction. If that ever stops holding, this replay warns and skips
-        // rather than silently enqueuing an unaddressable user message that the
-        // queue UI could neither show nor delete.
-        //
-        // Skipping is not free, and the cost belongs here rather than in a
-        // report nobody reads: `continue` also skips `push_watermark` and
-        // `replayed`, and the live push path (`dispatcher::…`) returns on the
-        // same `Err` BEFORE bumping its cursor. So one such row pins the
-        // watermark and is re-attempted on every boot until a later row raises
-        // the max. That is the fail-closed direction — a stuck cursor is
-        // visible and recoverable, an unaddressable queued message is not —
-        // and it is unreachable today.
+        // A dispatcher observation can never be a `UserMessage`; `QueueEntry::system` is the fence.
+        // `continue` also skips the watermark, so such a row pins it and is re-attempted every boot (fail-closed).
         let entry = match queue::QueueEntry::system(obs, Some(event_id)) {
             Ok(entry) => entry,
             Err(error) => {
@@ -346,10 +281,7 @@ async fn replay_harness_events_since(
                 continue;
             }
         };
-        // #1667 round-4 N3 — the same early fold the live enqueue applies:
-        // a replayed edit session (each event carrying two full bodies,
-        // each rendering up to 8 KB of diff) is one entry, not one per
-        // save. Contiguity (round-4 M2) is checked by the fold itself.
+        // Same early fold the live enqueue applies: a replayed edit session is one entry, not one per save.
         if !matches!(
             queue::try_fold_report_edit_tail(&mut entries, &entry),
             queue::FoldOutcome::Folded { .. }
@@ -471,10 +403,8 @@ impl HarnessRecoveryContext {
     }
 }
 
-/// Reinstall recoverable harnesses for surviving tracks after an aborted
-/// destructive saga. Deletion guards must be dropped before calling: the
-/// common recovery boundary acquires each track's direct-recovery fence.
-/// Sealed threads are skipped because their workspace could not be restored.
+/// Reinstall recoverable harnesses for surviving tracks after an aborted destructive saga.
+/// Deletion guards must be dropped before calling. Sealed threads are skipped.
 pub async fn recover_harnesses_for_tracks(
     context: &HarnessRecoveryContext,
     track_ids: &HashSet<TrackId>,
@@ -521,14 +451,11 @@ pub async fn recover_harnesses_for_tracks(
     Ok(recovered)
 }
 
-/// Fixtures-only deterministic-race hook (#953 test 8): fired once per
-/// runtime AFTER the per-runtime eligibility check and BEFORE the
-/// `try_reserve` claim.
+/// Fixtures-only race hook: fired once per runtime AFTER the eligibility check and BEFORE `try_reserve`.
 #[cfg(feature = "fixtures")]
 pub type PostEligibilityHook = std::sync::Arc<dyn Fn(&String) + Send + Sync>;
 
-/// #953 §5 — everything the deferred (post-heal) harness recovery task
-/// needs. Cloned out of `AppState` at arm time so the task owns its parts.
+/// Everything the deferred (post-heal) harness recovery task needs.
 pub struct DeferredRecoveryParams {
     pub repo: Arc<dyn Repo>,
     pub events: EventBus,
@@ -537,36 +464,20 @@ pub struct DeferredRecoveryParams {
     pub daemon: Arc<SharedCodexAppServer>,
     pub registry: HarnessRegistry,
     pub track_delete_locks: KeyedLocks,
-    /// Fixtures-only deterministic-race hook (#953 test 8): fired once per
-    /// runtime AFTER the per-runtime eligibility check (readiness still
-    /// running, generation unchanged) and BEFORE the `try_reserve` claim —
-    /// the window where a concurrent user registration must win, and (PR2
-    /// review D1) where a daemon transition during replay must make the
-    /// claim-boundary re-check abandon the pass.
+    /// Fixtures-only race hook: fired once per runtime AFTER the eligibility check and BEFORE
+    /// `try_reserve` — the window where a concurrent user registration must win.
     #[cfg(feature = "fixtures")]
     pub post_eligibility_hook: Option<PostEligibilityHook>,
 }
 
-/// #953 §5 — deferred claim-based harness recovery. Armed ONLY when the boot
-/// daemon spawn failed (boot used to skip planner-harness recovery forever);
-/// triggered by the first `running: true` observed on the supervisor's
-/// readiness watch. Claim-based: fresh DB re-read of recoverable runtimes at
-/// trigger time, per-runtime readiness re-check (running + unchanged
-/// generation) both before replay AND at the claim boundary immediately
-/// before `try_reserve` (PR2 review D1(a) — replay can be long), with
-/// `try_reserve` as the claim ([`ClaimMode::SkipIfClaimed`]) so a runtime
-/// the user already resumed is never shutdown-replaced.
+/// Deferred claim-based harness recovery, armed only when the boot daemon spawn failed and
+/// triggered by the first `running: true` on the readiness watch. Uses `try_reserve` as the
+/// claim so a runtime the user already resumed is never shutdown-replaced.
 pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
     let mut readiness = params.daemon.readiness_receiver();
     'arm: loop {
-        // Wait for a running daemon (first heal success). Lifecycle (PR2
-        // review D3): this task is spawned DETACHED
-        // (`AppState::arm_deferred_harness_recovery`) and owns an Arc of the
-        // supervisor via `params.daemon`, so the watch sender can never drop
-        // while we wait — the `changed()` Err arm below is defensive dead
-        // code, not the documented exit. The task actually ends by
-        // completing a recovery pass (the `return` at the bottom) or at
-        // process teardown.
+        // Wait for a running daemon. The task owns an Arc of the supervisor via `params.daemon`, so the
+        // watch sender cannot drop while we wait; the `changed()` Err arm is defensive.
         let observed = loop {
             let current = *readiness.borrow_and_update();
             if current.running {
@@ -580,8 +491,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
             generation = observed.generation,
             "shared daemon became ready; running deferred planner harness recovery"
         );
-        // Fresh re-read: the recoverable set may have changed since boot
-        // (user resumes, shutdowns, new runtimes).
+        // Fresh re-read: the recoverable set may have changed since boot.
         let runtimes = match params
             .repo
             .session_projection_recover_harnesses_on_boot()
@@ -599,10 +509,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
         };
         let mut recovered = 0usize;
         for runtime in runtimes {
-            // Per-runtime eligibility: still running, same generation as the
-            // readiness we acted on. On change, re-read readiness and either
-            // continue (still running, new incarnation) or re-arm (failed
-            // again).
+            // Per-runtime eligibility: still running, same generation as the readiness we acted on.
             let current = *readiness.borrow();
             if !current.running || current.generation != observed.generation {
                 tracing::info!(
@@ -635,10 +542,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                 Ok(RecoveryOutcome::Installed(_)) => recovered += 1,
                 Ok(RecoveryOutcome::Skipped) => {}
                 Ok(RecoveryOutcome::DaemonIneligible) => {
-                    // PR2 review D1(a) — the claim-boundary re-check failed
-                    // (daemon left Running or was replaced during replay).
-                    // Nothing was reserved; abandon this pass and re-arm the
-                    // wait loop so recovery resumes on the next heal.
+                    // Nothing was reserved; abandon this pass and re-arm so recovery resumes on the next heal.
                     tracing::info!(
                         runtime_id = %runtime_id,
                         "deferred harness recovery: daemon readiness changed at the claim boundary; re-arming"
@@ -646,8 +550,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                     continue 'arm;
                 }
                 Err(e) => {
-                    // Per-runtime failures don't abort the pass: recover
-                    // what can be recovered, log the rest.
+                    // Per-runtime failures don't abort the pass.
                     tracing::warn!(
                         runtime_id = %runtime_id,
                         error = %e,
@@ -681,10 +584,6 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// #953 test 14(iv) — install failure shuts down the just-built harness
-    /// (no leaked run loop): a reservation superseded between reserve and
-    /// install makes `install_or_shutdown` return `Ok(None)` after shutting
-    /// the handle down, leaving the newer claim untouched.
     #[tokio::test]
     async fn install_failure_shuts_down_just_built_harness() {
         let repo = Arc::new(
@@ -756,14 +655,6 @@ mod tests {
     use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
     use serde_json::json;
 
-    /// #1727 S1 — boot catch-up applies the same diet as the live push:
-    /// `workspace.leased/released`, `worktree.provisioned/committed` and the
-    /// planner-authored `review.round` yield no observation, a worker stop
-    /// hook whose tasks row already left `dispatched | running` is skipped,
-    /// and — the positive control that keeps the negatives honest — a stop
-    /// hook for a still-running worker and the gate result replay and issue
-    /// exactly one turn. (Before this slice each of the quiet rows replayed
-    /// and issued a turn of its own.)
     #[tokio::test]
     async fn boot_catch_up_skips_quiet_kinds_and_stale_stop_hooks_and_replays_the_wakes() {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());

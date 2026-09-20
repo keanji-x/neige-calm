@@ -1,61 +1,5 @@
-//! Issue #247 PR1 / #960 PR2 — CRDT storage for the track-report card.
-//!
-//! The kernel stores an opaque `automerge` document blob in
-//! `cards.body_crdt` alongside the legacy `payload` JSON column. The
-//! JSON column remains the wire format the REST + WS read paths and
-//! the frontend consume; this CRDT lives entirely server-side.
-//!
-//! ## Document layout (v2, #960 PR2)
-//!
-//! ```text
-//! ROOT
-//!   ├── summary : Text(<payload.summary>)
-//!   ├── blocks  : Map<block_id, Map { kind: Str, rev: Uint, text: Text }>
-//!   └── order   : List<Str(block_id)>
-//! ```
-//!
-//! The block map is the **authoritative source** for the report body.
-//! `body` no longer exists at the doc root — it is a pure projection:
-//! [`ReportDoc::project`] joins each block's `text` in `order`, adding
-//! a line ending between independently authored unterminated blocks.
-//! Blocks split from flat markdown already have line boundaries, so
-//! their projection reproduces the input byte for byte. Prose markdown is
-//! stored as `Text`, but changed block text is
-//! replaced with a fresh child object to keep writes linear. That replacement
-//! loses one side when two replicas concurrently edit the same block; it is
-//! safe only while production never merges two `body_crdt` documents (the
-//! frontend holds no CRDT, there is no offline sync, `track_vcs` stores text,
-//! replay uses the event write path, and writes are serialized + rev-checked).
-//!
-//! #960 PR3 — a non-prose block's `text` holds its **canonical
-//! `neige-block` fence** (`calm_types::report_blocks::fence`), i.e.
-//! exactly the bytes it contributes to the flat projection; the JSON
-//! payload the wire mirrors is recovered by parsing that fence
-//! ([`Self::blocks_snapshot`]). Storing the projection bytes keeps
-//! `project()` a per-block projection with line boundaries for every kind.
-//!
-//! ## Legacy layout + lazy migration
-//!
-//! Docs written before #960 PR2 have `ROOT.body: Text` and no
-//! `blocks` key. [`ReportDoc::from_bytes`] stays a pure load;
-//! [`ReportDoc::ensure_blocks_layout`] detects the old shape (O(1):
-//! `blocks` key absent) and rebuilds it in place — project the old
-//! body, split it into slices, reuse the block ids the caller passes
-//! from the payload JSON's PR1-derived `blocks` cache (minting fresh
-//! `b_xxxx` ids where there is no match), then delete `ROOT.body`.
-//! The persist boundary (`track_report::write::persist`)
-//! calls it right after loading, inside the same transaction, so the
-//! migrated bytes are written back atomically with the payload.
-//!
-//! [`ReportDoc::project`] tolerates a not-yet-migrated doc (read-only
-//! fallback to `ROOT.body`); every mutating entry point requires the
-//! v2 layout.
-//!
-//! ## Wire-format invariant
-//!
-//! The frontend never sees CRDT bytes. The payload JSON (`summary`,
-//! `body`, `blocks`) is a projection cache the persist boundary
-//! rewrites from this doc on every write.
+//! CRDT storage for the track-report card: `summary` Text + `blocks` map + `order` list at ROOT; the payload JSON is a projection cache.
+//! Changed block text is replaced wholesale, which loses one side if two replicas ever edit the same block concurrently.
 
 use anyhow::{Context, Result, bail, ensure};
 use automerge::transaction::Transactable;
@@ -71,42 +15,23 @@ use calm_types::report_blocks::{
 
 use crate::track_report::{ReportBlock, TrackReportPayload};
 
-/// Field key for the summary text object at the doc root.
 const FIELD_SUMMARY: &str = "summary";
-/// Field key for the block map at the doc root (v2 layout).
 const FIELD_BLOCKS: &str = "blocks";
-/// Field key for the block-id order list at the doc root (v2 layout).
 const FIELD_ORDER: &str = "order";
-/// Document-wide optimistic-concurrency revision (Uint). Legacy docs
-/// omit it and therefore read as revision zero until their first write.
+/// Document-wide revision; absent on legacy docs (reads as zero).
 const FIELD_DOC_REV: &str = "doc_rev";
-/// Field key for the legacy (pre-#960) body text object. Only the
-/// migrator and the read-only projection fallback may touch it.
+/// Legacy body text object; only the migrator and the read-only projection fallback touch it.
 const LEGACY_FIELD_BODY: &str = "body";
-/// Block-entry key: block kind (`prose` or a data kind, #960 PR3).
 const KEY_KIND: &str = "kind";
-/// Block-entry key: per-block optimistic-concurrency revision (Uint).
 const KEY_REV: &str = "rev";
-/// Block-entry key: the block's flat content (Text) — markdown for
-/// prose, the canonical `neige-block` fence for non-prose kinds.
+/// Block text: markdown for prose, the canonical `neige-block` fence for non-prose kinds.
 const KEY_TEXT: &str = "text";
 
 /// Opaque CRDT document holding the track-report's `summary` + block map.
-///
-/// Newtype around `automerge::AutoCommit` so the rest of the kernel
-/// never imports `automerge` directly. Every call site goes through
-/// the methods on this struct.
 pub struct ReportDoc(AutoCommit);
 
 impl ReportDoc {
-    /// Seed a brand-new doc from a payload snapshot. Used at first-
-    /// touch of any track-report card whose `cards.body_crdt` is still
-    /// NULL — i.e. every pre-#247 row, plus the lazy-init branch in
-    /// `persist_report`.
-    ///
-    /// The body is split into slices and aligned against the payload's
-    /// `blocks` cache (if present), so PR1-derived block ids survive
-    /// the seed instead of being re-minted.
+    /// Seed a brand-new doc from a payload snapshot; block ids from the payload's `blocks` cache survive the seed.
     pub fn from_payload(payload: &TrackReportPayload) -> Self {
         let mut doc = AutoCommit::new();
         let summary_id = doc
@@ -139,10 +64,7 @@ impl ReportDoc {
             .context("create exact report summary")?;
         doc.update_text(&summary_id, summary)
             .context("write exact report summary")?;
-        // Deliberately do not route this authoritative snapshot through
-        // `write_blocks_layout`: that defensive seeding helper may remint a
-        // duplicate id. The uniqueness check above is the fork boundary, and
-        // every id below is written byte-for-byte as supplied.
+        // Not routed through `write_blocks_layout`, which may remint a duplicate id; ids are written byte-for-byte.
         let blocks_id = doc
             .put_object(&ROOT, FIELD_BLOCKS, ObjType::Map)
             .context("create exact report blocks map")?;
@@ -164,8 +86,7 @@ impl ReportDoc {
         Ok(Self(doc))
     }
 
-    /// Read the authoritative document revision from the CRDT root.
-    /// Missing (legacy) fields are revision zero.
+    /// Document revision; missing (legacy) reads as zero.
     pub fn doc_rev(&self) -> Result<u64> {
         let Some((value, _)) = self.0.get(&ROOT, FIELD_DOC_REV).context("read doc_rev")? else {
             return Ok(0);
@@ -178,13 +99,7 @@ impl ReportDoc {
         }
     }
 
-    /// Increment `doc_rev` after a successful mutation. Called inside
-    /// the persist transaction so the revision and report bytes commit
-    /// atomically. This root scalar is a last-writer-wins register, so
-    /// callers must serialize mutations through the persist transaction;
-    /// concurrently merged branches could otherwise both publish N+1 and
-    /// make a stale N+1 anchor appear current. Overflow is treated as
-    /// corrupted/exhausted state.
+    /// Increment `doc_rev`; a last-writer-wins register, so callers must serialize mutations through the persist transaction.
     pub fn increment_doc_rev(&mut self) -> Result<u64> {
         let next = self.doc_rev()?.checked_add(1).context("doc_rev overflow")?;
         self.0
@@ -193,41 +108,17 @@ impl ReportDoc {
         Ok(next)
     }
 
-    /// Load a doc from its `to_bytes` serialization. Pure load — no
-    /// migration happens here; callers that intend to mutate a doc
-    /// must run [`Self::ensure_blocks_layout`] first. Returns an error
-    /// for corrupt blobs; callers map that to an `internal` error
-    /// since a row that fails to load is an invariant violation.
+    /// Pure load — no migration; mutators must run [`Self::ensure_blocks_layout`] first.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let doc = AutoCommit::load(bytes).context("automerge load")?;
         Ok(Self(doc))
     }
 
-    /// Serialize via `AutoCommit::save()`. The bytes are opaque to
-    /// every consumer outside this module; the only legal destination
-    /// is the `cards.body_crdt` column.
     pub fn to_bytes(&mut self) -> Vec<u8> {
         self.0.save()
     }
 
-    /// Deterministic, opaque encoding of the doc's Automerge canonical
-    /// heads (#955 §5.2) — the `base_doc_heads` anchor `neige.report.get`
-    /// hands to proposing plugins and the accept transaction compares
-    /// against. Change hashes are content-derived, so the token is
-    /// stable across process restarts and save/load round-trips; ANY
-    /// committed change (from any actor) yields a different token.
-    ///
-    /// Encoding: sort the head hashes (hex), hash the sorted sequence
-    /// with SHA-256, and prefix with a scheme tag so a future encoding
-    /// change is detectable rather than silently colliding. Sorting
-    /// makes the token independent of automerge's head ordering; the
-    /// second-stage hash keeps it fixed-size no matter how many
-    /// concurrent heads exist. Consumers MUST treat it as opaque —
-    /// equality is the only defined operation.
-    ///
-    /// `&mut self` because `get_heads` (like `save`) commits any
-    /// pending transaction before reading — call order next to
-    /// `to_bytes` is therefore irrelevant.
+    /// Opaque, restart-stable token over the doc's sorted Automerge heads; equality is the only defined operation.
     pub fn doc_heads(&mut self) -> String {
         use sha2::{Digest, Sha256};
         let mut heads: Vec<String> = self.0.get_heads().iter().map(|h| h.to_string()).collect();
@@ -241,20 +132,8 @@ impl ReportDoc {
         format!("ah1:{:x}", hasher.finalize())
     }
 
-    /// Lazily migrate a legacy (pre-#960) doc to the v2 block layout.
-    ///
-    /// Also performs the v3→v4 task-vocabulary migration in place: a terminal
-    /// task's legacy `goal` field becomes `command` without changing its block
-    /// revision. The rename preserves the executable value, so invalidating a
-    /// caller's existing `if_rev` anchor would create a spurious conflict.
-    ///
-    /// Returns whether either migration changed the in-memory document.
-    /// When the doc lacks the `blocks` map: read the legacy
-    /// `ROOT.body` text, split it, align the slices against
-    /// `hint_blocks` (the payload JSON's PR1-derived `blocks` cache,
-    /// so best-effort ids become durable ones), write the
-    /// `blocks`/`order` layout, delete `ROOT.body`, and return
-    /// `Ok(true)`.
+    /// Lazily migrate a legacy doc to the v2 block layout and rename legacy terminal-task `goal` to `command`
+    /// without bumping block revs; returns whether anything changed.
     pub fn ensure_blocks_layout(&mut self, hint_blocks: Option<&[ReportBlock]>) -> Result<bool> {
         let layout_changed = if self.blocks_map().context("probe blocks map")?.is_some() {
             false
@@ -300,19 +179,7 @@ impl ReportDoc {
         Ok(changed)
     }
 
-    /// Wholesale replace: the compatibility shim behind the legacy
-    /// `calm.report.write`/`edit` tools and the REST user-edit path.
-    ///
-    /// Splits `new_body`, aligns the slices against the current block
-    /// map via `calm_types::report_blocks::reassign_ids`, and lands
-    /// the result at block granularity: changed blocks get a
-    /// fresh linear-write Text child + `rev + 1`, new blocks
-    /// get a fresh map entry (`rev = 1`), vanished blocks are deleted,
-    /// and `order` is rewritten when it changed. Byte-identical
-    /// content is a doc-level no-op (revs untouched, zero text ops).
-    ///
-    /// Returns an error when the stored doc violates the layout
-    /// invariants (malformed CRDT bytes) — never panics.
+    /// Wholesale replace: realign `new_body` against the current block map; byte-identical content is a no-op.
     pub fn update(&mut self, new_summary: &str, new_body: &str) -> Result<()> {
         let summary_id = self.summary_text_id()?;
         self.0
@@ -324,10 +191,7 @@ impl ReportDoc {
         self.apply_aligned_blocks(&current, &aligned)
     }
 
-    /// Summary-only write behind `calm.report.commit`: replaces the
-    /// sidebar summary text and leaves the block map untouched (no block
-    /// rev moves, no order rewrite). The document-wide rev is advanced by
-    /// the persist layer like every other op.
+    /// Summary-only write; the block map is untouched.
     pub fn set_summary(&mut self, new_summary: &str) -> Result<()> {
         let summary_id = self.summary_text_id()?;
         self.0
@@ -335,13 +199,7 @@ impl ReportDoc {
             .context("update summary text")
     }
 
-    /// Marker-aware wholesale replace behind `calm.report.write_markdown`
-    /// (#960 PR2). Same landing semantics as [`Self::update`], but the
-    /// caller supplies pre-split slices plus per-slice id hints
-    /// (recovered from stripped `<!-- neige:b_xxxx -->` marker lines by
-    /// `calm_types::report_blocks::strip_markers_and_split`); hinted
-    /// slices bind to their old block exactly, the rest fall back to
-    /// the LCS/similarity alignment.
+    /// Wholesale replace with per-slice id hints; hinted slices bind to their old block exactly.
     pub fn update_with_hints(
         &mut self,
         new_summary: &str,
@@ -358,22 +216,7 @@ impl ReportDoc {
         self.apply_aligned_blocks(&current, &aligned)
     }
 
-    /// Read the current `(summary, body)` projection out of the doc,
-    /// where `body` joins block text in `order`, inserting a line ending
-    /// after an unterminated non-final block. Text split from a flat
-    /// document already has these boundaries and stays byte-identical.
-    /// The caller must thread
-    /// these back into the `TrackReportPayload` it writes to the
-    /// `payload` JSON column — the CRDT is authoritative, the JSON is
-    /// a cache.
-    ///
-    /// Read-only fallback: a legacy doc that has not been migrated
-    /// yet projects its `ROOT.body` text unchanged.
-    ///
-    /// Returns an error (never panics) when the stored doc violates
-    /// the layout invariants — a malformed blob must surface as an
-    /// `Internal` error at the persist/read boundary, not crash the
-    /// server.
+    /// `(summary, body)` projection; a not-yet-migrated legacy doc projects `ROOT.body` unchanged.
     pub fn project(&self) -> Result<(String, String)> {
         let summary = self.text_at(&ROOT, FIELD_SUMMARY)?;
         let body = if let Some(blocks_id) = self.blocks_map()? {
@@ -397,40 +240,23 @@ impl ReportDoc {
         Ok((summary, body))
     }
 
-    /// `Ok(true)` when the doc carries a **well-formed** v2
-    /// `blocks`/`order` layout: `blocks` is a Map, `order` exists and
-    /// is a List, and every order entry resolves to a shape-correct
-    /// block (`kind` Str / `rev` Uint / `text` Text). `Ok(false)` only
-    /// for the legal legacy shape (no `blocks` at ROOT — pre-#960,
-    /// handled by the lazy migrator). Anything in between is
-    /// corruption and errors — a damaged v2 doc must never be read as
-    /// a valid empty report (#960 PR2 review round 2).
+    /// `Ok(true)` for a well-formed v2 layout, `Ok(false)` only for the legal legacy shape; anything in between errors.
     pub fn has_blocks_layout(&self) -> Result<bool> {
         match self.blocks_map()? {
             None => Ok(false),
             Some(_) => {
-                // Full-shape walk; discard the snapshot, keep the
-                // validation.
                 self.blocks_snapshot()?;
                 Ok(true)
             }
         }
     }
 
-    /// Full typed snapshot of the block map in `order` order. The
-    /// persist boundary mirrors this into `TrackReportPayload::blocks`.
-    /// Prose blocks carry `{ markdown }`; a non-prose block's payload
-    /// is parsed back out of its stored canonical fence (#960 PR3) —
-    /// a non-prose `text` that is not a well-formed fence of the
-    /// stored kind is corruption and errors.
+    /// Typed snapshot of the block map in `order` order; a non-prose text that is not a well-formed fence errors.
     pub fn blocks_snapshot(&self) -> Result<Vec<ReportBlock>> {
         let Some(blocks_id) = self.blocks_map()? else {
             return Ok(Vec::new());
         };
-        // 1:1 layout validation (#960 PR2 review round 3): `order`
-        // must be duplicate-free and cover the blocks map exactly —
-        // a duplicated order id would project the same block twice,
-        // a hidden map entry outside `order` is unreachable state.
+        // `order` must be duplicate-free and cover the blocks map exactly.
         let order = self.order_ids()?;
         let mut seen: HashSet<&str> = HashSet::new();
         for id in &order {
@@ -495,8 +321,6 @@ impl ReportDoc {
         Ok(blocks)
     }
 
-    /// `(id, kind, rev)` per block, in `order` order — the index the
-    /// MCP tool surface (next slice) returns alongside the flat text.
     pub fn block_index(&self) -> Result<Vec<(String, String, u32)>> {
         Ok(self
             .blocks_snapshot()?
@@ -505,11 +329,7 @@ impl ReportDoc {
             .collect())
     }
 
-    /// Current rev of a block. `Ok(None)` when the id doesn't exist;
-    /// `Err` when the doc or the entry is malformed — rev corruption
-    /// must surface as an Internal-level error, never be folded into
-    /// "block not found" (which callers map to BadRequest). The
-    /// `if_rev` optimistic-concurrency check reads this.
+    /// `Ok(None)` for an unknown id; a malformed entry is `Err`, never folded into "not found".
     pub fn block_rev(&self, id: &str) -> Result<Option<u32>> {
         let blocks_id = self
             .blocks_map()?
@@ -528,27 +348,15 @@ impl ReportDoc {
         Ok(Some(rev))
     }
 
-    /// Insert or replace a single block.
-    ///
-    ///   * `id = None` — mint a fresh `b_xxxx` id (same style as
-    ///     `calm_types::report_blocks::mint_id`), create the block at
-    ///     the end of `order` with `rev = 1`, return `(id, 1)`.
-    ///   * `id = Some(_)` — replace that block's kind + content and
-    ///     bump `rev` by 1. Byte-identical content (same kind, same
-    ///     text) is an idempotent no-op: nothing is written and the
-    ///     **current** rev is returned, so a retried request cannot
-    ///     silently invalidate the caller's `if_rev` anchor (#960 PR2
-    ///     review). Unknown id is an error.
+    /// `id = None` mints a fresh block at the tail (`rev = 1`); `Some` replaces and bumps `rev`,
+    /// except byte-identical content is a no-op returning the current rev.
     pub fn upsert_block(
         &mut self,
         id: Option<&str>,
         kind: &str,
         content: &str,
     ) -> Result<(String, u32)> {
-        // #960 PR3 invariant: a non-prose block's stored text IS its
-        // canonical fence. The tool layer renders it; this check keeps
-        // a future caller from storing a fence the snapshot cannot
-        // parse back.
+        // A non-prose block's stored text IS its canonical fence.
         if kind != KIND_PROSE {
             let fence = parse_fence(content).with_context(|| {
                 format!(
@@ -589,11 +397,6 @@ impl ReportDoc {
                     .and_then(|(value, _)| value.to_str().map(str::to_string));
                 let existing_text = self.0.text(&text_id).context("read block text")?;
                 if existing_kind.as_deref() == Some(kind) && existing_text == content {
-                    // Idempotent replace: byte-identical content moves
-                    // nothing — no text op, no rev bump. The persist
-                    // boundary still runs (and still emits the dual-
-                    // event pair) so the uniform "every persist → two
-                    // events" invariant holds.
                     return Ok((id.to_string(), rev));
                 }
                 let next_rev = rev.saturating_add(1);
@@ -618,10 +421,7 @@ impl ReportDoc {
         }
     }
 
-    /// Move a block to `to_index` (its final index in the unchanged-
-    /// length list). Automerge lists have no move op, so this is a
-    /// delete + insert on `order`; the block entry itself is
-    /// untouched (rev unchanged — ordering is not content).
+    /// Automerge lists have no move op: delete + insert on `order`; the block's rev is untouched.
     pub fn move_block(&mut self, id: &str, to_index: usize) -> Result<()> {
         let order_id = self.order_list()?;
         let ids = self.order_ids()?;
@@ -646,8 +446,6 @@ impl ReportDoc {
         Ok(())
     }
 
-    /// Delete a block: remove its `order` entry and its map entry.
-    /// Unknown id is an error.
     pub fn delete_block(&mut self, id: &str) -> Result<()> {
         let blocks_id = self
             .blocks_map()?
@@ -667,14 +465,6 @@ impl ReportDoc {
         Ok(())
     }
 
-    // -- internals ---------------------------------------------------
-
-    /// Land an aligned block list produced by `reassign_ids` onto the
-    /// doc at block granularity. Content is each block's flat text
-    /// (markdown for prose, canonical fence for non-prose — #960 PR3).
-    /// The wholesale `Replace` path additionally refuses to stomp
-    /// non-prose blocks *before* alignment lands (the guard lives in
-    /// `track_report::apply_report_op`, inside the persist tx).
     fn apply_aligned_blocks(
         &mut self,
         current: &[ReportBlock],
@@ -748,18 +538,6 @@ impl ReportDoc {
         Ok(())
     }
 
-    /// Create the `blocks` map + `order` list from scratch and fill
-    /// them from an aligned block list. Seeding path shared by
-    /// `from_payload` and the lazy migrator.
-    ///
-    /// Duplicate ids in `blocks` are deduplicated defensively: the
-    /// first occurrence keeps the id, later occurrences get a freshly
-    /// minted one (a duplicate map key would silently overwrite the
-    /// first block's entry while `order` still listed the id twice —
-    /// projecting the same content twice and breaking the byte-exact
-    /// `flatten(blocks) == body` invariant). `reassign_ids*` already
-    /// guarantees unique output ids; this guards direct callers and
-    /// future refactors.
     fn write_blocks_layout(doc: &mut AutoCommit, blocks: &[ReportBlock]) {
         let blocks_id = doc
             .put_object(&ROOT, FIELD_BLOCKS, ObjType::Map)
@@ -783,7 +561,6 @@ impl ReportDoc {
             doc.insert(&order_id, index, id.as_str())
                 .expect("insert at list tail cannot fail");
         }
-        // Post-condition: `order` never carries a duplicate id.
         debug_assert_eq!(
             seen.len(),
             blocks.len(),
@@ -791,8 +568,6 @@ impl ReportDoc {
         );
     }
 
-    /// Create one block entry (`Map { kind, rev, text }`) under the
-    /// blocks map. Does not touch `order`.
     fn insert_block_entry(
         doc: &mut AutoCommit,
         blocks_id: &automerge::ObjId,
@@ -815,10 +590,7 @@ impl ReportDoc {
             .expect("update_text on freshly-minted Text obj cannot fail");
     }
 
-    /// The block-id order, materialized as owned strings. Only legal
-    /// in a v2 context (blocks map present): a missing or non-List
-    /// `order` is corruption, never "empty" — errors on that and on
-    /// non-Str entries.
+    /// A missing or non-List `order` is corruption, never "empty".
     fn order_ids(&self) -> Result<Vec<String>> {
         let order_id = self.order_list()?;
         (0..self.0.length(&order_id))
@@ -834,8 +606,6 @@ impl ReportDoc {
             .collect()
     }
 
-    /// The summary `Text` object id, validated. Errors (never panics)
-    /// when the doc has no summary or it is not a `Text` object.
     fn summary_text_id(&self) -> Result<automerge::ObjId> {
         let (value, id) = self
             .0
@@ -849,9 +619,6 @@ impl ReportDoc {
         Ok(id)
     }
 
-    /// Read a validated `Text` object's content at `parent[prop]`.
-    /// Errors when the key is absent or holds anything but a `Text`
-    /// object (a malformed doc must never panic the read path).
     fn text_at(&self, parent: &automerge::ObjId, prop: &str) -> Result<String> {
         let (value, id) = self
             .0
@@ -866,12 +633,7 @@ impl ReportDoc {
             .with_context(|| format!("read `{prop}` text"))
     }
 
-    /// Typed child-object lookup: `Ok(None)` when `prop` is absent,
-    /// `Err` when the lookup itself fails or the value is present but
-    /// not an object of type `ty`. A malformed doc must never be
-    /// silently reinterpreted (e.g. a scalar `order` read as "no
-    /// order" → empty report) — type errors are corruption, and
-    /// corruption surfaces as an error at the persist/read boundary.
+    /// `Ok(None)` when absent; a present value of the wrong type is corruption and errors.
     fn typed_at(
         &self,
         parent: &automerge::ObjId,
@@ -894,32 +656,23 @@ impl ReportDoc {
         }
     }
 
-    /// The v2 `blocks` map id, or `None` for a legacy (pre-#960) doc.
-    /// Errors when `blocks` exists but is not a Map.
+    /// `None` for a legacy doc.
     fn blocks_map(&self) -> Result<Option<automerge::ObjId>> {
         self.typed_at(&ROOT, FIELD_BLOCKS, ObjType::Map)
     }
 
-    /// The v2 `order` list id. Every caller is in a v2 context (the
-    /// blocks map exists or is required), so "blocks without order"
-    /// is NOT an interpretable state — missing or non-List `order` is
-    /// corruption and errors.
+    /// "blocks without order" is not an interpretable state — a missing `order` errors.
     fn order_list(&self) -> Result<automerge::ObjId> {
         self.typed_at(&ROOT, FIELD_ORDER, ObjType::List)?
             .context("malformed report doc: blocks map present but order list missing")
     }
 
-    /// A block entry (`Map`) under the blocks map: `Ok(None)` when the
-    /// id is absent, `Err` when present but not a Map.
     fn entry_at(&self, blocks_id: &automerge::ObjId, id: &str) -> Result<Option<automerge::ObjId>> {
         self.typed_at(blocks_id, id, ObjType::Map)
     }
 }
 
-/// Replace a block's Text object without Automerge's general Myers diff.
-/// Report writes are serialized and revision-checked before reaching this
-/// helper, so replacing the child object preserves the same visible text while
-/// keeping work linear for large repetitive input.
+/// Replaces the Text child object instead of diffing, keeping writes linear for large repetitive input.
 fn replace_text_object(
     doc: &mut AutoCommit,
     entry: &automerge::ObjId,
@@ -945,13 +698,8 @@ mod tests {
         )
     }
 
-    // ----- #955 §5.2: doc_heads ---------------------------------------
-
     #[test]
     fn doc_heads_is_stable_across_save_load_round_trips() {
-        // Restart-survival: the token must be a pure function of the
-        // committed change graph, not of in-process state. Round-trip
-        // through bytes (= what a process restart does) twice.
         let mut doc = ReportDoc::from_payload(&sample_payload());
         let token = doc.doc_heads();
         assert!(token.starts_with("ah1:"), "scheme-tagged token: {token}");
@@ -967,7 +715,6 @@ mod tests {
         let mut doc = ReportDoc::from_payload(&sample_payload());
         let before = doc.doc_heads();
 
-        // Body edit → new head.
         doc.update(
             "planner agent did a thing",
             "# Goal
@@ -979,7 +726,6 @@ changed.
         let after_body = doc.doc_heads();
         assert_ne!(after_body, before, "body edit must move the heads");
 
-        // Summary-only edit → new head again.
         doc.update(
             "new summary",
             "# Goal
@@ -991,12 +737,10 @@ changed.
         let after_summary = doc.doc_heads();
         assert_ne!(after_summary, after_body);
 
-        // Re-reading without writing does not move the token.
         assert_eq!(doc.doc_heads(), after_summary);
     }
 
-    /// Serialize a pre-#960 doc: `summary` + `body` Texts at ROOT,
-    /// no `blocks`/`order`. Mirrors the old `from_payload` verbatim.
+    /// A pre-v2 doc: `summary` + `body` Texts at ROOT, no `blocks`/`order`.
     fn legacy_doc_bytes(summary: &str, body: &str) -> Vec<u8> {
         let mut doc = AutoCommit::new();
         let summary_id = doc.put_object(&ROOT, FIELD_SUMMARY, ObjType::Text).unwrap();
@@ -1015,14 +759,11 @@ changed.
         let (summary, body) = doc.project().unwrap();
         assert_eq!(summary, payload.summary);
         assert_eq!(body, payload.body);
-        // Force a save round-trip too — project before save mustn't
-        // depend on any pending-op state that disappears post-save.
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).expect("round-trip load");
         let (s2, b2) = reloaded.project().unwrap();
         assert_eq!(s2, payload.summary);
         assert_eq!(b2, payload.body);
-        // Two H1 sections → two prose blocks at rev 1, order matches.
         let index = reloaded.block_index().unwrap();
         assert_eq!(index.len(), 2);
         assert!(
@@ -1071,7 +812,6 @@ changed.
         let (s, b) = doc.project().unwrap();
         assert_eq!(s, "new summary");
         assert_eq!(b, "# Heading\n\nnew body.\n");
-        // And it survives a save round-trip.
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).expect("round-trip load");
         let (s2, b2) = reloaded.project().unwrap();
@@ -1089,8 +829,6 @@ changed.
         let (id_b, _, rev_b) = before[1].clone();
         assert_eq!((rev_a, rev_b), (1, 1));
 
-        // Edit only block A (mild edit — stays above the similarity
-        // reuse threshold); B stays byte-identical.
         doc.update("s", "# A\n\nalpha edited\n\n# B\n\nbeta\n")
             .unwrap();
         assert_eq!(
@@ -1104,13 +842,11 @@ changed.
             "untouched block: rev unchanged"
         );
 
-        // Byte-identical rewrite: no rev movement at all.
         doc.update("s", "# A\n\nalpha edited\n\n# B\n\nbeta\n")
             .unwrap();
         assert_eq!(doc.block_rev(&id_a).unwrap(), Some(2));
         assert_eq!(doc.block_rev(&id_b).unwrap(), Some(1));
 
-        // Dropping a block deletes its entry; the survivor keeps id+rev.
         doc.update("s", "# B\n\nbeta\n").unwrap();
         assert_eq!(
             doc.block_rev(&id_a).unwrap(),
@@ -1127,7 +863,6 @@ changed.
         let body = "preamble\n\n# A\n\nalpha\n\n## B\n\nbeta\n";
         let bytes = legacy_doc_bytes(summary, body);
 
-        // Read-only projection works before migration (legacy fallback).
         let unmigrated = ReportDoc::from_bytes(&bytes).unwrap();
         assert_eq!(
             unmigrated.project().unwrap(),
@@ -1135,7 +870,6 @@ changed.
         );
         assert!(unmigrated.blocks_snapshot().unwrap().is_empty());
 
-        // Migrate with the PR1-derived JSON blocks as the id hint.
         let hint = reassign_ids(&[], &split_body(body));
         let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
         assert!(
@@ -1158,10 +892,8 @@ changed.
                 .collect::<Vec<_>>(),
             "hint ids become the durable block ids"
         );
-        // Legacy body is gone from the root.
         assert!(doc.0.get(&ROOT, LEGACY_FIELD_BODY).unwrap().is_none());
 
-        // Idempotent: second call is a no-op, also across a save.
         assert!(!doc.ensure_blocks_layout(Some(&hint)).unwrap());
         let bytes2 = doc.to_bytes();
         let mut reloaded = ReportDoc::from_bytes(&bytes2).unwrap();
@@ -1229,14 +961,12 @@ changed.
         let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", "# A\n\nalpha\n"));
         let (id_a, _, _) = doc.block_index().unwrap()[0].clone();
 
-        // Append a new block.
         let (id_b, rev_b) = doc.upsert_block(None, "prose", "# B\n\nbeta\n").unwrap();
         assert_eq!(rev_b, 1);
         assert!(id_b.starts_with("b_"));
         assert_ne!(id_b, id_a);
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha\n# B\n\nbeta\n");
 
-        // Replace an existing block: rev bumps, content splices.
         let (same_id, rev) = doc
             .upsert_block(Some(&id_a), "prose", "# A\n\nalpha v2\n")
             .unwrap();
@@ -1245,8 +975,6 @@ changed.
         assert_eq!(doc.block_rev(&id_a).unwrap(), Some(2));
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
 
-        // Replace with byte-identical content is an idempotent no-op:
-        // rev unchanged, content unchanged (#960 PR2 review).
         let (_, rev) = doc
             .upsert_block(Some(&id_a), "prose", "# A\n\nalpha v2\n")
             .unwrap();
@@ -1254,27 +982,21 @@ changed.
         assert_eq!(doc.block_rev(&id_a).unwrap(), Some(2));
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
 
-        // Unknown id errors.
         assert!(doc.upsert_block(Some("b_nope"), "prose", "x").is_err());
 
-        // Move B to the front; rev untouched.
         doc.move_block(&id_b, 0).unwrap();
         assert_eq!(doc.project().unwrap().1, "# B\n\nbeta\n# A\n\nalpha v2\n");
         assert_eq!(doc.block_rev(&id_b).unwrap(), Some(1));
-        // And back to the tail.
         doc.move_block(&id_b, 1).unwrap();
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
-        // Out-of-range and unknown-id are errors.
         assert!(doc.move_block(&id_b, 2).is_err());
         assert!(doc.move_block("b_nope", 0).is_err());
 
-        // Delete B.
         doc.delete_block(&id_b).unwrap();
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n");
         assert_eq!(doc.block_rev(&id_b).unwrap(), None);
         assert!(doc.delete_block(&id_b).is_err(), "double delete errors");
 
-        // Everything survives a save round-trip.
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).unwrap();
         assert_eq!(reloaded.project().unwrap().1, "# A\n\nalpha v2\n");
@@ -1325,9 +1047,6 @@ changed.
 
     #[test]
     fn identical_update_is_a_noop_at_byte_level() {
-        // Re-asserting the same content produces zero text ops and no
-        // rev movement; bound the saved-size growth as a smoke check
-        // that we're not silently rewriting the block map every call.
         let payload = sample_payload();
         let mut doc = ReportDoc::from_payload(&payload);
         let first = doc.to_bytes();
@@ -1355,10 +1074,6 @@ changed.
 
     #[test]
     fn round_trip_preserves_multibyte_emoji_and_crlf() {
-        // Regression pin for the read path: automerge `Text` is
-        // logically a sequence of Unicode scalar values. Verify the
-        // block-map projection is byte-for-byte identical to the input
-        // across multi-byte UTF-8, multi-codepoint emoji, and CRLF.
         let summary = "中文测试 🎉 🇨🇳";
         let body = "line1\r\nline2 中文 🎉 🇨🇳\r\n";
         let payload = TrackReportPayload::new(summary, body);
@@ -1370,7 +1085,6 @@ changed.
         assert_eq!(s.as_bytes(), summary.as_bytes());
         assert_eq!(b.as_bytes(), body.as_bytes());
 
-        // And the update path must preserve them too.
         let mut doc2 = ReportDoc::from_bytes(&bytes).expect("re-load for update");
         let new_summary = "新摘要 🚀 🇯🇵";
         let new_body = "第一行\r\n第二行 🎊\r\n";
@@ -1387,12 +1101,6 @@ changed.
 
     #[test]
     fn concurrent_fork_merge_preserves_both_edits() {
-        // Fork two replicas off the same root; each edits a different
-        // block via the wholesale `update` path; merge them and both
-        // edits must survive. Block-granular storage is what makes
-        // this clean — the edits land in two independent Text objects.
-        // This does not cover same-block edits; the known lossy semantics
-        // for that case are pinned by the next test.
         let payload = TrackReportPayload::new("shared", "# A\n\nalpha\n\n# B\n\nbeta\n");
         let mut origin = ReportDoc::from_payload(&payload);
         let bytes = origin.to_bytes();
@@ -1422,16 +1130,8 @@ changed.
 
     #[test]
     fn same_block_concurrent_merge_loses_one_edit_without_a_production_merge_path() {
-        // This is a known semantic of replacing a changed block's Text object:
-        // concurrent edits to the same block conflict, so one side is lost.
-        // It is currently safe because production never merges two `body_crdt`
-        // docs: the frontend holds no CRDT, there is no offline sync, `track_vcs`
-        // stores only text, replay uses the event write path, and server writes
-        // are serialized + rev-checked.
-        //
-        // If CRDT sync or multi-replica merge is introduced, this test is the
-        // tripwire: preserve the Text object's identity and splice characters,
-        // or implement custom character edits with a complexity bound.
+        // Tripwire: replacing a changed block's Text object loses one side of concurrent same-block edits;
+        // safe only while production never merges two `body_crdt` docs.
         let payload = TrackReportPayload::new("shared", "# A\n\nalpha beta\n");
         let mut origin = ReportDoc::from_payload(&payload);
         let bytes = origin.to_bytes();
@@ -1454,9 +1154,6 @@ changed.
         );
     }
 
-    // -- malformed-doc hardening (#960 PR2 review) -------------------
-
-    /// A fresh raw doc with a valid `summary` Text at ROOT.
     fn raw_doc_with_summary(summary: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
         let summary_id = doc.put_object(&ROOT, FIELD_SUMMARY, ObjType::Text).unwrap();
@@ -1466,7 +1163,6 @@ changed.
 
     #[test]
     fn malformed_dangling_order_id_errors_instead_of_panicking() {
-        // `order` references a block id with no `blocks` entry.
         let mut raw = raw_doc_with_summary("s");
         raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
         let order = raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
@@ -1478,14 +1174,12 @@ changed.
         assert!(err.to_string().contains("no blocks entry"), "err = {err:#}");
         assert!(doc.blocks_snapshot().is_err());
         assert!(doc.block_index().is_err());
-        // Mutating entry points surface the same error, no panic.
         let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
         assert!(doc.update("s", "# A\n").is_err());
     }
 
     #[test]
     fn malformed_non_text_block_field_errors_instead_of_panicking() {
-        // Block entry whose `text` is a scalar Str, not a Text object.
         let mut raw = raw_doc_with_summary("s");
         let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
         let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
@@ -1507,7 +1201,6 @@ changed.
 
     #[test]
     fn malformed_missing_summary_errors_instead_of_panicking() {
-        // v2 layout without any `summary` at ROOT.
         let mut raw = AutoCommit::new();
         raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
         raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
@@ -1528,8 +1221,6 @@ changed.
         );
     }
 
-    /// A raw doc with summary + a well-formed block entry under
-    /// `blocks`, but NO `order` list.
     fn raw_doc_blocks_without_order() -> Vec<u8> {
         let mut raw = raw_doc_with_summary("s");
         let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
@@ -1543,9 +1234,6 @@ changed.
 
     #[test]
     fn blocks_without_order_is_corruption_not_an_empty_report() {
-        // "blocks present, order missing" is NOT an interpretable
-        // state — it must error, never read as a valid empty report
-        // (which a subsequent write would then clobber).
         let bytes = raw_doc_blocks_without_order();
         let doc = ReportDoc::from_bytes(&bytes).unwrap();
         let err = doc.project().unwrap_err();
@@ -1564,7 +1252,6 @@ changed.
 
     #[test]
     fn scalar_order_is_corruption_not_an_empty_report() {
-        // `order` present but as a scalar Str instead of a List.
         let mut raw = raw_doc_with_summary("s");
         raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
         raw.put(&ROOT, FIELD_ORDER, "b_0001").unwrap();
@@ -1581,9 +1268,6 @@ changed.
 
     #[test]
     fn scalar_rev_is_corruption_not_block_not_found() {
-        // Block entry whose `rev` is a Str: rev corruption must error
-        // (Internal at the boundary), never fold into `Ok(None)` /
-        // "block not found" (which callers map to BadRequest).
         let mut raw = raw_doc_with_summary("s");
         let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
         let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
@@ -1603,14 +1287,11 @@ changed.
             doc.block_rev("b_0001").is_err(),
             "rev corruption must be an error, not Ok(None)"
         );
-        // An unknown id on the same doc is still a clean None.
         assert_eq!(doc.block_rev("b_nope").unwrap(), None);
     }
 
     #[test]
     fn out_of_range_rev_is_corruption_not_saturation() {
-        // rev stored as a Uint beyond u32::MAX: corruption, not a
-        // silently saturated value (#960 PR2 review round 3).
         let mut raw = raw_doc_with_summary("s");
         let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
         let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
@@ -1636,8 +1317,6 @@ changed.
 
     #[test]
     fn duplicate_order_id_is_corruption() {
-        // `order` lists the same id twice: projecting it would emit
-        // the block twice — corruption, not an interpretable state.
         let mut raw = raw_doc_with_summary("s");
         let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
         let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
@@ -1661,8 +1340,6 @@ changed.
 
     #[test]
     fn hidden_blocks_entry_outside_order_is_corruption() {
-        // The blocks map carries an entry `order` never lists: hidden,
-        // unreachable state — the 1:1 count check must reject it.
         let mut raw = raw_doc_with_summary("s");
         let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
         for id in ["b_0001", "b_hidden"] {
@@ -1685,13 +1362,8 @@ changed.
         assert!(doc.has_blocks_layout().is_err());
     }
 
-    // -- duplicate id hints (#960 PR2 review) ------------------------
-
     #[test]
     fn duplicate_hint_ids_migrate_with_unique_order() {
-        // Legacy migration fed a payload `blocks` cache in which two
-        // blocks share one id: only the first occurrence may claim it;
-        // the projection stays byte-exact and `order` is unique.
         let body = "# A\n\nalpha\n\n# B\n\nbeta\n";
         let hint = vec![
             ReportBlock {
@@ -1731,8 +1403,6 @@ changed.
         );
     }
 
-    // -- non-prose blocks (#960 PR3) ---------------------------------
-
     #[test]
     fn upsert_non_prose_block_stores_canonical_fence_and_snapshot_parses_it() {
         let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", "# A\n\nalpha\n"));
@@ -1741,31 +1411,25 @@ changed.
         let (id, rev) = doc.upsert_block(None, "app", &fence_text).unwrap();
         assert_eq!(rev, 1);
 
-        // Projection = prose + canonical fence, byte-exact.
         let (_, body) = doc.project().unwrap();
         assert_eq!(body, format!("# A\n\nalpha\n{fence_text}"));
-        // Snapshot recovers the JSON payload from the stored fence.
         let blocks = doc.blocks_snapshot().unwrap();
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[1].id, id);
         assert_eq!(blocks[1].kind, "app");
         assert_eq!(blocks[1].payload, payload);
-        // And the projection invariant holds through a save.
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).unwrap();
         assert_eq!(reloaded.project().unwrap().1, body);
         assert_eq!(reloaded.blocks_snapshot().unwrap()[1].payload, payload);
 
-        // Identical fence replace is idempotent; changed payload bumps.
         let (_, rev) = doc.upsert_block(Some(&id), "app", &fence_text).unwrap();
         assert_eq!(rev, 1, "identical fence: rev holds");
         let changed = calm_types::report_blocks::render_fence("app", &json!({ "src": "/apps/y" }));
         let (_, rev) = doc.upsert_block(Some(&id), "app", &changed).unwrap();
         assert_eq!(rev, 2, "changed payload: rev+1");
 
-        // Non-fence content for a non-prose kind is an invariant error.
         assert!(doc.upsert_block(Some(&id), "app", "not a fence\n").is_err());
-        // Kind/fence mismatch too.
         assert!(doc.upsert_block(Some(&id), "table", &changed).is_err());
     }
 
@@ -1790,17 +1454,11 @@ changed.
             "err = {err:#}"
         );
         assert!(doc.has_blocks_layout().is_err());
-        // project() still works (it only concatenates text) — the flat
-        // body is not gated on payload parseability.
         assert!(doc.project().is_ok());
     }
 
     #[test]
     fn wholesale_update_carrying_the_fence_verbatim_preserves_the_block() {
-        // The calm-types alignment path: a Replace-style update whose
-        // body contains the canonical fence byte-for-byte keeps id,
-        // kind, payload and rev (the server-level stomp guard allows
-        // exactly this shape through).
         let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", "# A\n\nalpha\n"));
         let payload = json!({ "src": "/apps/x" });
         let fence_text = calm_types::report_blocks::render_fence("app", &payload);
@@ -1819,10 +1477,6 @@ changed.
 
     #[test]
     fn write_blocks_layout_dedupes_duplicate_ids_defensively() {
-        // Feed the seeding path duplicate ids directly (bypassing
-        // `reassign_ids`, which already guarantees uniqueness): the
-        // first occupant keeps the id, the rest are re-minted, and the
-        // projection still concatenates every block byte-exactly.
         let mut raw = raw_doc_with_summary("s");
         let blocks = vec![
             ReportBlock {

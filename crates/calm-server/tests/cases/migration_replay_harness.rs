@@ -1,20 +1,5 @@
-//! PR0-D (#679) — snapshot migration-replay harness acceptance test.
-//!
-//! Two suites:
-//!
-//!   1. `synthetic_fixture_replays_from_every_supported_version` — for every
-//!      supported migration version N (0075+) in the chain: stage a temp DB
-//!      at N, seed the synthetic core fixture
-//!      (`tests/fixtures/migration_replay/core.json`, version-aware), replay
-//!      to head via the production `Migrator::run` path, then (a) structurally
-//!      diff the schema against a fresh head DB and (b) spot-check data survival.
-//!
-//!   2. `external_snapshot_replays_to_head` — point `NEIGE_SNAPSHOT_DB`
-//!      at any (sanitized) production sqlite file and the same replay +
-//!      schema-diff + integrity gates run against a private copy of it.
-//!      Self-skips with an explicit marker when the env var is unset
-//!      (codex-e2e self-skip pattern), so CI runs it as a no-op until a
-//!      prod snapshot is provisioned.
+//! Snapshot migration-replay harness: stage a DB at each supported version, seed the synthetic fixture, replay to
+//! head via the production `Migrator::run`, diff the schema against a fresh head DB and check data survival.
 
 use crate::support;
 
@@ -77,16 +62,12 @@ async fn synthetic_fixture_replays_from_every_supported_version() {
 
         harness::replay_to_head(&pool).await;
 
-        // Schema: staged+replayed must be structurally identical to fresh.
         let replayed = harness::schema_fingerprint(&pool).await;
         harness::assert_schema_matches(&replayed, &fresh, &context);
 
-        // Data: every seeded row in a still-existing table survives.
         harness::assert_rows_survive(&pool, &report, &context).await;
 
-        // Head stop sanity: at v=head the whole fixture (including rows
-        // only expressible at head, e.g. the 'parked' operation) seeds
-        // and replay is a checksum-validating no-op.
+        // At v=head the whole fixture seeds and replay is a checksum-validating no-op.
         if version == head {
             let parked: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE phase = 'parked'")
@@ -100,11 +81,8 @@ async fn synthetic_fixture_replays_from_every_supported_version() {
     }
 }
 
-/// Replay an externally provided (sanitized) production snapshot to head.
-///
-/// Usage: `NEIGE_SNAPSHOT_DB=/path/to/snapshot.sqlite cargo test -p
-/// calm-server --test migration_suite migration_replay_harness::`. Works on a private copy;
-/// the original file is never written.
+/// Usage: `NEIGE_SNAPSHOT_DB=/path/to/snapshot.sqlite cargo test -p calm-server --test migration_suite
+/// migration_replay_harness::`. Works on a private copy; the original file is never written.
 #[tokio::test]
 async fn external_snapshot_replays_to_head() {
     let Ok(snapshot) = std::env::var("NEIGE_SNAPSHOT_DB") else {

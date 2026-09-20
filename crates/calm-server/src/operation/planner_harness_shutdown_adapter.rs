@@ -43,13 +43,8 @@ impl PlannerHarnessShutdownAdapter {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlannerHarnessShutdownOperationPayload {
-    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
-    /// but leaves `operations.payload_json` alone — see that migration's §4.
-    /// The `rename` is the load-bearing half: an operation parked across a
-    /// restart is resumed by re-reading its stored payload, and this field is
-    /// a bare `String` with no default — without the rename a row that stores
-    /// a real id under the frozen key would fail to deserialize at all,
-    /// wedging the parked operation instead of resuming it.
+    /// Wire key frozen as `runtime_id`: stored `operations.payload_json` rows keep that key and this field has
+    /// no default, so without the rename a parked operation would fail to deserialize on resume.
     #[serde(rename = "runtime_id")]
     pub worker_session_id: String,
 }

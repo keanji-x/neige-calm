@@ -4,11 +4,8 @@ use crate::track_report::TrackReportPayload;
 use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_blocks;
 use calm_types::track_report::ReportBlock;
 
-/// One self-consistent `calm.report.read` snapshot: `summary`, flat
-/// `body` text, and the block index all derived from a SINGLE row
-/// read (`card_get_with_body_crdt` fetches payload JSON + CRDT bytes
-/// atomically), so a concurrent persist between two awaits can never
-/// tear `text` against `blocks` (#960 PR2 review round 2).
+/// One self-consistent `calm.report.read` snapshot derived from a single row read, so a concurrent
+/// persist can never tear `text` against `blocks`.
 pub struct ReportReadSnapshot {
     pub updated_at: i64,
     pub schema_version: u32,
@@ -19,11 +16,7 @@ pub struct ReportReadSnapshot {
     pub task_diagnostics: Vec<crate::db::sqlite::BlockVerdict>,
 }
 
-/// The document half of [`ReportReadSnapshot`]: everything the one row
-/// read yields before task diagnostics are evaluated. #1667 round-2 F1
-/// reads this on the dispatcher's push path (block ids / revs / `docRev`
-/// for the edit diff), where the diagnostics would be wasted work and
-/// the settings read is not wanted.
+/// The document half of [`ReportReadSnapshot`], before task diagnostics are evaluated.
 pub struct ReportDocSnapshot {
     pub updated_at: i64,
     pub doc_rev: u64,
@@ -39,8 +32,7 @@ pub async fn load_report_read_snapshot(
     report_card_id: &str,
     task_budget_default: i64,
 ) -> Result<ReportReadSnapshot, CalmError> {
-    // Diagnostics must explain the same effective budget the scheduler uses,
-    // including a Settings change made after server boot.
+    // Diagnostics must explain the same effective budget the scheduler uses, including a Settings change after boot.
     let task_budget_default = crate::routes::settings::load_settings(repo)
         .await?
         .task_budget_default
@@ -70,27 +62,8 @@ pub async fn load_report_doc_snapshot(
         .map(|(_, doc)| doc)
 }
 
-/// Load the document snapshot for the report card.
-///
-/// Source selection (the CRDT is the source of truth, the JSON cache
-/// is best-effort — #960 PR2 review):
-///
-///   1. `payload.blocks` present (the common case — the persist
-///      boundary rewrites the cache on every write): everything comes
-///      from the JSON payload of the one fetched row.
-///   2. Cache missing but the row holds a migrated (v2) doc:
-///      `summary`/`body`/`blocks` are ALL projected from that one doc
-///      — ids/revs the write path will actually check, and
-///      `flatten(blocks) == body` holds by construction. Never mix
-///      `payload.body` with CRDT-derived blocks. (A cache dropped by
-///      a pre-#960 binary — design D8 — must not make `read` hand out
-///      re-derived ids that diverge from the doc, e.g. after a
-///      `blocks.move`.)
-///   3. `body_crdt` NULL (pure v1 row) or a legacy not-yet-migrated
-///      doc layout: derive the index deterministically (`reassign_ids`
-///      over `split_body` of the served body) — byte-identical to
-///      what the CRDT seed / lazy migrator will mint on first write
-///      with the same (absent) hint, so the ids stay valid targets.
+/// The CRDT is the source of truth and the JSON cache is best-effort: with no cache, `summary`/`body`/
+/// `blocks` are all projected from the one doc — never mix `payload.body` with CRDT-derived blocks.
 async fn load_report_doc_snapshot_with_track(
     repo: &dyn crate::db::RepoRead,
     report_card_id: &str,
@@ -122,8 +95,7 @@ async fn load_report_doc_snapshot_with_track(
         }
         body
     };
-    // Pure legacy row (no CRDT yet): doc_rev is zero and the seed will run `reassign_ids`
-    //     over the same body with the same (absent) hints.
+    // Pure legacy row (no CRDT yet): the seed will run `reassign_ids` over the same body with the same hints.
     let Some(bytes) = bytes else {
         let blocks = normalize_legacy_terminal_task_blocks(&derive(&payload.body));
         let body = flatten(&blocks);
@@ -166,9 +138,6 @@ async fn load_report_doc_snapshot_with_track(
     }
     let internal =
         |e: anyhow::Error| CalmError::Internal(format!("track_report: card {report_card_id}: {e}"));
-    // 2 + 3b. Everything from the one doc: summary, body, and (for a
-    //     v2 layout) the block snapshot — internally consistent by
-    //     construction.
     doc.ensure_blocks_layout(None).map_err(internal)?;
     let (summary, body) = doc.project().map_err(internal)?;
     let blocks = doc.blocks_snapshot().map_err(internal)?;

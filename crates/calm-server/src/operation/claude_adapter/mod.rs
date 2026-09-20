@@ -169,13 +169,8 @@ impl ClaudeWorkerAdapter {
 pub struct ClaudeCreateOperationPayload {
     pub actor: ActorId,
     #[serde(default)]
-    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
-    /// but leaves `operations.payload_json` alone — see that migration's §4.
-    /// The `rename` is the load-bearing half: an operation parked across a
-    /// restart is resumed by re-reading its stored payload, and without the
-    /// rename a row that stores a real id under the frozen key would
-    /// deserialize to `None`, so the `unwrap_or_else(new_id)` below would mint
-    /// a FRESH session id for a row that already had one.
+    /// Wire key frozen as `runtime_id`: stored payloads keep the old key, and without the `rename` a parked row with a real id
+    /// would deserialize to `None` and `unwrap_or_else(new_id)` below would mint a FRESH session id for it.
     #[serde(rename = "runtime_id")]
     pub worker_session_id: Option<String>,
     pub request: PreparedClaudeCreateRequest,
@@ -187,9 +182,7 @@ pub struct ClaudeWorkerOperationPayload {
     pub track_id: String,
     pub idempotency_key: String,
     pub goal: String,
-    /// Forward-compatible only. Scheduler-created Claude worker payloads keep
-    /// this absent because the workspace lease path created in `prepare_tx`
-    /// is the worker cwd.
+    /// Forward-compatible only; scheduler-created payloads keep this absent because the workspace lease path is the worker cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -717,9 +710,7 @@ impl ProviderAdapter for ClaudeAdapter {
                 let settings_dir = step_arg_string(step, "settings_dir")?;
                 remove_dir_all_idempotent(Path::new(&settings_dir))
             }
-            // Back-compat: operations that entered `compensating` under a pre-PR10-d
-            // release persisted the legacy op string; accept it during recovery so
-            // in-flight compensation states still drain. New states write the new name.
+            // Back-compat: accept the legacy op string during recovery so in-flight compensation states still drain.
             "session_projection_set_status_failed_for_card"
             | "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
@@ -766,10 +757,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
     ) -> Result<TxOutput> {
         let payload: ClaudeWorkerOperationPayload = serde_json::from_value(input.clone())?;
         super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
-        // #1149 — title the worker card after its task key. Derived from
-        // the `tasks` row inside this tx (never carried on the payload,
-        // which would move `stable_payload_hash`), and fail-soft: `None`
-        // just leaves the card untitled.
+        // Derived from the `tasks` row inside this tx (never carried on the payload, which would move `stable_payload_hash`); `None` leaves the card untitled.
         let card_title = super::task_key_for_card_title(tx, &payload.idempotency_key).await;
         let card_id = new_id();
         let runtime_id = new_id();

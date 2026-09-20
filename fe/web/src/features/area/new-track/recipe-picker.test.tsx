@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
-//
-// The picker's recipe half (#1292 S4): the two labelled bands, and the fact
-// that two id spaces sharing a string cannot be confused for one another.
-//
-// The wire-level assertion — that a create carries `recipe_id` XOR
-// `template_id` — lives in `app/router/recipes-route.test.tsx`, because it is a
-// claim about the request and this component never makes one. What is asserted
-// here is the draft it hands its caller, which is the same fact one layer up.
+// The picker's recipe half: two labelled bands, and two id spaces sharing a string
+// that cannot be confused for one another.
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,15 +20,9 @@ const SMALL_CHANGE: TrackTemplate = {
   tasks: [{ key: 'inspect', goal: 'Read the requested change.' }],
 };
 
-/*
- * A recipe whose id is *the same string* as a built-in template's key.
- *
- * This is not contrived. Recipe ids are server-minted and templates' keys are
- * Rust constants; nothing in either system reserves the other's namespace, so
- * a collision is possible today and costs nothing to make impossible to
- * misread. The two rows below are what a bare-string selection could not tell
- * apart.
- */
+/* A recipe whose id is the same string as a built-in template's key: recipe ids
+ * are server-minted and template keys are Rust constants, and nothing reserves
+ * the other's namespace. */
 const COLLIDING_RECIPE: TrackRecipe = {
   id: 'small-change', title: 'My small change', body: '## Mine\n',
   revision: 1, created_at: 1, updated_at: 1,
@@ -77,13 +65,7 @@ async function fillMessage() {
 const submitButton = () => screen.getByRole('button', { name: 'Create track' });
 
 describe('the picker groups two kinds only when it has two kinds', () => {
-  /*
-   * Day one: the reader has no recipes. The menu must look exactly as it did
-   * before recipes existed — no "My recipes" band over an empty stretch, and
-   * no "you have no recipes yet" row taking up an option's worth of space in a
-   * popover. That copy belongs on the manage screen, which is reached from the
-   * one row this menu does gain.
-   */
+  /* With no recipes the menu must look exactly as it did before recipes existed. */
   it('renders no band headings when the reader has no recipes', async () => {
     renderForm({ recipes: [] });
     const menu = await openTemplates();
@@ -94,11 +76,8 @@ describe('the picker groups two kinds only when it has two kinds', () => {
       .toEqual(['No templateSelected', 'Small change', 'Manage recipes…']);
   });
 
-  /*
-   * A single band is not a grouping either: with recipes but no templates —
-   * which is what a failed `GET /api/track-templates` looks like from here —
-   * there is nothing to tell apart, so there is no heading.
-   */
+  /* A single band is not a grouping either: recipes but no templates is what a
+   * failed `GET /api/track-templates` looks like from here. */
   it('renders no band headings when the reader has no built-ins', async () => {
     renderForm({ templates: [], recipes: [COLLIDING_RECIPE] });
     const menu = await openTemplates();
@@ -108,13 +87,11 @@ describe('the picker groups two kinds only when it has two kinds', () => {
   it('names both bands once both kinds are present', async () => {
     renderForm({ recipes: [COLLIDING_RECIPE] });
     const menu = await openTemplates();
-    /* Mine first, built-ins after: the reader's own work is what they came
-       for, and the built-ins are the fallback. */
+    /* Mine first, built-ins after. */
     expect(within(menu).getAllByRole('group').map((group) => group.getAttribute('aria-label')))
       .toEqual(['My recipes', 'Built in']);
-    /* The visible heading is `aria-hidden` and the band carries the same
-       string as its name, so the text is announced once on entry rather than
-       met as an unowned node between menu items. */
+    /* The visible heading is `aria-hidden` and the band carries the same string as
+           its name, so the text is announced once on entry. */
     expect(within(menu).getByText('My recipes').getAttribute('aria-hidden')).toBe('true');
   });
 });
@@ -151,13 +128,8 @@ describe('two id spaces, never crossed', () => {
     expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
   });
 
-  /*
-   * A recipe and a template with the same id string. Choosing the recipe must
-   * produce `recipe_id`, and it must not produce `template_id` — which is the
-   * thing a `templates.find((t) => t.id === selected)` over a bare string
-   * would have got wrong, silently and in the direction that creates a track
-   * from something the reader never picked.
-   */
+  /* Choosing the recipe must produce `recipe_id` and never `template_id`, which a
+   * `templates.find` over a bare string would have got wrong. */
   it('creates from the recipe when a recipe and a template share an id', async () => {
     const { onSubmit } = renderForm({ recipes: [COLLIDING_RECIPE] });
     await fillMessage();
@@ -169,15 +141,8 @@ describe('two id spaces, never crossed', () => {
     expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing', recipe_id: 'small-change' });
   });
 
-  /*
-   * The stale-selection fallback, which is where the bare string did its
-   * second kind of damage: a recipe deleted in another window resolved against
-   * the *template* list, so the chip silently changed what it meant and the
-   * create sent a `template_id` the reader had never chosen.
-   *
-   * Falling back to "no template" is the safe direction — it always submits —
-   * and it is the only direction that does not invent a choice.
-   */
+  /* A recipe deleted in another window must not resolve against the template
+   * list; falling back to no template is the only direction that does not invent a choice. */
   it('falls back to no template when the selected recipe disappears', async () => {
     const { onSubmit, rerender, props } = renderForm({ recipes: [COLLIDING_RECIPE] });
     await fillMessage();
@@ -185,7 +150,7 @@ describe('two id spaces, never crossed', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: /^My small change/ }));
     expect(screen.getByRole('button', { name: 'Template: My small change' })).toBeTruthy();
 
-    // The recipe is deleted elsewhere and the list refetches without it. The
+    // The recipe is deleted elsewhere and the list refetches without it; the
     // template of the same id is still there.
     rerender(<NewTrackForm {...props} recipes={[]} />);
     expect(screen.getByRole('button', { name: 'Template: No template' })).toBeTruthy();
@@ -195,11 +160,8 @@ describe('two id spaces, never crossed', () => {
 });
 
 describe('the way to the manage screen', () => {
-  /*
-   * The only entry point to recipe authoring in the product, so it is present
-   * whether or not the reader has any — and it is an action, not an
-   * alternative: pressing it must not change what the track would start from.
-   */
+  /* The only entry point to recipe authoring, so present whether or not the reader
+   * has any; an action, not an alternative. */
   it('is offered with no recipes, and selects nothing', async () => {
     const { props } = renderForm({ recipes: [] });
     await openTemplates();

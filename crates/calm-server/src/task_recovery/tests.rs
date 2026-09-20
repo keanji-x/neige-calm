@@ -1,8 +1,5 @@
-//! Every admission refusal site, driven through the real admission function
-//! with a fixture that trips exactly that site, asserts the `(site, code,
-//! kind, continuation)` it names. The site table reads no message text; the
-//! two isolated sentences a branch predicate does not imply are pinned by
-//! text in their own test.
+//! Every admission refusal site, driven through the real admission function with a
+//! fixture that trips exactly that site.
 use super::admission;
 use super::launch_test_support::{
     RecoveryFixture, initial_claimed_task, initial_claimed_task_among, recovered_claimed_task,
@@ -30,17 +27,12 @@ fn declaration(declared_by: &str) -> Value {
     json!({"key":"b","kind":"terminal","command":"true","ready":true,"declared_by":declared_by})
 }
 
-/// A user-owned declaration that selects the isolated codex route: the
-/// predecessor fence then consults the isolated operation's stop record.
 fn isolated_declaration() -> Value {
     json!({"key":"b","kind":"codex","goal":"Write result.txt and report.","ready":true,
         "declared_by":"user","no_gate_reason":"Isolated fixture; no machine verification.",
         "context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}})
 }
 
-/// A file-delivery producer/consumer pair (the shape `prompts/planner.md`
-/// documents); the consumer projects only once its producer is declared, and
-/// its recovery must inherit the predecessor's frozen JSON input binding.
 fn file_delivery_declaration(key: &str, delivery: Value) -> Value {
     let workspace = if delivery["role"] == "consumer" {
         "file-input"
@@ -107,11 +99,8 @@ async fn open() -> (Arc<SqlxRepo>, EventBus, WriteContext, String) {
     (repo, EventBus::new(), write, track.id.to_string())
 }
 
-/// An initial attempt that failed before worker preparation: admissible as-is.
-/// The REST door only accepts user-owned declarations; a Planner-declared
-/// fixture rewrites the CRDT authority afterwards (the same bypass
-/// `task_recovery_rebuild_uses_authoritative_crdt_when_payload_cache_diverges`
-/// uses) and the frozen row's author with it, so admission sees one author.
+/// An initial attempt that failed before worker preparation. The REST door only accepts
+/// user-owned declarations, so a Planner-declared fixture rewrites the CRDT authority afterwards.
 async fn failed_initial(declared_by: &str) -> Fx {
     let fx = failed_initial_with(declaration("user")).await;
     if declared_by != "user" {
@@ -255,8 +244,6 @@ async fn insert_operation_with(
     id
 }
 
-/// The isolated fence, driven directly with an operation id (admission only
-/// ever passes the single keyed isolated operation's id).
 async fn require_stopped(fx: &Fx, op_id: &str) -> Result<(), AdmissionError> {
     let pool = fx.repo.sqlite_pool().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
@@ -270,15 +257,8 @@ async fn require_stopped(fx: &Fx, op_id: &str) -> Result<(), AdmissionError> {
 const ISOLATED_OP_ID: &str = "op-isolated-prepared";
 const ISOLATED_CARD_ID: &str = "card-isolated";
 
-/// The receipt the dedicated-codex Controller writes for a prepared isolated
-/// execution whose namespace stop it proved, as JSON: closed admission,
-/// `TurnActive`, a `Quiesced` proof whose handle is the endpoint boundary,
-/// and every identity field `confirmed_record_tx` compares consistent
-/// (`admissible_baselines_pass_so_each_case_trips_exactly_one_site` proves it
-/// admits). `RunRecord`, `SessionRecord` and `PreparedEndpoint` all derive
-/// `Deserialize`, so the private `launch` field is no barrier;
-/// `isolated_codex_retry::stop_evidence_corruption_and_ambiguous_operations_refuse_retry`
-/// forges the same shapes by JSON-pointer mutation of a real receipt.
+/// The receipt the dedicated-codex Controller writes for a prepared isolated execution
+/// whose namespace stop it proved, as JSON.
 fn isolated_receipt(fx: &Fx) -> Value {
     use crate::dedicated_codex::{DedicatedIdentity, DedicatedRequest};
     let task_id = fx.fixture.task.id.clone();
@@ -292,8 +272,7 @@ fn isolated_receipt(fx: &Fx) -> Value {
         workspace: "/workspaces/isolated".into(),
         developer_instructions: "fixture".into(),
     };
-    // The digest is over the typed request's own serialization, as the
-    // Controller computes it.
+    // The digest is over the typed request's own serialization, as the Controller computes it.
     let request_digest = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&request).unwrap())
@@ -338,10 +317,8 @@ fn isolated_receipt(fx: &Fx) -> Value {
     })
 }
 
-/// The keyed isolated operation row (`ISOLATED_OP_ID`) as
-/// `prepare_tx_and_advance` leaves it: card target, Kernel-dispatcher
-/// payload, `receipt` under `tx_output.data.isolated_execution`; `parked`
-/// rows carry the timestamps the phase CHECK requires.
+/// The keyed isolated operation row (`ISOLATED_OP_ID`) as `prepare_tx_and_advance` leaves it;
+/// `parked` rows carry the timestamps the phase CHECK requires.
 async fn insert_prepared_isolated_operation(fx: &Fx, phase: &str, receipt: &Value) {
     let payload = crate::isolated_codex::WorkerPayload {
         version: crate::isolated_codex::WorkerVersion::V1,
@@ -571,9 +548,7 @@ async fn admissible_baselines_pass_so_each_case_trips_exactly_one_site() {
         .expect("a failed isolated execution with a consistent, closed stop proof is admissible");
 }
 
-/// What every site names, keyed by the site. A row's fixture must trip
-/// exactly that site (the returned refusal's `site` is asserted), so a
-/// fixture that drifts onto a neighbouring site is red, not silently green.
+/// What every site names, keyed by the site; a fixture that drifts onto a neighbouring site is red.
 const ROWS: &[(Site, Code, Kind, Next)] = &[
     (
         Site::ActorNotUserOrPlanner,
@@ -817,8 +792,7 @@ const ROWS: &[(Site, Code, Kind, Next)] = &[
     ),
 ];
 
-/// Sites no fixture in this file can reach, each with its reason; the
-/// set-equality assertion below subtracts exactly these from [`Site::ALL`].
+/// Sites no fixture in this file can reach, each with its reason.
 const UNREACHABLE: &[(Site, &str)] = &[];
 
 /// Drives the real function with a fixture that trips exactly `site`.
@@ -919,8 +893,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::FileDeliveryInputUnhonoured => {
             Box::pin(async {
-                // A consumer claimed without its frozen input binding row:
-                // `file_delivery::require_recovery_input_tx` refuses.
+                // A consumer claimed without its frozen input binding row.
                 let fx =
                     failed_initial_among(&[producer_declaration()], consumer_declaration()).await;
                 refused(site, admit(&fx, user(), 1).await)
@@ -1024,14 +997,8 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::InnerConstraintShapeInvalid => {
             Box::pin(async {
-                // Neither view-consulted entry can trip this site:
-                // `admit_contract_and_predecessor_tx` validates the same
-                // constraint for the same Track first, and a stored allocation
-                // is validated by `AllocationRow::decode` (Internal, not a
-                // refusal) before `check_recovery_attempt_tx` reads it.
-                // `validate_frozen_contract_tx` reaches it with the code erased
-                // to `CalmError`. Drive the real function with a constraint
-                // that parses but fails `validate()`.
+                // Neither view-consulted entry can trip this site; drive the real function with a
+                // constraint that parses but fails `validate()`.
                 let fx = failed_initial(PLANNER).await;
                 let pool = fx.repo.sqlite_pool().unwrap();
                 let mut tx = begin_immediate_tx(&pool).await.unwrap();
@@ -1179,8 +1146,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::VerificationEffectsWithoutWorker => {
             Box::pin(async {
-                // The shape `task_recovery_refuses_live_verifier_descendant_after_gate_exit`
-                // produces: a gate ran, no worker card was ever prepared.
+                // A gate ran, no worker card was ever prepared.
                 let fx = failed_initial(PLANNER).await;
                 sql(
                     &fx,
@@ -1231,9 +1197,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::IsolatedOperationNotThisExecution => {
             Box::pin(async {
-                // Admission only ever passes the keyed isolated operation's own
-                // id; a settlement event naming another operation reaches the
-                // fence directly.
+                // A settlement event naming another operation reaches the fence directly.
                 let fx = failed_initial_with(isolated_declaration()).await;
                 insert_operation(
                     &fx,
@@ -1263,10 +1227,8 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::IsolatedStopPending => {
             Box::pin(async {
-                // The task failed and the Controller already checkpointed the
-                // matching `Quiesced` proof, but the parked-completion
-                // transaction that settles the operation has not run: the
-                // row is still `parked`. Only the phase is unmet.
+                // The Controller already checkpointed the matching `Quiesced` proof, but the
+                // parked-completion transaction has not run: only the phase is unmet.
                 let fx = failed_initial_with(isolated_declaration()).await;
                 insert_prepared_isolated_operation(&fx, "parked", &isolated_receipt(&fx)).await;
                 refused(site, admit(&fx, user(), 1).await)
@@ -1304,10 +1266,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::IsolatedStopUnconfirmed => {
             Box::pin(async {
-                // The operation is terminal, but the retained checkpoint is
-                // the stop request, never its proof
-                // (`isolated_codex_retry` mutates `/provider/record/stop` the
-                // same way on a real receipt).
+                // The retained checkpoint is the stop request, never its proof.
                 let fx = failed_initial_with(isolated_declaration()).await;
                 let mut receipt = isolated_receipt(&fx);
                 *receipt.pointer_mut("/provider/record/stop").unwrap() = json!("Requested");
@@ -1318,9 +1277,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::IsolatedStopIdentityMismatch => {
             Box::pin(async {
-                // Every identity field unchanged and the proof recorded; only
-                // the admission never closed (`isolated_codex_retry` mutates
-                // `/admission` the same way on a real receipt).
+                // Every identity field unchanged and the proof recorded; only the admission never closed.
                 let fx = failed_initial_with(isolated_declaration()).await;
                 let mut receipt = isolated_receipt(&fx);
                 *receipt.pointer_mut("/admission").unwrap() = json!("open");
@@ -1331,9 +1288,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::AllocationMissing => {
             Box::pin(async {
-                // tasks(id,track_id,key) references the allocation, so an
-                // existing row always has one; only an unknown attempt id
-                // reaches this site.
+                // tasks(id,track_id,key) references the allocation, so only an unknown attempt id reaches this site.
                 let fx = recovered().await;
                 refused(site, check_attempt_for(&fx, "no-such-attempt").await)
             })
@@ -1354,10 +1309,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
         }
         Site::ProvenanceUnsupported => {
             Box::pin(async {
-            // Allocations are immutable (trigger) and the service
-            // boundary only ever records User/Planner actors, so the
-            // only way to this site is a successor allocation inserted
-            // with a provenance admission would never have accepted.
+            // Allocations are immutable and the service boundary only records User/Planner actors.
             let fx = recovered().await;
             // The insert trigger requires a current failed predecessor.
             fail_current(&fx).await;
@@ -1392,9 +1344,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
     }
 }
 
-/// Every row drives the real function and asserts what the site named; the
-/// sites actually returned must be exactly `Site::ALL` minus `UNREACHABLE`,
-/// so a site without a row (or a row that never reaches its site) is red.
+/// The sites actually returned must be exactly `Site::ALL` minus `UNREACHABLE`.
 #[tokio::test]
 async fn every_refusal_site_names_its_code_kind_and_continuation() {
     let mut exercised = std::collections::BTreeSet::new();
@@ -1434,18 +1384,6 @@ async fn every_refusal_site_names_its_code_kind_and_continuation() {
     }
 }
 
-/// #1727 S3 fix 4 (M2) — the two isolated sentences name the condition their
-/// branch tests, not one inferred from it. `IsolatedStopPending` is reached
-/// with a matching quiescence proof already checkpointed (the Controller
-/// records `Quiesced` before the parked-completion transaction), so the
-/// sentence names the phase, not a missing stop. `IsolatedStopIdentityMismatch`
-/// is reached with every identity field unchanged when the admission never
-/// closed, so the sentence names the admission state. Its other bucket is ONE
-/// sentence for the rest of the disjunction — an identity field that differs,
-/// or stop-proof metadata that does not validate — so it is pinned where the
-/// old wording ("an identity chain that does not match") was false: a closed
-/// receipt whose every identity field matches and whose only defect is
-/// `observed_at_ms = 0` (the `isolated_codex_retry` mutation; #1727 PR-C N2).
 #[tokio::test]
 async fn isolated_stop_sentences_name_the_condition_their_branch_tests() {
     let pending = Box::pin(drive(Site::IsolatedStopPending)).await;
@@ -1479,10 +1417,7 @@ async fn isolated_stop_sentences_name_the_condition_their_branch_tests() {
     );
 }
 
-/// `Site::ALL` is exhaustive: the wildcard-free match below does not compile
-/// once a variant exists that it does not map, and its index must be the
-/// variant's position in `ALL`, so a variant added to the enum (or to the
-/// match) without an `ALL` entry is red.
+/// The wildcard-free match does not compile once a variant exists that it does not map.
 #[test]
 fn refusal_site_all_lists_every_variant_exactly_once() {
     fn position(site: Site) -> usize {
@@ -1536,9 +1471,7 @@ fn refusal_site_all_lists_every_variant_exactly_once() {
     }
 }
 
-/// The wire spellings are a published vocabulary: every variant is distinct
-/// and the pre-existing strings are byte-identical to what `capability_code`
-/// used to emit.
+/// The wire spellings are a published vocabulary: distinct and byte-stable.
 #[test]
 fn refusal_code_spellings_are_distinct_and_stable() {
     let all = [

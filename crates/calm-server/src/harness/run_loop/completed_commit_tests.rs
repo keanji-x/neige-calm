@@ -160,9 +160,7 @@ impl Fixture {
         self.harness.observe_durable_entries(entries).await.unwrap();
     }
 
-    /// #1625 P2 — the segments the last drain wrote to its projection row
-    /// (`write_projection_row`), read back from the transcript table. This is
-    /// where `issued_input_segments` used to be read from the snapshot.
+    /// The segments the last drain wrote to its projection row, read back from the transcript table.
     pub(super) async fn projected_segments(&self) -> Vec<HarnessInputSegment> {
         let rows = self
             .repo
@@ -228,11 +226,8 @@ async fn queued_commit_before_done_is_consumed_without_a_turn_and_later_user_inp
     assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 1);
 }
 
-/// #1727 S1 — a `worktree.committed` row is no longer a wake, so boot
-/// catch-up replays nothing for it. An OLD snapshot that still holds a
-/// queued commit entry (persisted before this slice) is consumed on
-/// rehydrate without a turn — `consume_completed_worktree_commits` stays —
-/// and the row does not come back on the next replay either.
+/// An OLD snapshot that still holds a queued commit entry is consumed on rehydrate without a
+/// turn, and the row does not come back on the next replay either.
 #[tokio::test]
 async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once() {
     let fx = Fixture::new().await;
@@ -257,7 +252,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
         snapshot.push_watermark, watermark_before,
         "nothing replayed, so the watermark is untouched"
     );
-    // Old-snapshot shape: the commit entry was queued before this slice.
+    // Old-snapshot shape: a queued commit entry.
     snapshot.set_pending_entries(vec![commit]);
     snapshot.push_watermark = event_id;
     // Rehydrate through the same constructor used by a recovered harness.
@@ -293,9 +288,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
     .await
     .unwrap();
     assert!(stored.pending_entries().is_empty());
-    // Positive control (fix round 1 F5): the SAME recovered harness still
-    // issues a turn for real input, so a harness with turn issuance broken
-    // could not have passed the "no turn" assertion above vacuously.
+    // Positive control: the SAME recovered harness still issues a turn for real input.
     recovered
         .observe_user_message_durable("please explain the result".into(), vec![])
         .await

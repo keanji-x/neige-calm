@@ -1,17 +1,6 @@
-//! #1189 S2 — what an `CardRole::Assistant` token can and cannot do once
-//! the block channel is open (§3.2b), driven through the real tool
-//! handlers, the real decision sink, and the real recorder gate.
-//!
-//! | gate | assertion here |
-//! |---|---|
-//! | G-B2 | an assistant drives `blocks.upsert` / `.move` / `.delete` / `write_markdown` end to end; a Worker token is still refused at the entry |
-//! | §3.4 | its edits persist as `EditAuthor::Assistant`, never as the planner |
-//! | P1   | an assistant's block write leaves a Draft track in Draft |
-//! | P2   | its writes may not create, modify, or delete a task block — including the whole-document shapes — while a prose-only rewrite that carries the task fences through unchanged succeeds |
-//!
-//! Every negative here has a Planner-token control next to it. Without one,
-//! "the assistant could not do X" would stay green if X had simply stopped
-//! working for everybody.
+//! What a `CardRole::Assistant` token can and cannot do on the block channel, driven through
+//! the real tool handlers, decision sink, and recorder gate. Every negative has a Planner-token
+//! control next to it.
 
 #![cfg(unix)]
 
@@ -74,10 +63,8 @@ async fn set_lifecycle(boot: &Boot, to: TrackLifecycle) {
         .expect("set fixture lifecycle");
 }
 
-/// The `author` of every `track.report_edited` in the persisted log, oldest
-/// first. Reading the stored event (not the tool's return value) is the
-/// point: attribution is what lands in the log, goldens, and the
-/// planner-wake decision.
+/// The `author` of every `track.report_edited` in the persisted log, oldest first — attribution
+/// is what lands in the log, not what the tool returns.
 async fn report_edit_authors(boot: &Boot) -> Vec<EditAuthor> {
     boot.repo
         .events_since(0, i64::MAX)
@@ -104,15 +91,8 @@ fn task_fence(declared_by: &str, key: &str) -> String {
     )
 }
 
-/// A task declaration that is **gate-clean**: it carries a `no_gate_reason`,
-/// so it satisfies the track's default `require_task_gates` policy and its
-/// only remaining barrier to schedulability is the `ready` flag.
-///
-/// `task_fence` above is deliberately *not* this: it has no gate and no
-/// `no_gate_reason`, so it is unschedulable no matter who writes it. That is
-/// fine for the equivalence assertions, but it cannot carry §7 P2's
-/// counterexample, which is about a write that would have produced a
-/// dispatchable task.
+/// A gate-clean task declaration: it carries a `no_gate_reason`, so its only remaining barrier
+/// to schedulability is the `ready` flag. `task_fence` has neither and is unschedulable regardless.
 fn gated_task_fence(key: &str, ready: bool) -> String {
     render_fence(
         KIND_TASK,
@@ -127,10 +107,7 @@ fn gated_task_fence(key: &str, ready: bool) -> String {
     )
 }
 
-/// `(key, status)` of every row in the track's task projection, which is what
-/// "a schedulable task" means concretely: `tasks_rebuild_tx` runs inside the
-/// same write transaction as the report edit, and the scheduler reads these
-/// rows and nothing else.
+/// `(key, status)` of every row in the track's task projection — what "a schedulable task" means.
 async fn task_rows(boot: &Boot) -> Vec<(String, String)> {
     let pool = boot.repo.sqlite_pool().expect("sqlite-backed fixture repo");
     sqlx::query_as::<_, (String, String)>(
@@ -142,13 +119,9 @@ async fn task_rows(boot: &Boot) -> Vec<(String, String)> {
     .expect("read the task projection")
 }
 
-/// Seed the report with prose plus **two** live task declarations, one
-/// signed by the planner and one by the user.
-///
-/// Both authors are needed by §3.2a P2's positive case: `#1180` already
-/// protects the user-signed one from every non-user writer, so a fixture
-/// with only a user task would let the P2 test pass on the strength of a
-/// guard S2 did not write. The planner-signed task is the one only P2 covers.
+/// Seed prose plus two live task declarations, one planner-signed and one user-signed; the
+/// user-signed one is already protected from every non-user writer, so only the planner-signed
+/// one exercises the assistant rule.
 async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
     let planner_fence = task_fence("spec", "build");
     let user_fence = task_fence("user", "review");
@@ -163,9 +136,7 @@ async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
     .await
     .expect("planner declares its task");
 
-    // The user's own declaration goes through the persist boundary with
-    // `EditAuthor::User` — the attribution rules pin `declared_by` to the
-    // writer, so there is no way to mint a user task as anyone else.
+    // The user's own declaration goes through the persist boundary with `EditAuthor::User`.
     let with_user = format!("{}\n{user_fence}", body_text(boot).await.trim_end());
     let track = boot
         .repo
@@ -210,18 +181,13 @@ async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
     (planner_fence, user_fence)
 }
 
-/// The report as `write_markdown` wants it: every block preceded by its
-/// `<!-- neige:b_xxxx -->` marker, so identity survives the round trip.
+/// The report as `write_markdown` wants it: every block preceded by its marker.
 async fn marked_text(boot: &Boot, identity: ToolCallIdentity) -> String {
     read(boot, identity, json!({ "with_markers": true })).await["text"]
         .as_str()
         .expect("marked read returns text")
         .to_string()
 }
-
-// ---------------------------------------------------------------------------
-// G-B2 — the channel is open, and only to the right roles
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn assistant_drives_the_whole_block_channel() {
@@ -265,7 +231,7 @@ async fn assistant_drives_the_whole_block_channel() {
     .await
     .expect("blocks.upsert replace serves an assistant");
 
-    // block 0 is the contract header block; the funnel rejects displacing it (#1635 S2c)
+    // block 0 is the contract header block; the funnel rejects displacing it
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
@@ -308,8 +274,7 @@ async fn assistant_drives_the_whole_block_channel() {
     );
 }
 
-/// §3.2b's negative half. The block channel opened by exactly one role,
-/// not "for agents".
+/// The block channel is opened by exactly one role, not "for agents".
 #[tokio::test]
 async fn worker_is_still_refused_at_the_block_channel_entry() {
     let boot = boot().await;
@@ -333,10 +298,6 @@ async fn worker_is_still_refused_at_the_block_channel_entry() {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// §3.4 — attribution
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn an_assistant_block_write_is_persisted_as_edit_author_assistant() {
@@ -368,10 +329,6 @@ async fn an_assistant_block_write_is_persisted_as_edit_author_assistant() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// P1 — no auto-promote
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn an_assistant_block_write_does_not_promote_a_draft_track() {
     let boot = boot().await;
@@ -395,9 +352,7 @@ async fn an_assistant_block_write_does_not_promote_a_draft_track() {
     );
 }
 
-/// P1's control. Auto-promote is suppressed *for the assistant*, not
-/// removed — a Draft track still leaves Draft on the planner's first block
-/// write, so the assertion above is about the role.
+/// Control: auto-promote is suppressed *for the assistant*, not removed.
 #[tokio::test]
 async fn a_planner_block_write_still_promotes_a_draft_track() {
     let boot = boot().await;
@@ -415,17 +370,7 @@ async fn a_planner_block_write_still_promotes_a_draft_track() {
     assert_eq!(lifecycle(&boot).await, TrackLifecycle::Planning);
 }
 
-// ---------------------------------------------------------------------------
-// P2 — task blocks are untouchable, prose around them is not
-// ---------------------------------------------------------------------------
-
-/// The positive case §3.2a calls for by name: the report holds **both** a
-/// user-declared and a planner-declared task, the assistant rewrites only the
-/// prose, and the write **succeeds**.
-///
-/// This is the assertion that keeps P2 from being written as "the write
-/// must not contain task blocks" — a criterion that would reject the
-/// ordinary case of an assistant editing the text around a task list.
+/// Keeps the rule from being written as "the write must not contain task blocks".
 #[tokio::test]
 async fn an_assistant_may_rewrite_prose_around_user_and_planner_task_blocks() {
     let boot = boot().await;
@@ -488,56 +433,10 @@ async fn an_assistant_may_not_declare_a_task_block() {
     );
 }
 
-/// §7 P2's counterexample in its load-bearing form: the refused assistant
-/// write is one that **would have produced a dispatchable task**, and the
-/// control group proves this fixture can produce one.
-///
-/// Three steps, because each of the first two alone is satisfiable by an
-/// accident:
-///
-/// 1. the **planner** declares a gate-clean task with `ready: false` — no task
-///    row, because the declaration is withdrawn, not because the environment
-///    forbids tasks;
-/// 2. the **assistant** flips exactly that block to `ready: true` — refused,
-///    and still no task row;
-/// 3. the **planner** makes the identical edit — a `pending` row appears.
-///
-/// Step 3 is what makes step 2 mean something. Without it "no task row after
-/// the assistant's write" would stay green if the track simply could not carry
-/// a schedulable task at all (which is exactly the state the earlier P2
-/// fixtures are in: their fences carry neither a gate nor a `no_gate_reason`,
-/// so under the track's default `require_task_gates` they project no
-/// schedulable row regardless of the writer).
-///
-/// What removing the P2 guard actually does, verified by mutation: step 2's
-/// write is no longer stopped at the guard and runs into the task projection.
-/// Because this particular edit *changes the projected key set*, the write
-/// emits `Event::PlanUpdated` (`track_report.rs`, guarded by
-/// `!task_projection.changed_keys.is_empty()`), and the in-tx *role gate*
-/// refuses that event with "only planner cards (or User/Kernel) may emit
-/// dispatch-request events (actor=AiCodex(<assistant card>))". So the row does
-/// not appear, because the whole write rolls back at that second, independent
-/// layer.
-///
-/// Read that message precisely, and do not over-read it: `role_gate.rs`
-/// handles `PlanUpdated` in the *same match arm* as `CodexWorkerRequested` /
-/// `TerminalWorkerRequested` and reuses one `NotPlannerForDispatch` string for
-/// all three. The mutation therefore does **not** exercise the real
-/// worker-request emission path; what it shows is that the released task
-/// reached track-level plan authority, no more than that.
-///
-/// **And that second layer is not a reason to drop P2 — it is strictly
-/// narrower.** It exists only when the edit changes the projected key set. A
-/// tamper that leaves the key set alone — an assistant rewriting an existing
-/// task's `goal` text, say — projects no `changed_keys`, emits no
-/// `PlanUpdated`, never reaches the role gate at all. For that whole class of
-/// edit P2 is the only defence there is: delete P2 and such a write lands.
-/// Anyone reading this fixture later (S3 included) must not conclude
-/// "the mutation was still refused, so P2 is redundant".
-///
-/// This is also why step 2 asserts P2's own message and not just an error
-/// code: with only the code asserted, the mutation would still be red, but for
-/// the wrong reason, and the fixture would silently stop pinning P2.
+/// The refused assistant write is one that would have produced a dispatchable task, and the
+/// planner control proves this fixture can produce one. The guard is not redundant with the
+/// role gate behind it: that gate fires only when the edit changes the projected key set, so an
+/// in-place rewrite of a task's `goal` never reaches it.
 #[tokio::test]
 async fn an_assistant_may_not_flip_a_planner_task_to_ready() {
     let boot = boot().await;
@@ -581,14 +480,8 @@ async fn an_assistant_may_not_flip_a_planner_task_to_ready() {
     )
     .await
     .expect_err("an assistant releasing a planner-declared task must be refused");
-    // The refusal must be P2's own, by message and not just by code. Delete
-    // the P2 guard and this write does not merely change error code: it runs
-    // all the way into the task projection, emits `PlanUpdated`, and is
-    // stopped only by the role gate's shared dispatch-request arm ("only planner
-    // cards (or User/Kernel) may emit dispatch-request events"). That backstop
-    // fires only because *this* edit changes the projected key set, so
-    // asserting P2's own message is what keeps the fixture pinned on P2 rather
-    // than on the narrower layer behind it.
+    // Assert the guard's own message, not just the code: without the guard this write is stopped
+    // later by the role gate's dispatch-request arm, and the fixture would silently stop pinning it.
     assert!(
         err.message
             .contains("an assistant may not modify task block"),
@@ -624,21 +517,8 @@ async fn an_assistant_may_not_flip_a_planner_task_to_ready() {
     );
 }
 
-/// The three shapes that reach a task block someone else declared. All of
-/// them funnel through the same before/after diff, which is why the guard
-/// lives there and not in a handler.
-///
-/// These three assert `before == after` on the report body rather than
-/// counting task rows, and that is sufficient — but only because of a fact
-/// worth writing down, since the assertion is otherwise strictly weaker than
-/// the one in `an_assistant_may_not_flip_a_planner_task_to_ready` above:
-/// `tasks_rebuild_with_tree_term_tx` (`track_report.rs:128-151`) projects the
-/// task table from the track-report card's `payload` + `body_crdt` and nothing
-/// else. It is a pure function of the report document. All three attempts
-/// here are refused as whole writes, so the document is bit-identical before
-/// and after; an unchanged input to a pure function cannot yield a changed
-/// projection. "No task was created" therefore follows from `before == after`
-/// and does not need its own assertion here.
+/// All three shapes funnel through the same before/after diff. `before == after` on the body
+/// suffices: the task projection is a pure function of the report document.
 #[tokio::test]
 async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
     let boot = boot().await;
@@ -659,8 +539,7 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
         .collect();
     assert_eq!(tasks.len(), 2, "fixture holds the planner and user tasks");
 
-    // 1. In-place rewrite of a declaration (here: the PLANNER-signed one,
-    //    which #1180's user-only rule does not cover at all).
+    // 1. In-place rewrite of the PLANNER-signed declaration (the user-only rule does not cover it).
     let (planner_task_id, planner_task_rev) = {
         let marked = marked_text(&boot, assistant_identity(&boot)).await;
         let planner_marker_owner = tasks
@@ -695,8 +574,7 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
     .expect_err("an assistant rewriting a planner-declared task must be refused");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 
-    // 2. Block-level delete — the one exemption the #1179 rule grants, and
-    //    it is not the assistant's to use.
+    // 2. Block-level delete.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
@@ -723,9 +601,7 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
     assert!(after.contains(&planner_fence) && after.contains(&user_fence));
 }
 
-/// P2's control: the planner-declared task the assistant could not touch is
-/// still the planner's to rewrite. Without this, every assertion above would
-/// hold equally well if task blocks had simply become immutable.
+/// Control: without this, every assertion above would hold if task blocks had simply become immutable.
 #[tokio::test]
 async fn the_planner_may_still_rewrite_its_own_task_block() {
     let boot = boot().await;
@@ -757,9 +633,8 @@ async fn the_planner_may_still_rewrite_its_own_task_block() {
             }),
         )
         .await;
-        // The user-declared block legitimately refuses (its `key` and
-        // `declared_by` are immutable, and #1180 protects it from every
-        // non-user writer); the planner-declared one must go through.
+        // The user-declared block legitimately refuses (`key` and `declared_by` are immutable); the
+        // planner-declared one must go through.
         if out.is_ok() {
             rewritten = true;
         }

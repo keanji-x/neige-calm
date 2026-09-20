@@ -2,18 +2,8 @@
 
 set -euo pipefail
 
-# Complements the PR9b-iv ratchet (which forbids only the bare,
-# unquoted FROM/INTO/UPDATE/DELETE runtimes verbs). The `runtimes`
-# table was dropped in migration 0055 and must never return. This
-# script closes the two holes the verb-list ratchet leaves: (a) DDL/JOIN
-# it never names (CREATE TABLE / CREATE INDEX ... ON / ALTER TABLE /
-# REPLACE INTO / JOIN), and (b) QUOTED identifiers `"runtimes"` that
-# slip past every \b-anchored pattern. The 0055 drop-regression test
-# legitimately re-creates the table to prove the drop, so it is the
-# single scoped exclusion (alongside historical migrations).
-# This gate intentionally keeps ripgrep's default semantics: hidden and ignored
-# paths are outside its scan boundary. CI's clean checkout makes that omission
-# negligible, while --no-ignore would sweep build artifacts and risk false positives.
+# The `runtimes` table was dropped in migration 0055 and must never return. This closes the two holes the bare-verb ratchet leaves: DDL/JOIN/REPLACE it never names, and quoted identifiers `"runtimes"` that slip past \b-anchored patterns. The 0055 drop-regression test legitimately re-creates the table and is the single scoped exclusion.
+# Hidden and ignored paths are outside the scan boundary on purpose: --no-ignore would sweep build artifacts.
 
 script_dir="${BASH_SOURCE[0]%/*}"
 [ "$script_dir" != "${BASH_SOURCE[0]}" ] || script_dir=.

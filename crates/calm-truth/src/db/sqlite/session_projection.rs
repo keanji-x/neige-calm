@@ -60,11 +60,8 @@ pub(super) async fn runtime_get_active_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
 ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-    // The active-runtime choice itself is not restated here: it is
-    // `ACTIVE_CARD_RUNTIME_SELECT`, the same statement the
-    // `harness.user_message.enqueued` predicate embeds, so the runtime this read
-    // reports and the runtime that predicate scopes its evidence to cannot drift
-    // apart (#1314).
+    // Uses `ACTIVE_CARD_RUNTIME_SELECT` so this read and the enqueued predicate
+    // cannot drift apart.
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.id = ({ACTIVE_CARD_RUNTIME_SELECT})
@@ -263,8 +260,7 @@ pub async fn session_clear_terminal_run_id_tx(
     Ok(())
 }
 
-/// Returns whether the row was written; see
-/// [`session_set_handle_state_mirror_tx`] for why a caller has to care.
+/// Returns whether the row was written; a caller promising durability must check.
 pub async fn session_set_handle_state_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,
@@ -310,17 +306,8 @@ pub async fn session_fail_if_active_runtime_tx(
     Ok(())
 }
 
-/// #1449 — record that this runtime's still-pending human sentences have left
-/// the undelivered set, either because a successor inherited its whole queue or
-/// because [`harvest_pending_user_messages_tx`] took them.
-///
-/// The `IS NULL` conjunct means the first stamp wins and a second one is a
-/// no-op, so the timestamp answers *when the queue stopped being deliverable*.
-///
-/// This function writes the marker only. `harvest_pending_user_messages_tx`
-/// edits the predecessor's snapshot in the same transaction, and
-/// `session_restore_from_superseded_tx` clears the marker so a restored row can
-/// be harvested again.
+/// Records that this runtime's pending human sentences have left the
+/// undelivered set; the `IS NULL` conjunct means the first stamp wins.
 pub async fn session_mark_queue_harvested_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &str,
@@ -339,50 +326,10 @@ pub async fn session_mark_queue_harvested_tx(
     Ok(())
 }
 
-/// #1449 — the human sentences that never reached an agent, taken off this
-/// card's superseded runtimes and handed to the successor being minted in THIS
-/// transaction.
-///
-/// The predicate is `state = 'superseded'` ONLY, which is narrower than the
-/// path table in the design's §3 reads: a dormant or `exited` predecessor is
-/// not harvested, so the residual documented at
-/// `user_message_enqueued_on_active_runtime` has a smaller membership than
-/// "every replacement".
-///
-/// The exclusion of `'failed'` is deliberate. It covers the message a failed
-/// mint carried: that caller got a non-2xx and re-sends the same text under a
-/// `#N` retry key, so harvesting the row would deliver it twice.
-///
-/// KNOWN GAP (#1449): the argument above is about the mint's own first
-/// message, and a `failed` row can hold sentences it does not cover. A
-/// `POST /planner/input` that answered 200 is persisted on the row, and its
-/// caller has been told the send succeeded; if that runtime later goes
-/// `failed`, this predicate skips the row and nothing re-sends the sentence.
-/// `routes/today_summary.rs` records a bootstrap case of the same shape, where
-/// a predicate re-derives the missing work; a human sentence has no such
-/// re-derivation.
-///
-/// Every row the read touched is stamped, including the ones that yielded
-/// nothing — the stamp records "this queue has left the undelivered set", not
-/// "this queue had something in it". Read, harvest and stamp share the caller's
-/// transaction with the successor's insert, so they commit or roll back
-/// together and a second restart can only ever see the stamp.
-///
-/// # Why the decoder is a parameter
-///
-/// `handle_state_json` holds a `HarnessSnapshot`, which is a `calm-server`
-/// type; this crate cannot name it. Passing the decoder in keeps the read and
-/// the stamp atomic *here* rather than handing the caller a row list it could
-/// forget to stamp. `extract` receives the runtime id (for its own warn line)
-/// and the raw snapshot text, and answers with the sentences to carry forward.
-///
-/// # Why the successor excludes itself
-///
-/// A deferred mint's placeholder row can be superseded by a runtime that raced
-/// in during the deferred window, and the insert that follows this call revives
-/// it under the SAME id. At this instant it is therefore `superseded` and
-/// unstamped while the successor already holds its queue in memory — harvesting
-/// it would hand the successor a second copy of its own sentences.
+/// Move the never-delivered human sentences off this card's `superseded`
+/// runtimes to the successor minted in THIS transaction. `failed` rows are
+/// excluded (their caller re-sends under a retry key); the successor excludes
+/// itself because a revived placeholder already holds its queue in memory.
 pub async fn harvest_pending_user_messages_tx<F>(
     tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
@@ -412,16 +359,9 @@ where
         let id: String = row.try_get("id")?;
         let state: Option<String> = row.try_get("handle_state_json")?;
         if let Some(state) = state.as_deref() {
-            // #1449 — the decoder mints ids for entries that have none, so it
-            // must see each row once. `worker_sessions.id` is the table's
-            // `TEXT PRIMARY KEY` and this is a single `SELECT` over it, so the
-            // ids this loop walks are distinct.
+            // The decoder mints ids for entries that have none, so it must see each row exactly once.
             let outcome = extract(id.as_str(), state);
-            // #1449 S2 — a MOVE, not a copy. The source row keeps whatever the
-            // caller did not take and loses what it did, in this transaction.
-            // Leaving the taken sentences behind is what let a second harvest,
-            // or a re-driven operation carrying an older snapshot, deliver them
-            // again.
+            // A MOVE, not a copy: sentences left behind would be delivered again by a second harvest.
             if let Some(remaining) = outcome.remaining_snapshot {
                 session_set_handle_state_of_any_runtime_tx(tx, &id, Some(remaining), now).await?;
             }
@@ -444,9 +384,7 @@ where
 pub struct HarvestOutcome {
     /// The human sentences taken off this row.
     pub taken: Vec<HarvestedMessage>,
-    /// The row's snapshot with those sentences removed, to be written back.
-    /// `None` means the decoder took nothing and the row is left byte-for-byte
-    /// as it was; `taken` is empty whenever this is.
+    /// `None` means the decoder took nothing and the row is left as it was.
     pub remaining_snapshot: Option<serde_json::Value>,
 }
 
@@ -458,7 +396,6 @@ pub struct HarvestedFrom {
     pub messages: Vec<HarvestedMessage>,
 }
 
-/// #1449 S3 — a runtime's persisted snapshot, inside a transaction, by id.
 pub async fn session_handle_state_by_id_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &str,
@@ -474,14 +411,8 @@ pub async fn session_handle_state_by_id_tx(
         .transpose()?)
 }
 
-/// #1449 S2 — write a runtime's `handle_state_json` whatever state its row is
-/// in.
-///
-/// The ordinary writer refuses non-active rows and the retired-runtime writer
-/// refuses active ones; the harvest needs neither restriction, because it is
-/// the transaction that is taking the queue and it holds the row for the
-/// duration. Kept separate from both so that neither of their predicates has to
-/// be widened for this one caller.
+/// Writes `handle_state_json` whatever state the row is in: the harvest holds
+/// the row for its transaction and needs neither writer's restriction.
 pub async fn session_set_handle_state_of_any_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &str,
@@ -503,60 +434,31 @@ pub async fn session_set_handle_state_of_any_runtime_tx(
     Ok(())
 }
 
-/// What one [`harvest_pending_user_messages_tx`] call took, and from where.
-///
-/// The ids are not diagnostics: the caller's saga has to be able to give them
-/// back. A mint that harvests and then fails leaves the harvested sentences on
-/// a `failed` successor — a state the harvest predicate deliberately never
-/// reads — while the rows they came from are stamped, so without an undo the
-/// sentences are unreachable for good and nothing reports it. See
-/// [`session_clear_queue_harvested_tx`].
+/// What one harvest took, and from where. The ids let a mint that fails after
+/// harvesting give the sentences back.
 #[derive(Debug, Default, Clone)]
 pub struct HarvestedQueues {
     pub messages: Vec<HarvestedMessage>,
     pub stamped_worker_session_ids: Vec<String>,
-    /// Per source row, what was taken off it. The undo journal: a mint that
-    /// fails after this transaction commits has to put each sentence back on
-    /// the row it came from.
+    /// The undo journal: per source row, what was taken off it.
     pub taken_from: Vec<HarvestedFrom>,
 }
 
-/// One queue entry taken off a retired row, with the identity of the instances
-/// it carries.
-///
-/// `ids` is never empty: the decoder mints one for an entry that was enqueued
-/// before the field existed, in the transaction that moves it, so everything
-/// this carries can be identified and therefore given back.
+/// One queue entry taken off a retired row. `ids` is never empty: the decoder
+/// mints one for entries enqueued before the field existed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HarvestedMessage {
     pub text: String,
     pub ids: Vec<String>,
-    /// #1505 PR4 review — the addressable `QueueEntryId` this sentence already
-    /// had, carried across the move so it keeps it.
-    ///
-    /// `None` means it had none: a pre-#1505 entry, which gains one on arrival
-    /// and can then be edited for the first time. That is the case the old
-    /// unconditional re-mint was written for, and it still behaves that way.
-    ///
-    /// What the re-mint also did — and must not — is take a live id away from
-    /// an entry that had one. A browser holding that id after a harvest asks
-    /// the server about an entry the server has renamed: `GET /planner/run`
-    /// lists the new id, so the message is drawn twice; an edit or a delete
-    /// against the old one 404s, which this UI reports as "already left the
-    /// queue" about a message that is still queued and still going to be sent.
-    /// Identity that changes under the holder is not identity.
+    /// The `QueueEntryId` this sentence already had, kept across the move so a
+    /// browser holding it is not left addressing a renamed entry. `None`: a legacy
+    /// entry, which gains one on arrival.
     pub entry_id: Option<String>,
 }
 
-/// #1449 — give a harvested queue back, because the mint that took it did not
-/// survive.
-///
-/// The compensating half of [`harvest_pending_user_messages_tx`]. The mint
-/// transaction's own rollback covers only a failure *inside* that transaction;
-/// a `thread/start` that fails afterwards is compensated in a DIFFERENT
-/// transaction, and that compensation marks the successor `failed`. The
-/// sentences would then be sitting on a row the harvest never reads, taken from
-/// rows that are stamped: silent, permanent loss.
+/// Compensating half of [`harvest_pending_user_messages_tx`]: a `thread/start`
+/// failing after the mint commits leaves sentences on a `failed` row the
+/// harvest never reads.
 pub async fn session_clear_queue_harvested_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &str,
@@ -572,35 +474,10 @@ pub async fn session_clear_queue_harvested_tx(
     Ok(())
 }
 
-/// #1449 — record what a runtime still owes, on a row the ordinary snapshot
-/// writer refuses to touch.
-///
-/// [`session_set_handle_state_tx`] carries
-/// `AND state IN ('starting','running','idle','turn_pending')`, so the moment a
-/// fence flips a row to `superseded` that runtime's snapshot writes silently
-/// affect zero rows — and `persist_snapshot_inner` additionally returns early
-/// once `shutting_down` is set. Both gates land BEFORE the run loop finishes
-/// the turn it is issuing, so the last thing written about a retired runtime is
-/// "the batch is still queued", whether or not the daemon has it.
-///
-/// That was harmless while nothing read an abandoned snapshot. It is not
-/// harmless now that the successor harvests it. This writer is the exception,
-/// and it is deliberately the narrowest one that closes the hole: it writes
-/// `handle_state_json` and nothing else — no `state`, no `active_turn_id`, no
-/// phase event — so it cannot revive a row the fence retired, which is what the
-/// predicate on the ordinary writer exists to prevent.
-///
-/// It refuses ACTIVE rows for the mirror-image reason: a row that has been
-/// revived under the same id (a refreshed deferred placeholder) belongs to a
-/// different harness, and a dead run loop must not write its stale queue over
-/// a live one.
-/// Returns whether the row was written.
-///
-/// #1449 — the two handle-state writers have complementary predicates, so a row
-/// that flips from retired back to active between them (`restore_old_runtime`)
-/// matches NEITHER. The retired row then keeps its PRE-drain queue, and once
-/// the restore clears its marker that queue is harvestable again: the same
-/// sentence delivered twice. The caller has to know the write did not land.
+/// Writes `handle_state_json` of a retired row and nothing else, so it cannot
+/// revive a row the fence retired; refuses ACTIVE rows because a revived id
+/// belongs to a different harness. Returns whether the row was written: a row
+/// that flipped back to active matches NEITHER writer, and the caller must know.
 pub async fn session_set_handle_state_of_retired_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &str,
@@ -823,7 +700,6 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         card_id: &str,
         status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
         let mut tx = begin_immediate_tx(&self.pool).await?;
         session_set_status_for_card_tx(&mut tx, card_id, status).await?;
         tx.commit().await?;
@@ -835,7 +711,6 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         card_id: &str,
         terminal_status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
         let mut tx = begin_immediate_tx(&self.pool).await?;
         session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
         tx.commit().await?;
@@ -847,7 +722,6 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         terminal_id: &str,
         terminal_status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
         let mut tx = begin_immediate_tx(&self.pool).await?;
         session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
         tx.commit().await?;

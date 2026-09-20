@@ -1,44 +1,27 @@
-//! Issue #955 §5 (PR-a) — proposal-channel wire vocabulary.
-//!
-//! The proposal channel was withdrawn in #973. These types remain only
-//! to deserialize historical `Event::ProposalSubmitted` and
-//! `Event::ProposalResolved` events.
+//! Proposal-channel wire vocabulary. The channel was withdrawn; these types remain only to
+//! deserialize historical `Event::ProposalSubmitted` / `Event::ProposalResolved` events.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-/// How a pending proposal was resolved. Two events, four decisions
-/// (design §5.6): `accepted` / `rejected` / `stale` are user-driven
-/// adjudications (`stale` is the accept attempt whose in-tx anchoring
-/// checks failed); `withdrawn` is the submitting plugin reclaiming its
-/// own pending slot — the only plugin-side exit, so quota can't be
-/// pinned forever by abandoned proposals.
-///
-/// Wire shape: bare lowercase string (matches the surrounding
-/// event-payload enum conventions, e.g. `EditAuthor`).
+/// How a pending proposal was resolved. Wire shape: bare lowercase string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ProposalDecision {
-    /// User accepted; the report change (Batch apply) commits in the
-    /// SAME write transaction as the decision event (design §5.6).
+    /// User accepted; the report change commits in the SAME write transaction as the decision event.
     Accepted,
     /// User rejected; no report change.
     Rejected,
-    /// User pressed accept but an in-tx anchoring check failed
-    /// (`if_rev` mismatch, unknown block, moved base heads). The
-    /// authoritative stale verdict only exists inside the accept
-    /// transaction — until then the proposal stays pending.
+    /// User pressed accept but an in-tx anchoring check failed.
     Stale,
     /// Submitting plugin reclaimed its own pending proposal.
     Withdrawn,
 }
 
 impl ProposalDecision {
-    /// Stable lowercase discriminator — the string persisted into the
-    /// `proposals.status` projection column and rendered into
-    /// role-gate denial messages. Must match the serde encoding above.
+    /// Stable lowercase discriminator persisted into `proposals.status`; must match the serde encoding.
     pub fn as_str(&self) -> &'static str {
         match self {
             ProposalDecision::Accepted => "accepted",
@@ -49,21 +32,13 @@ impl ProposalDecision {
     }
 }
 
-/// Position anchor for proposed block creation / moves (design §5.2.1).
-///
-/// Proposals are asynchronous, so positions are expressed against
-/// stable block ids — never numeric indexes (an unrelated insertion
-/// would silently shift index semantics while every block rev still
-/// matches). Externally-tagged serde gives `"at_start"` / `"at_end"` /
-/// `{"after_block_id": "b_0001"}` on the wire; `after_block_id` may
-/// reference a block created earlier in the same proposal via the
-/// `temp:<temp_id>` form.
+/// Position anchor for proposed block creation / moves, expressed against stable block ids, never
+/// numeric indexes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ProposalAnchor {
-    /// Place directly after the referenced block (`b_xxxx`, or
-    /// `temp:<temp_id>` for a block minted earlier in the batch).
+    /// Place directly after the referenced block (`b_xxxx`, or `temp:<temp_id>` for a block minted earlier in the batch).
     AfterBlockId(String),
     /// Place at the head of the document.
     AtStart,
@@ -71,28 +46,13 @@ pub enum ProposalAnchor {
     AtEnd,
 }
 
-/// One proposed mutation of the track-report block document
-/// (design §5.2.1). A deliberately *stricter* sibling of the
-/// interactive `calm.report.blocks.*` tool DTOs: anchoring must be
-/// complete because apply happens asynchronously, and the wholesale
-/// `WriteMarkdown` / `Replace` shapes are excluded on purpose (full
-/// overwrites and string matching cannot be meaningfully proposed).
-///
-/// Field-requirement rules (`if_rev` mandatory when replacing, exactly
-/// one of `block_id` / `temp_id`, anchor mandatory for creations) are
-/// historical: before the channel was withdrawn in #973, these constraints
-/// were enforced by its submit handler. The wire type keeps them `Option`
-/// only where two legal shapes share a variant.
+/// One proposed mutation of the track-report block document; a stricter sibling of the interactive
+/// `calm.report.blocks.*` tool DTOs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ProposalOp {
-    /// Replace an existing block (`block_id` + mandatory `if_rev`) or
-    /// create a new one (`temp_id` + mandatory `anchor`; the durable
-    /// `b_xxxx` id is minted by the kernel at apply time). `payload`
-    /// is the kind-specific block payload — `{ "markdown": … }` for
-    /// prose, the schema-validated object for data kinds (the same
-    /// vocabulary `calm.report.blocks.kinds` documents).
+    /// Replace an existing block (`block_id` + mandatory `if_rev`) or create a new one (`temp_id` + mandatory `anchor`).
     UpsertBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -111,8 +71,7 @@ pub enum ProposalOp {
         #[ts(optional)]
         anchor: Option<ProposalAnchor>,
     },
-    /// Reorder an existing block. `if_rev` is mandatory (async
-    /// anchoring must be complete, unlike the interactive move tool).
+    /// Reorder an existing block; `if_rev` is mandatory.
     MoveBlock {
         block_id: String,
         if_rev: u32,
@@ -188,7 +147,6 @@ mod tests {
             },
         ];
         let wire = serde_json::to_value(&ops).unwrap();
-        // Absent optionals must be absent on the wire, not null.
         assert_eq!(
             wire[0],
             json!({

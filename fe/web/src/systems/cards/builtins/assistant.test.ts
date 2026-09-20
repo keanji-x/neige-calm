@@ -19,13 +19,7 @@ describe('assistant card entry', () => {
     })).toEqual({ type: 'assistant', id: 'c2' });
   });
 
-  /*
-   * The two markers live under one field, and this is the direction that
-   * actually costs something: a predicate widened to "has a `harness_profile`"
-   * would make every area chat card resolve as a track assistant. The server
-   * refuses to conflate them for the same reason and pins it in
-   * `plain_chat.rs::the_two_conversation_markers_never_answer_for_each_other`.
-   */
+  /* A predicate widened to "has a `harness_profile`" would make every area chat card resolve as a track assistant. */
   it('refuses the plain-chat marker and an unmarked codex card', () => {
     for (const payload of [
       {}, { harness_profile: 'plain_chat' }, { harness_profile: true },

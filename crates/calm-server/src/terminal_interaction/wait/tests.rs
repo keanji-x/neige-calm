@@ -1,8 +1,6 @@
 use super::*;
 use tokio::sync::watch;
 
-/// `baseline_revision` is the string form of the revision the wait
-/// compared against, in both modes, next to the existing fields.
 #[test]
 fn wait_report_names_its_baseline_revision() {
     let report = WaitReport {
@@ -73,7 +71,6 @@ fn wait_report_names_its_baseline_revision() {
         }),
     };
     assert_eq!(report.to_json()["outcome"], "signal");
-    // #1677 r16: the conditions block in signal mode names both sides.
     assert_eq!(
         report.to_json()["conditions"],
         json!({"present":null,"absent":true})
@@ -85,8 +82,7 @@ fn wait_report_names_its_baseline_revision() {
         report.to_json()["repaint"],
         json!({"outcome":"settled","waited_ms":2})
     );
-    // No signal (#1692: its own name, not change mode's `unchanged`):
-    // both fields present and null, like `signal`.
+    // No signal: both fields present and null, like `signal`.
     let report = WaitReport {
         mode: WaitFor::Signal,
         outcome: WaitOutcome::NoSignal,
@@ -121,8 +117,7 @@ fn wait_report_names_its_baseline_revision() {
         report.to_json().get("text").is_none(),
         "text only in text mode"
     );
-    // #1666 text mode: `text` is the match or null, next to the same
-    // baseline fields; the signal fields stay absent.
+    // Text mode: `text` is the match or null; the signal fields stay absent.
     let matched = TextMatch {
         pattern: "❯".into(),
         row: 5,
@@ -173,10 +168,8 @@ struct SignalFixture {
     events: watch::Sender<u64>,
     stopped: Arc<AtomicBool>,
 }
-/// Spawn a signal wait for `stop` above `baseline` with every sender kept
-/// alive by the fixture (a dropped sender ends the loop at once, which
+/// Every sender is kept alive by the fixture (a dropped sender ends the loop at once, which
 /// would make a budget test vacuous).
-/// The loop's verdict and the paused-clock time it took.
 type SignalTask = tokio::task::JoinHandle<(SignalWait, Duration)>;
 fn start_signal(
     ring: Arc<crate::terminal_renderer::SignalRing>,
@@ -185,8 +178,7 @@ fn start_signal(
 ) -> (SignalFixture, SignalTask) {
     start_signal_repaint(ring, baseline, budget_ms, RepaintPlan::skip())
 }
-/// #1628: the same, with a repaint plan; the revision channel starts at
-/// 0 and the wait's revision baseline is 0.
+/// The same, with a repaint plan; the revision channel and baseline start at 0.
 fn start_signal_repaint(
     ring: Arc<crate::terminal_renderer::SignalRing>,
     baseline: u64,
@@ -227,9 +219,6 @@ fn start_signal_repaint(
     )
 }
 
-/// Signal loop: a matching signal above the baseline ends the wait
-/// whether it was already in the ring or arrives during the wait;
-/// protocol events and revisions only re-check stopped.
 #[tokio::test(start_paused = true)]
 async fn signal_loop_inspects_the_ring_before_select() {
     use crate::terminal_renderer::SignalRing;
@@ -279,9 +268,7 @@ async fn signal_loop_inspects_the_ring_before_select() {
     assert!(verdict.signal_at.is_none() && verdict.repaint.is_none());
 }
 
-/// The budget: with every sender alive the loop runs to the deadline and
-/// reports no signal after exactly the budget; a signal pushed at the
-/// deadline itself is still reported (the ring is re-read on timeout).
+/// A signal pushed at the deadline itself is still reported (the ring is re-read on timeout).
 #[tokio::test(start_paused = true)]
 async fn signal_loop_runs_to_the_budget_and_rereads_the_ring_on_timeout() {
     use crate::terminal_renderer::SignalRing;
@@ -296,10 +283,8 @@ async fn signal_loop_runs_to_the_budget_and_rereads_the_ring_on_timeout() {
     assert_eq!(waited, Duration::from_millis(300));
     drop(fixture);
 
-    // A matching signal that becomes visible to the lookup without any
-    // channel wake (only the deadline timer wakes the loop) is still
-    // reported: the timeout branch re-reads the ring instead of
-    // returning no signal.
+    // A matching signal visible to the lookup without any channel wake is still reported: the
+    // timeout branch re-reads the ring.
     let (signals_tx, signals_rx) = watch::channel(0u64);
     let (revisions_tx, revisions_rx) = watch::channel(0u64);
     let (events_tx, events_rx) = watch::channel(0u64);
@@ -348,16 +333,13 @@ async fn signal_loop_runs_to_the_budget_and_rereads_the_ring_on_timeout() {
     drop((signals_tx, revisions_tx, events_tx));
 }
 
-/// An exit that coincides with the deadline is reported as exited: the
-/// timeout branch re-reads `stopped` instead of returning no signal.
 #[tokio::test(start_paused = true)]
 async fn signal_loop_timeout_rechecks_the_stopped_state() {
     use crate::terminal_renderer::SignalRing;
     let ring = Arc::new(SignalRing::new());
     let (fixture, task) = start_signal(ring, 0, 300);
     tokio::task::yield_now().await;
-    // The process exits without any wake of the loop (no protocol event
-    // reaches it before the timer), so only the timer branch can see it.
+    // No protocol event reaches the loop before the timer, so only the timer branch can see the exit.
     fixture.stopped.store(true, Ordering::SeqCst);
     tokio::time::advance(Duration::from_millis(300)).await;
     let (verdict, waited) = task.await.unwrap();
@@ -366,9 +348,6 @@ async fn signal_loop_timeout_rechecks_the_stopped_state() {
     assert_eq!(waited, Duration::from_millis(300));
 }
 
-/// An invalidated projection wakes a signal wait through the revision
-/// subscription and, composed with `projection_unavailable`, ends it as
-/// exited before the budget (same treatment as change mode).
 #[tokio::test(start_paused = true)]
 async fn invalidated_projection_stops_a_signal_wait_before_the_budget() {
     use crate::terminal_renderer::{ModelView, SignalRing};
@@ -422,8 +401,6 @@ fn stop_ring() -> Arc<crate::terminal_renderer::SignalRing> {
     Arc::new(crate::terminal_renderer::SignalRing::new())
 }
 
-/// #1628 `already`: a revision since the baseline that has been quiet
-/// for `settle` when the signal arrives ends the wait at the signal.
 #[tokio::test(start_paused = true)]
 async fn repaint_already_when_a_quiet_revision_preceded_the_signal() {
     let ring = stop_ring();
@@ -442,8 +419,6 @@ async fn repaint_already_when_a_quiet_revision_preceded_the_signal() {
     assert_eq!(waited, Duration::from_millis(300));
 }
 
-/// #1628 `settled`: no revision at the signal; the repaint lands 300 ms
-/// later and the wait ends once it has been quiet for `settle`.
 #[tokio::test(start_paused = true)]
 async fn repaint_settles_after_a_revision_that_follows_the_signal() {
     let ring = stop_ring();
@@ -465,9 +440,7 @@ async fn repaint_settles_after_a_revision_that_follows_the_signal() {
     assert_eq!(waited, Duration::from_millis(550));
 }
 
-/// #1628 `none`: no revision within `repaint` of the signal. A screen
-/// that has been quiet since the start (longer than `settle`) without
-/// any revision is not `already`; the loop waits for the first one.
+/// A screen quiet since the start without any revision is not `already`.
 #[tokio::test(start_paused = true)]
 async fn repaint_none_when_nothing_lands_within_the_repaint_window() {
     let ring = stop_ring();
@@ -486,11 +459,8 @@ async fn repaint_none_when_nothing_lands_within_the_repaint_window() {
     assert_eq!(waited, Duration::from_millis(1_900));
 }
 
-/// #1628 `settled` from a change that preceded the signal: the revision
-/// lands at t=0, the signal 50 ms later (not yet quiet, so not
-/// `already`), nothing else follows. The quiet window is measured from
-/// the revision, so the wait ends 100 ms after the signal — it neither
-/// idles `repaint` nor reports `none`.
+/// The quiet window is measured from the revision that preceded the signal, so the wait ends
+/// 100 ms after the signal — it neither idles `repaint` nor reports `none`.
 #[tokio::test(start_paused = true)]
 async fn repaint_settles_from_a_revision_that_preceded_the_signal() {
     let ring = stop_ring();
@@ -511,9 +481,6 @@ async fn repaint_settles_from_a_revision_that_preceded_the_signal() {
     assert_eq!(waited, Duration::from_millis(150));
 }
 
-/// #1628: the repaint window and the quiet window are both bounded by
-/// the budget: `none` at the budget when nothing landed, `unsettled` when
-/// revisions were still landing.
 #[tokio::test(start_paused = true)]
 async fn repaint_windows_are_bounded_by_the_budget() {
     let ring = stop_ring();
@@ -543,10 +510,6 @@ async fn repaint_windows_are_bounded_by_the_budget() {
     assert_eq!(waited, Duration::from_millis(1_000));
 }
 
-/// #1628: a revision that lands as the quiet timer completes restarts
-/// the window (the timer wake re-reads the revision), and an exit during
-/// the repaint phase ends it with the verdict reached so far while the
-/// signal is kept.
 #[tokio::test(start_paused = true)]
 async fn repaint_timer_rereads_the_revision_and_an_exit_ends_the_phase() {
     for _ in 0..32 {
@@ -570,8 +533,7 @@ async fn repaint_timer_rereads_the_revision_and_an_exit_ends_the_phase() {
             !task.is_finished(),
             "settled although a revision was pending"
         );
-        // The pending revision is observed at the timer wake (150 ms),
-        // so the quiet window restarts there, as in change mode.
+        // The pending revision is observed at the timer wake (150 ms), so the quiet window restarts there.
         tokio::time::advance(Duration::from_millis(150)).await;
         let (verdict, waited) = task.await.unwrap();
         assert_eq!(verdict.repaint, repaint(RepaintOutcome::Settled, 300));
@@ -598,11 +560,8 @@ async fn repaint_timer_rereads_the_revision_and_an_exit_ends_the_phase() {
     assert_eq!(waited, Duration::from_millis(50));
 }
 
-/// #1692 no signal on a quiet screen: the loop returns at the deadline
-/// itself, `settled` when the screen was quiet for `settle` by then (the
-/// whole budget on an idle screen, or exactly `settle` after a
-/// revision); quiet for 1 ms less is a frame boundary (past the 30 ms
-/// frame gap), returned at once but not settled.
+/// Quiet for 1 ms less than `settle` is a frame boundary (past the 30 ms gap): returned at
+/// once but not settled.
 #[tokio::test(start_paused = true)]
 async fn no_signal_on_a_quiet_screen_returns_at_the_deadline() {
     let (_fixture, task) = start_signal_repaint(stop_ring(), 0, 300, REPAINT);
@@ -631,11 +590,7 @@ async fn no_signal_on_a_quiet_screen_returns_at_the_deadline() {
     }
 }
 
-/// #1692 `settle_ms: 0`: the frame gap and the grace are both zero, so
-/// the budget end returns at the deadline itself and is `settled`
-/// (quiet for 0 ms holds trivially) — on an idle screen and under the
-/// streaming output that keeps the default plan in its grace past the
-/// deadline.
+/// `settle_ms: 0`: quiet for 0 ms holds trivially, so the budget end is `settled` even under streaming output.
 #[tokio::test(start_paused = true)]
 async fn no_signal_with_settle_zero_returns_at_the_deadline_settled() {
     let plan = RepaintPlan {
@@ -663,9 +618,7 @@ async fn no_signal_with_settle_zero_returns_at_the_deadline_settled() {
     }
 }
 
-/// #1692 spinner: a revision every 100 ms, the last one 10 ms before
-/// the deadline. The loop waits for the frame gap (30 ms quiet) and
-/// returns 20 ms after the deadline, not settled.
+/// Spinner: the last revision 10 ms before the deadline; the loop waits for the 30 ms frame gap.
 #[tokio::test(start_paused = true)]
 async fn no_signal_under_a_spinner_returns_on_the_next_frame_boundary() {
     let (fixture, task) = start_signal_repaint(stop_ring(), 0, 300, REPAINT);
@@ -694,9 +647,7 @@ async fn no_signal_under_a_spinner_returns_on_the_next_frame_boundary() {
     );
 }
 
-/// #1692 streaming: a revision every 10 ms never leaves a frame gap, so
-/// the loop gives up at `deadline + settle`, not settled. A signal that
-/// lands during that grace is not looked for: the budget is over.
+/// Streaming: a revision every 10 ms never leaves a frame gap, so the loop gives up at `deadline + settle`.
 #[tokio::test(start_paused = true)]
 async fn no_signal_under_streaming_output_returns_at_the_grace_end() {
     let ring = stop_ring();
@@ -721,7 +672,7 @@ async fn no_signal_under_streaming_output_returns_at_the_grace_end() {
     assert_eq!(waited, Duration::from_millis(450), "deadline + settle");
 }
 
-/// #1692: an exit during the grace ends it at once as exited.
+/// An exit during the grace ends it at once as exited.
 #[tokio::test(start_paused = true)]
 async fn an_exit_during_the_frame_boundary_grace_is_exited() {
     let (fixture, task) = start_signal_repaint(stop_ring(), 0, 300, REPAINT);
@@ -782,12 +733,8 @@ fn bump(sender: &watch::Sender<u64>) {
     sender.send_modify(|value| *value += 1);
 }
 
-/// The quiet timer and a revision notification become ready in the same
-/// poll: a helper task's earlier sleep fires in the same driver pass as
-/// the waiter's quiet timer and bumps the revision before the waiter is
-/// polled. The loop must not report a settled screen that has already
-/// moved on. Repeated because `select!` picks among ready branches at
-/// random.
+/// A helper task's earlier sleep fires in the same driver pass as the quiet timer and bumps the
+/// revision before the waiter is polled. Repeated because `select!` picks among ready branches at random.
 #[tokio::test(start_paused = true)]
 async fn timer_completion_rechecks_the_revision_before_settling() {
     for _ in 0..64 {
@@ -844,8 +791,6 @@ async fn protocol_events_do_not_restart_the_quiet_window() {
     assert_eq!(waited, Duration::from_millis(160));
 }
 
-/// Every revision restarts the window; a sustained burst settles only
-/// after it ends, and a budget that ends mid-burst reports unsettled.
 #[tokio::test(start_paused = true)]
 async fn revisions_extend_the_quiet_window_until_the_burst_ends() {
     let (fixture, task) = start(150, 5_000);
@@ -872,11 +817,8 @@ async fn revisions_extend_the_quiet_window_until_the_burst_ends() {
     assert_eq!(waited, Duration::from_millis(300));
 }
 
-/// An invalidated projection wakes the loop without a revision; with the
-/// `projection_unavailable` predicate that production `wait()` composes
-/// into `stopped`, the loop ends at once as exited rather than idling to
-/// the budget. The production composition itself is covered by the MCP
-/// test `change_wait_stops_when_the_output_source_disconnects`.
+/// The production composition itself is covered by the MCP test
+/// `change_wait_stops_when_the_output_source_disconnects`.
 #[tokio::test(start_paused = true)]
 async fn invalidated_projection_stops_the_wait_before_the_budget() {
     use crate::terminal_renderer::ModelView;

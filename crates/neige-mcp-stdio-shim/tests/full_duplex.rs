@@ -1,10 +1,6 @@
-//! #1699 review (MAJOR-2 on 8961d9c59): the pump must keep reading the
-//! socket while a request write to the kernel is in flight. The kernel
-//! (`mcp_server/transport.rs::handle_connection`) is serial — it reads
-//! one request, finishes writing its response, then reads the next — so
-//! a pump that stops reading while it writes deadlocks as soon as a
-//! request and a response both exceed the socket buffers (208 KiB here,
-//! `net.core.wmem_default`).
+//! The pump must keep reading the socket while a request write is in flight: the
+//! kernel is serial, so a pump that stops reading while it writes deadlocks once a
+//! request and a response both exceed the socket buffers.
 
 #![cfg(unix)]
 
@@ -35,10 +31,8 @@ fn big_response(id: &serde_json::Value) -> String {
     )
 }
 
-/// The stub kernel's read side: one accumulator so the test can tell
-/// "a complete line" from "bytes of the next request have started to
-/// arrive" — the moment the real kernel would still be busy with the
-/// previous request.
+/// One accumulator so the test can tell a complete line from bytes of the next
+/// request having started to arrive.
 struct StubReader {
     rd: OwnedReadHalf,
     acc: Vec<u8>,
@@ -77,13 +71,6 @@ async fn stub_reply(wr: &mut OwnedWriteHalf, id: &serde_json::Value) {
         .expect("stub response write ok");
 }
 
-/// codex pipelines two 4 MiB `tools/call`s; the serial stub kernel answers
-/// each with a 4 MiB response before reading the next. Both responses
-/// must reach stdout and the stub must receive both requests. A pump
-/// that awaits the id-3 write without reading the socket (8961d9c59)
-/// blocks on a full send buffer while the stub blocks writing the id-2
-/// response into the shim's full receive buffer: neither side ever
-/// reads again and this test times out.
 #[tokio::test]
 async fn large_pipelined_requests_do_not_deadlock_against_a_serial_kernel() {
     let (_tmp, socket_path) = common::socket();
@@ -102,7 +89,6 @@ async fn large_pipelined_requests_do_not_deadlock_against_a_serial_kernel() {
         acc: Vec::new(),
     };
 
-    // Normal handshake (small frames).
     common::write_stdin(&mut stdin, &common::initialize_line(1)).await;
     let init = stub.read_frame().await;
     common::assert_replayed_initialize(&init, 1);
@@ -112,8 +98,7 @@ async fn large_pipelined_requests_do_not_deadlock_against_a_serial_kernel() {
     let resp = common::read_stdout(&mut stdout, "initialize response").await;
     assert_eq!(resp["id"], serde_json::json!(1));
 
-    // codex: two large requests back-to-back, and an independent stdout
-    // drain (codex reads responses regardless of what it is writing).
+    // codex reads responses regardless of what it is writing.
     let writer = tokio::spawn(async move {
         stdin
             .write_all(big_tools_call(2).as_bytes())
@@ -140,15 +125,13 @@ async fn large_pipelined_requests_do_not_deadlock_against_a_serial_kernel() {
         ids
     });
 
-    // The serial stub kernel.
     let scenario = async {
         let call = stub.read_frame().await;
         assert_eq!(call["method"], "tools/call", "got {call}");
         let id = call["id"].clone();
         assert_eq!(id, serde_json::json!(2));
-        // The real kernel is dispatching id 2 here while codex's next
-        // request arrives; wait for its first bytes so the shim is
-        // provably inside the id-3 write before the response goes out.
+        // Wait for the next request's first bytes so the shim is provably inside the
+        // id-3 write before the response goes out.
         stub.wait_for_next_frame_bytes().await;
         stub_reply(&mut wr, &id).await;
         let call = stub.read_frame().await;

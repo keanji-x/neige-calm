@@ -1,39 +1,5 @@
-//! The front matter of a template file (#1635 D1): a TOML block between two
-//! `+++` lines, then the report body.
-//!
-//! ```text
-//! +++
-//! id = "small-change"
-//! title = "Small change"
-//! +++
-//! <!-- neige:contract {…} -->
-//! …
-//! ```
-//!
-//! This is the whole of what the kernel reads out of a template file besides
-//! the body: an `id` (the roster key `POST /api/tracks` admits) and a `title`
-//! (the picker label, and the summary an instantiated report starts with).
-//! Everything after the closing delimiter line is the body, byte for byte —
-//! the parser never trims, normalizes or re-encodes it, because the body is
-//! `split_body`'s input and a changed byte is a changed block boundary.
-//!
-//! Only `calm-server` reads template files, so the parser lives here rather
-//! than in `calm-types` (the design doc's `calm_types::recipe_file` was written
-//! before that was settled): calm-types stays format-free.
-//!
-//! ## The `id` alphabet, and why `/` is not in it
-//!
-//! An id matches `^[a-z0-9][a-z0-9-]*$`. The kernel's built-in ids carry no
-//! prefix; the `site/` prefix (operator-supplied templates, #1635 S5 —
-//! `templates::SITE_PREFIX`, composed by the loader from the file stem) and
-//! the still-reserved `plugin/` prefix live *outside* the front matter — a
-//! file's own `id` never names its origin. Rejecting `/` here is what keeps a
-//! builtin file from spelling `site/…`; what keeps an operator file from
-//! shadowing a builtin id is the other half — the loader composes its key as
-//! `site/<stem>`, so the file's own `id` is never a key. The plugin-side
-//! alphabet (`TemplateDescriptor::validate`, `^[a-z0-9][a-z0-9._-]{0,63}$`)
-//! is wider than this one — it admits `.` and `_` — but neither admits `/`,
-//! so neither side can spell the `site/` prefix.
+//! The front matter of a template file: a TOML block between two `+++` lines, then the report body,
+//! returned byte for byte. An id matches `^[a-z0-9][a-z0-9-]*$`, so a file can never spell the `site/` prefix.
 
 use serde::Deserialize;
 
@@ -44,8 +10,7 @@ pub struct FrontMatter {
     pub title: String,
 }
 
-/// The TOML shape between the delimiters. `deny_unknown_fields`: a typo'd key
-/// (`titel = …`) is a broken file, not a file with one fewer fact.
+/// `deny_unknown_fields`: a typo'd key is a broken file, not a file with one fewer fact.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawFrontMatter {
@@ -93,17 +58,8 @@ impl std::error::Error for FrontMatterError {}
 /// The delimiter line, with its newline: a delimiter is a whole line.
 const DELIMITER: &str = "+++\n";
 
-/// Split a template file into its front matter and its body.
-///
-/// The body is the `&str` tail of `text` starting right after the closing
-/// `+++\n` — a borrow, not a copy, so a `'static` source yields a `'static`
-/// body (the builtin roster relies on that: its bodies are `include_str!`
-/// slices, never leaked).
-///
-/// The closing delimiter is the first line after the opener that is exactly
-/// `+++`. A TOML multi-line string containing such a line would be cut there;
-/// the front matter carries two short strings and nothing else, so that
-/// shape has no legitimate use here.
+/// Split a template file into its front matter and its body. The body is a borrow of `text`,
+/// not a copy, so a `'static` source yields a `'static` body (the builtin roster relies on that).
 pub fn parse(text: &str) -> Result<(FrontMatter, &str), FrontMatterError> {
     let after_open = text
         .strip_prefix(DELIMITER)
@@ -135,8 +91,7 @@ pub fn parse(text: &str) -> Result<(FrontMatter, &str), FrontMatterError> {
     ))
 }
 
-/// `^[a-z0-9][a-z0-9-]*$`, spelled out rather than compiled: no `regex`
-/// dependency for a three-clause predicate.
+/// `^[a-z0-9][a-z0-9-]*$`, spelled out rather than compiled.
 fn is_valid_id(id: &str) -> bool {
     let mut chars = id.chars();
     let Some(first) = chars.next() else {
@@ -163,10 +118,7 @@ mod tests {
                 title: "Small change".into(),
             }
         );
-        // Byte-exact: the body is the tail of the input starting right after
-        // the closing delimiter line — no trim, no normalization, and the
-        // returned slice is the input's own bytes (pointer identity), not a
-        // copy that could have been re-encoded on the way.
+        // Byte-exact: the returned slice is the input's own bytes (pointer identity), not a copy.
         let expected_body =
             "<!-- neige:contract {} -->\n\n# Plan\n\n```neige-block task\n{}\n```\n\n";
         assert_eq!(body, expected_body);
@@ -190,9 +142,7 @@ mod tests {
 
     #[test]
     fn an_empty_body_is_allowed_by_the_parser() {
-        // The parser does not judge the body; whether an empty one is usable
-        // is decided downstream (`routes::tracks::compile_template`). Here it
-        // is just the empty tail.
+        // The parser does not judge the body; whether an empty one is usable is decided downstream.
         let (front, body) = parse("+++\nid = \"x\"\ntitle = \"X\"\n+++\n").expect("well-formed");
         assert_eq!(front.id, "x");
         assert_eq!(body, "");

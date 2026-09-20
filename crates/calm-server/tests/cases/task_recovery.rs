@@ -777,9 +777,6 @@ async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop()
     }
 }
 
-/// A legacy (non-isolated) attempt is recovered onto the same legacy adapter
-/// the scheduler routes it through; the response must state that route, never
-/// the isolated Codex envelope.
 #[tokio::test]
 async fn task_recovery_of_legacy_attempt_states_its_actual_executor() {
     let boot = boot().await;
@@ -813,19 +810,8 @@ fn ordinary_codex_declaration(key: &str) -> Value {
         "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "ready": true})
 }
 
-/// The current attempt of `key` is claimed, prepared on `boot.worker_card_id`
-/// with a held workspace lease, then hit by the scheduler's liveness timeout
-/// (the same `task_fail_from_worker_tx(.., Kernel, "worker-timeout", ..)`
-/// `fail_task_liveness_timeout` issues), which releases the lease but keeps
-/// the directory. Returns the failed row and the lease path; the returned
-/// directory keeps the path alive.
-///
-/// The lease path has the production shape
-/// `<repo>/.claude/worktrees/<track>/<card>` (`workspace_lease_path_for`,
-/// the only path `acquire_workspace_lease_tx` writes outside fixtures): the
-/// slice branch `retained` names when no commit was recorded is derived
-/// from that shape (`workspace_lease_target_from_lease`), so a lease at an
-/// arbitrary path would read as a lease with no branch to name.
+/// Claims and prepares the current attempt of `key` with a held workspace lease, then hits the
+/// scheduler's liveness timeout; the lease path must have the production shape or `retained` reads as a lease with no branch to name.
 async fn time_out_prepared_ordinary_worker(
     boot: &Boot,
     key: &str,
@@ -950,10 +936,6 @@ async fn append_worktree_event(boot: &Boot, event: calm_server::event::Event) {
     tx.commit().await.unwrap();
 }
 
-/// #1727 S3 — an ordinary (shared) codex worker that timed out after it was
-/// prepared: the view names the way out, and `calm.plan.list` (MCP only)
-/// carries `recovery.guidance` with the retained worktree. The REST
-/// `TaskRecoveryView` stays `{allowed, code, reason}`.
 #[tokio::test]
 async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task() {
     let boot = boot().await;
@@ -1052,12 +1034,6 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
     );
 }
 
-/// #1727 S3 fix G1 — admission checks the actor-dependent policy before the
-/// actor-independent predecessor fence. A generation-2 auto-declare Planner
-/// task whose recovered ordinary worker timed out is refused to the Planner
-/// with `recovery_limit_reached`, but a User recovery would hit the permanent
-/// fence next: guidance must advertise `new_task`, naming both conditions,
-/// never a `user_recovery` the kernel refuses.
 #[tokio::test]
 async fn task_recovery_guidance_does_not_advertise_a_user_recovery_the_predecessor_fence_refuses() {
     let boot = boot().await;
@@ -1100,10 +1076,6 @@ async fn task_recovery_guidance_does_not_advertise_a_user_recovery_the_predecess
     assert_eq!(user_view.recovery.code, "predecessor_not_quiescent");
 }
 
-/// #1727 S3 fix G2 — `retained` follows the kernel's worktree events: a
-/// `worktree.removed` newer than the last `worktree.provisioned` means the
-/// directory and slice branch are gone (`git branch -D`), so only `removed`
-/// and the commit object survive; a later re-provision brings the path back.
 #[tokio::test]
 async fn task_recovery_guidance_retained_follows_worktree_removal_and_reprovision() {
     use calm_server::event::Event;
@@ -1181,9 +1153,6 @@ async fn task_recovery_guidance_retained_follows_worktree_removal_and_reprovisio
     );
 }
 
-/// #1727 S3 fix G4/G5 — a prepared terminal worker has no workspace lease:
-/// `retained` is `{}` in full mode and survives as `{}` in summary mode, and
-/// the reason never mentions a worktree it does not have.
 #[tokio::test]
 async fn task_recovery_summary_keeps_an_empty_retained_object_for_a_terminal_worker() {
     let boot = boot().await;
@@ -1231,8 +1200,6 @@ async fn task_recovery_summary_keeps_an_empty_retained_object_for_a_terminal_wor
     }
 }
 
-/// #1727 S3 fix G5 — verification effects without a worker card: the reason
-/// and the guidance say so instead of claiming a worker was prepared.
 #[tokio::test]
 async fn task_recovery_guidance_names_verification_effects_when_no_worker_was_prepared() {
     let boot = boot().await;
@@ -1276,9 +1243,7 @@ fn isolated_codex_declaration(key: &str) -> Value {
     declaration
 }
 
-/// A keyed `codex-isolated-worker` operation row with a preparation receipt
-/// (`tx_output_json` set) in `phase`, the way the predecessor fence finds
-/// one after normal card/session cleanup. Returns its id.
+/// Inserts a keyed `codex-isolated-worker` operation row with a preparation receipt in `phase`; returns its id.
 async fn insert_isolated_operation(boot: &Boot, task: &Task, phase: &str) -> String {
     let id = format!("isolated-{phase}-{}", task.id);
     sqlx::query(
@@ -1297,13 +1262,6 @@ async fn insert_isolated_operation(boot: &Boot, task: &Task, phase: &str) -> Str
     id
 }
 
-/// #1727 S3 fix 2 (K2) — the continuation follows the recorded predecessor,
-/// not the declaration's context shape. A task declared with an
-/// isolated-shaped `neige_execution` context whose recorded predecessor is
-/// an ordinary `codex-worker` (the shape
-/// `isolated_selection_does_not_reinterpret_a_recorded_legacy_worker`
-/// schedules) times out after preparation: admission refuses on the
-/// ordinary fence, and guidance says `new_task`, never `wait_for_settlement`.
 #[tokio::test]
 async fn task_recovery_guidance_follows_the_recorded_ordinary_predecessor_not_the_context_shape() {
     use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
@@ -1366,10 +1324,6 @@ async fn task_recovery_guidance_follows_the_recorded_ordinary_predecessor_not_th
     assert_eq!(guidance["retained"]["workspace_path"], lease_path);
 }
 
-/// #1727 S3 fix 2 (K2) — behind the Planner retry limit, the actor-independent
-/// re-check reaches the isolated fence: the predecessor is still parked, so
-/// the continuation is `wait_for_settlement` and the sentence carries both
-/// conditions. The refusal code stays what admission returned.
 #[tokio::test]
 async fn task_recovery_guidance_waits_for_settlement_behind_the_planner_limit() {
     let boot = boot().await;
@@ -1380,9 +1334,7 @@ async fn task_recovery_guidance_waits_for_settlement_behind_the_planner_limit() 
     let second = current(&boot, "b").await;
     assert_ne!(second.id, first.id);
     finish(&boot, &second, false).await;
-    // Still running its stop (`parked` itself is CHECK-bound to a real run
-    // record; `planner_observes_failure_then_settled_isolated_recovery`
-    // reaches the same site with one).
+    // Still running its stop: `parked` itself is CHECK-bound to a real run record.
     insert_isolated_operation(&boot, &second, "spawn_succeeded").await;
 
     let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
@@ -1408,9 +1360,6 @@ async fn task_recovery_guidance_waits_for_settlement_behind_the_planner_limit() 
     );
 }
 
-/// #1727 S3 fix 2 (K2) — behind a Track that does not schedule, the re-check
-/// reaches the ordinary fence: `new_task`, both conditions named, the
-/// lifecycle in the policy half.
 #[tokio::test]
 async fn task_recovery_guidance_names_the_new_task_behind_a_track_that_does_not_schedule() {
     let boot = boot().await;
@@ -1440,21 +1389,13 @@ async fn task_recovery_guidance_names_the_new_task_behind_a_track_that_does_not_
     assert_eq!(guidance["retained"]["workspace_path"], lease_path);
 }
 
-/// #1727 S3 fix 2 (K2) — a user-owned task whose declaration was withdrawn
-/// (`ready: false`): the Planner is refused with
-/// `user_authorization_required`, but the re-check finds nothing current to
-/// honour for any actor, so the continuation is `none` and the sentence
-/// names the withdrawn declaration rather than promising a User recovery.
 #[tokio::test]
 async fn task_recovery_guidance_has_no_continuation_for_a_withdrawn_user_owned_declaration() {
     let boot = boot().await;
     let (block_id, _) = declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
     finish(&boot, &b, false).await;
-    // The Planner may not author a user-owned block: rewrite the CRDT
-    // authority directly (the bypass
-    // `task_recovery_rebuild_uses_authoritative_crdt_when_payload_cache_diverges`
-    // uses) and the frozen row's author with it.
+    // The Planner may not author a user-owned block: rewrite the CRDT authority directly.
     let mut declared = declaration("b", &[]);
     declared["declared_by"] = json!("user");
     declared["ready"] = json!(false);
@@ -1505,10 +1446,6 @@ async fn task_recovery_guidance_has_no_continuation_for_a_withdrawn_user_owned_d
     assert_eq!(guidance["retained"], json!({}));
 }
 
-/// #1727 S3 fix 2 (K2) — a permanent isolated denial (the prepared isolated
-/// execution shares its key with verification effects): no settlement
-/// briefing re-opens it, so the continuation is `none` and the sentence says
-/// so instead of telling the Planner to wait.
 #[tokio::test]
 async fn task_recovery_guidance_has_no_continuation_for_a_permanent_isolated_denial() {
     let boot = boot().await;

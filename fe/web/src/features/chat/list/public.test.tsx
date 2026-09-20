@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
-//
-// #1722 §5.3 / INV-APP-118 — a conversation row's indicator, accessible name
-// and description come from ONE fold: the kernel's per-card verdict
-// (`cards[row.id]`), the reader's receipt (`unreadIds`) and, for the open row
-// only, the surface's own declared echoes (`local`). `Conversation.state` is
-// the server's session reading and reads into none of them: the harness leaves
-// it at `turn_pending` / `running` long after a turn ended, which is the
-// spinner that never stopped (#1722 §1).
+// `Conversation.state` is the server's session reading and reads into none of the fold: the harness
+// leaves it at `turn_pending` / `running` long after a turn ended.
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 

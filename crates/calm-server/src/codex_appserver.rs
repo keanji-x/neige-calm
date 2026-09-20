@@ -1,60 +1,6 @@
-//! Programmatic client for a card's `codex app-server` connection.
-//!
-//! ## Wire protocol (from the spike — build to these exactly)
-//!
-//! `codex app-server --listen unix://PATH` speaks **WebSocket over the
-//! Unix domain socket**, carrying JSON-RPC 2.0 messages as WebSocket text
-//! frames (URI path `ws://localhost/`). Two hard facts:
-//!
-//!   * **`permessage-deflate` MUST NOT be offered** or the server rejects
-//!     the handshake (`Missing, duplicated or incorrect header
-//!     sec-websocket-extensions`). We use `tokio-tungstenite` 0.24, whose
-//!     handshake never offers compression (no `Sec-WebSocket-Extensions`
-//!     header is generated — confirmed against the crate source), so this
-//!     is satisfied *by construction*. The hand-built request below adds
-//!     no extension header either. This is the Rust equivalent of the
-//!     spike's Python `compression=None`.
-//!   * Raw JSON written to the socket without a WS upgrade is silently
-//!     dropped (connection closed, zero bytes). We always go through the
-//!     WS client.
-//!
-//! JSON-RPC envelope: `{"jsonrpc":"2.0","id":<int|string>,"method":"…","params":…}`.
-//! The `jsonrpc` field is optional on the wire but we send it. We always
-//! emit integer ids; the protocol permits string ids too, so the reader
-//! correlates responses by an id that is either an integer or a
-//! string-encoded integer (defensive — we control the ids). Response
-//! `id` echoes the request; notifications carry no `id`. The connection is
-//! tagged `api_version=v2` server-side; we send `capabilities.experimentalApi
-//! = true` in `initialize` because all the methods we use are `[experimental]`.
-//!
-//! ## Architecture
-//!
-//! [`CodexAppServer::connect`] opens the WS-over-UDS connection, spawns a
-//! background **reader task** that owns the WS read half, and returns a
-//! handle plus a [`NotificationStream`]. The reader demultiplexes incoming
-//! frames:
-//!
-//!   * **server requests** (method + id) use a separate bounded, connection-owned
-//!     handler/reply path; no handler means explicit refusal,
-//!   * **responses** (frames with an `id` we are waiting on) are routed to
-//!     the matching request via a per-id [`oneshot`] channel held in a
-//!     shared pending-map, and
-//!   * **notifications** (frames with a `method` and no `id`, plus error
-//!     frames whose id we are not tracking) are parsed into [`Notification`]
-//!     and pushed onto an mpsc channel the caller consumes.
-//!
-//! Request methods serialize params, register a oneshot, write the frame
-//! through a `Mutex`-guarded write half, and await the correlated response.
-//! Unknown notification methods become [`Notification::Other`] rather than
-//! an error so codex version drift never breaks the consumer.
-//!
-//! ## Schema scope
-//!
-//! We type ONLY the params/results we use (not all 257 schema types).
-//! Every result struct is `#[serde(default)]` / ignores unknown fields so
-//! the `[experimental]` protocol can grow fields without breaking us. The
-//! thread/turn objects are kept as `serde_json::Value` where we only need
-//! to pluck an id — vendoring their full shape buys nothing for PR2.
+//! Programmatic client for a card's `codex app-server` connection: JSON-RPC 2.0 over WebSocket over a unix socket.
+//! `permessage-deflate` MUST NOT be offered or the server rejects the handshake; raw JSON without the WS upgrade is silently dropped. All methods used are `[experimental]`, so `initialize` sends `experimentalApi = true`.
+//! A reader task demultiplexes responses (per-id oneshot), server requests, and notifications (unbounded mpsc); only the params/results we use are typed, and unknown fields are tolerated.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -88,58 +34,18 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use crate::error::{CalmError, Result};
 use crate::planner_model::TurnModelSelection;
 
-/// WebSocket URI the server expects over the UDS. The host is irrelevant
-/// (there is no DNS over a unix socket) but tungstenite requires a `Host`
-/// header — `localhost` matches what the spike used.
+/// The host is irrelevant over a unix socket, but tungstenite requires a `Host` header.
 const WS_URI: &str = "ws://localhost/";
 
-/// Default per-request response timeout. All RPC methods we call return a
-/// short *acknowledgement* (e.g. `turn/start` returns only the turn id; turn
-/// *completion* arrives later as a `turn/completed` notification), so a tight
-/// bound never truncates a long-running turn. We pick 30 s — generous for a
-/// model-adjacent ack while still bounding a hung/never-answered request.
-/// (`plugin_host/mcp.rs:373` uses 10 s for its purely-local handshake.)
+/// Every RPC we call returns a short acknowledgement (turn completion arrives as a notification), so a tight bound never truncates a long turn.
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// #1453 — bound for [`CodexAppServer::connect`]'s two blocking steps:
-/// `connect(2)` on the unix socket and the WebSocket upgrade that follows.
-///
-/// Both used to be unbounded, and the upgrade is the dangerous one: a peer
-/// whose accept loop is blocked still lets `connect(2)` succeed (the kernel
-/// queues us in its listen backlog) and then never sends the HTTP 101, so
-/// `client_async` waits forever with no timer anywhere above it. That is the
-/// exact shape that wedged three `shared_codex_appserver` tests — and the
-/// self-hosted CI runner behind them — for hours, and in production it is a
-/// boot that never finishes and never errors: the shared-daemon takeover
-/// probe (`shared_codex_appserver::try_takeover_live`) awaits this call with
-/// no deadline of its own.
-///
-/// 10 s: this handshake is purely local (no model work, no disk), the same
-/// budget `plugin_host/mcp.rs` gives its local handshake, and every caller
-/// either retries or classifies the failure. Anything that has not answered
-/// a local WebSocket upgrade in 10 s is wedged, not slow.
+/// Bound for `connect(2)` and the WebSocket upgrade: a peer whose accept loop is blocked lets `connect(2)` succeed (listen backlog) and then never sends the HTTP 101.
+/// This handshake is purely local, so anything that has not answered in 10 s is wedged, not slow.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-// Notification backpressure decision (issue #293 fix-loop):
-//
-// The notification channel is **unbounded** (`mpsc::unbounded_channel`).
-// Responses and notifications are demultiplexed on the *same* reader loop;
-// responses are delivered via non-blocking `oneshot::send`. If notification
-// delivery could ever block the reader (as a bounded channel's
-// `send().await` does when full), a slow/absent notification consumer would
-// stall ALL in-flight RPC responses — a latent deadlock. Using an unbounded
-// channel with the synchronous, never-awaiting `unbounded_send` keeps
-// notification delivery from ever blocking response routing, and guarantees
-// turn-lifecycle notifications (esp. `turn/completed`, which PR3's dispatcher
-// depends on) are never silently dropped. The trade-off is unbounded memory
-// if a consumer never drains while events keep arriving; that is acceptable
-// here because the consumer (PR3) drains promptly and the connection is
-// per-card and short-lived. The alternative — bounded `try_send` with a drop
-// counter — was rejected because dropping `turn/completed` is unacceptable.
-
-// ===========================================================================
-// Typed params / results — only what we use.
-// ===========================================================================
+// The notification channel is unbounded on purpose: responses and notifications share one reader loop, so a blocking notification send would stall every in-flight RPC response.
+// Dropping `turn/completed` is unacceptable, and the per-card consumer drains promptly.
 
 /// `clientInfo` block for `initialize`. Required by the schema.
 #[derive(Debug, Clone, Serialize)]
@@ -148,8 +54,7 @@ pub struct ClientInfo {
     pub version: String,
 }
 
-/// `capabilities` block for `initialize`. All methods we call are
-/// `[experimental]`, so we always set `experimentalApi=true`.
+/// All methods we call are `[experimental]`, so `experimentalApi` is always true.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InitializeCapabilities {
@@ -163,8 +68,7 @@ struct InitializeParams {
     capabilities: InitializeCapabilities,
 }
 
-/// `initialize` result. Tolerates extra fields (the schema lists exactly
-/// these four as required, but we only assert on shape, not values).
+/// `initialize` result; tolerates extra fields.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InitializeResult {
@@ -175,39 +79,14 @@ pub struct InitializeResult {
 }
 
 /// A single `turn/start` / `turn/steer` input item.
-///
-/// Two of codex's `UserInput` variants are modeled. The rest (`image` with a
-/// data url, `skill`, `mention`) are not, and are not needed: planner
-/// attachments are images the server already has on local disk.
-///
-/// # The container's `rename_all` is not the wire spelling
-///
-/// codex's `UserInput` is `camelCase`, so its tag for the local-image variant
-/// is `"localImage"`. This enum is `rename_all = "lowercase"` because `Text`
-/// is `"text"` either way, and a variant added without its own `rename` would
-/// serialize as `"localimage"` — which compiles, passes every Rust test that
-/// does not read the wire bytes, and is rejected by codex at deserialization
-/// with no signal on our side. Hence the explicit variant-level rename, and
-/// hence `local_image_serializes_with_the_camel_case_tag` pinning the exact
-/// JSON.
+/// codex's `UserInput` is `camelCase` while this enum is `rename_all = "lowercase"`: a variant added without its own `rename` would serialize as `"localimage"`, which codex rejects with no signal on our side.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum InputItem {
     /// `{"type":"text","text":"…"}`.
     Text { text: String },
-    /// `{"type":"localImage","path":"/abs/path"}` — codex's app-server process
-    /// reads the file itself. It is our direct child in the same mount
-    /// namespace, so an absolute host path means the same thing on both sides.
-    ///
-    /// `detail` is `Option` + `#[serde(default)]` on codex's side and is
-    /// deliberately not sent: omitting it takes codex's default, and the one
-    /// thing we would gain by sending it (`Original`, to suppress the 2048px
-    /// downscale) is not a choice this feature has any reason to make.
-    ///
-    /// A read or decode failure on codex's side is **silent** — the item is
-    /// replaced with placeholder text and no error comes back — so nothing
-    /// downstream may treat a successful `turn/start` as evidence that the
-    /// image was seen.
+    /// `{"type":"localImage","path":"/abs/path"}` — codex reads the file itself (same mount namespace). `detail` is deliberately not sent.
+    /// A read or decode failure on codex's side is silent (placeholder text, no error), so a successful `turn/start` is no evidence the image was seen.
     #[serde(rename = "localImage")]
     LocalImage { path: String },
 }
@@ -326,9 +205,7 @@ impl InputItem {
     }
 }
 
-/// `thread/start` / `thread/resume` result. The full thread object is kept
-/// as a `Value` — we only ever read `thread.id`, exposed via
-/// [`ThreadResult::thread_id`].
+/// `thread/start` / `thread/resume` result; only `thread.id` is ever read.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ThreadResult {
@@ -339,9 +216,7 @@ pub struct ThreadResult {
 }
 
 impl ThreadResult {
-    /// The thread id (`thread.id`), the handle every subsequent
-    /// `turn/*` / `thread/*` call keys on. `None` only if the server
-    /// returned a shape without it (should not happen on success).
+    /// The thread id (`thread.id`); `None` only if the server returned a shape without it.
     pub fn thread_id(&self) -> Option<&str> {
         self.thread.get("id").and_then(Value::as_str)
     }
@@ -356,8 +231,7 @@ pub struct TurnStartResult {
 }
 
 impl TurnStartResult {
-    /// The id of the started turn — needed as `expectedTurnId` for a
-    /// subsequent `turn/steer` and as `turnId` for `turn/interrupt`.
+    /// Needed as `expectedTurnId` for `turn/steer` and as `turnId` for `turn/interrupt`.
     pub fn turn_id(&self) -> Option<&str> {
         self.turn.get("id").and_then(Value::as_str)
     }
@@ -370,19 +244,9 @@ pub struct TurnSteerResult {
     pub turn_id: String,
 }
 
-// ===========================================================================
-// thread/read + thread/loaded/list responses (#741 death arbiter).
-//
-// These MIRROR upstream `app-server-protocol/src/protocol/v2.rs` (HEAD
-// 35aaa5d9, ~5 weeks older than deployed 0.137.0 — version skew flagged;
-// real wire validation is the D-6 e2e in 741-3). We define ONLY the fields
-// the arbiter reads: the thread `status` and, per turn, `completedAt`.
-// ===========================================================================
+// `thread/read` + `thread/loaded/list` responses: narrowed mirrors of upstream `app-server-protocol` v2, defining only the fields the death arbiter reads.
 
-/// Upstream `ThreadStatus` (`v2.rs:4386`): internally tagged on `type`,
-/// camelCase variants. The arbiter keys on `Active` (a turn is running or
-/// blocked on a human → never reap, design §1.1/§1.4); the other arms mean
-/// "no turn running" and hand the decision to the last-turn `completedAt`.
+/// Upstream `ThreadStatus`: internally tagged on `type`, camelCase variants. The arbiter keys on `Active`; the other arms mean "no turn running".
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ThreadStatus {
@@ -395,9 +259,7 @@ pub enum ThreadStatus {
     },
 }
 
-/// Upstream `ThreadActiveFlag` (`v2.rs:4404`): the "blocked on a human"
-/// flags. Either flag on an `Active` thread is the idle-worker guard
-/// (design §1.4) — never reap.
+/// Upstream `ThreadActiveFlag`: either flag on an `Active` thread means blocked on a human — never reap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ThreadActiveFlag {
@@ -405,21 +267,13 @@ pub enum ThreadActiveFlag {
     WaitingOnUserInput,
 }
 
-/// `thread/read` response (`v2.rs:4422`). We name the inner thread object
-/// [`ThreadView`] (vs upstream's `Thread`) and keep only the fields the
-/// arbiter needs.
+/// `thread/read` response, narrowed to the fields the arbiter needs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ThreadReadResponse {
     pub thread: ThreadView,
 }
 
-/// The thread object inside [`ThreadReadResponse`] — a narrowed mirror of
-/// upstream `Thread` (`v2.rs:5121`).
-///
-/// Upstream types `turns` as a non-optional `Vec<Turn>` (an **empty list**
-/// when not requested, never absent). We type it `Option<Vec<TurnView>>`
-/// with `#[serde(default)]` so both `"turns": []` (→ `Some([])`) and an
-/// absent field (→ `None`) parse; the arbiter treats both as "no turns".
+/// Narrowed mirror of upstream `Thread`. Upstream `turns` is a non-optional `Vec` (empty when not requested); `Option` + `#[serde(default)]` lets both `[]` and an absent field parse, and the arbiter treats both as "no turns".
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadView {
@@ -428,9 +282,7 @@ pub struct ThreadView {
     pub turns: Option<Vec<TurnView>>,
 }
 
-/// A turn inside [`ThreadView`] — a narrowed mirror of upstream `Turn`
-/// (`v2.rs:5193`). `completedAt` is the ONLY field the arbiter reads
-/// (design §0.1): `null` = died mid-turn; `Some` = completed-or-aborted.
+/// Narrowed mirror of upstream `Turn`: `completedAt` is the only field the arbiter reads (`null` = died mid-turn).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnView {
@@ -438,50 +290,24 @@ pub struct TurnView {
     pub completed_at: Option<i64>,
 }
 
-/// `thread/loaded/list` response (`v2.rs:4378`). We keep only `data` (the
-/// loaded thread ids) and drop the pagination cursor.
+/// `thread/loaded/list` response; only `data` is kept, the pagination cursor is dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ThreadLoadedListResponse {
     pub data: Vec<String>,
 }
 
-// ===========================================================================
-// Notification stream (server -> client).
-// ===========================================================================
-
-/// One page of `model/list` (`v2/model.rs` `ModelListResponse`). The server
-/// pages the catalog; [`crate::shared_codex_appserver::SharedCodexAppServer::model_list`]
-/// drains it in one call.
+/// One page of `model/list`; `SharedCodexAppServer::model_list` drains the pages.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelListPage {
-    /// Left undecoded on purpose. The catalog ships from a component that
-    /// versions independently of us, so one preset that grew or renamed a
-    /// field must not be able to empty the page — the caller decodes each
-    /// entry into [`CodexModel`] separately and skips the ones it cannot
-    /// read. See `SharedCodexAppServer::model_list`.
+    /// Left undecoded on purpose: the catalog versions independently of us, so one unreadable preset must not empty the page — the caller decodes entries one by one.
     pub data: Vec<Value>,
     /// `None` (or an empty string) means "no further pages".
     pub next_cursor: Option<String>,
 }
 
-/// One catalog entry (`v2/model.rs` `Model`), narrowed to the seven fields
-/// `GET /api/models` proxies.
-///
-/// Codex's own struct carries more (`upgradeInfo`, `availabilityNux`,
-/// `hidden`, `serviceTiers`, …). We deliberately do not vendor those: nothing
-/// in this kernel reads them, and every field we decode is a field we would
-/// have to keep in step with an `[experimental]` protocol.
-///
-/// `id` is the *preset* identifier and `model` is the slug the model is
-/// invoked by. Only `model` may ever reach `turn/start` or
-/// `cards.payload_json`.
-///
-/// `id` is NOT kept off the REST wire, and an earlier version of this sentence
-/// claimed it was: `GET /api/models` publishes it as `CatalogModel::id` and
-/// the picker uses it as a React key. What holds is the direction — it travels
-/// outward for presentation and must never come back as a selection, which is
-/// what `SetPlannerModelBody::model` documents on the return leg.
+/// One catalog entry, narrowed to the fields `GET /api/models` proxies.
+/// `id` is the preset identifier and `model` the slug the model is invoked by; only `model` may ever reach `turn/start` or `cards.payload_json`. `id` travels outward for presentation and must never come back as a selection.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexModel {
@@ -490,52 +316,29 @@ pub struct CodexModel {
     pub display_name: String,
     pub description: String,
     pub supported_reasoning_efforts: Vec<CodexReasoningEffortOption>,
-    /// Wire type is a bare string, not a closed enum: codex's
-    /// `ReasoningEffort` has a `Custom(String)` variant and a hand-written
-    /// `Deserialize` that accepts any non-empty string
-    /// (`protocol/src/openai_models.rs`). A closed enum here would fail to
-    /// decode the whole catalog the first time codex ships a new effort.
+    /// Bare string, not a closed enum: codex's `ReasoningEffort` accepts any non-empty string, and a closed enum here would fail the whole catalog on a new effort.
     pub default_reasoning_effort: String,
-    /// Codex's own notion of a catalog default. It answers "which entry does
-    /// the picker highlight", NOT "which model does this installation
-    /// currently follow" — the latter comes from `config/read`.
+    /// Which entry the picker highlights, NOT which model this installation follows (that comes from `config/read`).
     pub is_default: bool,
 }
 
-/// One selectable reasoning effort for a model (`v2/model.rs`
-/// `ReasoningEffortOption`). `description` is codex's copy; we never
-/// substitute our own.
+/// One selectable reasoning effort for a model; `description` is codex's copy.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexReasoningEffortOption {
-    /// Bare string for the same reason as
-    /// [`CodexModel::default_reasoning_effort`].
+    /// Bare string for the same reason as [`CodexModel::default_reasoning_effort`].
     pub reasoning_effort: String,
     pub description: String,
 }
 
-/// `config/read` response (`v2/config.rs` `ConfigReadResponse`), narrowed to
-/// the `config` member.
-///
-/// **The two levels do not share a serde convention.** The envelope is
-/// `rename_all = "camelCase"`, but the `Config` it wraps is
-/// `rename_all = "snake_case"` (`v2/config.rs`). So the keys inside `config`
-/// are `model` and `model_reasoning_effort` — writing `modelReasoningEffort`
-/// here parses to `None` forever, silently. (Contrast `WarningNotification`,
-/// whose `threadId` really is camelCase.)
+/// `config/read` response, narrowed to `config`. The envelope is camelCase but the wrapped `Config` is snake_case: writing `modelReasoningEffort` here parses to `None` forever, silently.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigReadResponse {
     pub config: CodexConfig,
 }
 
-/// The layer-merged effective config, narrowed to the two keys the model
-/// picker needs. Field names are snake_case verbatim — see
-/// [`ConfigReadResponse`].
-///
-/// Both values are genuinely optional on codex's side: "no model configured"
-/// is a state this server has to represent (`default.model: null`), not a
-/// missing required field.
+/// The layer-merged effective config, narrowed to the two keys the model picker needs; field names are snake_case verbatim. Both are genuinely optional on codex's side.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct CodexConfig {
     #[serde(default)]
@@ -544,31 +347,20 @@ pub struct CodexConfig {
     pub model_reasoning_effort: Option<String>,
 }
 
-/// A server→client notification, narrowed to the variants the push
-/// migration cares about. Anything else (the dozens of housekeeping /
-/// realtime / approval methods) lands in [`Notification::Other`] so codex
-/// version drift never breaks the consumer.
-///
-/// The `method` strings map per the v2 schema (`ServerNotification`).
+/// A server→client notification; anything not modeled lands in [`Notification::Other`] so codex version drift never breaks the consumer.
 #[derive(Debug, Clone)]
 pub enum Notification {
     /// `thread/started` — a thread was created/loaded on this connection.
     ThreadStarted { params: Value },
-    /// `thread/status/changed` — `status` is `{ "type": "idle" | "active"
-    /// | "notLoaded" | "systemError", … }`. The `active` variant carries
-    /// `activeFlags`. We keep the raw status `Value` plus the thread id.
+    /// `thread/status/changed` — the raw status `Value` (`{ "type": "idle" | "active" | ... }`) plus the thread id.
     ThreadStatusChanged { thread_id: String, status: Value },
     /// `turn/started` — carries `threadId` + the full `turn` object.
     TurnStarted { thread_id: String, turn: Value },
-    /// `turn/completed` — the terminal event of a turn; carries `threadId`
-    /// + the final `turn` object.
+    /// `turn/completed` — the terminal event of a turn.
     TurnCompleted { thread_id: String, turn: Value },
-    /// Any `item/*` event (`item/started`, `item/completed`,
-    /// `item/agentMessage/delta`, …). The exact method is preserved so a
-    /// consumer can branch without re-deriving it.
+    /// Any `item/*` event; the exact method is preserved so a consumer can branch on it.
     Item { method: String, params: Value },
-    /// Any method we don't model. Preserves `method` + `params` so nothing
-    /// is silently lost.
+    /// Any method we don't model; `method` + `params` are preserved.
     Other { method: String, params: Value },
 }
 
@@ -587,12 +379,8 @@ impl Notification {
         }
     }
 
-    /// Parse a notification frame's `method` + `params` into a typed
-    /// variant. Never fails: unknown / malformed shapes degrade to
-    /// [`Notification::Other`] (or keep raw params), keeping the consumer
-    /// resilient to protocol drift.
+    /// Never fails: unknown / malformed shapes degrade to [`Notification::Other`].
     fn parse(method: String, params: Value) -> Self {
-        // Best-effort field extraction; missing fields default to empty.
         let thread_id = |p: &Value| {
             p.get("threadId")
                 .and_then(Value::as_str)
@@ -619,9 +407,7 @@ impl Notification {
     }
 }
 
-/// The receiving half of the server→client notification stream. Owned by
-/// the caller; the reader task pushes [`Notification`]s onto it. When the
-/// connection closes the channel ends (`recv` returns `None`).
+/// The receiving half of the notification stream; the channel ends when the connection closes.
 pub struct NotificationStream {
     rx: mpsc::UnboundedReceiver<Notification>,
 }
@@ -632,19 +418,12 @@ impl NotificationStream {
         self.rx.recv().await
     }
 
-    /// Await the next notification, returning a deterministic error once
-    /// the stream ends because the server closed the connection, the WS
-    /// reader hit an error, or the reader task exited.
+    /// Like `recv`, but a closed stream is a deterministic error.
     pub async fn recv_result(&mut self) -> Result<Notification> {
         self.rx.recv().await.ok_or_else(notification_stream_closed)
     }
 
-    /// Await the next notification satisfying `predicate`.
-    ///
-    /// Non-matching notifications are consumed. If the underlying stream
-    /// ends before a match arrives, returns a deterministic error instead
-    /// of silently yielding `None`, so callers can race this future against
-    /// process exit in a `tokio::select!`.
+    /// Await the next notification satisfying `predicate`; non-matching ones are consumed, and a stream that ends first is an error rather than `None`.
     pub async fn await_notification(
         &mut self,
         mut predicate: impl FnMut(&Notification) -> bool,
@@ -664,10 +443,6 @@ fn notification_stream_closed() -> CalmError {
     )
 }
 
-// ===========================================================================
-// JSON-RPC framing helpers.
-// ===========================================================================
-
 /// In-flight request registry: JSON-RPC id -> sender for its response.
 type Pending = Arc<StdMutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, RpcError>>>>>;
 
@@ -678,32 +453,19 @@ struct RpcError {
     message: String,
 }
 
-/// The write half of the socket, behind a `Mutex` so concurrent request
-/// methods serialize their frame writes (WS frames must not interleave).
+/// The write half, behind a `Mutex` so concurrent requests cannot interleave WS frames.
 type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<UnixStream>, Message>>>;
 
-// ===========================================================================
-// The client.
-// ===========================================================================
-
-/// An async client for one card's `codex app-server`, connected over
-/// WebSocket-over-UDS. Cheaply cloneable is intentionally NOT provided:
-/// the write sink is `Arc`-shared internally so `&self` methods can be
-/// called concurrently, but you hold a single handle.
+/// An async client for one card's `codex app-server` over WebSocket-over-UDS; `&self` methods may run concurrently, but there is a single handle.
 pub struct CodexAppServer {
     sink: WsSink,
     transport: Arc<TransportAbort>,
     server_requests: Arc<server_requests::Registration>,
     pending: Pending,
     next_id: AtomicU64,
-    /// Per-request response timeout. This is a leak/wedge backstop for a
-    /// request whose response never arrives; lifecycle state is driven by
-    /// notifications / EOF / child exit, not by this timer. Configurable via
-    /// [`CodexAppServer::set_request_timeout`]; defaults to
-    /// [`DEFAULT_REQUEST_TIMEOUT`].
+    /// A leak/wedge backstop for a request whose response never arrives; lifecycle is driven by notifications / EOF / child exit, not by this timer.
     request_timeout: Duration,
-    /// Kept so dropping the client aborts the reader task (no orphan task
-    /// after the connection is gone).
+    /// Kept so dropping the client aborts the reader task.
     reader: tokio::task::JoinHandle<()>,
 }
 
@@ -715,20 +477,10 @@ impl Drop for CodexAppServer {
     }
 }
 
-/// #1453 — the message a [`CONNECT_TIMEOUT`] expiry produces. A bound is only
-/// worth having if the failure says what we were waiting for and what the
-/// peer looked like while we waited, so this names the stage, the socket, the
-/// budget, and the observable peer state (does the socket file still exist?
-/// is anything listening on it right now?) instead of a bare "timed out".
+/// The message a [`CONNECT_TIMEOUT`] expiry produces: names the stage, the socket, the budget and the observable peer state.
 async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state: &str) -> String {
     let sock_exists = sock_path.exists();
-    // A fresh probe: `connect(2)` returning ECONNREFUSED means the socket
-    // file is stale (nobody is listening); succeeding means a listener is
-    // still bound. This distinguishes "the daemon died and left its socket
-    // behind" from "the daemon is alive but not answering", which are
-    // opposite repairs. Bounded (200 ms) and async on purpose — a
-    // *blocking* probe here would itself hang against a peer whose listen
-    // backlog is full, which is precisely the state we are reporting on.
+    // A fresh probe: ECONNREFUSED means a stale socket file, success means a listener is still bound — opposite repairs. Bounded and async on purpose: a blocking probe would itself hang against a full listen backlog.
     let listener_bound = match tokio::time::timeout(
         Duration::from_millis(200),
         UnixStream::connect(sock_path),
@@ -754,31 +506,9 @@ async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state:
     )
 }
 
-/// Build the `turn/start` params frame.
-///
-/// Split out from the method so the frame — the only thing codex actually
-/// sees — can be asserted on without a daemon, a socket or a runtime.
-///
-/// **A `None` in `selection` omits the key entirely; it never sends `null`.**
-/// The two are not interchangeable here. Codex's `TurnStartParams` fields are
-/// plain `Option`s and its overrides are sticky, so an omitted key means
-/// "leave the thread's current override alone" while an explicit `null`
-/// deserializes to the same `None` but travels as a value we chose to send.
-/// Omission is the cheaper and more honest spelling of "we have nothing to
-/// say", and it is what every turn issued before #1505 sent.
-///
-/// `effort` is spelled `effort`, not `reasoningEffort`: `TurnStartParams` is
-/// `rename_all = "camelCase"` over a field named `effort`. The `config/read`
-/// side of this feature uses `model_reasoning_effort` — a different struct
-/// with different casing rules — and confusing the two produces a frame codex
-/// silently ignores.
-///
-/// `client_user_message_id` is codex's `TurnStartParams.clientUserMessageId`
-/// (`Option<String>`, omitted when `None` for the same reason as the two
-/// keys above). Codex copies it verbatim onto the `userMessage` item it
-/// echoes for this turn as `item.clientId`, which is the only key the kernel
-/// has for matching that echo back to the row it wrote at drain time (#1625
-/// P2). One value per turn, because codex echoes one `userMessage` per turn.
+/// Build the `turn/start` params frame, split out so the frame can be asserted on without a daemon.
+/// A `None` in `selection` omits the key entirely, never `null`: codex's overrides are sticky, and an omitted key means "leave the thread's current override alone".
+/// `effort` is spelled `effort` (not `reasoningEffort`); `clientUserMessageId` is echoed back by codex as `item.clientId` on the `userMessage` item, the kernel's only key for matching that echo.
 fn turn_start_params(
     thread_id: &str,
     input: &[InputItem],
@@ -804,10 +534,7 @@ fn turn_start_params(
     params
 }
 
-/// The `turn/steer` frame (#1625 P3). Three required keys and the same
-/// optional `clientUserMessageId` as `turn_start_params`, omitted rather than
-/// `null` when there is none. No model and no effort: codex rejects settings
-/// on a steer, and the turn already has its own.
+/// The `turn/steer` frame: three required keys plus the optional `clientUserMessageId` (omitted, never `null`). No model and no effort: codex rejects settings on a steer.
 fn turn_steer_params(
     thread_id: &str,
     expected_turn_id: &str,
@@ -832,20 +559,12 @@ fn turn_steer_params(
 }
 
 impl CodexAppServer {
-    /// Register the sole dynamic-tool consumer for this connection. Default is
-    /// explicit refusal. This does not register tools on any provider thread.
+    /// Register the sole dynamic-tool consumer for this connection; the default is explicit refusal.
     pub fn take_dynamic_tool_requests(&self) -> Result<mpsc::Receiver<DynamicToolRequest>> {
         self.server_requests.take()
     }
 
-    /// Test-only: build a fully-constructed [`CodexAppServer`] over an
-    /// in-process `UnixStream::pair` WebSocket handshake, returning the
-    /// client + its [`NotificationStream`] + the *server* end (which the
-    /// caller must keep alive — dropping it closes the connection and
-    /// stops the reader). Lets other modules' tests (e.g.
-    /// `planner_appserver`) construct a real client/handle without a `codex`
-    /// binary. The server end is returned rather than parked so the
-    /// caller controls its lifetime.
+    /// Test-only: a fully-constructed [`CodexAppServer`] over an in-process `UnixStream::pair` handshake; the returned server end must be kept alive or the connection closes.
     #[cfg(any(test, feature = "fixtures"))]
     pub(crate) async fn connect_pair_for_test()
     -> (Self, NotificationStream, WebSocketStream<UnixStream>) {
@@ -884,12 +603,7 @@ impl CodexAppServer {
         (client, NotificationStream { rx: notif_rx }, server)
     }
 
-    /// Connect to a `codex app-server` listening on the unix socket at
-    /// `sock_path` (started with `--listen unix://<sock_path>`). Performs
-    /// the WebSocket upgrade (compression disabled by construction), spawns
-    /// the background reader, and returns the client paired with its
-    /// [`NotificationStream`]. Does NOT send `initialize` — call
-    /// [`CodexAppServer::initialize`] next.
+    /// Connect to a `codex app-server` on `sock_path`, spawn the reader, return the client and its [`NotificationStream`]. Does NOT send `initialize`.
     pub async fn connect(sock_path: impl AsRef<Path>) -> Result<(Self, NotificationStream)> {
         let sock_path = sock_path.as_ref();
         let stream =
@@ -914,11 +628,7 @@ impl CodexAppServer {
                 }
             };
 
-        // Build the handshake request by hand. `IntoClientRequest` on a
-        // `&str` URI fills in the mandatory Sec-WebSocket-* headers and a
-        // `Host`; crucially it adds NO `Sec-WebSocket-Extensions`, so we
-        // never offer permessage-deflate (the server would otherwise
-        // reject the upgrade — see module docs).
+        // `IntoClientRequest` on a `&str` URI adds NO `Sec-WebSocket-Extensions`, so permessage-deflate is never offered.
         let request = WS_URI
             .into_client_request()
             .map_err(|e| CalmError::CodexAppServer(format!("build ws handshake request: {e}")))?;
@@ -957,9 +667,7 @@ impl CodexAppServer {
         let (write, read) = ws.split();
         let sink: WsSink = Arc::new(Mutex::new(write));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
-        // Unbounded: notification delivery must never block the reader's
-        // response routing — see the backpressure note at the top of this
-        // module.
+        // Unbounded: notification delivery must never block the reader's response routing.
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
 
         let server_requests = Arc::new(server_requests::Registration::default());
@@ -986,9 +694,7 @@ impl CodexAppServer {
         Ok((client, NotificationStream { rx: notif_rx }))
     }
 
-    /// Override the per-request response timeout (default
-    /// [`DEFAULT_REQUEST_TIMEOUT`] = 30 s). Builder-style so a caller can
-    /// `CodexAppServer::connect(..).await?.0.with_request_timeout(..)`.
+    /// Override the per-request response timeout, builder-style.
     #[must_use]
     pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
@@ -1000,8 +706,7 @@ impl CodexAppServer {
         self.request_timeout
     }
 
-    /// Send `initialize` and return its result. Must be the first call on
-    /// a fresh connection (the server requires it before any other method).
+    /// Must be the first call on a fresh connection.
     pub async fn initialize(&self, client_info: ClientInfo) -> Result<InitializeResult> {
         let params = InitializeParams {
             client_info,
@@ -1012,9 +717,7 @@ impl CodexAppServer {
         self.request("initialize", json!(params)).await
     }
 
-    /// `thread/start` — create a fresh thread. Note (from the spike): a
-    /// brand-new thread has NO rollout on disk until a turn runs, so a
-    /// second connection cannot `thread/resume` it until then.
+    /// `thread/start` — a brand-new thread has NO rollout on disk until a turn runs, so a second connection cannot `thread/resume` it until then.
     pub async fn thread_start(&self, developer_instructions: Option<&str>) -> Result<ThreadResult> {
         let params = match developer_instructions {
             Some(prompt) => json!({ "developerInstructions": prompt }),
@@ -1132,9 +835,7 @@ impl CodexAppServer {
         .await
     }
 
-    /// `thread/resume` — attach to an existing thread by id. Fails with a
-    /// `-32600 "no rollout found …"` (surfaced as
-    /// [`CalmError::CodexAppServer`]) if the thread has not yet run a turn.
+    /// `thread/resume` — fails with `-32600 "no rollout found …"` if the thread has not yet run a turn.
     pub async fn thread_resume(&self, thread_id: &str) -> Result<ThreadResult> {
         self.request("thread/resume", json!({ "threadId": thread_id }))
             .await
@@ -1152,11 +853,7 @@ impl CodexAppServer {
         self.request("thread/resume", value).await
     }
 
-    /// `thread/read` — read a thread's current status and (optionally) its
-    /// turn history. The #741 death arbiter calls this with
-    /// `include_turns = true` to inspect the last turn's `completed_at`
-    /// (the died-mid-turn discriminator, design §0.1). Mirrors upstream
-    /// `ThreadReadParams` (`v2.rs:4412`).
+    /// `thread/read` — current status and, with `include_turns`, the turn history whose last `completed_at` is the died-mid-turn discriminator.
     pub async fn thread_read(
         &self,
         thread_id: &str,
@@ -1169,23 +866,13 @@ impl CodexAppServer {
         .await
     }
 
-    /// `thread/loaded/list` — the thread ids currently loaded in daemon
-    /// memory. The arbiter uses this as a secondary signal (design §1.3).
-    /// Mirrors upstream `ThreadLoadedListResponse` (`v2.rs:4378`); we pluck
-    /// `data` and drop the pagination cursor.
+    /// `thread/loaded/list` — the thread ids currently loaded in daemon memory (pagination cursor dropped).
     pub async fn thread_loaded_list(&self) -> Result<Vec<String>> {
         let resp: ThreadLoadedListResponse = self.request("thread/loaded/list", json!({})).await?;
         Ok(resp.data)
     }
 
-    /// `turn/start` — begin a turn on `thread_id` with the given input.
-    /// Returns quickly with the started turn's id; the actual work streams
-    /// as notifications (`turn/started` → `item/*` → `turn/completed`).
-    ///
-    /// `selection` says what this turn asks of the model. It is a required
-    /// argument rather than an option with a default so that every caller has
-    /// to answer the question out loud; a caller with nothing to say passes
-    /// [`TurnModelSelection::inherit`].
+    /// `turn/start` — returns the turn id quickly; the work streams as notifications. `selection` is required so every caller answers the model question out loud (`TurnModelSelection::inherit` for nothing to say).
     pub async fn turn_start(
         &self,
         thread_id: &str,
@@ -1196,9 +883,7 @@ impl CodexAppServer {
             .await
     }
 
-    /// `turn/start` carrying `clientUserMessageId` — see `turn_start_params`.
-    /// The planner drain is the one caller with an id to send; every other
-    /// turn goes through [`Self::turn_start`], which sends none.
+    /// `turn/start` carrying `clientUserMessageId`; the planner drain is the one caller with an id to send.
     pub async fn turn_start_with_client_id(
         &self,
         thread_id: &str,
@@ -1213,11 +898,7 @@ impl CodexAppServer {
         .await
     }
 
-    /// `model/list` — one page of codex's model catalog.
-    ///
-    /// `includeHidden` is pinned to `false`: the picker-visibility filter is
-    /// codex's (`preset.show_in_picker`), and a hidden preset is hidden for
-    /// the same reasons in our UI as in theirs.
+    /// `model/list` — one page. `includeHidden` is pinned to `false`: the picker-visibility filter is codex's.
     pub async fn model_list(
         &self,
         cursor: Option<&str>,
@@ -1230,12 +911,7 @@ impl CodexAppServer {
         self.request_until("model/list", params, deadline).await
     }
 
-    /// `config/read` — the layer-merged effective config.
-    ///
-    /// `cwd` decides which project layers are folded in. Pass the same path
-    /// the thread was started with, or `None` to read only the layers that
-    /// apply everywhere; the caller must not present a `None` read as if it
-    /// were that thread's effective default.
+    /// `config/read` — `cwd` decides which project layers are folded in; a `None` read must not be presented as a thread's effective default.
     pub async fn config_read(
         &self,
         cwd: Option<&str>,
@@ -1248,19 +924,8 @@ impl CodexAppServer {
         self.request_until("config/read", params, deadline).await
     }
 
-    /// `turn/steer` — push more input into the turn that is running now.
-    /// `expected_turn_id` must be the id returned by the `turn/start` that is
-    /// still running; codex refuses with `-32600` when no turn is active
-    /// (`no active turn to steer`) or when a different one is
-    /// (`expected active turn id … but found …`), and both reach the caller
-    /// as [`CalmError::CodexRefused`].
-    ///
-    /// `client_user_message_id` is `TurnSteerParams.clientUserMessageId`
-    /// (`string | null` in codex 0.153.4's generated schema), omitted when
-    /// `None` like the `turn/start` key of the same name; codex copies it onto
-    /// the `userMessage` item it echoes for the steered input as
-    /// `item.clientId` (#1625 P3), which is the key the kernel wrote its
-    /// transcript projection under.
+    /// `turn/steer` — push more input into the running turn. Codex refuses with `-32600` when no turn or a different turn is active (reaches the caller as [`CalmError::CodexRefused`]).
+    /// `client_user_message_id` is echoed back as `item.clientId` on the steered `userMessage` item.
     pub async fn turn_steer(
         &self,
         thread_id: &str,
@@ -1275,11 +940,7 @@ impl CodexAppServer {
         .await
     }
 
-    /// `thread/inject_items` — push context items onto a thread without
-    /// starting a turn. `items` is an opaque array of schema item objects
-    /// (kept as `Value` — the shape is large and we don't constrain it).
-    /// Returns `()` (the server returns `{}`). Note: inject alone does not
-    /// create a rollout, so it does not make a turn-less thread resumable.
+    /// `thread/inject_items` — push context items without starting a turn; inject alone creates no rollout, so it does not make a turn-less thread resumable.
     pub async fn inject_items(&self, thread_id: &str, items: Vec<Value>) -> Result<()> {
         let _: Value = self
             .request(
@@ -1290,8 +951,7 @@ impl CodexAppServer {
         Ok(())
     }
 
-    /// `turn/interrupt` — cancel a running turn. Both `thread_id` and the
-    /// running `turn_id` are required.
+    /// `turn/interrupt` — cancel a running turn.
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
         let response: Result<Value> = self
             .request(
@@ -1301,10 +961,7 @@ impl CodexAppServer {
             .await;
         match response {
             Ok(_) => Ok(()),
-            // Interrupt is a cancellation request, so a turn which completed
-            // between our active-turn snapshot and the daemon handling this
-            // request is already in the requested state. Codex reports that
-            // race as this exact invalid-request response.
+            // A turn that completed between our snapshot and the daemon handling this is already in the requested state; codex reports that race as this exact response.
             Err(CalmError::CodexRefused(message))
                 if message
                     == "turn/interrupt failed: no active turn to interrupt (code -32600)" =>
@@ -1315,11 +972,7 @@ impl CodexAppServer {
         }
     }
 
-    /// Core request/response round-trip: assign an id, register a oneshot,
-    /// write the frame, await the correlated response, deserialize the
-    /// `result` into `T`. A JSON-RPC `error` frame maps to
-    /// [`CalmError::CodexRefused`]; transport failures and a dead reader map
-    /// to [`CalmError::CodexAppServer`].
+    /// Core round-trip. A JSON-RPC `error` frame maps to [`CalmError::CodexRefused`]; transport failures and a dead reader map to [`CalmError::CodexAppServer`].
     async fn request<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
@@ -1329,29 +982,14 @@ impl CodexAppServer {
         self.request_until(method, params, deadline).await
     }
 
-    /// [`Self::request`] with an explicit deadline instead of the per-client
-    /// default.
-    ///
-    /// Callers that want a shorter bound than
-    /// [`DEFAULT_REQUEST_TIMEOUT`] should pass one absolute budget here. The
-    /// response wait uses that deadline. Cancellation also removes its pending
-    /// correlation entry; if it interrupts an incomplete send, the owned socket
-    /// is shut down without flushing and the execution outcome stays unknown.
-    /// Fully flushed requests keep the shared transport healthy on reply timeout.
-    ///
-    /// A deadline already in the past elapses immediately, which is what a
-    /// caller spending one budget across several calls wants.
+    /// [`Self::request`] with an explicit absolute deadline. Cancellation removes the pending entry; if it interrupts an incomplete send the owned socket is shut down unflushed and the outcome stays unknown.
     async fn request_until<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Value,
         deadline: tokio::time::Instant,
     ) -> Result<T> {
-        // An already-spent budget is answered without touching the wire. A
-        // caller spending one deadline across several calls has, by the time
-        // it reaches a later one, nothing left to wait with — writing the
-        // frame anyway would put a request on the daemon whose answer we have
-        // already decided to ignore.
+        // An already-spent budget is answered without touching the wire: writing the frame would put a request on the daemon whose answer we already decided to ignore.
         if tokio::time::Instant::now() >= deadline {
             return Err(CalmError::CodexAppServer(format!(
                 "request {method} skipped: the caller's budget was already spent"
@@ -1372,12 +1010,10 @@ impl CodexAppServer {
         });
         let text = serde_json::to_string(&frame)?;
 
-        // Write under the sink lock so concurrent requests don't interleave
-        // WS frames.
+        // Write under the sink lock so concurrent requests don't interleave WS frames.
         {
             let mut sink = self.sink.lock().await;
-            // Created after the lock: cancellation closes the owned socket BEFORE
-            // releasing the sink. This also cuts off read-side automatic flushes.
+            // Created after the lock: cancellation closes the owned socket BEFORE releasing the sink.
             let mut sending = self.transport.sending()?;
             if let Err(e) = sink.send(Message::Text(text)).await {
                 // Drop the now-unanswerable pending entry.
@@ -1389,13 +1025,7 @@ impl CodexAppServer {
 
         tracing::trace!(id, method, "codex app-server: request sent");
 
-        // Backstop the await: a server that never answers (or an event
-        // we'll never get a response for) must not hang the caller forever.
-        // On elapse we remove our own pending entry so the map doesn't leak
-        // the never-fired oneshot. NOTE: `turn/start` returns only the turn
-        // *ack* (turn id); turn lifecycle is decided later by
-        // notifications/EOF/child-exit, so this timer is not a turn
-        // lifecycle criterion.
+        // On elapse remove our own pending entry so the map does not leak the never-fired oneshot. This timer is not a turn lifecycle criterion.
         let outcome = match tokio::time::timeout_at(deadline, rx).await {
             Ok(received) => received,
             Err(_elapsed) => {
@@ -1409,15 +1039,12 @@ impl CodexAppServer {
         match outcome {
             Ok(Ok(value)) => serde_json::from_value(value)
                 .map_err(|e| CalmError::CodexAppServer(format!("decode {method} result: {e}"))),
-            // The one place codex's own refusal is still distinguishable from
-            // everything else that can go wrong with asking. Below this line it
-            // is a formatted string like any other.
+            // The one place codex's own refusal is still distinguishable from everything else that can go wrong.
             Ok(Err(rpc)) => Err(CalmError::CodexRefused(format!(
                 "{method} failed: {} (code {})",
                 rpc.message, rpc.code
             ))),
-            // Sender dropped without sending: the reader task ended (the
-            // connection closed) before our response arrived.
+            // Sender dropped without sending: the reader task ended before our response arrived.
             Err(_) => Err(CalmError::CodexAppServer(format!(
                 "{method}: connection closed before response"
             ))),
@@ -1425,10 +1052,7 @@ impl CodexAppServer {
     }
 }
 
-/// Background reader: owns the WS read half, demultiplexes every inbound
-/// frame into either a response (routed to the matching pending request)
-/// or a notification (pushed onto the caller's channel). Exits when the WS
-/// closes, on a transport error, or when the notification consumer is gone.
+/// Background reader: demultiplexes inbound frames into responses, server requests and notifications; exits on close, transport error, or when the notification consumer is gone.
 async fn reader_loop(
     mut read: futures_util::stream::SplitStream<WebSocketStream<UnixStream>>,
     pending: Pending,
@@ -1456,8 +1080,7 @@ async fn reader_loop(
         let text = match msg {
             Message::Text(t) => t,
             Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
-            // Ping/Pong/Close/frame — tungstenite auto-replies to pings;
-            // a Close ends the stream on the next poll.
+            // tungstenite auto-replies to pings; a Close ends the stream on the next poll.
             Message::Close(_) => {
                 tracing::debug!("codex app-server: ws close frame; reader stopping");
                 break;
@@ -1473,8 +1096,7 @@ async fn reader_loop(
             }
         };
 
-        // Bidirectional IDs are independent: a server request must never
-        // consume a pending client RPC with the same ID.
+        // Bidirectional IDs are independent: a server request must never consume a pending client RPC with the same ID.
         if obj.get("method").is_some() && obj.get("id").is_some() {
             if !requests.accept(&obj) {
                 break;
@@ -1499,24 +1121,17 @@ async fn reader_loop(
                 } else {
                     Ok(obj.get("result").cloned().unwrap_or(Value::Null))
                 };
-                // Receiver may be gone if the request future was dropped;
-                // that's fine.
+                // Receiver may be gone if the request future was dropped.
                 let _ = sender.send(payload);
                 continue;
             }
-            // Untracked id — fall through and treat as a notification if it
-            // carries a method (rare), else drop.
+            // Untracked id — treat as a notification if it carries a method, else drop.
         }
 
         if let Some(method) = obj.get("method").and_then(Value::as_str) {
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
             let notif = Notification::parse(method.to_string(), params);
-            // `unbounded_send` is synchronous and never awaits capacity, so a
-            // slow/absent notification consumer can NEVER block RPC-response
-            // routing on this same loop. The only failure is the consumer
-            // having been dropped (receiver gone) — then the channel is
-            // closed and we stop. See the backpressure note at the top of
-            // this module.
+            // `unbounded_send` never awaits capacity, so a slow consumer can never block response routing; the only failure is a dropped receiver.
             if notif_tx.send(notif).is_err() {
                 tracing::debug!("codex app-server: notification consumer dropped; reader stopping");
                 break;
@@ -1524,8 +1139,7 @@ async fn reader_loop(
         }
     }
 
-    // Connection ended: drain any pending requests so their futures resolve
-    // with a clean "connection closed" error instead of hanging.
+    // Drain pending requests so their futures resolve with "connection closed" instead of hanging.
     let mut guard = pending.lock().unwrap();
     guard.clear();
 }
@@ -1533,10 +1147,6 @@ async fn reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -----------------------------------------------------------------
-    // thread/read + thread/loaded/list deser (#741 wire shapes).
-    // -----------------------------------------------------------------
 
     #[test]
     fn thread_read_parses_last_turn_completed_at_null() {
@@ -1616,22 +1226,12 @@ mod tests {
         assert_eq!(resp.data, vec!["t-1".to_string(), "t-2".to_string()]);
     }
 
-    /// A test harness that wires a real WS-over-UnixStream connection: the
-    /// client end is a fully-constructed [`CodexAppServer`] (real reader
-    /// task), and the server end is a raw [`WebSocketStream`] the test drives
-    /// directly to send responses / notifications (or to stay silent). This
-    /// exercises `request()` and `reader_loop` end-to-end without a `codex`
-    /// binary.
+    /// A real WS-over-UnixStream connection: a fully-constructed client on one end and a raw [`WebSocketStream`] the test drives on the other, no `codex` binary.
     struct Harness {
         client: CodexAppServer,
-        /// The notification receiver. Most tests don't drain it (that's the
-        /// point of the decoupling test), but it MUST stay alive: dropping
-        /// it closes the channel, which would make the reader's
-        /// `unbounded_send` fail and stop the reader. Underscored so the
-        /// "never read" lint is satisfied while the value is kept.
+        /// Must stay alive even when not drained: dropping it closes the channel and stops the reader.
         _notifs: NotificationStream,
-        /// Server-side WS end; the test reads requests off it and writes
-        /// responses/notifications back.
+        /// Server-side WS end; the test reads requests off it and writes responses back.
         server: WebSocketStream<UnixStream>,
     }
 
@@ -2053,8 +1653,7 @@ mod tests {
         }
     }
 
-    /// Fix #1: a request whose response never arrives times out, returns the
-    /// `timed out` error, and leaves NO entry in the pending map (no leak).
+    /// A never-answered request times out and leaves NO entry in the pending map.
     #[tokio::test]
     async fn never_answered_request_times_out_and_cleans_pending() {
         let h = harness().await;
@@ -2083,17 +1682,7 @@ mod tests {
         );
     }
 
-    /// #1505 S4-2: a caller-supplied deadline must clean the pending map the
-    /// same way the per-client one does.
-    ///
-    /// This is the regression that `never_answered_request_times_out_and_
-    /// cleans_pending` above stopped covering the moment a caller wanted a
-    /// bound shorter than `DEFAULT_REQUEST_TIMEOUT`. Wrapping `request` in an
-    /// outer `tokio::time::timeout` drops the future before its own elapse arm
-    /// runs, so the `(id -> oneshot)` entry stays in the shared client's map
-    /// until codex answers late or the connection closes — one leaked entry
-    /// per call against a connected-but-stalled daemon. `GET /api/models` is
-    /// exactly that caller, so the bound is passed down instead.
+    /// A caller-supplied deadline must clean the pending map the same way the per-client one does: an outer `tokio::time::timeout` would drop the future before its own elapse arm runs and leak the entry.
     #[tokio::test]
     async fn a_caller_deadline_cleans_pending_the_same_way() {
         let h = harness().await;
@@ -2148,10 +1737,7 @@ mod tests {
         );
     }
 
-    /// Fix #2: notification delivery is decoupled from RPC response routing.
-    /// With many notifications queued and NO consumer draining them, a real
-    /// RPC response still routes back to the waiting request — proving the
-    /// reader's unbounded notification send never blocks response delivery.
+    /// With many notifications queued and NO consumer draining them, a real RPC response still routes back to the waiting request.
     #[tokio::test]
     async fn response_routes_while_notifications_are_undrained() {
         let mut h = harness().await;
@@ -2170,9 +1756,7 @@ mod tests {
             .await;
         }
 
-        // Now issue a real request; the server answers it. If notification
-        // delivery could block the reader loop, this response would never be
-        // routed and the request would hit its timeout instead.
+        // If notification delivery could block the reader loop, this response would never be routed and the request would time out.
         let client = h.client.with_request_timeout(Duration::from_secs(5));
         let req_fut = client.request::<ThreadResult>("thread/start", json!({}));
 
@@ -2200,8 +1784,7 @@ mod tests {
         let _server = server_task.await.unwrap();
     }
 
-    /// Cheap nit: response correlation also works when the server echoes the
-    /// id as a *string* (`"1"`), not just an integer.
+    /// Response correlation also works when the server echoes the id as a string.
     #[tokio::test]
     async fn response_correlates_with_string_id() {
         let mut h = harness().await;
@@ -2481,9 +2064,7 @@ mod tests {
         assert_eq!(r.model, "gpt-5.5");
     }
 
-    /// #1505 S4-3. The assertion is on the frame, because the frame is the
-    /// entire contract: everything else in this feature only decides what
-    /// goes in these two keys.
+    /// The assertion is on the frame, because the frame is the entire contract.
     #[test]
     fn a_chosen_model_and_effort_reach_the_turn_start_frame() {
         let frame = turn_start_params(
@@ -2500,9 +2081,7 @@ mod tests {
         assert_eq!(frame["effort"], json!("high"));
     }
 
-    /// The slug travels, the preset id does not. Asserted in both directions
-    /// so a fixture whose two identifiers happen to be equal cannot let a
-    /// read of the wrong field pass.
+    /// Asserted in both directions so a fixture whose two identifiers are equal cannot let a read of the wrong field pass.
     #[test]
     fn the_frame_carries_a_slug_and_never_a_preset_id() {
         let catalog_entry = json!({ "id": "preset-abc", "model": "gpt-5" });
@@ -2519,9 +2098,7 @@ mod tests {
         assert_ne!(frame["model"], json!("preset-abc"));
     }
 
-    /// `inherit` must be byte-for-byte the frame this kernel sent before
-    /// #1505 — no `model`, no `effort`, and in particular no explicit `null`,
-    /// which would be a value we chose to send rather than silence.
+    /// `inherit` sends no `model`, no `effort`, and in particular no explicit `null`.
     #[test]
     fn inherit_sends_neither_key_and_not_a_null_either() {
         let frame = turn_start_params("thread-1", &[], &TurnModelSelection::inherit(), None);
@@ -2560,9 +2137,7 @@ mod tests {
         assert!(!effort_only.as_object().unwrap().contains_key("model"));
     }
 
-    /// Codex accepts any non-empty effort string (`ReasoningEffort::Custom`),
-    /// so an effort we do not recognise must reach the wire unaltered rather
-    /// than be filtered against a set we invented.
+    /// Codex accepts any non-empty effort string, so an unrecognised one must reach the wire unaltered.
     #[test]
     fn an_unrecognised_effort_string_is_not_filtered_out() {
         let frame = turn_start_params(
@@ -2577,8 +2152,7 @@ mod tests {
         assert_eq!(frame["effort"], json!("ludicrous"));
     }
 
-    /// #1625 P2 — the drain's client id reaches the frame under codex's own
-    /// key, and its absence is an absent key rather than a `null`.
+    /// The drain's client id reaches the frame under codex's own key, and its absence is an absent key rather than `null`.
     #[test]
     fn a_client_user_message_id_reaches_the_frame_and_is_omitted_otherwise() {
         let frame = turn_start_params("t", &[], &TurnModelSelection::inherit(), Some("entry-0001"));
@@ -2593,11 +2167,7 @@ mod tests {
         );
     }
 
-    /// #1625 P3 — the steer frame carries the three keys codex requires
-    /// (`threadId`, `expectedTurnId`, `input`) plus the client id under the
-    /// same key `turn/start` uses, and omits that key rather than sending
-    /// `null` when there is none. No `model`, no `effort`: codex rejects
-    /// settings on a steer.
+    /// The steer frame carries the three required keys plus the client id, omitted rather than `null` when absent; no `model`, no `effort`.
     #[test]
     fn a_steer_frame_carries_the_client_id_and_omits_it_otherwise() {
         let input = vec![InputItem::text("now")];
@@ -2679,15 +2249,7 @@ mod tests {
         }
     }
 
-    /// `turn/plan/updated` needs no variant of its own: it must reach the
-    /// run loop through `Other` with `params` unchanged, and `thread_id()`
-    /// must still resolve from the top-level `threadId`. Both are what the
-    /// persistence arm in `harness/run_loop.rs` relies on.
-    ///
-    /// "Unchanged" here means `Value`-level equality — no field dropped,
-    /// added or reshaped — and not the original bytes: the frame is already a
-    /// `serde_json::Value` before `parse` sees it, so key order, whitespace
-    /// and escape spellings are gone by then regardless of what `parse` does.
+    /// `turn/plan/updated` needs no variant: it must reach the run loop through `Other` with `params` unchanged (`Value`-level equality) and `thread_id()` resolving from the top-level `threadId`.
     #[test]
     fn notification_parse_preserves_turn_plan_updated_frame() {
         let params = json!({
@@ -2773,14 +2335,7 @@ mod tests {
         assert_eq!(other.thread_id(), Some("thread-other"));
     }
 
-    /// #1505 S6. The tag on the wire is `localImage`, and the container's
-    /// `rename_all = "lowercase"` would make it `localimage` on its own.
-    ///
-    /// This asserts the exact bytes rather than a round trip, because there is
-    /// no round trip available: the only reader of these bytes is codex, whose
-    /// types are not a compilable dependency of this repository. Deleting the
-    /// variant-level `#[serde(rename = "localImage")]` turns this red; nothing
-    /// else in the workspace notices, which is the whole reason it is here.
+    /// Asserts the exact bytes because the only reader is codex, whose types are not a compilable dependency: deleting the variant-level `#[serde(rename = "localImage")]` turns only this red.
     #[test]
     fn local_image_serializes_with_the_camel_case_tag() {
         let json = serde_json::to_value(InputItem::local_image("/w/.neige/a.png")).unwrap();
@@ -2788,8 +2343,7 @@ mod tests {
             json,
             serde_json::json!({"type": "localImage", "path": "/w/.neige/a.png"}),
         );
-        // The sibling variant is unaffected, so the rename is scoped to the
-        // one variant that needs it rather than applied to the container.
+        // The sibling variant is unaffected: the rename is scoped to the one variant that needs it.
         assert_eq!(
             serde_json::to_value(InputItem::text("hi")).unwrap(),
             serde_json::json!({"type": "text", "text": "hi"}),
@@ -2797,7 +2351,6 @@ mod tests {
     }
 
     /// `detail` is optional on codex's side and we deliberately send nothing.
-    /// A key that appeared here would be one we never decided to send.
     #[test]
     fn a_local_image_item_has_exactly_two_keys() {
         let json = serde_json::to_value(InputItem::local_image("/w/a.png")).unwrap();

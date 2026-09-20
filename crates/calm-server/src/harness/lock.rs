@@ -1,13 +1,7 @@
 use crate::ids::TrackId;
 
-/// #480 §D — proof token that the per-track push lock for `track_id` is held.
-/// `OwnedMutexGuard<()>` owns the `Arc<tokio::sync::Mutex<()>>` so the guard
-/// is not tied to a `DashMap` entry borrow and can cross `.await`. Holding
-/// across `.await` is intentional (catch-up replay) but can starve that
-/// track; bound replay bodies.
-///
-/// **Invariant**: this guard proves the lock is held — NOT that replay
-/// events are semantically complete or ordered (#480 §F4).
+/// Proof token that the per-track push lock for `track_id` is held; the owned guard can cross
+/// `.await`. Proves only that the lock is held — not that replay events are complete or ordered.
 pub struct PushLockGuard {
     track_id: TrackId,
     _guard: tokio::sync::OwnedMutexGuard<()>,

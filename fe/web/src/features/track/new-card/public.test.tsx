@@ -33,10 +33,6 @@ describe('AddCardMenu', () => {
     expect(onSelect).toHaveBeenCalledWith(CODEX);
   });
 
-  /* The `+` stays even with nothing to offer: a build that registered no
-     creatable kind is a defect, and a missing button reads as a design choice
-     rather than the fault it is. The one row is disabled — it says why the menu
-     is empty, and there is nothing behind it to pick. */
   it('keeps the trigger and says so when no kind is available', async () => {
     const onSelect = vi.fn();
     render(<AddCardMenu entries={[]} onSelect={onSelect} />);
@@ -68,24 +64,7 @@ describe('NewCardForm', () => {
     return onSubmit;
   }
 
-  /*
-   * CAP-TRACKWORKSPACE-006 — the nesting half of what CAP-TRACKWORKSPACE-003 used
-   * to say, pinned on the call site where the hazard can occur.
-   *
-   * This form renders *inside* `app/router`'s add-card dialog, so its folder
-   * control must push `DirectoryBrowser` into that dialog through
-   * `useDialogView` and must not open a second one: a nested dialog fights the
-   * outer one's focus trap, which the outer dialog owns for its whole lifetime.
-   * (`features/area/new-track` is a route with no dialog above it and is
-   * deliberately the other case — see -003.)
-   *
-   * Driven through a real `Dialog`, not a stub: the branch under test *is*
-   * `DirectoryField` asking `useDialogView()` what is above it, and a fixture
-   * providing its own context would prove only that the fixture agrees with
-   * itself. The observable the child-view push guarantees is the outer dialog's
-   * accessible name changing — so that is what is asserted, on the same element
-   * both before and after.
-   */
+  /* This form renders inside `app/router`'s add-card dialog, so the folder control must push into that dialog through `useDialogView` and never open a second one: a nested dialog fights the outer focus trap. */
   it('pushes the folder picker into the surrounding dialog, opening no second one', async () => {
     render(
       <Dialog open onClose={vi.fn()} title="Add card">
@@ -105,15 +84,8 @@ describe('NewCardForm', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /Working directory/ }));
 
-    // Still exactly one dialog, and it is the same element — the picker was
-    // pushed into it rather than stacked on top of it.
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     expect(screen.getByRole('dialog')).toBe(outer);
-    /* The accessible-name swap *is* the `useDialogView()` contract: the same
-       element that was "Add card" is now the picker. Asserted on the name
-       rather than on the words appearing somewhere, because the browser's own
-       chrome also says "Choose a directory" — matching text would pass even if
-       the picker had been stacked in a second dialog. */
     await waitFor(() => expect(outer.getAttribute('aria-label')).toBe('Choose a directory'));
   });
 
@@ -124,10 +96,6 @@ describe('NewCardForm', () => {
     expect(onSubmit).toHaveBeenCalledWith({ title: 'Rewrite the parser' });
   });
 
-  /* An untouched field must not reach the caller as `''`: the caller drops
-     empty values, but a key that was never touched should not be there at all —
-     the two are the same on the wire and different in a test's diff, and this
-     pins which one the form produces. */
   it('omits a field the reader never touched', async () => {
     const onSubmit = renderForm(CODEX);
     await userEvent.click(screen.getByRole('button', { name: 'Create codex' }));

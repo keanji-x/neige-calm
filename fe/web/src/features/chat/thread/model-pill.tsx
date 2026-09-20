@@ -1,26 +1,5 @@
-// The model picker that sits in a planner conversation's composer footer
-// (#1505 S4-3/S4-4).
-//
-// Presentational on purpose: everything it shows is a prop. The queries and the
-// write live in `app/router`, because `features/**` may not import `app/**` and
-// because the pill has no business owning a conversation's data.
-//
-// ## Two levels, and why the second one sometimes is not there
-//
-// Reasoning effort is a property *of a model*: each catalog entry carries its
-// own `supported_reasoning_efforts`, and the descriptions beside them are
-// codex's own words, never ours. A model that offers one effort (or none) gets
-// no effort control at all — a menu with a single choice is a control that
-// cannot be operated.
-//
-// ## What "Default" means here, precisely
-//
-// It means "follow whatever this installation is configured to use", not the
-// name of a model. When we know that name it is shown beside the word; when we
-// do not — no card workspace to resolve layers against, an unreadable config —
-// the word stands alone rather than borrowing a name from somewhere weaker.
-// `GET /api/models` reports which of those two happened in `default_source`,
-// and the caller passes it through.
+// The model picker in a planner conversation's composer footer. Presentational:
+// every value is a prop; the queries and the write live in `app/router`.
 
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
@@ -36,16 +15,7 @@ import styles from './model-pill.module.css';
 
 const FOLLOW_DEFAULT_LABEL = 'Default';
 
-/**
- * The one sentence about switching models that is true every time.
- *
- * Deliberately a standing note in the menu rather than a warning attached to a
- * particular change: whether a switch actually triggers a compaction depends on
- * the two models' context windows and on how full the thread already is, and
- * the catalog we are given carries no window at all. A caption that asserted it
- * on every switch would be false in the great majority of them, and a warning
- * that is usually false is worse than none.
- */
+/** A standing note rather than a per-switch warning: the catalog carries no context window, so whether a switch compacts is unknowable here. */
 const SWITCH_NOTE = 'Switching to a model with a smaller context window can make codex compact the history first.';
 
 export function ModelPill({
@@ -70,51 +40,14 @@ export function ModelPill({
   const defaultName = catalog?.default_source === 'config_read' || catalog?.default_source === 'config_toml'
     ? catalog.default.model
     : null;
-  /*
-   * Which catalog entry the effort control is about.
-   *
-   * Following the installation default is still running a MODEL, and that
-   * model's efforts are sitting right there in the catalog — so the control
-   * belongs here too. This used to resolve to `undefined` whenever
-   * `selection.model` was null, which is every conversation that has not
-   * overridden anything, i.e. all of them until someone touches the pill: the
-   * effort menu simply did not exist for the common case. Verified against the
-   * kernel rather than assumed — `catalog_advice` (`routes/planner_model.rs`)
-   * takes `{model: null, reasoning_effort: "high"}` and stores it unjudged,
-   * with an explicit note that with no model chosen there is no catalog entry
-   * to judge the effort against.
-   *
-   * That note is also the honest limit on what this list means while the
-   * default is being followed: these are the efforts of whatever the default
-   * resolves to NOW. If the installation's default model changes under a
-   * conversation, the stored effort travels with it and the kernel decides at
-   * turn time. We are not promising otherwise.
-   */
+  /* Following the installation default is still running a model, so the effort control belongs here too: these are the efforts of whatever the default resolves to now. */
   const followed = catalog?.default.model == null
     ? undefined
     : models.find((model) => model.model === catalog.default.model);
   const chosen = selection.model === null
     ? followed
     : models.find((model) => model.model === selection.model);
-  /*
-   * The trigger says the MODEL, not how it was arrived at.
-   *
-   * It used to read `Default (gpt-6-astra)`, and the first word was noise on
-   * every conversation nobody has touched: what a person wants off that pill
-   * is which model is running, and "Default" is a fact about the *route* to
-   * that answer, not the answer. The route still has a place — the menu's
-   * first row is still `Default (gpt-6-astra)`, where the word is what
-   * distinguishes "follow whatever this installation uses" from pinning that
-   * same model by name, and the tick says which of the two is in force.
-   *
-   * The one case where the word survives here is the one where dropping it
-   * would leave nothing true to say: no catalog, or a default this
-   * installation cannot resolve. Then `Default` alone IS the whole of what is
-   * known.
-   *
-   * A slug we hold that the catalog does not list still names the model this
-   * conversation runs; showing the slug is more use than showing nothing.
-   */
+  /* The trigger names the model, not the route to it; `Default` alone only when nothing truer can be said, and an unlisted slug still names what runs. */
   const label = selection.model === null
     ? (defaultName ?? FOLLOW_DEFAULT_LABEL)
     : (chosen?.display_name ?? selection.model);
@@ -127,9 +60,7 @@ export function ModelPill({
   const efforts = chosen?.supported_reasoning_efforts ?? [];
   const closeOnEscape = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Escape' || !open) return;
-    // Owned here for the same reason the starting-point pill owns it: a host
-    // Dialog's document listener would otherwise take Escape first and the
-    // trigger would not get its focus back.
+    // A host Dialog's document listener would otherwise take Escape first and the trigger would not get its focus back.
     event.preventDefault();
     event.stopPropagation();
     setOpen(false);
@@ -143,43 +74,16 @@ export function ModelPill({
           placement={placement}
           isMenuOpen={open}
           onOpenChange={setOpen}
-          /*
-           * No chevron, at the owner's call. Worth naming what that spends:
-           * with no fill, no border and now no glyph, nothing about this
-           * control announces itself as one until the pointer is over it —
-           * hover and focus are the whole of the affordance. It keeps its
-           * button role and its name, so nothing is lost to a screen reader or
-           * to the keyboard; what a mouse loses is the hint that there is
-           * something here to press.
-           */
           hasChevron={false}
           button={{
             id: triggerId,
             label: spokenLabel,
-            /* Model names run long — `gpt-5.1-codex-max` and worse — and the
-               trigger cannot have the whole footer. `maxLines` ends it in an
-               ellipsis and `hasTruncateTooltip` offers the full name on hover
-               ONLY when it was actually shortened, which is the difference
-               between this and the `max-inline-size` that used to just cut it
-               off with no way to read the rest. */
-            /* `type`/`color` inherit, and that is load-bearing: `Text`
-               defaults to body size in primary text and would re-assert both
-               over the trigger's own — measured, the model name stayed large
-               and black while the effort beside it (a plain string, so it
-               inherits) went small and grey. Same shape as the tooltip bug in
-               `context-ring.tsx`: `Text` on somebody else's surface has to be
-               told to inherit. */
+            /* `type`/`color` inherit, and that is load-bearing: `Text` would re-assert body size and primary colour over the trigger's own. */
             children: (
               <Text type="inherit" color="inherit" maxLines={1} hasTruncateTooltip>
                 {label}
               </Text>
             ),
-            /* `ghost`: no fill, no border. The composer footer is a quiet row
-               under the field, and a filled pill there was the heaviest thing
-               in it — heavier than Send, which is the control anyone looking
-               at that row is actually aiming for. With the chevron gone too
-               (see `hasChevron` above), hover and focus are all that is left
-               to say it is pressable. */
             variant: effortControl === 'in-menu' ? 'secondary' : 'ghost',
             size: 'sm',
             isDisabled: isDisabled || unreachable,
@@ -196,10 +100,7 @@ export function ModelPill({
               key={model.id}
               label={model.display_name}
               isSelected={selection.model === model.model}
-              /* Switching model drops the effort back to "follow the default":
-                 an effort chosen for the previous model may not exist on this
-                 one, and carrying it over is how a selection the server has to
-                 quietly correct gets made. */
+              /* Switching model drops the effort: one chosen for the previous model may not exist on this one. */
               onSelect={() => onChange({ model: model.model, reasoning_effort: null })}
             />
           ))}
@@ -229,12 +130,7 @@ export function ModelPill({
         <EffortPill
           efforts={efforts}
           value={selection.reasoning_effort}
-          /* The name behind the word "Default", when there is one to give —
-             the same treatment the model trigger gets, and for the same
-             reason: "Default" alone tells you that you have not chosen, not
-             what you are getting. While a model IS chosen the entry's own
-             `default_reasoning_effort` is the one that applies; while the
-             installation default is followed it is the catalog's. */
+          /* While a model is chosen the entry's own `default_reasoning_effort` applies; while the default is followed, the catalog's. */
           defaultName={selection.model === null
             ? catalog?.default.reasoning_effort ?? null
             : chosen?.default_reasoning_effort ?? null}
@@ -282,12 +178,6 @@ function EffortPill({
         button={{
           label: spokenLabel,
           children: label,
-          /* Both triggers are ghost now that neither is filled, so the
-             subordination that used to come from `secondary` vs `ghost` comes
-             from colour instead (`.effort`). Effort is a property OF the
-             chosen model and has to read as one; two identical controls side
-             by side said they were two independent settings, which is the one
-             thing this pair is not. */
           variant: 'ghost',
           size: 'sm',
           isDisabled,

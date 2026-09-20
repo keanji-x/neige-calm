@@ -16,16 +16,9 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
   const track = await createTrack(request, area.id);
 
   const routes = [
-    /* #1253 — see `routes-reachable`: Today's page title is a locale- and
-       date-dependent string, so the anchor is the calendar module's week nav
-       instead. It is Today-only, so a green run here means axe really scanned
-       Today. */
+    /* Today's page title is locale- and date-dependent, so the anchor is the Today-only week nav. */
     { path: '/next/', anchor: page.getByRole('button', { name: 'Previous week' }) },
-    /* #1211 — the new-track page. Added here rather than left to the create
-       test: this is a real route with its own heading, a `contenteditable` and
-       two chips, and none of that is exercised for contrast or naming by a test
-       that only drives it. It is anchored on the composer because the page has
-       no `data-nc-page-title` — deliberately, the greeting is its one title. */
+    /* Anchored on the composer: the new-track page has no `data-nc-page-title`; the greeting is its one title. */
     { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },
     { path: `/next/track/${track.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: track.title }) },
     { path: '/next/settings', anchor: page.getByRole('spinbutton', { name: 'Task concurrency' }) },
@@ -36,19 +29,8 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
     await page.goto(route.path);
     await expect(page.locator('nav[aria-label="Workspace"]')).toBeVisible();
     await expect(route.anchor).toBeVisible();
-    /*
-     * Colour is only measurable once the page has stopped moving.
-     *
-     * Settings renders inside `ui/dialog`, whose panel fades in over the scrim
-     * (`dialog-enter`). Playwright calls the panel visible as soon as it has a
-     * box — opacity is not part of that verdict — so axe could sample a
-     * *blend* of the panel and the scrim behind it and report a contrast
-     * violation that no reader ever sees: measured, secondary text on a
-     * half-faded panel came out at 3.27:1 against a background (#e3e2e0) the
-     * settled page never paints. Waiting for the animations to finish makes
-     * the sample the state the reader is actually in, and is why this used to
-     * fail on the first attempt and pass on the retry.
-     */
+    /* Wait for animations: Playwright calls a fading `ui/dialog` panel visible before it is opaque, so
+     * axe could sample a blend of panel and scrim and report a contrast violation no reader sees. */
     await page.evaluate(() => Promise.all(
       document.getAnimations().map((animation) => animation.finished.catch(() => undefined)),
     ));

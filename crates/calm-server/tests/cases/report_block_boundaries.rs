@@ -1,4 +1,4 @@
-//! #1501: independent prose blocks remain editable beside task fences.
+//! Independent prose blocks remain editable beside task fences.
 use super::*;
 
 #[tokio::test]

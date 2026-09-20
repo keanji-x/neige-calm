@@ -28,10 +28,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
-/// (or any other process env read by the fake codex shim). Peer test
-/// binaries keep their own `ENV_LOCK` because each test binary is a separate
-/// process.
+/// Serializes tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct EnvGuard(&'static str);
@@ -142,9 +139,7 @@ async fn start_new_process_strips_per_card_env_keys() {
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
     let env = daemon.spawn_env_for_test().await.unwrap();
 
-    // #863: `env_clear()` subsumes the old per-key `env_remove`; the stale
-    // per-card keys must be ABSENT from `get_envs()` (no explicit-removal
-    // `Some(&None)` marker, no explicit set).
+    // The stale per-card keys must be ABSENT from `get_envs()`: no explicit-removal marker, no explicit set.
     for stale in [
         "NEIGE_CARD_ID",
         "NEIGE_HOOK_PROVIDER",
@@ -163,9 +158,6 @@ async fn start_new_process_strips_per_card_env_keys() {
     );
 }
 
-/// #863 §5 — allow-list purity at the `get_envs()` seam: every explicitly-set
-/// key is either a computed key, a `SPAWN_ENV_PASSTHROUGH` entry, or (in this
-/// fixtures-enabled test build only) a fake-codex fixture-channel key.
 #[tokio::test]
 async fn spawn_env_explicit_keys_stay_within_allow_list_and_computed_keys() {
     let root = tempfile::tempdir().unwrap();
@@ -217,16 +209,8 @@ async fn spawn_env_explicit_keys_stay_within_allow_list_and_computed_keys() {
     );
 }
 
-/// #863 red repro (TEST A): the spawned shared app-server must not inherit
-/// ambient parent env. `spawn_env_for_test` cannot catch this class of bug —
-/// `Command::get_envs()` only reports explicitly-set keys, never implicit
-/// inheritance — so this test boots the real spawn path
-/// (`start_or_takeover` → `launch_spawned_process`) against the fake codex
-/// binary and reads `/proc/<pid>/environ` of the live child directly.
-///
-/// RED today: `apply_spawn_env` never calls `env_clear()`, so parent-side
-/// canaries leak into the codex child. Turns green once the child env is an
-/// explicit allow-list (a pure function of config).
+/// `Command::get_envs()` only reports explicitly-set keys, never implicit inheritance, so this boots the
+/// real spawn path and reads `/proc/<pid>/environ` of the live child.
 #[tokio::test]
 async fn spawned_daemon_does_not_inherit_parent_canary_env() {
     let _guard = ENV_LOCK.lock().await;
@@ -282,10 +266,6 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
          (child env must be a pure function of config); leaked: {leaks:?}"
     );
 
-    // #863 §5 allow-list purity: the child's key set must be a subset of
-    // {computed keys} ∪ SPAWN_ENV_PASSTHROUGH (∪ the fixture channel, which
-    // exists only in this fixtures-enabled build) — "no key outside the pure
-    // function".
     let computed = [
         "CODEX_HOME",
         "NEIGE_CALM_BASE_URL",
@@ -306,8 +286,7 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
              (child env must be a pure function of config); full env: {child_env:?}"
         );
     }
-    // Positive outage canaries: the allow-list must actually pass the
-    // load-bearing vars through, not just drop everything.
+    // Positive canaries: the allow-list must actually pass the load-bearing vars through.
     for canary in ["PATH=", "HOME="] {
         assert!(
             child_env.iter().any(|kv| kv.starts_with(canary)),
@@ -316,13 +295,8 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
     }
 }
 
-/// #863 red repro (TEST B): booting the shared app-server against a
-/// CODEX_HOME whose config.toml carries an unexpected `[mcp_servers.*]`
-/// entry must be refused at launch. `seed()` copies host `~/.codex/`
-/// verbatim, so a host-level plugin registration lands in the shared home
-/// exactly like the pollution written below.
-///
-/// RED today: launch never inspects config.toml and boots happily.
+/// `seed()` copies host `~/.codex/` verbatim, so a host-level plugin registration lands in the shared
+/// home exactly like the pollution written below.
 #[tokio::test]
 async fn boot_rejects_codex_home_with_unexpected_mcp_server_entry() {
     let root = tempfile::tempdir().unwrap();
@@ -332,7 +306,6 @@ async fn boot_rejects_codex_home_with_unexpected_mcp_server_entry() {
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
     );
-    // seed_from(None): deterministic empty home, no host ~/.codex copy.
     home.seed_from(None).unwrap();
     // Legitimate `calm` entry, as boot wiring (state.rs) writes it.
     let shim = McpShimConfig {
@@ -357,9 +330,7 @@ async fn boot_rejects_codex_home_with_unexpected_mcp_server_entry() {
         "launch refusal must name the unexpected mcp server entry; got: {msg}"
     );
 
-    // #863 review F1 — the refusal must be visible on the status surface,
-    // not only in the boot error: state=Failed with last_error naming the
-    // offender.
+    // The refusal must be visible on the status surface, not only in the boot error.
     let status = daemon.status_snapshot();
     assert_eq!(
         status.state,
@@ -375,12 +346,8 @@ async fn boot_rejects_codex_home_with_unexpected_mcp_server_entry() {
     );
 }
 
-/// #863 review F2 — a `.env` dropped into the shared CODEX_HOME after boot
-/// sanitize (e.g. while the daemon runs) would be injected into the daemon's
-/// own process env by codex arg0 `load_dotenv` at the next launch, bypassing
-/// the spawn allow-list. The launch guard treats it as derived-state
-/// pollution and DELETES it (warn, no outage) before the spawn — boot must
-/// succeed AND the file must be gone.
+/// A `.env` in the shared CODEX_HOME would be injected into the daemon's env by codex's `load_dotenv` at
+/// the next launch, bypassing the spawn allow-list; the launch guard deletes it before the spawn.
 #[tokio::test]
 async fn boot_deletes_leaked_codex_home_env_file_before_spawn() {
     let root = tempfile::tempdir().unwrap();
@@ -405,9 +372,7 @@ async fn boot_deletes_leaked_codex_home_env_file_before_spawn() {
     );
 }
 
-/// Deterministic shared home whose config.toml carries an unexpected
-/// `[mcp_servers.evil]` entry, so `start_or_takeover`'s boot guard refuses.
-/// Mirrors the setup of `boot_rejects_codex_home_with_unexpected_mcp_server_entry`.
+/// Deterministic shared home whose config.toml carries an unexpected `[mcp_servers.evil]` entry, so the boot guard refuses.
 fn polluted_home(root: &tempfile::TempDir) -> calm_server::shared_codex_home::SharedCodexHome {
     let cfg = cfg(root);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
@@ -428,10 +393,6 @@ fn polluted_home(root: &tempfile::TempDir) -> calm_server::shared_codex_home::Sh
     home
 }
 
-/// #863 review R2-3(b) — a boot-guard refusal against a VERIFIED persisted
-/// daemon must both reap the process and persist the reap: state=failed,
-/// identity tuple (pid/pgid/start_time/boot_id) cleared, last_error naming
-/// the offending guard error.
 #[tokio::test]
 async fn guard_refusal_reaps_verified_daemon_and_persists_failed_record() {
     let root = tempfile::tempdir().unwrap();
@@ -496,13 +457,8 @@ async fn guard_refusal_reaps_verified_daemon_and_persists_failed_record() {
     );
 }
 
-/// #863 review R2-3(a) / F3a, reshaped by #953 §3 — a persisted record whose
-/// pgid != pid is corrupt (spawn invariant: `process_group(0)` ⇒ pgid ==
-/// pid); the guard refusal must NOT signal it (the launcher/native split
-/// makes the liveness assertion meaningful: a regression that signals the
-/// recorded pgid kills both). #953 change: the record is no longer left
-/// untouched — the refusal persists `failed` RETAINING the identity tuple as
-/// the durable unreconciled marker, with the `unreconciled:` prefix.
+/// A persisted record whose pgid != pid is corrupt (`process_group(0)` ⇒ pgid == pid); the refusal must not
+/// signal it — with the launcher/native split, signaling the recorded pgid would kill both.
 #[tokio::test]
 async fn guard_refusal_pgid_mismatch_marks_unreconciled_retains_identity_and_never_signals() {
     let root = tempfile::tempdir().unwrap();
@@ -542,8 +498,7 @@ async fn guard_refusal_pgid_mismatch_marks_unreconciled_retains_identity_and_nev
         "guard refusal must NOT signal a corrupt (pgid != pid) persisted record; \
          peer_alive={peer_alive} launcher_alive={launcher_alive}"
     );
-    // #953 §3 — identity RETAINED as-read (the durable unreconciled marker),
-    // state now `failed` with the `unreconciled:` prefix.
+    // Identity RETAINED as-read (the durable unreconciled marker), state `failed` with the `unreconciled:` prefix.
     assert_eq!(
         record.pid,
         Some(peer_pid),
@@ -720,9 +675,8 @@ async fn spawn_launcher_with_fake_appserver(
             "FAKE_CODEX_FAIL_INITIALIZE",
             if fail_initialize { "1" } else { "0" },
         )
-        // These tests model daemon-group survival beyond the launcher's
-        // death; the fixture's pdeathsig test-hygiene belt would kill the
-        // child as soon as the launcher exits and make them vacuous.
+        // These tests model daemon-group survival beyond the launcher's death; the fixture's pdeathsig belt
+        // would kill the child as soon as the launcher exits.
         .env("FAKE_CODEX_NO_PDEATHSIG", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -844,7 +798,7 @@ async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
     panic!("timed out waiting for captured fake app-server requests");
 }
 
-/// #1444 R2 — how many `thread/resume` RPCs the capture holds for one thread.
+/// How many `thread/resume` RPCs the capture holds for one thread.
 fn resume_count(rows: &[Value], thread_id: &str) -> usize {
     rows.iter()
         .filter(|row| {
@@ -854,7 +808,7 @@ fn resume_count(rows: &[Value], thread_id: &str) -> usize {
         .count()
 }
 
-/// #1444 R2 — wait for a fixture sidecar file and return its contents.
+/// Wait for a fixture sidecar file and return its contents.
 async fn wait_for_file(path: &Path) -> String {
     for _ in 0..500 {
         if let Ok(text) = std::fs::read_to_string(path) {
@@ -865,9 +819,8 @@ async fn wait_for_file(path: &Path) -> String {
     panic!("timed out waiting for {}", path.display());
 }
 
-/// #1444 R2 — is there still an active shared-Codex session row owning this
-/// Card? `None` is exactly the condition the cold-respawn resume treats as
-/// "no database owner" and answers with a plain, config-less resume.
+/// Is there still an active shared-Codex session row owning this Card? `None` is the condition the
+/// cold-respawn resume treats as "no database owner".
 async fn session_projection_active_for_card(repo: &SqlxRepo, card_id: &str) -> Option<String> {
     sqlx::query_scalar(
         "SELECT id FROM worker_sessions \
@@ -1016,14 +969,7 @@ async fn takeover_handshake_failure_reaps_verified_daemon_before_relaunch() {
     assert_eq!(record.pgid, Some(new_pid));
 }
 
-/// #954 defect 3, design test 4 (rewrites the pre-#954
-/// `takeover_respawns_when_env_signature_differs` — the semantics FLIP):
-/// signature mismatch against a VERIFIED healthy daemon must ADOPT it and
-/// mark `needs_respawn` (drain at the next thread-start boundary) instead of
-/// executing it at boot — the boot-time reap is what killed prod on 7/12
-/// (#863 salt ⇒ guaranteed mismatch on the first post-upgrade boot). The
-/// re-stamp must keep the OLD persisted signature so the drain obligation
-/// survives calm-server restarts.
+/// The re-stamp must keep the OLD persisted signature so the drain obligation survives calm-server restarts.
 #[tokio::test]
 async fn takeover_adopts_on_env_signature_mismatch_and_marks_drain() {
     let root = tempfile::tempdir().unwrap();
@@ -1095,13 +1041,6 @@ async fn takeover_adopts_on_env_signature_mismatch_and_marks_drain() {
     let _ = child.wait().await;
 }
 
-/// #954 review D3 (failing-first) — adopt-and-drain marks `needs_respawn`,
-/// but a crash-lane respawn already spawns with CURRENT settings and
-/// persists the current signature: the pending drain is satisfied by that
-/// very spawn and must be CLEARED, so the next mint does not pay a fully
-/// redundant graceful replace (cold start, potentially minutes). Pre-fix
-/// the stale flag survived the respawn and the mint replaced the fresh
-/// daemon (pid/generation churn asserted below).
 #[tokio::test]
 async fn crash_respawn_with_current_settings_clears_pending_drain() {
     let root = tempfile::tempdir().unwrap();
@@ -1142,8 +1081,6 @@ async fn crash_respawn_with_current_settings_clears_pending_drain() {
         "adoption of a mismatched signature must arm the drain"
     );
 
-    // Crash the adopted daemon: the crash-lane watcher respawns with
-    // CURRENT settings and persists the current signature.
     child.kill().await.expect("kill adopted fake app-server");
     let _ = child.wait().await;
     let respawned = tokio::time::timeout(Duration::from_secs(8), async {
@@ -1166,7 +1103,6 @@ async fn crash_respawn_with_current_settings_clears_pending_drain() {
          now-satisfied drain flag"
     );
 
-    // The mint must NOT graceful-replace the already-current daemon.
     let generation_before = daemon.generation_for_test().await;
     let card_id = seed_card(&repo, 1).await;
     let thread_id = daemon
@@ -1197,23 +1133,8 @@ async fn crash_respawn_with_current_settings_clears_pending_drain() {
     );
 }
 
-/// #954 review D1 walk (r2 update) — the launcher (the persisted leader)
-/// dies on the group SIGTERM but is held UNREAPED by this test (tokio
-/// reaps only on `wait`/drop), so the reap helper deterministically
-/// observes an exited ZOMBIE leader on the NON-owned (`VerifiedIdentity`)
-/// path. Pre-r2 that arm sent a group-wide `kill(-pgid, SIGKILL)` — the
-/// recycle-unsafe signal the r2 review flagged (an externally-reapable
-/// zombie does not pin the pgid across the observation→signal interval).
-/// Post-r2 the arm instead SWEEPS the remaining group members
-/// individually (scan `/proc` for `pgrp == pgid`, re-verify each member's
-/// `start_time`, SIGKILL by pid) — and the TERM-ignoring native
-/// descendant still dies. This test is therefore the Z-observed cousin of
-/// `reaped_leader_sweep_kills_verified_group_members` below: same
-/// observable oracle (descendant dies) via the sweep instead of the group
-/// signal; the absence of any group-wide signal on this arm is pinned by
-/// construction (the `ExitedPinned`-non-owned arm no longer contains a
-/// `scope.send(SIGKILL)` call), not by an observable — a recycled pgid
-/// cannot be constructed deterministically in a test.
+/// The launcher dies on the group SIGTERM but is held UNREAPED here (tokio reaps only on `wait`/drop), so the
+/// reap helper observes a zombie leader on the non-owned path and must sweep group members individually.
 #[tokio::test]
 async fn takeover_handshake_fail_kills_group_descendants_even_after_launcher_exits() {
     let root = tempfile::tempdir().unwrap();
@@ -1237,34 +1158,15 @@ async fn takeover_handshake_fail_kills_group_descendants_even_after_launcher_exi
     );
 }
 
-/// #954 review r2 D1 (failing-first) — when the verified leader is FULLY
-/// REAPED by its external parent (or observed as an externally-reapable
-/// zombie) within the grace, the group identity is unverifiable and the
-/// numeric pgid may already be recycled, so no group-wide
-/// `kill(-pgid, SIGKILL)` may be sent. But simply SKIPPING (the r1 shape,
-/// `fully_reaped_leader_skips_final_group_sigkill`) leaked TERM-ignoring
-/// descendants — the r2 review's honesty note. r2 fix: the non-owned
-/// Z/FullyGone arms SWEEP the remaining group members individually
-/// (scan `/proc` for `pgrp == pgid`, capture each member's `start_time`,
-/// re-verify it, SIGKILL by pid). Observable oracle: the TERM-ignoring
-/// descendant left in the group now DIES — pre-r2-fix this construction
-/// left it alive (asserted by this test's r1 predecessor), so this
-/// assertion fails first on the pre-fix code. The recycled-pgid hazard
-/// itself is not deterministically constructible in a test; its guard is
-/// pinned by the per-member `start_time` re-verify (unit-tested in
-/// `proc_identity`) plus code construction: neither non-owned arm
-/// contains a group-wide signal anymore.
+/// With the leader fully reaped the numeric pgid may already be recycled, so no group-wide `kill(-pgid)` may
+/// be sent; the sweep must re-verify each member's `start_time` and SIGKILL by pid.
 #[tokio::test]
 async fn reaped_leader_sweep_kills_verified_group_members() {
     let root = tempfile::tempdir().unwrap();
     let leader_pid_file = root.path().join("leader.pid");
     let survivor_pid_file = root.path().join("survivor.pid");
-    // Leader script, run as a fresh session/process-group leader: it traps
-    // TERM → exits immediately, after spawning a TERM-ignoring survivor
-    // inside its group. Its PARENT (the intermediate `sh` below) blocks in
-    // the foreground and therefore reaps it the instant it dies — the
-    // "external parent reaps the leader during the supervisor's grace
-    // poll" shape.
+    // Leader script, run as a fresh session/process-group leader: traps TERM → exits after spawning a
+    // TERM-ignoring survivor in its group; its parent `sh` reaps it the instant it dies.
     let leader_script = root.path().join("leader.sh");
     std::fs::write(
         &leader_script,
@@ -1312,9 +1214,7 @@ wait
     );
     let process_start_time = read_proc_start_time(leader_pid).expect("leader start time");
 
-    // Persist the leader as a verified running daemon whose socket has no
-    // listener: the takeover handshake fails and the supervisor reaps the
-    // verified group with the stop grace.
+    // Persist the leader as a verified running daemon whose socket has no listener, so the takeover handshake fails.
     let sock = root.path().join("run/codex-appserver.sock");
     std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
     let repo = repo().await;
@@ -1331,15 +1231,11 @@ wait
     let daemon = server(&root, repo.clone()).await;
     daemon.start_or_takeover().await.unwrap();
 
-    // The leader must be gone (TERM'd, then reaped by its parent) …
     assert!(
         wait_proc_gone(leader_pid).await,
         "leader must exit on SIGTERM and be reaped by its parent"
     );
-    // … and the TERM-ignoring survivor must ALSO die: with the leader
-    // reaped (or zombie) no group-wide SIGKILL is allowed, so the sweep
-    // must have re-verified the survivor's identity and SIGKILLed it by
-    // pid individually.
+    // The TERM-ignoring survivor must ALSO die via the per-pid sweep: no group-wide SIGKILL is allowed here.
     let survivor_gone = wait_proc_gone(survivor_pid).await;
     // Cleanup before asserting so a failure can't leak the group.
     unsafe {
@@ -1700,23 +1596,8 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
     );
 }
 
-/// #1444 R2 — the resume loop takes a SNAPSHOT of the candidate list. A
-/// Track/Area delete that commits (and runs its cache cleanup) while that
-/// loop is parked mid-iteration must still not produce a `thread/resume`
-/// for the deleted Card's thread.
-///
-/// The race is held open on the REAL primitive: the fixture app-server
-/// parks the first `thread/resume` of the respawn and answers it only once
-/// the test releases it, so the kernel's loop is genuinely suspended
-/// *inside* one iteration with the victim still in its snapshot — asserted
-/// below, not assumed. `<sock>.held-resume` appearing is that proof.
-///
-/// The replay is driven through `transition_replace` — the crash-restart /
-/// self-heal shape — deliberately: `ensure_respawn_for_current_settings` and
-/// `thread_start_mint_*` hold `kernel_thread_start_serial` across the respawn
-/// they trigger, which already excludes the cleanup for that path's whole
-/// duration. `transition_replace` holds no such guard, so it is the path where
-/// a delete's cleanup can genuinely complete mid-replay.
+/// The race is held open on the real primitive: the fixture parks the first `thread/resume` of the respawn
+/// until released. Driven through `transition_replace`, the one path holding no `kernel_thread_start_serial`.
 #[tokio::test]
 async fn cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop() {
     let _guard = ENV_LOCK.lock().await;
@@ -1746,7 +1627,6 @@ async fn cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop() {
         "premise: the first connect resumes both cached threads"
     );
 
-    // Arm the one-shot park, then drive the cold respawn.
     let sock = root.path().join("run/codex-appserver.sock");
     std::fs::write(sock.with_extension("hold-first-resume"), "1").unwrap();
     let respawn = tokio::spawn({
@@ -1758,9 +1638,7 @@ async fn cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop() {
         }
     });
 
-    // The loop is now parked INSIDE an iteration, on the fixture's unanswered
-    // `thread/resume`. Whichever thread it parked on, the OTHER one is the
-    // victim — still unresumed, and still in the snapshot the loop will walk.
+    // The loop is parked INSIDE an iteration; whichever thread it parked on, the OTHER one is the victim still in the snapshot.
     let parked = wait_for_file(&sock.with_extension("held-resume")).await;
     let (victim_thread, victim_card) = cards
         .iter()
@@ -1781,9 +1659,7 @@ async fn cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop() {
          (only the pre-delete connect resumed it)"
     );
 
-    // The Track/Area delete COMMITS, then its cache cleanup runs — both while
-    // the replay is parked. The cleanup is spawned because a correct kernel
-    // makes it wait on the very boundary this test is about.
+    // The delete COMMITS, then its cache cleanup runs — both while parked; the cleanup is spawned because a correct kernel makes it wait.
     sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
         .bind(&victim_card)
         .execute(repo.pool())
@@ -1810,10 +1686,7 @@ async fn cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop() {
                 .await
         }
     });
-    // Either the cleanup lands while the replay is parked (nothing fences it),
-    // or it queues behind the parked iteration (the fence). Which one happened
-    // is reported, because it changes what the release below proves — but the
-    // final assertion is decisive in both.
+    // Either the cleanup lands while parked (nothing fences it) or it queues behind the iteration; the final assertion is decisive in both.
     let mut cleanup_landed_while_parked = false;
     for _ in 0..25 {
         if daemon.cached_card_for_thread(&victim_thread).is_none() {
@@ -1926,13 +1799,8 @@ async fn concurrent_mark_during_respawn_is_preserved() {
 
     let mut observed_respawn_in_progress = false;
     for _ in 0..200 {
-        // #480 PR5b: respawn now transitions Restarting → Starting → Running
-        // per §C.3. #954 review D3 — gate on the PERSISTED `starting` row:
-        // it is written only AFTER the spawn's settings snapshot was read
-        // (`load_spawn_env_snapshot` → `persist_runtime_starting`), so the
-        // proxy upsert below deterministically postdates the in-flight
-        // spawn's snapshot. The in-memory Starting state alone is flipped
-        // BEFORE the snapshot read and would race the upsert.
+        // Gate on the PERSISTED `starting` row: it is written only AFTER the spawn's settings snapshot was read,
+        // so the proxy upsert below postdates it. The in-memory Starting state flips before the read and would race.
         let record = repo.shared_daemon_runtime_get().await.unwrap();
         if SharedDaemonState::from_db_str(&record.state) == SharedDaemonState::Starting
             && !daemon.needs_respawn_on_next_thread_start_for_test()
@@ -1947,12 +1815,7 @@ async fn concurrent_mark_during_respawn_is_preserved() {
         "respawn did not reach test window"
     );
 
-    // #954 review D3 — model the production shape: the settings route
-    // upserts the changed proxy BEFORE marking, so the concurrent mark
-    // corresponds to a REAL signature change. The in-flight respawn's
-    // snapshot predates the upsert (see the gate above), so the
-    // spawn-success clear-if-current re-reads a DIFFERENT signature and
-    // must preserve this mark.
+    // The settings route upserts the changed proxy BEFORE marking, so the mark corresponds to a REAL signature change.
     repo.settings_upsert("http_proxy", "http://drain-proxy.test:8080")
         .await
         .unwrap();
@@ -2272,13 +2135,6 @@ async fn taken_over_daemon_exit_triggers_restart() {
     assert_eq!(restarted.restart_count, 1);
 }
 
-/// #954 design test 12 (rewrites the pre-#954 `cleanup_guard_drop_kills_pgid`
-/// — the belt semantics FLIP): `SpawnedChildGuard::drop` is a belt reachable
-/// only via detached-task panic/teardown-abort; it must send SIGTERM ONLY —
-/// no SIGKILL chaser (and no tokio `kill_on_drop`, which is removed). A
-/// cooperative child that checkpoints for 300ms after SIGTERM must live long
-/// enough to write its marker; the pre-#954 TERM+instant-SIGKILL belt (and
-/// `kill_on_drop`) killed it before the write.
 #[tokio::test]
 async fn spawn_guard_drop_belt_sends_sigterm_only() {
     let root = tempfile::tempdir().unwrap();
@@ -2302,11 +2158,7 @@ async fn spawn_guard_drop_belt_sends_sigterm_only() {
         .spawn()
         .expect("spawn guard test child");
     let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
-    // #954 review D4 — readiness handshake instead of a fixed sleep: the
-    // fixture writes `handler_ready` only AFTER its SIGTERM handler (and
-    // monitor thread) are armed. A fixed sleep on a loaded runner could
-    // fire the belt TERM at a still-default-disposition process, killing
-    // it before the cooperative marker write and hard-failing the oracle.
+    // Readiness handshake instead of a fixed sleep: the fixture writes `handler_ready` only AFTER its SIGTERM handler is armed.
     let mut handler_armed = false;
     for _ in 0..500 {
         if handler_ready.exists() {
@@ -2342,12 +2194,6 @@ async fn spawn_guard_drop_belt_sends_sigterm_only() {
     );
 }
 
-/// #954 design test 1 (failing-first) — settings-drain `transition_replace`
-/// must reap the Running daemon with an exit-driven grace: a cooperative
-/// daemon that checkpoints for 1.5s after SIGTERM writes its marker and
-/// exits 0, and is never SIGKILLed. Pre-#954 the reap gave it a fixed 500ms
-/// and then SIGKILLed — the marker never appeared (that instant SIGKILL is
-/// what armed codex's 900s backfill lease in prod on 7/12).
 #[tokio::test]
 async fn settings_drain_reaps_running_daemon_gracefully() {
     let _guard = ENV_LOCK.lock().await;
@@ -2383,13 +2229,6 @@ async fn settings_drain_reaps_running_daemon_gracefully() {
     );
 }
 
-/// #954 design test 2 (failing-first) — the cold-start-deadline miss (the
-/// mid-backfill child whose SIGKILL armed the production livelock) is an
-/// ordinary error path and gets the FULL grace: deadline miss ⇒ explicit
-/// graceful reap ⇒ the never-initialized child still gets its cooperative
-/// 1.5s SIGTERM shutdown (marker written), never an instant SIGKILL.
-/// Pre-#954 this failed twice over: the guard Drop's zero-wait SIGKILL AND
-/// `kill_on_drop(true)`.
 #[tokio::test]
 async fn cold_start_deadline_miss_reaps_child_gracefully() {
     let _guard = ENV_LOCK.lock().await;
@@ -2437,11 +2276,6 @@ async fn cold_start_deadline_miss_reaps_child_gracefully() {
     );
 }
 
-/// #954 design test 9(a) — the leak-audit contract: dropping every
-/// supervisor Arc must leave the daemon RUNNING (no `impl Drop` SIGTERM, no
-/// tokio `kill_on_drop` SIGKILL) — shutdown deliberately leaves the daemon
-/// for the next boot's takeover, which this test then performs. Pre-#954
-/// the Child drop SIGKILLed the daemon.
 #[tokio::test]
 async fn dropped_supervisor_leaves_daemon_running_for_next_boot_takeover() {
     let root = tempfile::tempdir().unwrap();
@@ -2462,7 +2296,6 @@ async fn dropped_supervisor_leaves_daemon_running_for_next_boot_takeover() {
          takeover target"
     );
 
-    // Next boot takes over the surviving daemon (same pid, no respawn).
     let next_boot = server(&root, repo.clone()).await;
     next_boot.start_or_takeover().await.unwrap();
     let snapshot = next_boot.status_snapshot();
@@ -2538,14 +2371,8 @@ async fn turn_start_seeds_active_turns_synchronously() {
     );
 }
 
-/// #1505 S4 review — the real client forwards the caller's selection.
-///
-/// Every other test of this feature reads the FIXTURES fake's recorded
-/// argument, and the fake records it and returns before `client.turn_start` is
-/// ever reached. Replacing the forwarded `selection` with
-/// `TurnModelSelection::inherit()` therefore left all of them green while
-/// silently sending every planner turn under codex's default. This one drives
-/// a real socket to a real child process and reads the frame that arrived.
+/// The fixtures fake records the argument and returns before `client.turn_start` is reached, so only a
+/// real socket to a real child can see the frame.
 #[tokio::test]
 async fn turn_start_forwards_the_selection_onto_the_wire() {
     let _guard = ENV_LOCK.lock().await;
@@ -2603,13 +2430,8 @@ async fn turn_start_forwards_the_selection_onto_the_wire() {
     );
 }
 
-/// Block until the fake child has written a `turn/start` frame and return it.
-///
-/// The child is a separate PROCESS: the request is in the socket's buffer by
-/// the time `turn_start` returns, but the child still has to be scheduled to
-/// read it and append the line. The deadline is a failure ceiling, not a
-/// measurement — it exists so a frame that never arrives fails with what was
-/// captured instead of hanging.
+/// Block until the fake child (a separate process) has written a `turn/start` frame and return it; the
+/// deadline is a failure ceiling, not a measurement.
 async fn wait_for_captured_turn_start(path: &std::path::Path) -> serde_json::Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -2725,8 +2547,6 @@ async fn active_turns_map_tracks_turn_started_and_completed() {
     }
 }
 
-// ================= #949 cold-start deadline & child-liveness wait =================
-
 /// `/proc/<pid>` liveness for reap assertions: gone entirely, or already
 /// reaped into a zombie (state `Z`) — either way the process stopped working.
 fn pid_gone_or_zombie(pid: i32) -> bool {
@@ -2742,14 +2562,7 @@ fn pid_gone_or_zombie(pid: i32) -> bool {
         .unwrap_or(false)
 }
 
-/// #949 acceptance (1)+(5) — repro of the production cold-start livelock:
-/// codex may spend minutes rebuilding its state db (48.7s measured in
-/// production) before it binds the listen socket at all. The fake delays
-/// socket BIND past the old hardcoded 10s deadline; the start must still
-/// succeed (default deadline 120s) and the child must NOT be reaped.
-///
-/// RED before #949: `poll_connect_initialized` gave up at a hardcoded 10s
-/// and `SpawnedChildGuard` killed the legitimately-backfilling child.
+/// codex may spend minutes rebuilding its state db before it binds the listen socket; the fake delays BIND past 10s.
 #[tokio::test]
 async fn cold_start_survives_socket_bind_slower_than_ten_seconds() {
     let _guard = ENV_LOCK.lock().await;
@@ -2785,12 +2598,6 @@ async fn cold_start_survives_socket_bind_slower_than_ten_seconds() {
     );
 }
 
-/// #949 acceptance (2) — the child exits before the socket appears: the
-/// cold-start poll must fail fast (well under the deadline) and surface the
-/// child's exit status instead of blindly waiting out the timer.
-///
-/// RED before #949: the poll ignored child liveness and burned the full
-/// deadline, then reported only the socket connect error.
 #[tokio::test]
 async fn cold_start_fails_fast_with_exit_status_when_child_dies_before_bind() {
     let _guard = ENV_LOCK.lock().await;
@@ -2819,10 +2626,6 @@ async fn cold_start_fails_fast_with_exit_status_when_child_dies_before_bind() {
     );
 }
 
-/// #949 acceptance (3) — the child stays alive but never binds: the
-/// configured deadline (2s here) is the only kill switch. The start must
-/// fail shortly after that deadline — not the old hardcoded 10s — and the
-/// spawn guard must reap the child.
 #[tokio::test]
 async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
     let _guard = ENV_LOCK.lock().await;
@@ -2835,8 +2638,7 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
     let repo = repo().await;
     let mut cfg = cfg(&root);
     cfg.shared_codex_appserver_start_timeout_secs = 2;
-    // #953 — keep the armed heal loop quiet for the assertion window so it
-    // does not respawn (and re-persist `starting`) mid-test.
+    // Keep the armed heal loop quiet for the assertion window so it does not respawn mid-test.
     cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
     cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
@@ -2851,9 +2653,7 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
         let daemon = daemon.clone();
         async move { daemon.start_or_takeover().await }
     });
-    // #953 — the failed spawn persists `failed` with identity NULLed, so the
-    // spawned pid must be captured from the transient `starting` row while
-    // the spawn is still in flight.
+    // The failed spawn persists `failed` with identity NULLed, so capture the pid from the transient `starting` row in flight.
     let pid = wait_for_starting_pid(&repo).await;
     let err = start_task
         .await
@@ -2874,7 +2674,6 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
         "timeout error must report the configured deadline: {msg}"
     );
 
-    // The spawn guard reaps the still-alive child on failure.
     let mut reaped = false;
     for _ in 0..60 {
         if pid_gone_or_zombie(pid) {
@@ -2887,8 +2686,6 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
         reaped,
         "never-binding child must be reaped after the deadline"
     );
-    // #953 defect 1 — and the row must reflect the failure, not a stranded
-    // `starting`.
     let record = repo.shared_daemon_runtime_get().await.unwrap();
     assert_eq!(
         SharedDaemonState::from_db_str(&record.state),
@@ -2913,15 +2710,8 @@ async fn wait_for_starting_pid(repo: &SqlxRepo) -> i32 {
     panic!("spawn never persisted a starting row with a pid");
 }
 
-/// #949 review-fix — the deadline is a TOTAL cap even across an in-flight
-/// attempt: the child binds the socket immediately but never answers
-/// `initialize` (delay >> deadline). Without `timeout_at` around the
-/// attempt, the attempt's internal 10s request timeout would stretch the
-/// configured 2s deadline to ~10s. The start must fail at ~2s and the spawn
-/// guard must reap the child.
-///
-/// RED before the fix: elapsed was ~10s (attempt-internal request timeout),
-/// violating the knob's documented total-time semantics.
+/// The child binds immediately but never answers `initialize`; without `timeout_at` around the attempt,
+/// its internal 10s request timeout would stretch the 2s deadline.
 #[tokio::test]
 async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
     let _guard = ENV_LOCK.lock().await;
@@ -2936,7 +2726,7 @@ async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
     let repo = repo().await;
     let mut cfg = cfg(&root);
     cfg.shared_codex_appserver_start_timeout_secs = 2;
-    // #953 — keep the armed heal loop quiet for the assertion window.
+    // Keep the armed heal loop quiet for the assertion window.
     cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
     cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
@@ -2951,8 +2741,7 @@ async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
         let daemon = daemon.clone();
         async move { daemon.start_or_takeover().await }
     });
-    // #953 — capture the spawned pid from the transient `starting` row (the
-    // failure now persists `failed` with identity NULLed).
+    // Capture the spawned pid from the transient `starting` row (the failure persists `failed` with identity NULLed).
     let pid = wait_for_starting_pid(&repo).await;
     let err = start_task
         .await
@@ -2974,7 +2763,6 @@ async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
         "timeout error must report the configured deadline: {msg}"
     );
 
-    // The spawn guard reaps the still-hanging child on failure.
     let mut reaped = false;
     for _ in 0..60 {
         if pid_gone_or_zombie(pid) {
@@ -2989,8 +2777,6 @@ async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
     );
 }
 
-/// #949 acceptance (4) — the cold-start deadline knob: 120s default, and
-/// flag + env overrides, mirroring the sibling restart-delay knobs.
 #[tokio::test]
 async fn cold_start_deadline_config_default_flag_and_env_override() {
     let _guard = ENV_LOCK.lock().await;
@@ -3023,8 +2809,6 @@ async fn cold_start_deadline_config_default_flag_and_env_override() {
         "env override must win over the default"
     );
 }
-
-// ================= #953 supervisor self-heal =================
 
 /// Build a daemon whose codex bin is a removable symlink, so tests can break
 /// and repair the spawn path deterministically.
@@ -3070,11 +2854,6 @@ async fn wait_for_state(daemon: &SharedCodexAppServer, want: SharedDaemonState, 
     .is_ok()
 }
 
-/// #953 defect 1 — failing-first repro (i), design test 1: a spawn failure
-/// AFTER `persist_runtime_starting` (here: the child answers `initialize`
-/// with an error until the 1s cold-start deadline) must persist a `failed`
-/// row with the identity tuple NULLed and last_error set. It must never
-/// strand the DB at `state='starting'` with a dead pid (production: 16 days).
 #[tokio::test]
 async fn spawn_failure_after_persist_starting_persists_failed_row() {
     let _guard = ENV_LOCK.lock().await;
@@ -3125,16 +2904,7 @@ async fn spawn_failure_after_persist_starting_persists_failed_row() {
     );
 }
 
-/// #953 defect 3 — failing-first repro (ii), design tests 2+4: once the
-/// daemon is Failed (missing codex bin at boot), repairing the cause and
-/// firing the settings-change nudge must bring the daemon back to Running
-/// WITHOUT any manual respawn call and without restarting calm-server.
-///
-/// #953 review D5 — the heal delays are pinned FAR beyond the 15s wait
-/// (60s/120s; the Persistent slow lane floors at the 120s max), so a pass
-/// can only come from the nudge's immediate wake, never from a polling
-/// round happening to land inside the window. This pins the design's
-/// settings-nudge immediate-wake claim while keeping the test bounded.
+/// The heal delays are pinned far beyond the 15s wait, so a pass can only come from the nudge's immediate wake.
 #[tokio::test]
 async fn failed_daemon_heals_in_background_without_server_restart() {
     let root = tempfile::tempdir().unwrap();
@@ -3157,8 +2927,7 @@ async fn failed_daemon_heals_in_background_without_server_restart() {
         record.state
     );
 
-    // #953 defect 3/design test 4 — while Failed, the preflight message must
-    // carry the live failure and the background-retry fact.
+    // While Failed, the preflight message must carry the live failure and the background-retry fact.
     assert!(
         !daemon.is_running(),
         "failed daemon must preflight as not running"
@@ -3186,17 +2955,13 @@ async fn failed_daemon_heals_in_background_without_server_restart() {
         "heal success must persist the running row"
     );
     assert!(record.pid.is_some());
-    // Lockout reversed: the user-path preflight passes again.
     assert!(
         daemon.is_running(),
         "preflighted user path must pass after the background heal"
     );
 }
 
-/// #953 PR2 §5 — the readiness watch is stamped `running: false` on a
-/// terminal Failed (typestate error arm) and `running: true` with the
-/// installed generation on every installed Running (typestate success arm).
-/// This is the channel the deferred harness recovery consumes.
+/// The readiness watch is the channel the deferred harness recovery consumes.
 #[tokio::test]
 async fn readiness_watch_tracks_failed_and_running_transitions() {
     let root = tempfile::tempdir().unwrap();
@@ -3222,8 +2987,6 @@ async fn readiness_watch_tracks_failed_and_running_transitions() {
         "terminal Failed must stamp running: false"
     );
 
-    // Repair + the existing settings-change nudge: the heal loop's success
-    // must stamp running: true with the installed generation.
     std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
     daemon.mark_needs_respawn();
     let ready = tokio::time::timeout(std::time::Duration::from_secs(15), async {
@@ -3248,14 +3011,8 @@ async fn readiness_watch_tracks_failed_and_running_transitions() {
     assert!(daemon.is_running());
 }
 
-/// #953 PR2 review D1(b) — entering a transition (leaving Running) must
-/// invalidate readiness IMMEDIATELY: `transition_replace` publishes
-/// `running: false` with the OUTGOING generation at transition entry, so a
-/// claim-boundary consumer (deferred harness recovery) never accepts a
-/// transitional Restarting/Starting daemon whose last terminal value was
-/// still `running: true`. The Ok arm then re-publishes the terminal
-/// `running: true` with the newly installed generation — no premature
-/// `running: true` in between (the parked window only ever shows `false`).
+/// `transition_replace` publishes `running: false` with the OUTGOING generation at entry, so a claim-boundary
+/// consumer never accepts a transitional daemon whose last terminal value was `running: true`.
 #[tokio::test]
 async fn transition_entry_invalidates_readiness_before_terminal_republish() {
     let root = tempfile::tempdir().unwrap();
@@ -3297,7 +3054,6 @@ async fn transition_entry_invalidates_readiness_before_terminal_republish() {
         "the entry invalidation must carry the OUTGOING generation"
     );
 
-    // Release: the transition completes and re-publishes the terminal value.
     drop(parked);
     let outcome = task.await.unwrap().unwrap();
     assert_eq!(outcome, ReplaceOutcome::Replaced);
@@ -3313,8 +3069,7 @@ async fn transition_entry_invalidates_readiness_before_terminal_republish() {
     assert_eq!(after.generation, daemon.generation_for_test().await);
 }
 
-/// Rewrite the polluted home's config.toml without the `evil` entry —
-/// "polluted-then-repaired" (#953 design test 6).
+/// Rewrite the polluted home's config.toml without the `evil` entry — "polluted-then-repaired".
 fn repair_polluted_home(root: &tempfile::TempDir) {
     let cfg_path = root.path().join("codex-home/config.toml");
     let content = std::fs::read_to_string(&cfg_path).unwrap();
@@ -3323,12 +3078,6 @@ fn repair_polluted_home(root: &tempfile::TempDir) {
     std::fs::write(&cfg_path, repaired).unwrap();
 }
 
-/// #953 design test 5 — the double-spawn race of the old split path,
-/// demonstrated post-hoc via the precondition that replaced it (the split
-/// path is deleted, so the race itself is no longer constructible): a
-/// crash restart carrying a stale generation — its process was already
-/// replaced by a settings respawn — must abort silently: no reap, no spawn,
-/// a single live pid, consistent restart_count.
 #[tokio::test]
 async fn stale_generation_crash_restart_aborts_without_reap_or_spawn() {
     let root = tempfile::tempdir().unwrap();
@@ -3337,7 +3086,6 @@ async fn stale_generation_crash_restart_aborts_without_reap_or_spawn() {
     daemon.start_or_takeover().await.unwrap();
     let stale_generation = daemon.generation_for_test().await;
 
-    // A settings respawn replaces the process: the generation moves on.
     daemon.mark_needs_respawn();
     daemon.ensure_respawn_for_current_settings().await.unwrap();
     let after_respawn = daemon.status_snapshot();
@@ -3378,15 +3126,8 @@ async fn stale_generation_crash_restart_aborts_without_reap_or_spawn() {
     );
 }
 
-/// #953 review D2 — the generation bumps ONLY when a Running incarnation is
-/// installed, so a crash restart made stale by an intervening FAILED
-/// transition (here: a settings respawn that reaps the crashed process and
-/// then fails to spawn) still sees its captured generation. The
-/// `GenerationIs` precondition must additionally require the state to still
-/// be the Running incarnation the crash watcher observed; against the
-/// intervening Failed state the stale task must abort — never retry on the
-/// crash lane, override the settings-failure classification, double-count
-/// restarts, or consume the restored `needs_respawn` flag.
+/// The generation bumps ONLY when a Running incarnation is installed, so `GenerationIs` must also require
+/// the state to still be that Running incarnation.
 #[tokio::test]
 async fn stale_crash_restart_after_failed_settings_respawn_aborts() {
     let root = tempfile::tempdir().unwrap();
@@ -3406,13 +3147,8 @@ async fn stale_crash_restart_after_failed_settings_respawn_aborts() {
         .ensure_respawn_for_current_settings()
         .await
         .expect_err("the settings respawn must fail with the bin gone");
-    // #954 — the detached transition releases the serial before the caller
-    // resumes, so the heal loop (nudged by mark_needs_respawn's stored
-    // permit) may already be running its own — also failing — round when
-    // the caller observes state. Wait for the terminal settle instead of
-    // asserting the instantaneous state (the heal round consumes the nudge
-    // permit and then sleeps on the quiet 120s slow lane, so the state is
-    // stable afterwards).
+    // The detached transition releases the serial before the caller resumes, so the heal loop may already be
+    // running its own failing round; wait for the terminal settle instead of asserting the instantaneous state.
     assert!(
         wait_for_state(&daemon, SharedDaemonState::Failed, 10).await,
         "the failed settings respawn must settle terminal Failed; still {:?}",
@@ -3470,11 +3206,6 @@ async fn stale_crash_restart_after_failed_settings_respawn_aborts() {
     );
 }
 
-/// #953 design test 6 — fence-unreconciled: a corrupt pgid≠pid record plus a
-/// polluted-then-repaired home. While the survivor lives, no round may
-/// spawn (row keeps identity + `unreconciled:` prefix, survivor untouched);
-/// once the survivor is gone, reconciliation proves absence, NULLs identity,
-/// and the spawn proceeds.
 #[tokio::test]
 async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
     let root = tempfile::tempdir().unwrap();
@@ -3496,7 +3227,6 @@ async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
 
     repair_polluted_home(&root);
 
-    // The home is clean now, but the unreconciled row still fences the spawn.
     let err = daemon
         .ensure_running()
         .await
@@ -3532,7 +3262,6 @@ async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
         "no spawn may happen while unreconciled"
     );
 
-    // Survivor killed ⇒ absence provable ⇒ identity NULLed ⇒ spawn proceeds.
     force_cleanup_process_group(launcher, pgid);
     assert!(
         wait_proc_gone(peer_pid).await,
@@ -3551,10 +3280,6 @@ async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
     assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Running);
 }
 
-/// #953 design test 11 — the unreconciled marker is durable: a NEW
-/// supervisor instance over the same repo (calm-server restart) classifies
-/// Unreconciled from the row alone (NOT SafeToRetry), spawns nothing while
-/// the survivor lives, and recovers once the survivor is gone.
 #[tokio::test]
 async fn unreconciled_classification_survives_supervisor_restart() {
     let root = tempfile::tempdir().unwrap();
@@ -3567,8 +3292,7 @@ async fn unreconciled_classification_survives_supervisor_restart() {
     let repo = repo().await;
     persist_running_daemon(&repo, &root, peer_pid, pgid, &sock, process_start_time).await;
 
-    // Instance A refuses (polluted home) and persists the durable marker.
-    // Its heal loop is quieted (long delays) so it cannot race instance B.
+    // Instance A's heal loop is quieted (long delays) so it cannot race instance B.
     let mut cfg_a = cfg(&root);
     cfg_a.shared_codex_appserver_restart_initial_delay_ms = 60_000;
     cfg_a.shared_codex_appserver_restart_max_delay_ms = 120_000;
@@ -3582,8 +3306,6 @@ async fn unreconciled_classification_survives_supervisor_restart() {
     assert_eq!(record.pid, Some(peer_pid), "marker must retain identity");
     drop(instance_a);
 
-    // The pollution is repaired; a NEW instance (fresh in-memory state) must
-    // still classify the row Unreconciled and refuse to spawn.
     repair_polluted_home(&root);
     let home_b = calm_server::shared_codex_home::SharedCodexHome::new(
         root.path().join("codex-home"),
@@ -3609,8 +3331,6 @@ async fn unreconciled_classification_survives_supervisor_restart() {
         SharedDaemonState::Running
     );
 
-    // Kill the survivor ⇒ the next round proves absence, NULLs identity,
-    // and spawns.
     force_cleanup_process_group(launcher, pgid);
     assert!(wait_proc_gone(peer_pid).await);
     instance_b
@@ -3625,10 +3345,6 @@ async fn unreconciled_classification_survives_supervisor_restart() {
     assert_ne!(record.pid, Some(peer_pid));
 }
 
-/// #953 design test 7 (integration half) — identical consecutive failures
-/// produce exactly one Failed DB write: `updated_at` stays put across
-/// repeated failing rounds (the module unit test covers the forced-DB-
-/// failure half of the dedup contract).
 #[tokio::test]
 async fn identical_consecutive_failures_dedup_to_one_db_write() {
     let root = tempfile::tempdir().unwrap();
@@ -3665,8 +3381,6 @@ async fn identical_consecutive_failures_dedup_to_one_db_write() {
     );
 }
 
-/// #953 design test 9 — heal-task abort: the RAII guard clears the
-/// singleton claim on abort, and re-scheduling can claim again.
 #[tokio::test]
 async fn heal_task_abort_clears_claim_via_raii_guard() {
     let root = tempfile::tempdir().unwrap();
@@ -3706,24 +3420,14 @@ async fn heal_task_abort_clears_claim_via_raii_guard() {
     handle2.abort();
 }
 
-/// #953 review D1 — heal-claim release race: a heal round succeeds
-/// (Running installed, serial released) but the task still holds the
-/// singleton `heal_active` claim through the post-transition window
-/// (production: `resume_cached_threads`, which can take seconds — modelled
-/// here by the fixtures post-Ok gate). If the fresh daemon crashes and its
-/// crash restart FAILS inside that window, the failure path's
-/// `schedule_heal()` CAS silently loses against the held claim. The heal
-/// task must therefore release the claim FIRST and then re-check the
-/// terminal state, re-arming on Failed — otherwise the end state is
-/// Failed + heal_active=false + no loop: the permanent lockout this PR
-/// exists to remove.
+/// A heal round holds the singleton `heal_active` claim through the post-transition window; a crash-restart
+/// failure's `schedule_heal()` CAS in that window loses silently, so the task must release the claim FIRST.
 #[tokio::test]
 async fn heal_ok_claim_release_race_rearms_loop_for_failure_that_lost_cas() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
     let (daemon, codex_link) = daemon_with_codex_symlink(&root, repo.clone());
 
-    // Boot failure arms the heal loop (claim held by the loop task).
     std::fs::remove_file(&codex_link).unwrap();
     daemon
         .start_or_takeover()
@@ -3735,17 +3439,13 @@ async fn heal_ok_claim_release_race_rearms_loop_for_failure_that_lost_cas() {
     // the claim release (the resume_cached_threads window).
     let hold = daemon.heal_post_ok_gate_for_test().lock_owned().await;
 
-    // Repair the bin: the heal loop heals to Running, then parks at the
-    // gate STILL HOLDING the claim.
     std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
     assert!(
         wait_for_state(&daemon, SharedDaemonState::Running, 30).await,
         "heal round must install Running before parking at the gate"
     );
 
-    // Inside the window: crash the fresh daemon AND re-break the bin so
-    // the crash restart fails; its schedule_heal() CAS loses against the
-    // claim the parked task still holds.
+    // Inside the window: crash the fresh daemon AND re-break the bin so the crash restart fails and its schedule_heal() CAS loses.
     std::fs::remove_file(&codex_link).unwrap();
     let crashed_pid = daemon
         .status_snapshot()
@@ -3765,11 +3465,7 @@ async fn heal_ok_claim_release_race_rearms_loop_for_failure_that_lost_cas() {
         "the parked heal task must still hold the singleton claim"
     );
 
-    // Repair again, then release the gate. The finishing heal task must
-    // release its claim FIRST and re-arm against the Failed state it
-    // re-reads (the crash path's schedule_heal already lost its CAS). The
-    // nudge only wakes the re-armed loop promptly — with no loop armed
-    // (the pre-fix lockout) it wakes nothing.
+    // Repair again, then release the gate: the finishing heal task must release its claim FIRST and re-arm against Failed.
     std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
     drop(hold);
     daemon.mark_needs_respawn();
@@ -3788,9 +3484,6 @@ async fn heal_ok_claim_release_race_rearms_loop_for_failure_that_lost_cas() {
     );
 }
 
-/// #953 design test 10 — takeover success re-stamps the row: adopting a
-/// daemon persisted as `starting` flips the row to `running` with the
-/// adopted tuple.
 #[tokio::test]
 async fn takeover_restamps_starting_row_to_running() {
     let root = tempfile::tempdir().unwrap();
@@ -3812,8 +3505,6 @@ async fn takeover_restamps_starting_row_to_running() {
     let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
 
     let repo = repo().await;
-    // Persist the daemon as it would look mid-launch: state='starting' with
-    // a full identity tuple and the current env signature.
     repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
         state: "starting".into(),
         pid: Some(old_pid),
@@ -3854,11 +3545,8 @@ async fn takeover_restamps_starting_row_to_running() {
     let _ = child.wait().await;
 }
 
-/// Spawn a fake app-server child directly from the test with a delayed
-/// socket bind (models mid-backfill: alive, verified, not yet bound) and a
-/// SIGTERM marker oracle. Returns (child, pid, process_start_time) once the
-/// fixture reports its SIGTERM handler armed — before that, a reap would
-/// hit a default-disposition process and the marker oracle would be vacuous.
+/// Spawn a fake app-server child with a delayed socket bind (alive, verified, not yet bound) and a SIGTERM
+/// marker oracle. Returns once the fixture reports its SIGTERM handler armed; before that the oracle is vacuous.
 async fn spawn_unbound_child_with_term_marker(
     sock: &Path,
     bind_delay_ms: u64,
@@ -3923,20 +3611,8 @@ async fn persist_starting_daemon(
     .unwrap();
 }
 
-/// #954 defect 2, design test 10 (failing-first) — a persisted `starting`
-/// row naming a VERIFIED alive child that has not yet bound its socket
-/// (mid-backfill) must be given the remaining readiness window budgeted by
-/// the persisted `started_at`, and ADOPTED when it binds: same pid, never
-/// signaled (no marker), restart_count unchanged, backfill progress
-/// preserved. Pre-#954-PR2 the takeover probe made a single
-/// `connect_initialized` attempt that failed instantly on the unbound
-/// socket → handshake-failure reap → a fresh spawn restarting backfill from
-/// scratch on every boot.
-///
-/// #953 interaction: the adoption funnels through the SAME
-/// `start_new_process_typestate` seam as a fresh spawn, so it must publish
-/// readiness `running: true` with the bumped installed generation (the
-/// claim boundary deferred harness recovery consumes).
+/// The adoption funnels through the same `start_new_process_typestate` seam as a fresh spawn, so it must
+/// publish readiness `running: true` with the bumped installed generation.
 #[tokio::test]
 async fn boot_adopts_starting_child_within_readiness_window() {
     let root = tempfile::tempdir().unwrap();
@@ -3998,11 +3674,6 @@ async fn boot_adopts_starting_child_within_readiness_window() {
     let _ = child.wait().await;
 }
 
-/// #954 defect 2, design test 11 — window lapse: the persisted `started_at`
-/// is backdated beyond the start timeout, so the remaining window is zero.
-/// The alive-but-unbound child is reaped GRACEFULLY (cooperative SIGTERM
-/// marker written — the defect-1 helper, not an instant SIGKILL) and a
-/// fresh spawn replaces it.
 #[tokio::test]
 async fn readiness_window_lapse_reaps_gracefully_then_spawns_fresh() {
     let root = tempfile::tempdir().unwrap();
@@ -4050,10 +3721,6 @@ async fn readiness_window_lapse_reaps_gracefully_then_spawns_fresh() {
     drop(child);
 }
 
-/// #954 defect 2, design test 11 (exit arm) — a child that EXITS during the
-/// readiness window is detected by the liveness probe (`verify_owned_pid`
-/// polling) and replaced by an immediate fresh spawn — the boot never sits
-/// out the remaining window against a dead child.
 #[tokio::test]
 async fn child_exit_during_readiness_window_spawns_immediately() {
     let root = tempfile::tempdir().unwrap();
@@ -4096,17 +3763,8 @@ async fn child_exit_during_readiness_window_spawns_immediately() {
     drop(child);
 }
 
-/// #954 defect 2 — the readiness window NEVER re-arms across repeated boots
-/// for the same child: it is budgeted by the PERSISTED `started_at` (which
-/// adoption/re-stamp preserves), so a second boot sees only the leftover
-/// budget. Constructed via a backdated `started_at` anchored to a
-/// timestamp captured BEFORE the spawn: with an 8s start timeout and 6s
-/// already consumed, the lapse deadline is `started_at + 8s` = anchor + 2s,
-/// while the child binds no earlier than anchor + 5s — a ≥3s margin that
-/// setup latency (repo init, handler-ready wait) cannot erode, because
-/// extra latency only shrinks the leftover window further. The lapse
-/// happens even though a (wrongly) re-armed fresh 8s window would have
-/// adopted the 5s bind.
+/// Backdated `started_at` anchored BEFORE the spawn: with an 8s timeout and 6s consumed the lapse is anchor + 2s
+/// while the child binds no earlier than anchor + 5s — extra setup latency only shrinks the leftover window.
 #[tokio::test]
 async fn readiness_window_never_rearms_for_same_child() {
     let root = tempfile::tempdir().unwrap();
@@ -4159,9 +3817,6 @@ async fn readiness_window_never_rearms_for_same_child() {
     drop(child);
 }
 
-/// #953 design test 12 — the settings PUT path (mark + nudge) never takes
-/// the transition serial: it must return promptly even while a stalled
-/// spawn holds the serial.
 #[tokio::test]
 async fn settings_nudge_returns_promptly_during_stalled_spawn() {
     let _guard = ENV_LOCK.lock().await;
@@ -4202,11 +3857,7 @@ async fn settings_nudge_returns_promptly_during_stalled_spawn() {
         .expect("delayed initialize within the default deadline must succeed");
 }
 
-/// #953 design test 13(a) — pid-partial shape: a failed row naming only a
-/// pid (verification pair incomplete). While `/proc/<pid>` exists the shape
-/// stays unreconciled and the process is NEVER signaled (ownership
-/// unprovable — a bare-pid kill could hit an unrelated process); once it
-/// exits, the next round proves absence and the spawn proceeds.
+/// While `/proc/<pid>` exists the pid-only shape is never signaled: ownership is unprovable and a bare-pid kill could hit an unrelated process.
 #[tokio::test]
 async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
     let root = tempfile::tempdir().unwrap();
@@ -4258,14 +3909,12 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
         record.last_error
     );
 
-    // Rounds only re-probe: a second round changes nothing and stays fenced.
     daemon
         .ensure_running()
         .await
         .expect_err("still fenced while the pid is live");
     assert_eq!(unsafe { libc::kill(survivor_pid, 0) }, 0);
 
-    // Process exits ⇒ next round NULLs identity ⇒ SafeToRetry ⇒ spawn.
     survivor.kill().await.expect("stop test survivor");
     let _ = survivor.wait().await;
     daemon
@@ -4280,10 +3929,6 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
     assert_ne!(record.pid, Some(survivor_pid));
 }
 
-/// #953 design test 13(b) — the pid-NULL operator shape: identity fragments
-/// without a pid name no process at all. Rounds only re-read; the row and
-/// `status_snapshot().last_error` carry `unreconciled-needs-operator:`;
-/// remediation is the operator clearing the identity columns.
 #[tokio::test]
 async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
     let root = tempfile::tempdir().unwrap();
@@ -4328,7 +3973,6 @@ async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
         Some(12345),
         "identity fragments must be retained for the operator"
     );
-    // Surfaced via the existing daemon status API (no new UI).
     assert!(
         daemon
             .status_snapshot()
@@ -4338,7 +3982,6 @@ async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
         "status_snapshot().last_error must surface the operator state"
     );
 
-    // Rounds only re-read: identical tuple, no rewrite.
     tokio::time::sleep(Duration::from_millis(50)).await;
     daemon
         .ensure_running()
@@ -4377,10 +4020,7 @@ async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
     );
 }
 
-/// #953 design test 13(c) — triple complete (pid/start_time/boot_id) with
-/// pgid NULL: verifiable but not group-reapable — there is no valid pgid to
-/// target and a bare-pid signal is not a group reap. Stays unreconciled and
-/// unsignaled while alive; verify-false after exit proves absence.
+/// pgid NULL is verifiable but not group-reapable: a bare-pid signal is not a group reap.
 #[tokio::test]
 async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers() {
     let root = tempfile::tempdir().unwrap();
@@ -4434,7 +4074,6 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
         record.last_error
     );
 
-    // Process exits ⇒ verify-false ⇒ identity NULLed ⇒ spawn.
     survivor.kill().await.expect("stop test survivor");
     let _ = survivor.wait().await;
     daemon
@@ -4467,18 +4106,8 @@ async fn wait_until_zombie(pid: i32) -> bool {
     false
 }
 
-/// #953 review D4(a) — a zombie group LEADER is not proof that its process
-/// group is dead: live descendants may remain in the group. For a full
-/// verified pid==pgid tuple, reconciliation must still run the group reap
-/// (verification permits signaling the known pgid; the leader being a
-/// zombie is irrelevant to the members) instead of classifying ProvenAbsent
-/// on the leader's zombie state alone — which would clear the durable fence
-/// and spawn a replacement while the old group still contains live
-/// processes.
-///
-/// Construction: a `sh` group leader backgrounds a `sleep` in its own pgid,
-/// prints the member pid, and exits; the test holds the tokio `Child`
-/// without `wait()`ing, so the leader stays a zombie while the member lives.
+/// Construction: a `sh` group leader backgrounds a `sleep` in its own pgid, prints the member pid, and exits;
+/// the test holds the tokio `Child` without `wait()`ing, so the leader stays a zombie while the member lives.
 #[tokio::test]
 async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent() {
     let root = tempfile::tempdir().unwrap();
@@ -4535,10 +4164,7 @@ async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent(
         .await
         .expect("group reap of the verified tuple must prove absence and reopen the spawn path");
 
-    // The core assertion: absence was proven by SIGNALING the known pgid,
-    // never silently from the leader's zombie state — the live member must
-    // be gone (SIGKILL to the group; init reaps it once its dead parent's
-    // slot is cleared). Pre-fix, the member survived unsignaled.
+    // Absence was proven by SIGNALING the known pgid, never from the leader's zombie state: the live member must be gone.
     let mut member_gone = false;
     for _ in 0..100 {
         // SAFETY: signal 0 probes liveness without delivering a signal.
@@ -4565,16 +4191,9 @@ async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent(
         "a fresh daemon must be spawned"
     );
 
-    // Reap the zombie leader (test-side wait) for hygiene.
     let _ = leader.wait().await;
 }
 
-/// #953 review D4(b) — the pid-partial shape (a): a ZOMBIE pid is still a
-/// present /proc entry, and group absence is NOT provable from it (the
-/// unverifiable record may name a group whose members outlive the zombie
-/// leader; a bare pid must never be signaled). The shape must stay
-/// unreconciled while the zombie exists and recover only once the entry is
-/// truly gone (parent reaps it).
 #[tokio::test]
 async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
     let root = tempfile::tempdir().unwrap();
@@ -4626,8 +4245,6 @@ async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
         "no spawn may happen while the zombie entry exists"
     );
 
-    // Parent reaps the zombie ⇒ /proc entry gone ⇒ absence provable ⇒ the
-    // next round NULLs identity and spawns.
     let _ = child.wait().await;
     daemon
         .ensure_running()
@@ -4641,11 +4258,6 @@ async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
     assert_ne!(record.pid, Some(zombie_pid));
 }
 
-// ================= #954 graceful replacement & shutdown (PR1) =================
-
-/// #954 design test 3 — the grace is a CEILING: a wedged daemon that ignores
-/// SIGTERM pays the full (test-shortened, 1s) grace and is then SIGKILLed;
-/// the transition still completes with a fresh daemon.
 #[tokio::test]
 async fn grace_ceiling_escalates_to_sigkill_for_sigterm_ignoring_daemon() {
     let _guard = ENV_LOCK.lock().await;
@@ -4689,10 +4301,6 @@ async fn grace_ceiling_escalates_to_sigkill_for_sigterm_ignoring_daemon() {
     );
 }
 
-/// #954 design test 5 — the drain boundary, continuation of the adopt test:
-/// after adopt-on-mismatch, the FIRST thread start triggers the replace —
-/// the old daemon exits via SIGTERM (cooperative marker), a fresh daemon
-/// with the CURRENT signature is persisted, and the thread is minted on it.
 #[tokio::test]
 async fn adopted_mismatched_daemon_drains_at_first_thread_start() {
     let root = tempfile::tempdir().unwrap();
@@ -4737,7 +4345,6 @@ async fn adopted_mismatched_daemon_drains_at_first_thread_start() {
     );
     assert!(daemon.needs_respawn_on_next_thread_start_for_test());
 
-    // The drain boundary: the first thread start replaces the daemon.
     let card_id = seed_card(&repo, 1).await;
     let thread_id = daemon
         .thread_start_mint_for_card(
@@ -4778,11 +4385,7 @@ async fn adopted_mismatched_daemon_drains_at_first_thread_start() {
     let _ = child.wait().await;
 }
 
-/// #954 design test 6 — drain durability across supervisor loss: the drain
-/// obligation lives in the persisted OLD signature, nothing else. Destroying
-/// the supervisor (its in-memory needs_respawn flag dies with it) and
-/// constructing a new one over the same repo must re-detect the mismatch,
-/// re-adopt, and re-mark.
+/// The drain obligation lives in the persisted OLD signature, nothing else.
 #[tokio::test]
 async fn adopt_drain_obligation_survives_supervisor_loss() {
     let root = tempfile::tempdir().unwrap();
@@ -4856,11 +4459,7 @@ async fn adopt_drain_obligation_survives_supervisor_loss() {
     let _ = child.wait().await;
 }
 
-/// #954 design test 8 — re-stamp failure keeps the mismatch durably
-/// detectable: the failing write is the ONLY write on the adoption path, so
-/// the pre-existing row (old state, old signature) stays untouched; the
-/// current process still drains (in-memory flag), and a fresh supervisor
-/// still re-detects and re-marks.
+/// The failing re-stamp is the ONLY write on the adoption path, so the pre-existing row stays untouched.
 #[tokio::test]
 async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
     let root = tempfile::tempdir().unwrap();
@@ -4926,8 +4525,6 @@ async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
          stays durably detectable"
     );
 
-    // Supervisor loss + repaired DB: a fresh supervisor re-detects from the
-    // untouched row, re-adopts, re-marks.
     drop(instance_a);
     sqlx::query("DROP TRIGGER fail_running_stamp")
         .execute(repo.pool())
@@ -4951,13 +4548,6 @@ async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
     let _ = child.wait().await;
 }
 
-/// #954 design test 7 — the cancellation belt, post-persist: aborting the
-/// DETACHED transition task itself (test seam; models runtime teardown or an
-/// in-task panic — caller cancellation can no longer reach the guard) mid-
-/// readiness-poll must fire the belt: the child receives SIGTERM ONLY (its
-/// cooperative marker proves no SIGKILL chaser — also proving kill_on_drop
-/// is gone), the row remains `starting` with the full tuple, and the serial
-/// is released so the next transition recovers through the normal walk.
 #[tokio::test]
 async fn aborted_detached_transition_belt_terms_child_and_leaves_starting_row() {
     let _guard = ENV_LOCK.lock().await;
@@ -5012,9 +4602,7 @@ async fn aborted_detached_transition_belt_terms_child_and_leaves_starting_row() 
     assert_eq!(record.pid, Some(pid), "the starting tuple must be intact");
     assert!(record.pgid.is_some() && record.boot_id.is_some() && record.started_at.is_some());
 
-    // Serial released by the aborted task; the next transition reaches the
-    // row through the normal walk (verify-false ⇒ stale-socket reap ⇒
-    // fresh spawn).
+    // Serial released by the aborted task; the next transition reaches the row through the normal walk.
     unsafe {
         std::env::remove_var("FAKE_CODEX_INITIALIZE_DELAY_MS");
     }
@@ -5024,10 +4612,6 @@ async fn aborted_detached_transition_belt_terms_child_and_leaves_starting_row() 
     assert_ne!(snapshot.runtime.map(|runtime| runtime.pid), Some(pid));
 }
 
-/// #954 design test 14(a) — caller cancelled mid-transition: the detached
-/// task still finishes the transition to a terminal state (Running
-/// installed) — never a stuck Starting in memory, never a row-less live
-/// child.
 #[tokio::test]
 async fn caller_cancelled_mid_transition_still_reaches_terminal_running() {
     let _guard = ENV_LOCK.lock().await;
@@ -5060,10 +4644,6 @@ async fn caller_cancelled_mid_transition_still_reaches_terminal_running() {
     assert_eq!(record.pid, Some(pid), "the spawned child owns the row");
 }
 
-/// #954 design test 14(b) — serial retained by the detached task: a
-/// concurrent `transition_replace` attempted while the cancelled caller's
-/// task still runs BLOCKS until that task's terminal write, then proceeds —
-/// the first task's persist never overwrites the second transition's row.
 #[tokio::test]
 async fn concurrent_transition_blocks_until_cancelled_callers_task_terminal() {
     let _guard = ENV_LOCK.lock().await;
@@ -5115,10 +4695,6 @@ async fn concurrent_transition_blocks_until_cancelled_callers_task_terminal() {
     );
 }
 
-/// #954 design test 14(c) — caller cancelled AFTER the completion Result was
-/// sent: nothing is pending, the state is already terminal, and dropping the
-/// queued Result carries no obligations (the r4 race) — the serial is free
-/// for the next transition.
 #[tokio::test]
 async fn caller_cancelled_after_result_sent_leaves_terminal_state_and_free_serial() {
     let root = tempfile::tempdir().unwrap();
@@ -5131,16 +4707,12 @@ async fn caller_cancelled_after_result_sent_leaves_terminal_state_and_free_seria
         futures::poll!(caller_future.as_mut()).is_pending(),
         "first poll parks the caller at the receiver await"
     );
-    // Let the detached task run the whole transition and SEND its result.
     assert!(
         wait_for_state(&daemon, SharedDaemonState::Running, 20).await,
         "the detached task must reach terminal Running"
     );
-    // Cancel the caller post-send: the queued Result is dropped.
     drop(caller_future);
 
-    // Nothing pending: the state is terminal and the serial is free — a
-    // fresh transition acquires it promptly and completes.
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         daemon
             .transition_replace_for_test("post-cancel transition", ReplacePrecondition::Always)
@@ -5153,10 +4725,6 @@ async fn caller_cancelled_after_result_sent_leaves_terminal_state_and_free_seria
     assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Running);
 }
 
-/// #954 design test 14(d) — forced persist-Err on the Running-row write: the
-/// detached task's typestate Err arm reaps the child GRACEFULLY (cooperative
-/// marker), persists Failed (identity NULLed — proven absent), and arms heal
-/// before releasing the serial.
 #[tokio::test]
 async fn forced_running_persist_error_reaps_gracefully_and_terminalizes_failed() {
     let _guard = ENV_LOCK.lock().await;
@@ -5217,12 +4785,8 @@ async fn forced_running_persist_error_reaps_gracefully_and_terminalizes_failed()
     );
 }
 
-/// #954 r5 ordering pin — `tokio::spawn` is synchronous: the detached
-/// transition task is created BEFORE the caller's first await of the
-/// receiver. Poll the raw transition future exactly ONCE (which runs it
-/// synchronously up to and through `tokio::spawn`, parking at the receiver),
-/// then DROP it — the caller is cancelled at its very first await — and the
-/// already-created task must still complete the transition.
+/// `tokio::spawn` is synchronous: poll the raw transition future exactly ONCE (through `tokio::spawn`, parking
+/// at the receiver), then DROP it — the already-created task must still complete the transition.
 #[tokio::test]
 async fn spawn_transition_task_outlives_caller_cancelled_at_first_await() {
     let root = tempfile::tempdir().unwrap();
@@ -5250,9 +4814,7 @@ async fn spawn_transition_task_outlives_caller_cancelled_at_first_await() {
     );
 }
 
-/// #954 — the stop-grace knob: default 60 (codex upstream STOP_GRACE_PERIOD),
-/// flag + env overrides mirroring the sibling knobs, and validation 1..=600
-/// (0 would silently restore the instant-SIGKILL defect).
+/// Validation 1..=600: 0 would silently restore the instant-SIGKILL defect.
 #[tokio::test]
 async fn stop_grace_config_default_flag_env_and_validation() {
     let _guard = ENV_LOCK.lock().await;
@@ -5305,27 +4867,8 @@ async fn stop_grace_config_default_flag_env_and_validation() {
     );
 }
 
-// ===========================================================================
-// #1453 — the unbounded-wait class that wedged the CI runner.
-// ===========================================================================
-
-/// #1453 regression guard — the fake app-server must serve OVERLAPPING
-/// connections.
-///
-/// The wedge: the fixture's accept loop used to `.await serve_conn(..)`
-/// inline, so it served exactly one connection at a time and reached a
-/// connection only after every earlier one closed. Every adopt/drain test
-/// hands a live daemon from a dropped supervisor to a fresh one, and the old
-/// supervisor's WebSocket closes ASYNCHRONOUSLY (`Drop for CodexAppServer`
-/// only *requests* the reader task's abort). A connect landing inside that
-/// window therefore waited exactly as long as the old connection lived — and
-/// with no timeout anywhere above `client_async` (see
-/// `connect_to_a_silent_peer_fails_with_a_bounded_diagnostic`), an old
-/// connection that was never released meant a test process sitting at 0% CPU
-/// until a human killed it, taking the self-hosted runner with it.
-///
-/// Two clients at once, both fully initialized, is the smallest statement of
-/// the fixed behaviour — and it is also how a real `codex app-server` behaves.
+/// The old supervisor's WebSocket closes ASYNCHRONOUSLY (`Drop for CodexAppServer` only requests the reader
+/// task's abort), so a connect landing in that window must not wait for the old connection to close.
 #[tokio::test]
 async fn fake_app_server_serves_overlapping_connections() {
     let root = tempfile::tempdir().unwrap();
@@ -5359,9 +4902,7 @@ async fn fake_app_server_serves_overlapping_connections() {
             .expect("first client connects");
     first.initialize(info()).await.expect("first initialize");
 
-    // The second connection is the one that used to hang forever. Bound it
-    // well below `CONNECT_TIMEOUT` so a regression fails as a timeout here
-    // rather than as a 10s-per-attempt slowdown.
+    // Bound well below `CONNECT_TIMEOUT` so a regression fails as a timeout here rather than a 10s-per-attempt slowdown.
     let second = tokio::time::timeout(
         Duration::from_secs(5),
         calm_server::codex_appserver::CodexAppServer::connect(&sock),
@@ -5378,7 +4919,6 @@ async fn fake_app_server_serves_overlapping_connections() {
         .expect("the second connection must reach initialize, not sit in the backlog")
         .expect("second initialize");
 
-    // And the first connection is still usable — concurrency, not takeover.
     first
         .initialize(info())
         .await
@@ -5388,20 +4928,8 @@ async fn fake_app_server_serves_overlapping_connections() {
     let _ = child.wait().await;
 }
 
-/// #1453 characterization — a peer that accepts the socket and then goes
-/// silent must produce a BOUNDED, self-describing failure.
-///
-/// This pins the fix at its root: `CodexAppServer::connect`'s WebSocket
-/// upgrade had no deadline, so every caller inherited an unbounded wait —
-/// including `try_takeover_live`'s `running`-row adoption probe
-/// (`shared_codex_appserver.rs`, the `connect_initialized(&sock).await` arm),
-/// which is a production boot path. A never-answering daemon there used to
-/// hang calm-server's boot forever with no error and no heal.
-///
-/// The listener below accepts and never writes a byte — a wedged daemon's
-/// exact observable shape. The assertion is on the DIAGNOSTIC, not merely on
-/// the error: a bound that says only "timed out" would leave the next
-/// on-call reading this file instead of the log line.
+/// `CodexAppServer::connect`'s WebSocket upgrade is also `try_takeover_live`'s adoption probe, a production
+/// boot path; a never-answering daemon there must not hang boot. The assertion is on the DIAGNOSTIC, not the error.
 #[tokio::test]
 async fn connect_to_a_silent_peer_fails_with_a_bounded_diagnostic() {
     let root = tempfile::tempdir().unwrap();

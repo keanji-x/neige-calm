@@ -1,19 +1,6 @@
 // @vitest-environment jsdom
-/*
- * #1191 §2 end to end: the real `AppShell`, the real track route, a real router
- * and a real memory history — no mocked `useGo`, no AppShell stand-in.
- *
- * That is the point. `responsive.contract.test.tsx` mocks
- * `@tanstack/react-router` and `navigation.ts` wholesale, so it can say nothing
- * about what lands in the URL, and `mobile.browser.test.tsx` drives a hand-built
- * copy of the shell. Everything this file asserts is a claim about how two
- * modules are *wired together* — the report's panel to `?panel=`, the report's
- * Panel history, the header's menu host, and current-Area navigation remain
- * connected through the real shell; a stub on either side would prove none of it.
- *
- * The pattern is `track-cards-panel.test.tsx` + `read-fallbacks.contract.test.tsx`:
- * `createAppRouter` + `router.update({ history: createMemoryHistory(...) })`.
- */
+/* The real `AppShell`, the real track route, a real router and a real memory history: every claim
+ * here is about how two modules are wired together, which a stub on either side could not prove. */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -37,11 +24,7 @@ const CARD = {
   id: 'card-term', track_id: 'w1', kind: 'terminal', title: 'Build log', sort: 1,
   payload: {}, deletable: true, created_at: 1, updated_at: 2,
 };
-/*
- * A report with one section and one task, which is what makes the Outline and
- * TASKS panels non-empty — both anchor landings (§1.4) go through the same
- * `openReportAnchor`, and neither had a URL assertion anywhere before.
- */
+/* One section and one task, which is what makes the Outline and TASKS panels non-empty. */
 const REPORT_CARD = {
   id: 'card-report', track_id: 'w1', kind: 'track-report', title: 'Report card', sort: 2,
   deletable: false, created_at: 1, updated_at: 2,
@@ -96,14 +79,7 @@ async function openPanelFromMenu(label: string): Promise<void> {
   await userEvent.click(await screen.findByRole('menuitem', { name: label }));
 }
 
-/*
- * A `matchMedia` whose answer can *change*, with real listeners.
- *
- * The default stub in `beforeEach` reports compact and drops every listener on
- * the floor, which is fine for the tests that never leave the phone — but
- * widening the window is itself a reachable gesture (`?panel=` is a compact-only
- * concept), and a stub that cannot fire `change` cannot exercise it.
- */
+/* A `matchMedia` whose answer can change, with real listeners: widening the window is a reachable gesture. */
 function stubViewport(initiallyCompact: boolean) {
   const listeners = new Set<() => void>();
   let compact = initiallyCompact;
@@ -111,9 +87,8 @@ function stubViewport(initiallyCompact: boolean) {
     get matches() { return media.includes('width') ? compact : false; },
     media,
     onchange: null,
-    // Only the width query's subscribers are replayed: `ThemeProvider` listens
-    // to `prefers-color-scheme` through the same global and its handler reads
-    // the event, which a synthetic width change does not have.
+    // Only the width query's subscribers are replayed: `ThemeProvider`'s handler reads the event, which
+    // a synthetic width change does not have.
     addEventListener: (_type: string, listener: () => void) => {
       if (media.includes('width')) listeners.add(listener);
     },
@@ -129,8 +104,7 @@ function stubViewport(initiallyCompact: boolean) {
 }
 
 beforeEach(() => {
-  // The compact branch of the shell is the subject; `RAIL_COLLAPSE_QUERY` is
-  // the only media query it asks about.
+  // `RAIL_COLLAPSE_QUERY` is the only media query the compact shell asks about.
   vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
     matches: media.includes('width'), media, onchange: null,
     addEventListener: vi.fn(), removeEventListener: vi.fn(),
@@ -150,7 +124,7 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
 
     await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
     expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
-    // §2.5 — the panel container takes focus, not whatever the menu left behind.
+    // The panel container takes focus, not whatever the menu left behind.
     await waitFor(() => { expect(document.activeElement).toBe(mobilePanel()); });
   });
 
@@ -161,11 +135,7 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
-    /*
-     * The opener, not the document body. Closing removes the control the click
-     * landed on, so without an explicit restore focus falls to `<body>` and a
-     * keyboard reader has to Tab in from the top of the page again.
-     */
+    /* The opener, not the body: closing removes the control the click landed on. */
     await waitFor(() => { expect(document.activeElement).toBe(trackActions()); });
   });
 
@@ -181,8 +151,7 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
     await openPanelFromMenu('Cards');
     await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
 
-    // A POP, not a click — the panel state is nowhere but the URL, so this is
-    // the whole of "the reader pressed Back".
+    // A POP, not a click: the panel state is nowhere but the URL.
     router.history.back();
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     expect(mobilePanel()?.getAttribute('data-nc-mobile-page')).toBe('closed');
@@ -194,30 +163,14 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
     expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
-    // The sheet is a different layer of the app; leaving the report layer drops
-    // the report's panel (§2.1).
+    // Leaving the report layer drops the report's panel.
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
   });
 
-  /*
-   * §0.3, on the *other* exit from a panel.
-   *
-   * `closePanel` earns its `back()` branch; the shell's "walking off the report"
-   * exit used to be an unconditional `replace`, and `replace` does not merge
-   * with the entry before it. Every open-then-leave cycle therefore left one
-   * more `/track/w1` on the stack, and the reader had to press hardware Back
-   * once per cycle to see anything change.
-   *
-   * The gesture is a real one and every press lands on a visible control: the
-   * workspace navigation opens from the header and closes any report panel
-   * through the same history transition.
-   * Escape closes the sheet the way a reader would, then the menu opens the
-   * panel again.
-   *
-   * `router.history.length` is the whole point: the URL is identical at every
-   * step, so nothing but the stack depth can tell the two behaviours apart.
-   */
+  /* `closePanel`'s `back()` branch: an unconditional `replace` does not merge with the entry before it,
+   * so every open-then-leave cycle would stack one more `/track/w1`. The URL is identical at every
+   * step, so only `router.history.length` can tell the two behaviours apart. */
   it('does not stack a duplicate report entry each time the reader leaves the panel for a sheet', async () => {
     const router = setup('/track/w1');
     await screen.findByRole('button', { name: 'Track actions' });
@@ -233,24 +186,15 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
       expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull();
     }
 
-    // One report entry and one panel entry, whatever the cycle count — the
-    // `back()` branch pops the pushed panel instead of overwriting it.
+    // One report entry and one panel entry, whatever the cycle count.
     expect(router.history.length).toBe(2);
-    // And the reader is standing on the report entry, so hardware Back leaves
-    // the report rather than replaying three identical frames.
     expect(router.history.canGoBack()).toBe(false);
   });
 
-  /*
-   * §1.4's row for the Outline / TASKS anchor: `panel` cleared, `from` kept,
-   * hash written. Both rows are the same `openReportAnchor`, and until now the
-   * decision had *no* URL coverage anywhere — swapping it for a `goSameTrack`
-   * that preserves `?panel=` left the whole suite green.
-   */
+  /* `panel` cleared, `from` kept, hash written; a `goSameTrack` that preserved `?panel=` would pass every other case. */
   it('sends an outline entry to the block anchor and clears ?panel=', async () => {
     const router = setup('/track/w1?panel=outline&from=area');
-    // Scoped to the sheet: the desktop report rail draws the very same outline,
-    // and it is the mobile panel's copy whose landing is under test.
+    // Scoped to the sheet: the desktop report rail draws the very same outline.
     const panel = await waitFor(() => { const found = mobilePanel(); expect(found).not.toBeNull(); return found!; });
     await userEvent.click(await within(panel as HTMLElement).findByRole('button', { name: /Findings/ }));
     await waitFor(() => { expect(href(router)).toBe('/track/w1?from=area#b-1-h1'); });
@@ -309,25 +253,16 @@ describe('workspace header navigation', () => {
   });
 });
 
-/*
- * `?panel=` is a compact-only concept, and above the breakpoint it is not
- * harmless: `TrackPage` derives `mobilePanelOpen` from the prop alone and puts
- * `inert` + `aria-hidden` on the *desktop* panel surface, whose mobile
- * counterpart is `display: none` there. The result is a panel that is fully
- * visible and completely unreachable — the failure mode a11y tests exist for.
- */
+/* Above the breakpoint `?panel=` is not harmless: `TrackPage` derives `mobilePanelOpen` from the prop
+ * alone and puts `inert` + `aria-hidden` on the DESKTOP panel surface — visible and unreachable. */
 describe('a desktop viewport never lets ?panel= disable the track panel', () => {
   it('keeps the desktop panel in the accessibility tree for a shared ?panel= link', async () => {
     stubViewport(false);
     const router = setup('/track/w1?panel=cards');
 
-    // A role query is exactly the right instrument: `inert` + `aria-hidden`
-    // take the surface out of the accessibility tree, so this heading — the
-    // desktop CARDS module — disappears from it while the bug is present.
+    // A role query is the right instrument: `inert` + `aria-hidden` take the surface out of the accessibility tree.
     expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
-    /* `^` anchors the query to the row itself: the CARDS row now has a delete
-       sibling whose accessible name also carries the card's title (#1231), and
-       an unanchored match finds both. The row is what this case is about. */
+    /* `^` anchors to the row itself: the delete sibling's accessible name also carries the card's title. */
     expect(await screen.findByRole('button', { name: /^Build log/ })).toBeTruthy();
     // And the URL stops claiming a state this viewport cannot be in.
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
@@ -344,9 +279,7 @@ describe('a desktop viewport never lets ?panel= disable the track panel', () => 
     // `replace`, not a push: widening a window is not a place to go Back to.
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     expect(router.history.length).toBe(1);
-    /* `^` anchors the query to the row itself: the CARDS row now has a delete
-       sibling whose accessible name also carries the card's title (#1231), and
-       an unanchored match finds both. The row is what this case is about. */
+    /* `^` anchors to the row itself: the delete sibling's accessible name also carries the card's title. */
     expect(await screen.findByRole('button', { name: /^Build log/ })).toBeTruthy();
   });
 });

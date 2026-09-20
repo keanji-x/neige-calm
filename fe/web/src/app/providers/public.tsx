@@ -10,43 +10,11 @@ import { ReadReceiptScopeProvider } from './ui-preferences.tsx';
 import styles from './preflight-status.module.css';
 
 /**
- * This bundle's view of the negotiated wire contract.
- *
- * Must equal `WEB_COMPAT_VERSION` in `crates/calm-server/src/routes/version.rs`
- * and in `web/src/api/version.ts`. Nothing relates the three at the type level;
- * the `web compat version lockstep gate (#1209 PR-2)` step in
- * `.github/workflows/ci.yml` compares them textually.
- *
- * 16 -> 17: #1209 PR-2 renamed the two template fields of the `POST /api/tracks`
- * request body, which `deny_unknown_fields` makes a hard break for older
- * bundles.
- * 21 -> 22: #1450 makes Track detail's `can_resume` capability required, so an
- * old cached bundle must refresh and a new bundle must not pair with API v4.
- * 22 -> 23: #1456 replaces terminal task `goal` with `command`; cached bundles
- * must refresh before parsing the new block shape.
- * 26 -> 27: MCP JSON setup depends on headers/tools_all and the Check endpoint;
- * a bundled frontend must not install through a v26 server that ignores them.
- * 27 -> 28: #1625 P3 adds `restored` to `harness.queue.changed`. A v27
- * bundle's event union rejects the frame and `reduceEventFrame` skips a
- * rejected frame without invalidating the queue, so it keeps showing a
- * restored entry as sent; the curtain is what stops it.
- * 28 -> 29: #1722 S1b makes `lastTurnCompletedAt` a required conversation-row
- * field (API v9). A v29 bundle's row parser rejects every list from a v8
- * kernel, so a bundled client ahead of its kernel must sit behind the
- * `server-update` curtain; the raised floor keeps a v28 bundle off this kernel.
- * Floor 30 retains #1712 scan-only enrollment; REST v10 combines its endpoints
- * with the required #1722 fields instead of aliasing two different v9 contracts.
+ * This bundle's view of the negotiated wire contract. Must equal `WEB_COMPAT_VERSION` in
+ * `crates/calm-server/src/routes/version.rs` and `web/src/api/version.ts`; CI compares them textually.
  */
 export const WEB_COMPAT_VERSION = 30;
-/**
- * `databaseId` / `nowMs` (#1722 S1b): the database's stable id and the server
- * clock at response time. Optional in the *type* like `conversationCreateModel`
- * — the version schema parses before the curtain decides, so a v8 kernel
- * without them must still produce a `ServerVersionInfo` the curtain can judge.
- * The reader (`ServerCompatGate` → `ReadReceiptScopeProvider`, #1722 S2a)
- * treats them as required: absent means a `null` receipt scope, under which
- * nothing is ever unread.
- */
+/** `databaseId` / `nowMs` are optional in the type so an older kernel still parses before the curtain decides; absent means a `null` receipt scope, under which nothing is ever unread. */
 export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string; nowMs?: number }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;
@@ -96,11 +64,7 @@ export function ServerCompatGate({ children: routeContent, runtime, client, rend
     if (!previous) safeWrite(runtime, DB_INSTANCE_ID_KEY, id);
   }, [client, cursorStore, previousInstanceId, query.data?.dbInstanceId, runtime]);
 
-  /*
-   * #1722 §5.2 — the database's *stable* id, remembered the same way as the
-   * instance id above (write when missing, overwrite when it changes) but with
-   * none of the cache busting: it seeds `createUiPreferences` on the next load.
-   */
+  /* The database's STABLE id, remembered like the instance id but with none of the cache busting. */
   const databaseId = query.data?.databaseId;
   useEffect(() => {
     if (databaseId === undefined) return;
@@ -110,11 +74,8 @@ export function ServerCompatGate({ children: routeContent, runtime, client, rend
   const id = query.data?.dbInstanceId;
   const verdict = id === undefined ? 'pending'
     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';
-  // Route preferences consume the verdict; the event bridge keeps its own
-  // independent guard and lifetime below. The receipt scope is the database
-  // identity (never the per-boot instance id), together with the server clock
-  // that stamps a first visit's baseline; a kernel that reports neither leaves
-  // the scope null, and a null scope is never unread (#1722 §5.2).
+  // The receipt scope is the database identity (never the per-boot instance id) plus the server clock;
+  // a kernel that reports neither leaves the scope null, and a null scope is never unread.
   const nowMs = query.data?.nowMs;
   const receiptScope = verdict === 'same' && databaseId !== undefined && nowMs !== undefined
     ? { id: databaseId, nowMs } : { id: null, nowMs: null };

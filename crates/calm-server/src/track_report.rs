@@ -1,52 +1,6 @@
-//! Issue #229 PR B — track-report card payload + MCP-tool support helpers.
-//!
-//! The track-report card is a kernel-owned card minted at track-create time
-//! (plus backfilled for legacy tracks via migration 0014). Its payload is a
-//! single Markdown document the planner agent maintains via three MCP tools
-//! that mimic codex's native Read/Edit/Write file tools 1:1:
-//!
-//!   * `calm.report.read`  — fetch current body + summary
-//!   * `calm.report.write` — wholesale replace (like codex `Write`)
-//!   * `calm.report.edit`  — string replacement (like codex `Edit`;
-//!     `old_string` must be unique unless `replace_all = true`)
-//!
-//! Storage shape is intentionally one big Markdown string rather than a
-//! `Vec<Section>` — sections are derived at render time by splitting at
-//! H1 headings (`^# `). This keeps the planner agent's mental model simple
-//! (it's editing a Markdown file), keeps the wire shape stable across
-//! UI iterations on the section vocabulary, and avoids a second
-//! storage-shape negotiation if the section list ever needs to change.
-//!
-//! The persisted payload has this wire shape:
-//!
-//! | Field | Meaning |
-//! | --- | --- |
-//! | `schemaVersion` | Tier-A payload schema version |
-//! | `docRev` | optimistic-concurrency anchor returned by `calm.report.read` |
-//! | `summary` | short report summary |
-//! | `body` | complete Markdown document |
-//! | `blocks` | optional derived block index |
-//!
-//! ## Schema versioning (Tier A persistence contract)
-//!
-//! See `docs/upgrade-stability.md`. The struct carries `schema_version`
-//! explicitly + matches it against
-//! [`crate::validation::TRACK_REPORT_PAYLOAD_SCHEMA_VERSION`] at every
-//! write boundary. The current shape is v4 (`docRev` + optional block
-//! index + kind-discriminated task instruction fields). During a downgrade
-//! window, an old binary can overwrite the JSON payload back to v3 and write
-//! an ambiguous terminal `goal`;
-//! mixed-version report writes therefore have a real lost-write window and
-//! are unsupported.
-//!
-//! ## Field rationale ([[required-over-option]])
-//!
-//! `summary` and `body` are required `String` (not `Option<String>`):
-//! every callsite must commit to a value. An empty `summary` is a valid
-//! value ("the agent hasn't written a one-liner yet"); the `Option`
-//! shape would have introduced two indistinguishable absent-states
-//! (`null` vs missing) for no information gain. `TrackReportPayload::initial()`
-//! seeds the canonical "agent hasn't run yet" defaults.
+//! Track-report card payload + MCP-tool support helpers. The payload is one Markdown document
+//! (sections derived at render time by splitting at H1); mixed-version report writes across a
+//! downgrade window have a real lost-write window and are unsupported.
 
 use crate::db::RouteRepo;
 use crate::db::sqlite::{
@@ -84,10 +38,8 @@ pub(crate) async fn report_blocks_snapshot_tx(
     report_blocks_snapshot_from_row(track_id, report)
 }
 
-/// The same snapshot as ONE autocommit statement on the pool — no
-/// transaction. #1628 S2's drain-side admission reads here: a deferred read
-/// transaction is one party of the #930 deadlock ring (R locks held across
-/// statements against an IMMEDIATE writer), so production code opens none.
+/// The same snapshot as ONE autocommit statement on the pool — no transaction: a deferred read
+/// transaction holding R locks across statements against an IMMEDIATE writer deadlocks.
 pub(crate) async fn report_blocks_snapshot(
     pool: &sqlx::SqlitePool,
     track_id: &str,
@@ -99,9 +51,7 @@ pub(crate) async fn report_blocks_snapshot(
     report_blocks_snapshot_from_row(track_id, report)
 }
 
-/// Decode one `cards` row (`json(payload)`, `body_crdt`) into the report's
-/// summary and block snapshot. Shared by the transactional and the
-/// autocommit readers above so the two cannot drift.
+/// Shared by the transactional and the autocommit readers above so the two cannot drift.
 fn report_blocks_snapshot_from_row(
     track_id: &str,
     report: Option<(String, Option<Vec<u8>>)>,
@@ -219,16 +169,9 @@ pub(crate) async fn validate_task_rebuild_source_tx(
     task_projection_source_tx(tx, track_id).await.map(|_| ())
 }
 
-/// Strictly reproject every member after the root budget `B` is edited or a
-/// member is added, increasing `N`.
-///
-/// The recursive member set and budget are read once, then the precomputed
-/// [`TrackTreeTerm`] is supplied to each projection. Production admission plus
-/// [`MAX_TREE_TASK_BUDGET`] bounds this loop to 64 members. The final grouped
-/// inventory check is the transaction's postcondition: pending overage has
-/// been culled, and any remaining in-flight overage rejects that tightening.
-/// Member removal uses [`tasks_rebuild_tree_after_member_removal_tx`] because a
-/// pre-existing frozen overage must not make an otherwise safe deletion fail.
+/// Strictly reproject every member after the root budget is edited or a member is added. The
+/// final grouped inventory check is the postcondition: remaining in-flight overage rejects the
+/// tightening. Member removal uses [`tasks_rebuild_tree_after_member_removal_tx`] instead.
 pub async fn tasks_rebuild_tree_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     root_id: &str,
@@ -236,10 +179,8 @@ pub async fn tasks_rebuild_tree_tx(
     tasks_rebuild_tree_with_policy_tx(tx, root_id, TreeRebuildPolicy::Strict).await
 }
 
-/// Reproject a tree after one member has already been removed in this
-/// transaction. Unlike an operator-requested budget/member addition, deletion
-/// may safely preserve an existing in-flight overage: N only fell, no fixed
-/// work was added, and admission remains frozen until that work terminates.
+/// Reproject a tree after one member was removed in this transaction; deletion may safely
+/// preserve an existing in-flight overage (N only fell, no fixed work was added).
 pub async fn tasks_rebuild_tree_after_member_removal_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     root_id: &str,
@@ -383,17 +324,13 @@ use calm_types::report_contract::{HeaderError, normalize_header};
 use std::borrow::Cow;
 use std::sync::Arc;
 
-/// #1635 S2c — a contract header the caller wrote that does not parse. The
-/// ingress rejection; the funnel's own mapping lives in `write.rs`.
+/// A contract header the caller wrote that does not parse: the ingress rejection.
 fn header_bad_request(error: HeaderError) -> CalmError {
     CalmError::BadRequest(format!("report contract header: {error}"))
 }
 
-/// #1635 S2c — prose content is the only block content that can carry the
-/// header line, so it is the only kind normalized at the block ingress
-/// (inside [`apply_upsert_existing`] / [`apply_upsert_new`], after the rev
-/// checks their callers and they run). Data kinds are canonical fences and
-/// pass through untouched.
+/// Prose content is the only block content that can carry the header line, so it is the only
+/// kind normalized at the block ingress (after the rev checks). Data kinds pass through untouched.
 fn normalize_prose_content<'a>(kind: &str, content: &'a str) -> Result<Cow<'a, str>, CalmError> {
     if kind == KIND_PROSE {
         normalize_header(content).map_err(header_bad_request)
@@ -402,55 +339,30 @@ fn normalize_prose_content<'a>(kind: &str, content: &'a str) -> Result<Cow<'a, s
     }
 }
 
-// #679 PR1 — `TrackReportPayload` moved to `calm_types::track_report`
-// (Tier-A persisted payload, TS-exported). Re-exported so the
-// `crate::track_report::TrackReportPayload` path is unchanged.
 pub use calm_types::track_report::{ReportBlock, TrackReportPayload};
 
-// ---------------------------------------------------------------------------
-// Report-doc operations (#960 PR2)
-// ---------------------------------------------------------------------------
-
-/// One mutation of the report's CRDT block map, executed *inside* the
-/// persist transaction by `write::persist` — the only
-/// place `if_rev` may be checked, because only there is
-/// `ReportDoc::block_rev` the transactional truth (the JSON `blocks`
-/// cache can be arbitrarily stale under D8).
-///
-/// Every variant lands through the same five-step persist sequence and
-/// therefore keeps the dual-event invariant: one successful op = one
-/// `CardUpdated` + one `TrackReportEdited` whose `body_before/after`
-/// are the flat projections.
+/// One mutation of the report's CRDT block map, executed inside the persist transaction — the
+/// only place `if_rev` may be checked, because only there is `ReportDoc::block_rev` the
+/// transactional truth (the JSON `blocks` cache can be arbitrarily stale).
 #[derive(Debug, Clone)]
 pub enum ReportDocOp {
-    /// Wholesale `(summary, body)` replace — the legacy
-    /// `calm.report.write`/`edit` tools and the REST user-edit path.
-    /// `summary: None` keeps the doc's **current** summary, resolved
-    /// inside the persist transaction against the CRDT truth (#960
-    /// PR2 review: an outside-tx snapshot would let a concurrent
-    /// summary write be silently reverted — TOCTOU).
+    /// Wholesale `(summary, body)` replace. `summary: None` keeps the doc's CURRENT summary,
+    /// resolved inside the persist transaction (an outside-tx snapshot would let a concurrent
+    /// summary write be silently reverted).
     Replace {
         summary: Option<String>,
         body: String,
         if_doc_rev: u64,
     },
-    /// `calm.report.write_markdown`: wholesale replace whose body may
-    /// carry `<!-- neige:b_xxxx -->` marker lines. Markers are
-    /// stripped unconditionally in-tx (they never reach storage) and
-    /// become exact id-reuse hints; unmarked slices fall back to the
-    /// LCS alignment. `summary: None` keeps the current summary,
-    /// resolved in-tx (same TOCTOU rule as [`Self::Replace`]).
+    /// `calm.report.write_markdown`: wholesale replace whose body may carry `<!-- neige:b_xxxx -->`
+    /// marker lines, stripped in-tx and used as exact id-reuse hints. `summary: None` keeps the current summary.
     WriteMarkdown {
         summary: Option<String>,
         body: String,
         if_doc_rev: u64,
     },
-    /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
-    /// default append) and requires `if_doc_rev`; `id: Some` replaces
-    /// and requires `if_rev`.
-    /// `content` is the block's flat text: markdown for `prose`, the
-    /// canonical `neige-block` fence (already rendered + validated by
-    /// the tool layer) for data kinds (#960 PR3).
+    /// `calm.report.blocks.upsert`. `id: None` creates and requires `if_doc_rev`; `id: Some`
+    /// replaces and requires `if_rev`. `content` is the block's flat text.
     UpsertBlock {
         id: Option<String>,
         kind: String,
@@ -459,8 +371,7 @@ pub enum ReportDocOp {
         if_doc_rev: Option<u64>,
         position: Option<usize>,
     },
-    /// `calm.report.blocks.move`: reorder only, rev untouched; requires
-    /// the document-wide `if_doc_rev` because it mutates block order.
+    /// `calm.report.blocks.move`: reorder only, rev untouched; requires `if_doc_rev` because it mutates block order.
     MoveBlock {
         id: String,
         to_index: usize,
@@ -468,19 +379,9 @@ pub enum ReportDocOp {
     },
     /// `calm.report.blocks.delete`: `if_rev` is mandatory.
     DeleteBlock { id: String, if_rev: u32 },
-    /// `calm.report.commit` (planner feedback #1): one user-intent update
-    /// = an ordered list of block ops + an optional summary, under ONE
-    /// document-wide `if_doc_rev` check. Each op runs through the same
-    /// code path as its single-op sibling (`if_rev` per existing block,
-    /// content rules, index bounds), so a failure anywhere aborts the
-    /// whole persist transaction — nothing lands, nothing is emitted.
-    /// The doc rev still advances exactly once for the whole batch.
-    /// `summary: None` keeps the current summary.
-    ///
-    /// A `Delete` inside a batch carries no live-task exemption: only the
-    /// single `DeleteBlock` op may retire a live task declaration
-    /// (`guard_task_declarations`, #1179), so a batch that makes a live
-    /// task block disappear is refused for every author.
+    /// `calm.report.commit`: an ordered list of block ops + optional summary under ONE `if_doc_rev`.
+    /// A failure anywhere aborts the whole persist transaction; the doc rev advances exactly once.
+    /// A `Delete` inside a batch carries no live-task exemption (only the single `DeleteBlock` may retire one).
     Batch {
         if_doc_rev: u64,
         summary: Option<String>,
@@ -488,9 +389,7 @@ pub enum ReportDocOp {
     },
 }
 
-/// One step of a [`ReportDocOp::Batch`]. Mirrors the three block-level
-/// single ops minus their document-wide anchor, which the batch carries
-/// once.
+/// One step of a [`ReportDocOp::Batch`], minus the document-wide anchor the batch carries once.
 #[derive(Debug, Clone)]
 pub enum BatchBlockOp {
     /// `id: Some` replaces (needs `if_rev`); `id: None` creates at
@@ -512,23 +411,15 @@ pub enum BatchBlockOp {
     },
 }
 
-/// `(id, rev)` a block-level [`ReportDocOp`] resolved to: the created/
-/// replaced/moved block's id and its post-op rev. `None` for the
-/// wholesale and delete variants.
+/// `(id, rev)` a block-level [`ReportDocOp`] resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockOpOutcome {
     pub id: String,
     pub rev: u32,
 }
 
-/// What one [`ReportDocOp`] resolved to: the block-level outcome where the
-/// op has one, plus (#1669 §2.3) the final ids of every **prose** block the
-/// op wrote — the set the receipt's `neige://source/` link warnings scan.
-/// `UpsertBlock` and each batch `Upsert` contribute their final id (new
-/// ids included, and a content-equal replace still counts as written);
-/// `WriteMarkdown` and `Replace` rewrite the whole document and contribute
-/// every prose block of the result; `MoveBlock` / `DeleteBlock` / a batch
-/// of only moves, deletes or a summary contribute nothing.
+/// What one [`ReportDocOp`] resolved to, plus the final ids of every prose block the op wrote
+/// (the set the receipt's `neige://source/` link warnings scan). A content-equal replace still counts as written.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReportOpTrace {
     pub block: Option<BlockOpOutcome>,
@@ -547,19 +438,10 @@ pub(crate) fn block_not_found(id: &str) -> CalmError {
     CalmError::BadRequest(format!("block {id} not found"))
 }
 
-/// Execute `op` against the (already migrated) doc. Returns
-/// `CalmError::Conflict` on an `if_rev` mismatch — the persist closure
-/// propagates it, aborting the transaction, so a conflicting op writes
-/// nothing and emits nothing. Unknown ids / out-of-range indexes are
-/// `CalmError::BadRequest`.
-///
-/// #1727 S2 (#1678 B2) — the conflict names BOTH current revisions, the
-/// block's and the document's, so the RPC mapping
-/// (`track_report_blocks::rev_conflict_error`) can hand a retry
-/// `data.{rev, docRev}` without a full re-read.
+/// Execute `op` against the (already migrated) doc. `if_rev` mismatch is `Conflict` naming BOTH
+/// current revisions (block and document) so the RPC mapping can hand a retry without a re-read.
 fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
-    // A malformed doc/rev is Internal (corruption), never folded
-    // into "block not found" (BadRequest).
+    // A malformed doc/rev is Internal (corruption), never folded into "block not found".
     let current = doc
         .block_rev(id)
         .map_err(|e| CalmError::Internal(format!("track_report: block rev: {e}")))?
@@ -580,11 +462,8 @@ fn block_op_internal(e: anyhow::Error) -> CalmError {
     CalmError::Internal(format!("track_report: block op: {e}"))
 }
 
-/// Replace an existing block: `if_rev` against the CRDT truth, then the
-/// caller-content rule (`validate_caller_content` is false only for the
-/// tombstone `normalize_report_op` synthesizes — see the #1269 note on
-/// `caller_block_content` in [`apply_report_op`]), then the doc write.
-/// Shared by the single `UpsertBlock` op and every batch `Upsert`.
+/// Replace an existing block: `if_rev` against the CRDT truth, then the caller-content rule
+/// (`validate_caller_content` is false only for the tombstone `normalize_report_op` synthesizes).
 fn apply_upsert_existing(
     doc: &mut ReportDoc,
     id: &str,
@@ -594,10 +473,8 @@ fn apply_upsert_existing(
     validate_caller_content: bool,
 ) -> Result<BlockOpOutcome, CalmError> {
     check_rev(doc, id, expected_rev)?;
-    // #1635 S2c — after the rev check, so a stale `if_rev` is still the
-    // `Conflict` it was (the #1269 verdict order) even when the content also
-    // carries a malformed header. Whether the header may sit where this
-    // block lands is the funnel's call.
+    // After the rev check, so a stale `if_rev` is still a `Conflict` even when the content also
+    // carries a malformed header.
     let content = normalize_prose_content(kind, content)?;
     if validate_caller_content {
         validate_block_content(kind, &content)?;
@@ -608,9 +485,7 @@ fn apply_upsert_existing(
     Ok(BlockOpOutcome { id, rev })
 }
 
-/// Create a block at `position` (default append). The document-wide
-/// anchor is the caller's business: the single op checks its own
-/// `if_doc_rev` first, the batch checks one for all its steps.
+/// Create a block at `position` (default append). The document-wide anchor is the caller's business.
 fn apply_upsert_new(
     doc: &mut ReportDoc,
     kind: &str,
@@ -618,8 +493,8 @@ fn apply_upsert_new(
     position: Option<usize>,
     validate_caller_content: bool,
 ) -> Result<BlockOpOutcome, CalmError> {
-    // #1635 S2c — the caller has already checked its document-wide anchor,
-    // so a stale `if_doc_rev` stays a `Conflict` ahead of a malformed header.
+    // The caller has already checked its document-wide anchor, so a stale `if_doc_rev` stays a
+    // `Conflict` ahead of a malformed header.
     let content = normalize_prose_content(kind, content)?;
     if validate_caller_content {
         validate_block_content(kind, &content)?;
@@ -670,8 +545,7 @@ fn apply_delete(doc: &mut ReportDoc, id: &str, if_rev: u32) -> Result<(), CalmEr
 /// Upper bound on the ops one `calm.report.commit` may carry.
 pub const MAX_BATCH_OPS: usize = 64;
 
-/// The block-outcome half of [`apply_report_op_traced`]; production goes
-/// through the traced form, the in-crate guard tests through this one.
+/// The block-outcome half of [`apply_report_op_traced`], for the in-crate guard tests.
 #[cfg(test)]
 pub(crate) fn apply_report_op(
     doc: &mut ReportDoc,
@@ -681,17 +555,15 @@ pub(crate) fn apply_report_op(
     apply_report_op_traced(doc, op, author).map(|trace| trace.block)
 }
 
-/// [`apply_report_op`] plus the written-prose trace (#1669 §2.3).
+/// [`apply_report_op`] plus the written-prose trace.
 pub(crate) fn apply_report_op_traced(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
     author: EditAuthor,
 ) -> Result<ReportOpTrace, CalmError> {
     let internal = block_op_internal;
-    // `summary: None` = keep the current summary. Resolved HERE,
-    // inside the persist transaction, from the doc itself — never from
-    // a caller-side snapshot (which could revert a summary written
-    // between the caller's read and this tx).
+    // `summary: None` = keep the current summary, resolved HERE from the doc itself — never from a
+    // caller-side snapshot, which could revert a summary written since the caller's read.
     let tx_summary = |doc: &ReportDoc, summary: &Option<String>| -> Result<String, CalmError> {
         match summary {
             Some(summary) => Ok(summary.clone()),
@@ -703,25 +575,9 @@ pub(crate) fn apply_report_op_traced(
                 .0),
         }
     };
-    // #1269 (+ follow-up) — the content rule judges what a CALLER sent,
-    // so the `kind`/`content` it sees are read off the caller's own op,
-    // here, before `normalize_report_op` below can hand the `UpsertBlock`
-    // arm something else. That rewrite turns a user's `DeleteBlock` on a
-    // live task into a tombstone upsert the server synthesizes from
-    // fields already stored on that block; running a schema check over
-    // those bytes would make a *repair* path fail on the very data it
-    // exists to retire (a task stored with a `key` the current schema
-    // rejects could no longer be deleted at all, since the whole-document
-    // shapes refuse to drop a live task). `render_fence`'s output is
-    // still parsed and kind-matched by `ReportDoc::upsert_block`; only
-    // the payload-schema gate is scoped to caller bytes.
-    //
-    // This is `Some` exactly when the caller's op is an `UpsertBlock`,
-    // and `normalize_report_op` returns such an op unchanged (it rewrites
-    // only `DeleteBlock`), so the `UpsertBlock` arms below run with this
-    // `Some` for every caller-supplied upsert. Reading it here rather
-    // than checking before the match keeps the existing order of
-    // verdicts: a stale `if_rev` is still the `Conflict` it was.
+    // The content rule judges what a CALLER sent, read before `normalize_report_op` rewrites a
+    // user's `DeleteBlock` on a live task into a server-synthesized tombstone upsert: a schema
+    // check over those bytes would make the repair path fail on the very data it exists to retire.
     let caller_block_content = match op {
         ReportDocOp::UpsertBlock { kind, content, .. } => Some((kind.as_str(), content.as_str())),
         _ => None,
@@ -739,9 +595,8 @@ pub(crate) fn apply_report_op_traced(
         } => {
             check_doc_rev(doc, *if_doc_rev)?;
             let summary = tx_summary(doc, summary)?;
-            // #1635 S2c — line 1 is rewritten to the canonical header before
-            // anything reads the body, so the fence check, the stomp guard
-            // and the doc write all see the same bytes the funnel will.
+            // Line 1 is rewritten to the canonical header before anything reads the body, so every check
+            // and the doc write see the same bytes the funnel will.
             let body = normalize_header(body).map_err(header_bad_request)?;
             validate_body_fences(&body)?;
             guard_non_prose_stomp(doc, &body)?;
@@ -757,12 +612,9 @@ pub(crate) fn apply_report_op_traced(
             check_doc_rev(doc, *if_doc_rev)?;
             let summary = tx_summary(doc, summary)?;
             let marked = calm_types::report_blocks::strip_markers_and_split(body);
-            // #1635 S2c — normalize AFTER the markers are stripped: a
-            // `with_markers` read puts `<!-- neige:b_hhhh -->` on line 1 and
-            // the header on line 2, and `normalize_header` looks at line 1
-            // only. Replacing one comment line by another cannot change the
-            // block count, so the hints stay index-aligned with the rebuilt
-            // slices; a mismatch is a kernel bug, not a caller error.
+            // Normalize AFTER the markers are stripped: a `with_markers` read puts the marker on line 1
+            // and the header on line 2. Replacing one comment line by another cannot change the block
+            // count, so the hints stay index-aligned.
             let cleaned = normalize_header(&marked.cleaned).map_err(header_bad_request)?;
             let rebuilt;
             let slices = match &cleaned {
@@ -780,10 +632,8 @@ pub(crate) fn apply_report_op_traced(
                     &rebuilt
                 }
             };
-            // The escape hatch MAY rewrite/delete non-prose blocks
-            // (that is its point), but every fence it carries must be
-            // well-formed and schema-valid — reject the whole write
-            // otherwise (#960 PR3).
+            // The escape hatch MAY rewrite/delete non-prose blocks, but every fence it carries must be
+            // well-formed and schema-valid.
             validate_body_fences(&cleaned)?;
             doc.update_with_hints(&summary, slices, &marked.hints)
                 .map_err(internal)?;
@@ -798,25 +648,9 @@ pub(crate) fn apply_report_op_traced(
             if_doc_rev,
             position,
         } => {
-            // #1269 (+ follow-up) — defence in depth at the op layer, on
-            // both halves of `kind`. All `ReportDoc::upsert_block` asks of
-            // the content is `parse_fence` + a kind match, so a direct
-            // `apply_report_op` call used to carry a ```neige-block fence
-            // straight into a `kind: "prose"` block, and a schema-invalid
-            // payload straight into a data block. Content a user sends to
-            // the block *upsert* endpoints (MCP #971 / REST #990) never
-            // arrives that way — they run `check_prose_markdown` on a
-            // prose argument and build data content with
-            // `render_data_block` — and the point is that the op stops
-            // depending on them to do so. `caller_block_content` is read
-            // before the delete rewrite, so the tombstone that rewrite
-            // synthesizes is not judged here; see its comment above. Which
-            // rule each `kind` gets and what is left to `upsert_block`
-            // (and so still surfaces as a 500 rather than a 400) is
-            // written up once on `validate_block_content`. Both arms
-            // check — leaving either unchecked would leave the op-layer
-            // gap open (the delete rewrite only ever produces the replace
-            // arm, since it carries the stored block's id).
+            // Defence in depth at the op layer: `ReportDoc::upsert_block` only asks `parse_fence` + a kind
+            // match, so without this a fence could land in a `prose` block and a schema-invalid payload
+            // in a data block. The synthesized tombstone is not judged here (see `caller_block_content`).
             let validate = caller_block_content.is_some();
             let outcome = match id {
                 Some(id) => {
@@ -863,11 +697,8 @@ pub(crate) fn apply_report_op_traced(
                     ops.len()
                 )));
             }
-            // Ops run in order against the doc as the previous ones left
-            // it — a `Move` may address a block an earlier `Upsert` in the
-            // same batch created only through its returned id, which the
-            // caller does not have yet, so batches address existing
-            // blocks. The first `?` aborts the whole persist tx.
+            // Ops run in order against the doc as the previous ones left it; batches address existing
+            // blocks (a created id is not known to the caller yet). The first `?` aborts the whole tx.
             let mut written_ids = Vec::new();
             for (index, block_op) in ops.iter().enumerate() {
                 let step = |e: CalmError| match e {
@@ -931,11 +762,8 @@ pub(crate) fn apply_report_op_traced(
             .map(|block| block.id.clone())
             .collect(),
     };
-    // The block-level delete endpoint is the ONLY way a live task
-    // declaration may leave the document (#1179); the guard needs to know
-    // which block, if any, this op deleted that way. `op` here is the
-    // normalized op, so a user delete (rewritten into an in-place
-    // tombstone) is not a delete anymore and grants no exemption.
+    // The block-level delete endpoint is the ONLY way a live task declaration may leave the
+    // document. `op` is the normalized op, so a user delete rewritten into a tombstone grants no exemption.
     let block_delete_id = match &op {
         ReportDocOp::DeleteBlock { id, .. } => Some(id.as_str()),
         _ => None,
@@ -947,10 +775,9 @@ pub(crate) fn apply_report_op_traced(
     })
 }
 
-/// Apply one successful persist operation and advance the document-wide
-/// revision exactly once. Keeping the increment outside [`apply_report_op`]
-/// is load-bearing: every operation invalidates whole-document anchors,
-/// including moves and content-equal replacements that do not bump a block.
+/// Advance the document-wide revision exactly once per successful op. Kept outside
+/// [`apply_report_op`]: every operation invalidates whole-document anchors, including moves
+/// and content-equal replacements that do not bump a block.
 fn apply_persisted_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
@@ -976,54 +803,11 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Shared persist boundary (Issue #247 PR3, closed by #1318 §1)
-// ---------------------------------------------------------------------------
-
-/// The resolved report a write is about: the three values that come out of
-/// [`resolve_report_for_track`] together and travel together from there on.
+/// The resolved report a write is about. Fields are private: `write::persist` takes the row id
+/// from `report_card` and the events/reprojection from `track`, and a mismatched pair rewrites
+/// B's report while emitting A's events. [`for_resolved_parts`] compares the pair — a drift
+/// catch for an accidental pairing, not a guard against a caller that means it.
 ///
-/// Introduced by #1318 §1 because the split made the duplication obvious —
-/// five signatures (three entry points, the test entry, the writer) each
-/// repeated the same three parameters in the same order, which is four chances
-/// to transpose two of them. They are one value; this is that value.
-///
-/// Deliberately not the return type of [`resolve_report_for_track`] itself: that
-/// function is `pub` and its tuple is destructured at ~20 test call sites, and
-/// churning those would have buried this slice's actual diff.
-///
-/// # The fields are private, and the constructor catches an accidental mismatch
-///
-/// Read the next two paragraphs together; the second is the one that keeps this
-/// doc honest.
-///
-/// **What the constructor is for.** `write::persist` takes the row id from
-/// `report_card`, and the event scope, the `PlanUpdated` target and the task
-/// reprojection from `track`. Hand it a mismatched pair and it rewrites B's
-/// report while emitting A's events and rebuilding A's tasks — and nothing
-/// downstream compares the two. A review channel built exactly that from a
-/// struct literal, back when the fields were `pub(crate)`. So the fields are
-/// private (visible only inside `track_report` and its descendants), and every
-/// other module goes through [`resolve`] — which cannot mismatch, because
-/// `resolve_report_for_track` finds the card *among that track's cards* — or
-/// through [`for_resolved_parts`], which compares the pair.
-///
-/// **What that comparison is worth.** Not much, against a caller that means it.
-/// `Card::track_id` is a `pub` field, so a sibling holding B's real card can
-/// clone it, overwrite `track_id` with A's, and walk straight through: the
-/// check compares two values the caller supplied. It is a **drift catch for an
-/// accidental pairing, not a guard** — the same reason this slice refused a
-/// witness token minted from `Actor` (`write.rs`, "What is still not closed",
-/// item 2), and it would be inconsistent to ship the shape here under a better
-/// name. A real check has to run against the row inside the write transaction;
-/// see item 6 of that list.
-///
-/// `current_payload` is not checked at all. It seeds the CRDT on a first write
-/// (`body_crdt` still NULL) and supplies the block-id hints on layout
-/// migration, so a wrong one is a real defect — it simply has no cheap local
-/// comparison, since a payload carries no owner.
-///
-/// [`resolve`]: ReportEditTarget::resolve
 /// [`for_resolved_parts`]: ReportEditTarget::for_resolved_parts
 pub(crate) struct ReportEditTarget {
     track: Track,
@@ -1032,10 +816,7 @@ pub(crate) struct ReportEditTarget {
 }
 
 impl ReportEditTarget {
-    /// Resolve by track id — the REST legs' entry, which had no reason to see the
-    /// three parts separately in the first place. Cannot produce a mismatch:
-    /// [`resolve_report_for_track`] finds the report card *among that track's
-    /// cards*.
+    /// Resolve by track id. Cannot produce a mismatch: the report card is found among that track's cards.
     pub(crate) async fn resolve(repo: &dyn RouteRepo, id: &str) -> Result<Self, CalmError> {
         let (track, report_card, current_payload) = resolve_report_for_track(repo, id).await?;
         Ok(Self {
@@ -1045,14 +826,8 @@ impl ReportEditTarget {
         })
     }
 
-    /// Build from parts a caller resolved itself — the MCP funnel, whose
-    /// resolver (`mcp_server::tools::track_report::resolve_report_for_caller`)
-    /// derives the track from the connection-bound spec card rather than from a
-    /// path parameter.
-    ///
-    /// Fallible on purpose. The check is one comparison and it is the whole
-    /// reason the fields are private: without it this constructor would be a
-    /// struct literal wearing a function's clothes.
+    /// Build from parts a caller resolved itself (the MCP funnel derives the track from the
+    /// connection-bound spec card). Fallible on purpose: the comparison is the reason the fields are private.
     pub(crate) fn for_resolved_parts(
         track: Track,
         report_card: Card,
@@ -1077,44 +852,16 @@ impl ReportEditTarget {
 pub(crate) mod dispatch;
 mod repair;
 mod user_start;
-/// #1318 §1 — the writer and the complete set of ways to reach it.
-///
-/// The mutating function lives in there as a **private** `fn`, so "which code
-/// can write a track report" is a question `rustc` answers: this module's file
-/// and nothing else. Read [`write`]'s header for what that does and does not
-/// close. Everything outside calls one of its purpose-specific entry points.
+/// The writer and the complete set of ways to reach it. The mutating function is a private `fn`
+/// in there, so "which code can write a track report" is a question `rustc` answers.
 pub(crate) mod write;
 
-/// The pre-#1318 direct handle on the persist boundary, kept for tests only.
-///
-/// Re-exported here rather than left at `track_report::write::persist_report`
-/// so the ten integration-test files that call
-/// `calm_server::track_report::persist_report` keep working unchanged — the
-/// point of this slice is the production caller set, and churning test imports
-/// would have buried that diff. Same `cfg` as the definition: absent from any
-/// build without `fixtures`, so it is not a hole in the boundary.
+/// Direct handle on the persist boundary, kept for tests only; absent from any build without `fixtures`.
 #[cfg(any(test, feature = "fixtures"))]
 pub use write::persist_report;
 
-/// Look up the track-report card for a given track id, returning the
-/// `(track, report_card, current_payload)` triple. The invariant
-/// "every track has exactly one report card" (PR1 backfill + the
-/// partial unique index on `cards.kind = 'track-report'`) means a
-/// missing report row signals a data-shape bug, not a 404.
-///
-/// Errors:
-///   * `CalmError::NotFound` — the track row doesn't exist.
-///   * `CalmError::Internal` — track exists but has no report card
-///     (invariant violation), OR the persisted payload won't
-///     deserialize (someone wrote past card kind validation).
-///
-/// Used by `routes::tracks::update_track_report` (REST) to gather the
-/// pieces the write entry needs without duplicating the row-lookup
-/// logic across paths. The MCP path uses its own resolver
-/// (`mcp_server::tools::track_report::resolve_report_for_caller`)
-/// because it derives the track from the connection-bound planner card
-/// rather than a path parameter — but both ultimately funnel into the
-/// same `write::persist` writer, through different entry points.
+/// Look up the track-report card for a track. A missing report row is a data-shape bug
+/// (`Internal`), not a 404; `NotFound` only when the track row doesn't exist.
 pub async fn resolve_report_for_track(
     repo: &dyn RouteRepo,
     track_id: &str,
@@ -1149,10 +896,8 @@ mod tests {
 
     #[test]
     fn whole_tree_total_postcondition_rejects_an_over_budget_inventory() {
-        // Exact production share construction makes member-overage imply this
-        // branch. Feed a deliberately inconsistent share map to prove the
-        // independent fail-closed guard remains live if that construction is
-        // ever corrupted without changing the grouped inventory.
+        // Feed a deliberately inconsistent share map to prove the independent fail-closed guard
+        // remains live even if the share construction is corrupted.
         let shares = std::collections::BTreeMap::from([("root".to_owned(), 9)]);
         let error =
             require_tree_budget_postcondition("root", 8, &shares, &[("root".to_owned(), 9)])
@@ -1162,17 +907,7 @@ mod tests {
         );
     }
 
-    /// #1318 §1 — the check that makes [`ReportEditTarget`] a resolved target
-    /// rather than three arguments in a trench coat.
-    ///
-    /// The construction a review channel built: hand the constructor track A
-    /// with B's report card, and `write::persist` would rewrite B's row while
-    /// emitting A's events and reprojecting A's tasks. Nothing downstream
-    /// compares the two, so this is the only place it can be caught — which is
-    /// why the fields are private and this is the only door in.
-    ///
-    /// Both directions, because a constructor that rejected everything would
-    /// pass the first assertion on its own.
+    /// Both directions, because a constructor that rejected everything would pass the first assertion on its own.
     #[test]
     fn report_edit_target_pairs_a_card_only_with_its_own_owner() {
         fn parts(card_owner: &str) -> (Track, Card) {
@@ -1195,9 +930,7 @@ mod tests {
             .expect("its own report card must build a target");
 
         let (owner, foreign_card) = parts("w_b");
-        // `let ... else` rather than `expect_err`: the latter would need
-        // `ReportEditTarget: Debug`, and deriving it to serve one test is how a
-        // type grows an accessor nobody asked for.
+        // `let ... else` rather than `expect_err`: the latter would need `ReportEditTarget: Debug`.
         let Err(error) = ReportEditTarget::for_resolved_parts(
             owner,
             foreign_card,
@@ -1225,8 +958,7 @@ mod tests {
     fn serde_round_trip_camelcase_wire() {
         let p = TrackReportPayload::new("hi", "# A\n\nb\n");
         let v = serde_json::to_value(&p).unwrap();
-        // Wire shape: camelCase keys. A drift here would break the
-        // frontend's zod schema silently — pin via this test.
+        // Wire shape: camelCase keys. A drift here would break the frontend's zod schema silently.
         assert_eq!(
             v,
             json!({
@@ -1261,10 +993,8 @@ mod tests {
 
     #[test]
     fn apply_op_with_none_summary_resolves_from_doc_inside_tx() {
-        // #960 PR2 review (write_markdown TOCTOU): `summary: None`
-        // must resolve against the doc — the in-tx truth — not any
-        // caller-side snapshot. Simulate the race by moving the doc's
-        // summary after "the caller read it".
+        // `summary: None` must resolve against the doc — the in-tx truth — not any caller-side
+        // snapshot. Simulate the race by moving the doc's summary after "the caller read it".
         let mut doc =
             ReportDoc::from_payload(&TrackReportPayload::new("stale snapshot", "# A\n\nalpha\n"));
         doc.update("racing summary", "# A\n\nalpha\n").unwrap();
@@ -1326,8 +1056,7 @@ mod tests {
         let first = blocks[0].clone();
         let second = blocks[1].clone();
 
-        // Content-equal replace is deliberately included: it is a document
-        // write even when no block revision changes.
+        // Content-equal replace is deliberately included: it is a document write even when no block revision changes.
         assert_advances(
             ReportDoc::from_payload(&payload),
             ReportDocOp::Replace {
@@ -1377,9 +1106,7 @@ mod tests {
         use automerge::transaction::Transactable;
         use automerge::{AutoCommit, ObjType, ROOT};
 
-        // Shape 1: block rev stored as a Str. check_rev must surface
-        // CalmError::Internal (corruption), never fold the broken rev
-        // into "block not found" (BadRequest).
+        // Shape 1: block rev stored as a Str. Must surface Internal, never "block not found".
         let mut raw = AutoCommit::new();
         let summary_id = raw.put_object(&ROOT, "summary", ObjType::Text).unwrap();
         raw.update_text(&summary_id, "s").unwrap();
@@ -1407,9 +1134,8 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
 
-        // Shape 2: blocks map present but no order list. A wholesale
-        // replace must fail Internal-level — the corrupt doc must not
-        // be read as an empty report and silently overwritten.
+        // Shape 2: blocks map present but no order list. The corrupt doc must not be read as an empty
+        // report and silently overwritten.
         let mut raw = AutoCommit::new();
         let summary_id = raw.put_object(&ROOT, "summary", ObjType::Text).unwrap();
         raw.update_text(&summary_id, "s").unwrap();
@@ -1428,20 +1154,15 @@ mod tests {
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
     }
 
-    // -----------------------------------------------------------------------
-    // #1635 S2c — the contract-header ingress rules, at the op layer. What
-    // each arm does to line 1 before the doc write; where a header may SIT
-    // is the funnel's question and lives with the persist-path tests
-    // (`tests/cases/mcp_track_report_blocks.rs`).
-    // -----------------------------------------------------------------------
+    // The contract-header ingress rules at the op layer; where a header may SIT is the funnel's
+    // question and lives with the persist-path tests.
 
     use calm_types::report_contract::{
         ContractHeader, ContractSection, HEADER_OPEN, canonical_line,
     };
 
-    /// A one-section header as a caller might spell it: keys out of
-    /// declaration order and an explicit `"omit_if_empty":false`, both of
-    /// which the canonical form drops.
+    /// A one-section header as a caller might spell it: keys out of declaration order and an
+    /// explicit `"omit_if_empty":false`, both of which the canonical form drops.
     const NON_CANONICAL_HEADER: &str = "<!-- neige:contract {\"sections\":[{\"omit_if_empty\":false,\"h1\":\"概要\"}],\"version\":1} -->";
 
     fn one_section_header() -> ContractHeader {
@@ -1514,10 +1235,8 @@ mod tests {
         assert_eq!(doc.doc_rev().unwrap(), 0, "and advances nothing");
     }
 
-    /// The order note from #1635 S2c: a `with_markers` read puts the marker
-    /// on line 1 and the header on line 2, so normalizing before the strip
-    /// would see a marker, not a header, and let the non-canonical line
-    /// through to the funnel as `Internal`.
+    /// A `with_markers` read puts the marker on line 1 and the header on line 2, so normalizing
+    /// before the strip would see a marker, not a header.
     #[test]
     fn write_markdown_normalizes_the_header_after_stripping_markers() {
         let canonical = canonical_line(&one_section_header());
@@ -1564,10 +1283,8 @@ mod tests {
         assert_eq!(after[1].2, 2, "the edited section bumped its rev");
     }
 
-    /// Block content is normalized on both the single op and the batch
-    /// step; the doc here has no header, so the resulting document is one
-    /// the funnel accepts — the "doc already had one" half is a persist-path
-    /// test, since only the funnel sees the whole document.
+    /// The doc here has no header, so the resulting document is one the funnel accepts; the
+    /// "doc already had one" half is a persist-path test.
     #[test]
     fn upsert_prose_at_position_0_carrying_a_header_is_normalized() {
         let canonical = canonical_line(&one_section_header());
@@ -1609,8 +1326,7 @@ mod tests {
         let (_, body) = doc.project().unwrap();
         assert_eq!(first_line(&body), canonical, "batch step: {body:?}");
 
-        // A malformed header is refused at the same ingress, with the step
-        // index the batch prefixes on every step error.
+        // A malformed header is refused at the same ingress, with the step index the batch prefixes.
         let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", "# A\n\nalpha\n"));
         let err = apply_report_op(
             &mut doc,
@@ -1635,9 +1351,8 @@ mod tests {
         );
     }
 
-    /// The #1269 verdict order survives S2c: a stale anchor is judged before
-    /// the content, so stale `if_rev` / `if_doc_rev` plus a malformed header
-    /// is still the `Conflict` it was, on both upsert arms and on a batch.
+    /// A stale anchor is judged before the content, so stale `if_rev` / `if_doc_rev` plus a
+    /// malformed header is still a `Conflict`.
     #[test]
     fn a_stale_rev_beside_a_malformed_header_is_still_a_conflict() {
         let malformed = format!("{HEADER_OPEN}not json -->\n");

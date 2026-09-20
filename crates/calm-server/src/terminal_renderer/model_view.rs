@@ -39,13 +39,9 @@ impl ModelView {
     pub fn capture(&self, offset: usize) -> anyhow::Result<(Frame, u64)> {
         Ok((self.view()?.frame(offset)?, self.revision))
     }
-    /// #1710 — `TerminalView::history_rows` on the projection (the same
-    /// error as `capture` when it is unavailable).
     pub fn history_rows(&self) -> anyhow::Result<usize> {
         Ok(self.view()?.history_rows())
     }
-    /// #1710 — `TerminalView::find_text` on the projection (the same error
-    /// as `capture` when it is unavailable).
     pub fn find_text(
         &self,
         pattern: &str,

@@ -1,10 +1,5 @@
-//! Issue #679 PR7b-ii Unit 3: transport-only security cells plus
-//! Principal delta vectors.
-//!
-//! The existing `frozen_gate_vectors.rs` corpus drives the public write
-//! entry (`Repo::log_pure_event`). It cannot express MCP connection mode,
-//! per-call `_meta.threadId` resolution, or the Principal recorder grant.
-//! This file keeps those addenda separate and intentionally small.
+//! Transport-only security cells plus Principal delta vectors: MCP connection mode, per-call
+//! `_meta.threadId` resolution, and the Principal recorder grant.
 
 #![cfg(unix)]
 
@@ -44,32 +39,9 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const TEST_BUDGET: Duration = Duration::from_secs(5);
-/// 3 role files × 8 + the 6 assistant / cross-track cells #1189 S2 adds + the
-/// 2 surviving cells of the old `02_planner_non_root.json`.
-///
-/// #1189 S2 retired **6** of that file's 8 cells: all six carried
-/// `recorder_gate: false`, and the role gate never reads the session for an
-/// `AiPlanner` actor (`enforce_role(&actor, ..)` below takes no session at all),
-/// so they were byte-for-byte duplicates of `01_root.json`'s corresponding
-/// cells.
-///
-/// The 2 `recorder_gate: true` cells are **kept**, in
-/// `02_superseded_planner_session.json`, still expecting Deny. Their old premise
-/// ("bound to this track's planner card but not the track root") was denied by the
-/// root criterion this slice removes; their new premise is that the session on
-/// that card is `superseded`, and the liveness check in `decide_recorder` is
-/// the only thing refusing them. That makes them the regression nails for that
-/// check — nothing else in the corpus covers it (`05_assistant.json`'s last
-/// two cells pin the orthogonal cross-track axis, and `decision_gate`'s
-/// `a_root_marked_worker_session_is_still_refused` pins the opposite
-/// direction).
-///
-/// Note the old comment's schema claim was wrong: `ws_one_active_per_card`
-/// (migration `0055_drop_runtimes.sql:200-202`) is a **partial** unique index
-/// — `WHERE state IN ('starting','running','idle','turn_pending')` — so
-/// `worker_sessions.card_id` is not UNIQUE and a card may carry any number of
-/// non-active sessions alongside its one live one. That is exactly why the
-/// superseded fixture below is representable.
+/// 3 role files × 8 + 6 assistant / cross-track cells + 2 superseded-planner-session cells.
+/// `ws_one_active_per_card` is a partial unique index, so a card may carry non-active sessions
+/// alongside its one live one — that is what makes the superseded fixture representable.
 const EXPECTED_PRINCIPAL_DELTA_VECTOR_COUNT: usize = 32;
 
 type IdentityCaptureRx = mpsc::UnboundedReceiver<ToolCallIdentity>;
@@ -620,9 +592,8 @@ impl PrincipalFixture {
         let executor = seed_role_card(&repo, &cache, &home_track, CardRole::Worker).await;
         let validator = seed_role_card(&repo, &cache, &home_track, CardRole::Worker).await;
         let report = seed_role_card(&repo, &cache, &home_track, CardRole::ReportCard).await;
-        // #1189 §3.6 — the recorder criterion is now card-keyed, so the
-        // corpus needs the two cards that criterion is about: an assistant
-        // on this track (allowed) and one on a *different* track (G-A').
+        // The recorder criterion is card-keyed: an assistant on this track (allowed) and one on a
+        // *different* track.
         let assistant = seed_role_card(&repo, &cache, &home_track, CardRole::Assistant).await;
 
         let away_track_row = repo
@@ -644,11 +615,8 @@ impl PrincipalFixture {
         let away_assistant = seed_role_card(&repo, &cache, &away_track, CardRole::Assistant).await;
         let away_planner = seed_role_card(&repo, &cache, &away_track, CardRole::Planner).await;
 
-        // Session → card bindings are the whole point of the new criterion,
-        // so they must be REAL card ids. They used to be a synthetic
-        // `card-<session>` string, which under the card-keyed gate would
-        // have denied every vector for the wrong reason (unknown card) and
-        // made the corpus vacuous.
+        // Session → card bindings must be REAL card ids, or the card-keyed gate denies every vector for
+        // the wrong reason and the corpus is vacuous.
         seed_sessions(
             &repo,
             &home_track,
@@ -661,19 +629,8 @@ impl PrincipalFixture {
                     &home_track,
                     WorkerSessionState::Running,
                 ),
-                // #1189 §3.6 liveness — the *superseded* predecessor of
-                // `session-root` on the very same Planner card. This is what a
-                // resume leaves behind: `session_supersede_active_tx` (via
-                // `session_supersede_and_start_tx`) only flips the old row to
-                // `superseded` and keeps it, same `card_id` on the same track.
-                // Repointing `tracks.root_session_id` at the successor is a
-                // separate, conditional path — `session_repoint_current_links_tx`
-                // → `session_mark_track_root_tx`, and only when the successor is
-                // an active-authority `Planner`. Both halves of the card
-                // criterion still admit the predecessor, so `decide_recorder`'s
-                // liveness check is the only thing between it and the report.
-                // `ws_one_active_per_card` is partial, so it coexists with the
-                // running row.
+                // The *superseded* predecessor of `session-root` on the same Planner card, as a resume leaves
+                // it; only `decide_recorder`'s liveness check stands between it and the report.
                 (
                     "session-planner-superseded",
                     &planner,
@@ -789,9 +746,7 @@ async fn seed_sessions(
         .await
         .unwrap();
     }
-    // `session-root` stays marked as the home track's root. The recorder
-    // criterion no longer reads it (#1189 §3.6), and keeping the mark is
-    // what makes that observable: root-ness alone must not be what any
+    // `session-root` stays marked as the home track's root: root-ness alone must not be what any
     // vector's Allow rests on.
     session_mark_track_root_tx(&mut tx, home_track, &WorkerSessionId::from("session-root"))
         .await

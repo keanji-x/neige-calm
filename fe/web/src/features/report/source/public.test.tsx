@@ -41,11 +41,6 @@ const WELL_FORMED = target('neige://source/src_2c9e0a1b#q1', 'src_2c9e0a1b', 'q1
 const NO_ANCHOR = target('neige://source/src_2c9e0a1b', 'src_2c9e0a1b', null);
 
 describe('ReportSourcePanel', () => {
-  /*
-   * The owner signed these four strings (#1669 §2.5). Each provenance is
-   * rendered on its own and the badge is read back by the enum value, so a
-   * swapped pair — `summary` wearing `full_text`'s words — turns this red.
-   */
   it.each(Object.keys(SOURCE_PROVENANCE_COPY) as SourceProvenance[])('names the %s provenance with the signed wording', (provenance) => {
     render(<ReportSourcePanel target={NO_ANCHOR} resolution={{ status: 'ok', source: row({ provenance }) }} onRetry={() => undefined} />);
     const badge = document.querySelector('[data-nc-report-source-provenance]');
@@ -68,7 +63,6 @@ describe('ReportSourcePanel', () => {
     expect(container.textContent).toContain('mcp-wisburg');
     expect(container.textContent).toContain('get_article_detail');
     expect(container.textContent).toContain('752972');
-    // Raw: the Markdown is shown as written, nothing becomes an element.
     const body = container.querySelector('pre[data-nc-report-source-body]');
     expect(body?.textContent).toBe('看 [链接](https://example.com/x) 和 ![图](https://example.com/x.png) **不渲染**');
     expect(container.querySelectorAll('a, img, strong').length).toBe(0);
@@ -83,8 +77,6 @@ describe('ReportSourcePanel', () => {
     expect(marks.length).toBe(1);
     expect(marks[0]?.textContent).toBe('9月加息概率接近九成');
     expect(marks[0]?.getAttribute('data-nc-report-source-quote')).toBe('q1');
-    // The text before the mark is exactly the prefix of the FIRST occurrence;
-    // slicing the second one would put `市场认为` before it.
     expect(body?.childNodes[0]?.textContent).toBe('央行表示，');
     expect(body?.textContent).toBe(BODY);
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
@@ -92,26 +84,20 @@ describe('ReportSourcePanel', () => {
     expect(container.querySelector('[data-nc-report-source-missing]')).toBeNull();
   });
 
-  /* §2.5: the anchor does not exist → the missing state, with the destination
-     as written — and the source underneath, because the reader still gains
-     from it. Same shape as the source-missing case (`data-nc-report-source-missing`). */
   it('keeps the source but shows the missing state with the destination when the anchor is not on the row', () => {
     const missingAnchor = target('neige://source/src_2c9e0a1b#q7', 'src_2c9e0a1b', 'q7');
     const { container } = render(<ReportSourcePanel target={missingAnchor} resolution={{ status: 'ok', source: row() }} onRetry={() => undefined} />);
-    // The source is still there: badge, title, raw body, no highlight.
     expect(container.querySelector('[data-nc-report-source-provenance="full_text"]')?.textContent).toBe('智堡全文');
     expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Mikko 全球市场日志 9-13');
     expect(container.querySelector('mark')).toBeNull();
     expect(container.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(BODY);
     expect(scrollIntoView).not.toHaveBeenCalled();
-    // …and above it, the missing state naming the anchor that is not there.
     const notice = container.querySelector('[data-nc-report-source-missing="anchor"]');
     expect(notice).not.toBeNull();
     expect(screen.getByRole('heading', { level: 3 }).textContent).toBe(SOURCE_PANEL_COPY.anchorMissingTitle);
     expect(SOURCE_PANEL_COPY.anchorMissingTitle).toBe('引用锚点缺失');
     expect(notice?.textContent).toContain(SOURCE_PANEL_COPY.anchorMissingDetail);
     expect(notice?.querySelector('code')?.textContent).toBe('neige://source/src_2c9e0a1b#q7');
-    // The body itself is not decorated with the notice's words.
     expect(container.querySelector('pre')?.textContent).not.toContain('引用锚点缺失');
   });
 
@@ -142,7 +128,6 @@ describe('ReportSourcePanel', () => {
 
   it('says the source is missing, with the destination, when the citation would not parse', () => {
     const malformed = target('neige://source/src_dead#q0', null, null);
-    // Whatever the app's query says is irrelevant: nothing was fetched.
     const { container } = render(<ReportSourcePanel target={malformed} resolution={{ status: 'ok', source: row() }} onRetry={() => undefined} />);
     expect(screen.getByRole('heading', { level: 2 }).textContent).toBe(SOURCE_PANEL_COPY.missingTitle);
     expect(container.querySelector('[data-nc-report-source-missing]')?.getAttribute('data-nc-report-source-missing')).toBe('malformed');

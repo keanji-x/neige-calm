@@ -12,12 +12,8 @@ pub const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
 /// Frozen persisted author value for planner-authored task declarations.
 pub const PLANNER_DECLARATION_AUTHOR: &str = "spec";
 
-/// Diagnostic paths that make a keyed task declaration unschedulable.
-///
-/// `path` is the §6.5 withdrawal predicate carrier, not a compatibility-only
-/// display field. Keep this exhaustive: the projection layer uses equality
-/// against this set when deciding whether an in-flight declaration needs a
-/// withdrawal warning.
+/// Diagnostic paths that make a keyed task declaration unschedulable. Keep exhaustive: the
+/// projection layer compares against this set when deciding whether a declaration needs a withdrawal warning.
 pub const TASK_BLOCKING_DIAGNOSTIC_PATHS: &[&str] =
     &["depends_on", "gate", "key", "payload", "refs"];
 
@@ -43,7 +39,7 @@ pub const TASK_DIAGNOSTIC_CODES: &[&str] = &[
     "tree_root_unresolved",
 ];
 
-/// Stable producer contract used by §6.5 withdrawal decisions.
+/// Stable producer contract used by withdrawal decisions.
 pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("invalid_declaration", "payload"),
     ("duplicate_key", "key"),
@@ -65,10 +61,7 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("tree_root_unresolved", "key"),
 ];
 
-/// Recovery-action contract shared by producers and checked by the web copy
-/// tests. Capacity diagnostics must point at the setting that can actually
-/// release admission; changing only the Rust producer or only the renderer is
-/// therefore a test failure.
+/// Recovery-action contract shared by producers and checked by the web copy tests.
 pub const TASK_DIAGNOSTIC_ACTIONS: &[(&str, &str)] = &[
     ("planner_task_ceiling", "raise_planner_task_ceiling"),
     ("tree_budget_exhausted", "raise_tree_task_budget"),
@@ -115,9 +108,8 @@ pub struct GateStepInput {
     pub cmd: String,
 }
 
-/// Required declaration provenance. Only the report extractor creates report
-/// evidence from the same raw snapshot as the executable fields. Pure validation
-/// inputs have no report root and must never be accepted by DB projection.
+/// Required declaration provenance. Pure validation inputs have no report root and must never be
+/// accepted by DB projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskDeclarationSource {
     Report { root_hash_preimage: String },
@@ -127,8 +119,7 @@ pub enum TaskDeclarationSource {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskDeclaration {
     pub source: TaskDeclarationSource,
-    /// Present only for declarations projected from report blocks. Plan-upsert
-    /// validation has no block whose diagnostics could be indexed.
+    /// Present only for declarations projected from report blocks.
     pub block_index: Option<usize>,
     pub block_id: String,
     pub key: String,
@@ -144,22 +135,15 @@ pub struct TaskDeclaration {
     pub refs: Vec<String>,
     pub declared_by: String,
     pub released_by_user: bool,
-    /// Claim-frozen execution route. Missing and explicit null normalize to
-    /// `in-wave` before projection.
+    /// Claim-frozen execution route. Missing and explicit null normalize to `in-wave` before projection.
     pub spawn: String,
     pub tombstoned_by: Option<String>,
     pub ready: bool,
     pub tombstone: bool,
 }
 
-/// Normalize the one pre-#1456 task shape that remains in persisted reports.
-///
-/// Terminal declarations used to store the executable shell command in
-/// `goal`. New write schemas reject that ambiguous shape and require
-/// `command`, but existing report JSON and CRDT snapshots must stay readable.
-/// This is deliberately narrow: only `kind == "terminal"`, a string `goal`,
-/// and an absent `command` are rewritten. Mixed/new-invalid shapes are left
-/// untouched so normal validation rejects them instead of guessing.
+/// Normalize the one legacy task shape that remains in persisted reports: a terminal declaration
+/// storing its shell command in `goal`. Only `kind == "terminal"`, a string `goal`, and an absent `command` are rewritten.
 pub fn normalize_legacy_terminal_command(payload: &Value) -> Value {
     let mut payload = payload.clone();
     let Some(map) = payload.as_object_mut() else {
@@ -176,8 +160,8 @@ pub fn normalize_legacy_terminal_command(payload: &Value) -> Value {
     payload
 }
 
-/// Read-side/persist-migrator wrapper that preserves block identity and
-/// revision while updating only the terminal instruction field name.
+/// Read-side/persist-migrator wrapper that preserves block identity and revision while updating
+/// only the terminal instruction field name.
 pub fn normalize_legacy_terminal_task_block(block: &ReportBlock) -> ReportBlock {
     if block.kind != super::KIND_TASK {
         return block.clone();
@@ -210,8 +194,7 @@ pub struct Diagnostic {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     pub path: String,
-    /// Compatibility fields for existing MCP clients. `message` is always
-    /// rendered from `code` + `message_args`; it is never a second source.
+    /// Compatibility fields for existing MCP clients. `message` is always rendered from `code` + `message_args`.
     pub message: String,
 }
 
@@ -378,11 +361,8 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 )
             }
         }
-        // The cause of this one lives OUTSIDE the track being read: it is the
-        // whole tree's budget, divided across the tree's tracks. Saying only
-        // "ceiling reached" would send the reader to raise this track's ceiling,
-        // which changes nothing — so the sentence names the root track, the
-        // budget, how many tracks share it, and this track's slice.
+        // The cause lives OUTSIDE the track being read (the whole tree's budget), so the sentence names the
+        // root track rather than sending the reader to raise this track's ceiling.
         "tree_budget_exhausted" => {
             let root = arg(args, "root_wave_id");
             let budget = args
@@ -714,10 +694,7 @@ pub fn project_task_declarations(
         let normalized_payload = normalize_legacy_terminal_command(&block.payload);
         if let Err(error) = super::validate_payload(super::KIND_TASK, &normalized_payload) {
             diagnostics[index].push(Diagnostic::new("payload", error));
-            // Preserve a keyed declaration when the payload is structurally
-            // readable.  Its payload diagnostic keeps it unschedulable while
-            // allowing both diagnostic read paths to explain why an existing
-            // pending row was removed.
+            // Preserve a keyed declaration when the payload is structurally readable; its payload diagnostic keeps it unschedulable.
             if normalized_payload
                 .get("key")
                 .and_then(Value::as_str)
@@ -858,10 +835,7 @@ pub fn project_task_declarations(
         let tombstoned_by = declarations
             .iter()
             .find(|declaration| declaration.key == *key && declaration.tombstone)
-            // Frozen document vocabulary, not the kernel's. `tombstoned_by`
-            // lives in stored report blocks, so #1316 S3 left its value at
-            // `"spec"` (migration 0083's header says why); this fallback feeds
-            // a diagnostic that is compared against those blocks.
+            // Frozen document vocabulary, not the kernel's: `tombstoned_by` lives in stored report blocks as `"spec"`.
             .and_then(|declaration| declaration.tombstoned_by.as_deref())
             .unwrap_or(PLANNER_DECLARATION_AUTHOR);
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {

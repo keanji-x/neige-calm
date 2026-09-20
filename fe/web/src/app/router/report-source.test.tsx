@@ -1,15 +1,4 @@
 // @vitest-environment jsdom
-/*
- * #1669 §2.5 — the track page, from a citation in the report to the source
- * panel in the right rail, over the real router and a scripted transport.
- *
- * What is held here and nowhere else: that the citation button the document
- * paints reaches `ReportSourceDrawer` with the parsed target, that the drawer
- * asks the kernel for exactly that row, that a 404 lands as "来源缺失" rather
- * than an error, that the conversation drawer underneath goes inert while the
- * source card is over it, and that an Escape inside the source card closes it
- * without touching a running planner turn.
- */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -107,11 +96,7 @@ describe('sourceResolutionOf', () => {
   });
 });
 
-/**
- * A `matchMedia` that answers the width query the way a phone would. The
- * theme's `prefers-color-scheme` subscriber goes through the same global and
- * must keep getting a non-matching list.
- */
+/** A `matchMedia` answering the width query as a phone would; the theme's `prefers-color-scheme` subscriber must keep getting a non-matching list. */
 function stubCompactViewport() {
   vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
     matches: media.includes('width'),
@@ -170,11 +155,9 @@ describe('the source panel on the track page', () => {
     setup();
     fireEvent.click(await screen.findByRole('button', { name: '未追加的锚点' }));
     const drawer = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
-    // The source is shown — badge, body — with nothing highlighted…
     expect(within(drawer).getByText('智堡摘要，非机构原文')).toBeTruthy();
     expect(drawer.querySelector('mark')).toBeNull();
     expect(drawer.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(SOURCE_ROW.body);
-    // …under the missing state that names the citation as written.
     const notice = drawer.querySelector('[data-nc-report-source-missing="anchor"]');
     expect(within(drawer).getByRole('heading', { level: 3 }).textContent).toBe(SOURCE_PANEL_COPY.anchorMissingTitle);
     expect(notice?.querySelector('code')?.textContent).toBe('neige://source/src_2c9e0a1b#q7');
@@ -188,7 +171,6 @@ describe('the source panel on the track page', () => {
     expect(host?.hasAttribute('inert')).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Mikko 日志' }));
     const source = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
-    // Both cards are in the DOM; the conversation is still open underneath.
     expect(screen.getByRole('complementary', { name: 'Planner chat' })).toBe(conversation);
     expect(host?.hasAttribute('inert')).toBe(true);
     // The source is later in the DOM, so it paints over and owns Escape.
@@ -213,12 +195,9 @@ describe('the source panel on the track page', () => {
     fireEvent.keyDown(source, { key: 'Escape' });
     await waitFor(() => expect(source.hasAttribute('data-nc-escape-layer')).toBe(false));
     expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(0);
-    // …and the conversation is still where the reader left it.
     const conversation = screen.getByRole('complementary', { name: 'Planner chat' });
     expect(conversation.hasAttribute('data-nc-escape-layer')).toBe(true);
-    /* The premise, checked after rather than before so it cannot have used
-       up the running turn: the same key from inside the conversation card
-       does reach the interrupt. */
+    /* The premise, checked after rather than before so it cannot have used up the running turn. */
     fireEvent.keyDown(conversation, { key: 'Escape' });
     await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1));
     expect(conversation.hasAttribute('data-nc-escape-layer')).toBe(true);

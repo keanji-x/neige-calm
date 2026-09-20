@@ -1,81 +1,7 @@
-//! #840 slice (e1) — out-of-process kernel kill+reboot harness + danger-point-1.
-//!
-//! This is the FIRST buildable slice of the §3 crash-recovery epic. Every
-//! existing boot-recovery test is *in-process*: it builds `AppState` over
-//! `sqlite::memory:` and calls a recovery fn directly (see
-//! `planner_harness_boot_recovery.rs`). None of them spawns the shipped binary or
-//! kills a real process, so none of them proves the durable-DB kill/reboot
-//! machinery actually survives a `SIGKILL`.
-//!
-//! This test builds that machinery for the first time:
-//!   spawn the real `calm-server` binary against a **file-backed** sqlite DB in
-//!   an isolated tempdir → wait until it is fully booted → `SIGKILL` it →
-//!   relaunch against the **same tempdir** on a fresh port → wait until booted
-//!   again → assert the rebooted kernel preserved durable state and reclaimed it
-//!   exactly once, with no duplicate dispatch.
-//!
-//! ## Danger-point-1: snapshot preservation + codex-free lease reclaim
-//!
-//! Note on wording: with no codex present, `boot_harnesses` returns `Ok(0)` and
-//! harness recovery is **skipped**, so the `HarnessSnapshot` survives by
-//! *non-mutation* (preservation), NOT by `state_from_snapshot` reconstruction.
-//! The real crash-recovery invariant this slice proves is the **exactly-once
-//! workspace-lease reclaim** across a reboot. True snapshot reconstruction
-//! (`state_from_snapshot`, which requires a live codex daemon) is out of scope
-//! here and is NOT covered by e2/e3 either.
-//!
-//! Scoped (per the converged design) to the *supervisor-free* crash-recovery
-//! path — NOT terminal-PTY reconcile (which needs a live calm-proc-supervisor)
-//! and NOT the codex harness snapshot (which is deferred until the shared codex
-//! app-server is running; `boot_harnesses` swallows that failure and returns
-//! `Ok(0)` when no codex binary is present — see `lib.rs`
-//! `recover_harnesses_after_daemon_boot`).
-//!
-//! The cheapest fully codex-free, worker-free, deterministic, DB-observable
-//! crash-recovery action is the **workspace-lease boot reclaim**, the very first
-//! action of `recover_operations_on_boot`
-//! (`operation::driver::recover_on_boot` → `reclaim_dead_workspace_leases_on_boot`).
-//! It runs unconditionally, in pure SQLite, before the HTTP listener binds — so
-//! by the time `/api/version` answers 200 the reclaim has already happened.
-//!
-//! We seed a `held` workspace lease owned by a *stale machine boot* (a lease
-//! whose `boot_id` differs from the host's `/proc/sys/kernel/random/boot_id`),
-//! plus a durable `worker_sessions` row carrying a `HarnessSnapshot`. After
-//! kill+reboot we assert:
-//!   * the lease was reclaimed to `released`,
-//!   * exactly ONE `workspace.released` event exists (the second boot re-runs
-//!     recovery over the already-released row and, fenced by
-//!     `state IN ('held','releasing')`, emits nothing — the exactly-once /
-//!     no-duplicate-dispatch invariant across a reboot),
-//!   * the seeded worker session was neither duplicated nor mutated (no codex ⇒
-//!     harness recovery skipped ⇒ its durable `HarnessSnapshot` survives intact).
-//!
-//! ## What e1 proves vs. what e2/e3 defer
-//!   * e1 (this): the spawn → file-DB → SIGKILL → relaunch → reconcile harness
-//!     works; a codex-free boot reclaim is exactly-once across a reboot and the
-//!     durable snapshot is preserved. Kill lands at an *arbitrary* instant
-//!     (after ready), NOT a targeted window. (True `state_from_snapshot`
-//!     reconstruction needs a live codex daemon and is not proven by any of
-//!     e1/e2/e3 — it belongs to the real-agent stability tier.)
-//!   * e2 (deferred): a `CALM_TEST_CRASH_AT` seam in the forge merge path
-//!     (`complete_parked_tx`) to crash inside the "merge landed but fence not
-//!     committed" window, then assert the gh-shim merge count == 1 (exactly-once
-//!     merge across the crash seam).
-//!   * e3 (deferred): SIGKILL while the exit-75 *held* irreversible launcher is
-//!     blocked on its `_go` handshake; assert the child exits 75 having run
-//!     nothing.
-//!
-//! ## Safety
-//! This spawns REAL `calm-server` processes, so it is hard-guarded to never
-//! touch prod: the DB lives in a throwaway `tempfile::tempdir()`, the port is a
-//! freshly-discovered ephemeral port (asserted `!= 4040`), and codex/claude/
-//! supervisor binaries are pointed at non-existent paths so no real agent or
-//! shared app-server is ever launched. The child environment is **cleared and
-//! rebuilt from a minimal allowlist** (`spawn_kernel`), so no inherited
-//! `CALM_*` / `NEIGE_*` / `RECORD_SESSION` var can bleed in and no write can
-//! escape the tempdir (`HOME`/`TMPDIR` are redirected into it). Children are
-//! killed via a `Drop` guard even on panic. It is CI-safe: no external deps, and
-//! it self-skips if the sandbox denies a loopback bind.
+//! Out-of-process kernel kill+reboot harness: spawn the real `calm-server` binary against a
+//! file-backed sqlite DB in an isolated tempdir, SIGKILL it once booted, relaunch on the same
+//! tempdir, and assert the workspace-lease boot reclaim is exactly-once and the durable
+//! `HarnessSnapshot` is preserved. The child env is cleared and rebuilt from an allowlist.
 
 #![cfg(target_os = "linux")]
 
@@ -94,16 +20,10 @@ use serde_json::json;
 use support::kernel_proc::launch_kernel;
 use tempfile::TempDir;
 
-/// A machine boot id that can never match the host's real
-/// `/proc/sys/kernel/random/boot_id`, so the seeded lease is always treated as
-/// belonging to a *previous* (dead) machine boot and is reclaimed.
+/// A machine boot id that can never match the host's real one, so the seeded lease is reclaimed.
 const STALE_BOOT_ID: &str = "00000000-0000-0000-0000-000000000000";
 
 const SNAPSHOT_WATERMARK: i64 = 42;
-
-// ---------------------------------------------------------------------------
-// Durable-state seeding (before the first boot) and post-reboot assertions.
-// ---------------------------------------------------------------------------
 
 struct Seeded {
     runtime_id: String,
@@ -112,9 +32,8 @@ struct Seeded {
     track_id: String,
 }
 
-/// Seed the file DB with (a) a durable worker-session row carrying a
-/// `HarnessSnapshot`, and (b) a `held` workspace lease owned by a stale machine
-/// boot — the two durable facts danger-point-1 asserts survive a reboot.
+/// Seed a durable worker-session row carrying a `HarnessSnapshot` and a `held` workspace lease
+/// owned by a stale machine boot.
 async fn seed_durable_state(db_url: &str) -> Seeded {
     let repo = SqlxRepo::open(db_url)
         .await
@@ -187,11 +106,8 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
     .await
     .unwrap();
 
-    // The held lease belonging to a stale machine boot. `lease_owner` points at
-    // no operation row (LEFT JOIN → NULL owner_phase → "not recoverable"), so
-    // `workspace_lease_should_reclaim_on_boot` reclaims it purely on the
-    // boot_id mismatch. No filesystem dir is required — the boot reclaim path
-    // only rewrites the row + emits one `workspace.released` event.
+    // `lease_owner` points at no operation row (NULL owner_phase → "not recoverable"), so the
+    // reclaim is purely on the boot_id mismatch; no filesystem dir is required.
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
@@ -211,9 +127,7 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
 
     tx.commit().await.unwrap();
 
-    // Drop the pool before spawning the server so the seeding connection isn't
-    // holding the file open across the boot (WAL tolerates it, but this keeps
-    // the ownership story clean).
+    // Drop the pool before spawning the server so the seeding connection is not holding the file open.
     Seeded {
         runtime_id,
         lease_id,
@@ -251,10 +165,8 @@ async fn read_final_state(db_url: &str, seeded: &Seeded) -> FinalState {
             .await
             .unwrap();
 
-    // Exactly-once proof: `workspace.released` is emitted once, by boot 1's
-    // reclaim; boot 2 re-runs recovery over the released row and emits nothing.
-    // The DB is isolated and seeds exactly one lease, so counting by kind alone
-    // is unambiguous (mirrors the in-process reclaim test's assertion).
+    // `workspace.released` is emitted once, by boot 1's reclaim; boot 2 re-runs recovery over the
+    // released row and emits nothing.
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
             .fetch_one(repo.pool())
@@ -289,7 +201,7 @@ async fn read_final_state(db_url: &str, seeded: &Seeded) -> FinalState {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kernel_reboot_preserves_snapshot_and_reclaims_lease_without_duplicate_dispatch() {
-    // ---- prod-safety hard guards (never touch the real DB / port) ---------
+    // prod-safety hard guards (never touch the real DB / port)
     let tmp: TempDir = tempfile::tempdir().expect("tempdir");
     let tmp_path: PathBuf = tmp.path().to_path_buf();
     let db_path = tmp_path.join("calm.db");
@@ -306,30 +218,24 @@ async fn kernel_reboot_preserves_snapshot_and_reclaims_lease_without_duplicate_d
     );
     let db_url = format!("sqlite://{db_str}?mode=rwc");
 
-    // ---- seed durable state, then close the seeding connection ------------
     let seeded = seed_durable_state(&db_url).await;
 
-    // ---- boot 1: spawn the real binary, wait until fully booted -----------
+    // boot 1: spawn the real binary, wait until fully booted
     let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "boot-1", &[]) else {
         return; // sandbox denied loopback bind — CI-safe skip
     };
     assert_ne!(boot1.port, 4040);
 
-    // ---- SIGKILL at an arbitrary instant while durable state is live ------
+    // SIGKILL at an arbitrary instant while durable state is live
     boot1.sigkill_and_reap();
 
-    // ---- boot 2: relaunch against the SAME tempdir ------------------------
-    // The whole tempdir (calm.db + its `-wal`/`-shm` WAL sidecars) is preserved
-    // across the kill — we reuse `tmp_path`/`db_path` verbatim. `launch_kernel`
-    // picks a fresh ephemeral port; we do NOT assert it differs from boot 1's,
-    // because after the kill the OS allocator may legally hand back the same
-    // port and a same-port reboot is perfectly valid.
+    // boot 2: relaunch against the SAME tempdir (calm.db + WAL sidecars preserved). The port is
+    // not asserted to differ: the OS may legally hand back the same one.
     let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "boot-2", &[]) else {
         return;
     };
     boot2.sigkill_and_reap();
 
-    // ---- assert snapshot preservation + exactly-once reclaim, no dup -------
     let state = read_final_state(&db_url, &seeded).await;
 
     assert_eq!(
@@ -364,7 +270,6 @@ async fn kernel_reboot_preserves_snapshot_and_reclaims_lease_without_duplicate_d
         "durable HarnessSnapshot pending_queue must survive the reboot intact"
     );
 
-    // Touch track_id so the field is used and the compiler keeps the invariant
-    // documented in `Seeded` honest.
+    // Touch track_id so the field is used.
     assert!(!seeded.track_id.is_empty());
 }

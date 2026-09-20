@@ -1,59 +1,7 @@
-//! Track-as-Actor PR3 (#136) — authorization gate at the single write entry.
-//!
-//! The gate runs inside `Repo::write_with_event` / `Repo::log_pure_event`,
-//! after the closure produces an `Event`, before `event_append_in_tx`
-//! commits the row. A violation rolls the txn back: no entity write,
-//! no event row, no broadcast. The kernel is the only safety boundary
-//! between AI-controlled cards and the track-level kernel state, so the
-//! gate is deliberately strict — *deny* is the default for anything
-//! ambiguous, and we re-confirm role lookups against the in-process
-//! `CardRoleCache` rather than trusting the actor's claimed identity.
-//!
-//! ## What the gate enforces
-//!
-//! 1. **Empty-CardId guard.** `ActorId::AiCodex(CardId(""))`,
-//!    `ActorId::AiClaude(CardId(""))`, and `ActorId::AiPlanner(CardId(""))`
-//!    are rejected outright. This catches
-//!    the PR2 stopgap path in `crate::actor::Actor::to_actor_id` where
-//!    the `X-Calm-Actor: ai:codex` header has no card context to attach.
-//!    PR3 reattributes the codex bridge ingest to a real card id (see
-//!    `routes::codex::ingest_hook`), so this branch ends up firing only
-//!    when something else regresses — fail loud, not silent.
-//!
-//! 2. **`Event::TrackUpdated` is gated to planner cards.** The actor must be
-//!    `User`, `Kernel`, or `AiPlanner(card_id)` where the cache confirms
-//!    `CardRole::Planner`. Any `AiCodex` / `AiClaude` actor — even one bound
-//!    to a card — is rejected: worker cards must not edit track-level state.
-//!
-//! 3. **Worker/ReportCard self-scope check.** When an
-//!    `AiCodex(card_id)` or `AiClaude(card_id)` actor's cached role is
-//!    `Worker` or `ReportCard`, the event's
-//!    `EventScope` must be the
-//!    same card, its `track` field must match the card's home track
-//!    (issue #232), *and* its `area` field must match the card's
-//!    home area (issue #234). A worker or report-card actor that tries
-//!    to emit a `Track` or `Area` scope event — or a Card scope with a
-//!    spoofed `track` or `area` — is refused.
-//!
-//! 4. **Dispatch-request events are gated to planner cards.** Issue #583.
-//!    `Event::CodexWorkerRequested` and `Event::TerminalWorkerRequested` are
-//!    refused for any `AiCodex` / `AiClaude` actor, mirroring the
-//!    `TrackUpdated` rule. Planner card (`AiPlanner`) with cached role `Planner`
-//!    passes; User / Kernel / KernelDispatcher / Plugin keep their
-//!    unrestricted access for forward compatibility (no current emitter
-//!    in those families).
-//!
-//! 5. **User / Kernel / KernelDispatcher / Plugin(_)** are unrestricted
-//!    in PR3. The kernel's own writes (FSM projector, terminal sweeper,
-//!    plugin callback dispatcher) and the user's REST surface continue
-//!    to flow through the gate unchanged.
-//!
-//! 6. **Unknown card.** If the actor names a card the cache doesn't
-//!    know, the write is denied. Two possible causes:
-//!      * the card was deleted between the actor's request landing and
-//!        the gate running (race; safe to reject),
-//!      * an attacker fabricated a card id (the gate is the last line
-//!        of defense, deny by default).
+//! Authorization gate at the single write entry, run inside `write_with_event`
+//! before the event row commits; a violation rolls the txn back. Deny is the
+//! default for anything ambiguous, and role lookups are re-confirmed against
+//! the in-process `CardRoleCache` rather than the actor's claimed identity.
 
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{Event, EventScope};
@@ -64,9 +12,7 @@ use crate::worker::WorkerSessionId;
 use calm_types::proposal::ProposalDecision;
 use thiserror::Error;
 
-/// Reasons the gate may refuse a write. Surfaced verbatim into the
-/// returned `CalmError::Forbidden` so test assertions can pattern-match
-/// without parsing a free-form string.
+/// Surfaced verbatim into `CalmError::Forbidden` so tests can pattern-match.
 #[derive(Debug, Error)]
 pub enum RoleViolation {
     #[error(
@@ -74,9 +20,7 @@ pub enum RoleViolation {
     )]
     EmptyAiCardId,
 
-    /// A session-keyed actor reached the sync gate; session→authority
-    /// resolution lands in HP1-a-2 (#770) — until then session actors
-    /// are denied.
+    /// A session-keyed actor reached the sync gate unresolved; denied.
     #[error(
         "session-keyed actor {session} reached sync role gate before session authority resolution"
     )]
@@ -165,8 +109,8 @@ pub enum RoleViolation {
     #[error("worker card {card} is out of scope {scope}")]
     WorkerOutOfScope { card: CardId, scope: String },
 
-    /// #1189 — an `Assistant`-roled card wrote outside the two card
-    /// scopes it owns (itself, and its home track's report card).
+    /// An `Assistant`-roled card wrote outside the two card scopes it owns
+    /// (itself, and its home track's report card).
     #[error("assistant card {card} is out of scope {scope}")]
     AssistantOutOfScope { card: CardId, scope: String },
 
@@ -178,26 +122,12 @@ pub enum RoleViolation {
 
     /// A role/track/area lookup the gate needs could not be read, or read
     /// nothing. "Cannot prove" is a denial.
-    ///
-    /// Two shapes reach it. A transaction-backed read that *errors*
-    /// (`decision_gate::hydrate_role_caches_from_tx`) — the in-memory caches
-    /// have no failure mode, so that shape is cached-path-unreachable. And a
-    /// track→area lookup that comes back empty in `enforce_card_scope`, which
-    /// both substrates can produce; see the comment there for what a miss
-    /// means in each.
     #[error("role lookup failed for {subject}; denying by default")]
     RoleLookupFailed { subject: String },
 }
 
-/// Run the role gate. Returns `Ok(())` on success, `Err(RoleViolation)`
-/// to refuse the write. Caller wraps the error into a transactional
-/// rollback — see the `write_with_event` / `log_pure_event` impls in
-/// `db::sqlite`.
-///
-/// The function is intentionally side-effect-free: it never mutates the
-/// cache (only the card-create / -delete paths do), and it never reads
-/// the database. That's why the gate is cheap enough to run inline at
-/// every write site.
+/// Run the role gate; the caller turns `Err` into a rollback. Side-effect-free:
+/// never mutates the cache, never reads the database.
 pub fn enforce_role(
     actor: &ActorId,
     event: &Event,
@@ -205,14 +135,7 @@ pub fn enforce_role(
     cache: &CardRoleCache,
     track_area_cache: &TrackAreaCache,
 ) -> Result<(), RoleViolation> {
-    // --- (1) Empty-CardId guard. ---
-    //
-    // PR2's `Actor::to_actor_id` returns `AiCodex(CardId(""))` for the
-    // legacy `X-Calm-Actor: ai:codex` header path because there's no
-    // card context at the REST entry. PR3 must not silently match an
-    // empty CardId against any real card — that would be a
-    // gate-bypass. We reject loud and let the call site (the codex
-    // bridge ingest in routes/codex.rs) attribute a real card.
+    // (1) Empty-CardId guard: an empty id must never match a real card.
     if let ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiPlanner(c) = actor
         && c.as_str().is_empty()
     {
@@ -225,24 +148,12 @@ pub fn enforce_role(
         return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
     }
 
-    // --- (2) `TrackUpdated` is planner-only. ---
-    //
-    // The track-level authority decision: only the planner card (PR6) is
-    // allowed to update the track row. User + Kernel keep their
-    // unrestricted authority (the user is *the* authority; Kernel is
-    // the FSM projector / sweeper / plugin dispatcher, which writes
-    // server-internal lifecycle the user implicitly authorized at
-    // boot).
+    // (2) `TrackUpdated` is planner-only; User/Kernel keep unrestricted authority.
     if matches!(event, Event::TrackUpdated(_)) {
         match actor {
             ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
             ActorId::Plugin(_) => {
-                // Plugins are unrestricted in PR3 — see the
-                // `RouteRepo` capability split docs. Plugin-driven
-                // track edits are rare in practice (the surface for
-                // them lives in the plugin host callback dispatcher,
-                // which is server-internal). If PR4+ tightens this,
-                // it lands here.
+                // Plugins are unrestricted here.
             }
             ActorId::AiPlanner(card_id) => {
                 let role = cache.get(card_id);
@@ -253,11 +164,8 @@ pub fn enforce_role(
                 }
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
-                // Even an AI worker actor whose card happens to be
-                // `Planner`-roled (impossible in PR3 — planner cards are
-                // bound to `AiPlanner`) is rejected here. The actor
-                // variant is the wire-level claim; the gate sticks
-                // to it rather than re-binding via the cache.
+                // The actor variant is the wire-level claim; the gate sticks to it rather
+                // than re-binding via the cache.
                 return Err(RoleViolation::NotPlannerForTrack {
                     actor: ai_worker_actor_label(actor, card_id),
                 });
@@ -272,20 +180,8 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.5) Dispatch-request + plan-revision events are planner-only. ---
-    //
-    // Issue #583. `calm.task.dispatch` is gated to Planner at the MCP
-    // soft gate (`emit.rs::dispatch_request`), but the in-tx gate must
-    // also refuse worker AI actors from emitting these events to provide
-    // real kernel-level defense-in-depth — otherwise an internal caller
-    // that reaches `write_with_event_typed` with an AiCodex/AiClaude
-    // worker actor + a dispatch event can still commit a recursive
-    // worker-tree mint. Mirrors section (2)'s shape.
-    //
-    // Issue #644 — `Event::PlanUpdated` joins the list: the task plan is
-    // track-level authority (the PR-B scheduler dispatches whatever the
-    // plan says), so a worker actor writing plan revisions would be the
-    // same recursive-mint hole one hop removed.
+    // (2.5) Dispatch-request + plan-revision events are planner-only: a worker
+    // actor committing one could mint a recursive worker tree.
     if matches!(
         event,
         Event::CodexWorkerRequested { .. }
@@ -318,18 +214,8 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.6) `task.dispatched` is kernel-only. ---
-    //
-    // Issue #644 PR-B. The scheduler appends `Event::TaskDispatched`
-    // inside its claim tx as the projection's dispatch record (§5.6).
-    // It is a *kernel observation* of plan execution, not a card
-    // authority: a planner forging it could fabricate "the kernel claimed
-    // this task" records that desynchronize the runs projection from
-    // the tasks table, and a worker forging it is the #583 recursive
-    // hole again. Every card-derived actor (AiPlanner included) AND
-    // plugins are refused — unlike sections (2)/(2.5), a plugin has no
-    // business writing the scheduler's claim record, so this gate is
-    // narrower: only User / Kernel / KernelDispatcher pass.
+    // (2.6) `task.dispatched` is a kernel observation, not a card authority:
+    // narrower than (2)/(2.5), plugins are refused too.
     if matches!(event, Event::TaskDispatched { .. }) {
         match actor {
             ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
@@ -358,10 +244,8 @@ pub fn enforce_role(
         }
     }
 
-    // Issue #985 PR3a-i. Context freeze and advancement records are facts
-    // produced by the scheduler kernel. Unlike the older "kernel-only"
-    // gates, these records are strict: a plain User cannot forge either the
-    // frozen set or its stale verdict.
+    // Context freeze/advancement records are strict kernel facts: even a plain
+    // User cannot forge them.
     if matches!(event, Event::TaskContextFrozen { .. }) {
         match actor {
             ActorId::Kernel | ActorId::KernelDispatcher => {}
@@ -440,15 +324,7 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.7) `task.gate_result` is kernel-only. ---
-    //
-    // Issue #644 PR-C. The gate runner appends `Event::TaskGateResult`
-    // in the same tx as the `verifying → done|failed` tasks-row flip.
-    // It is the kernel's *machine verdict* for a verification gate — a
-    // card forging it could fabricate "the gate passed" evidence that
-    // the planner (and the lifecycle promotion) treats as ground truth.
-    // Same narrow gate as (2.6): only User / Kernel / KernelDispatcher
-    // pass; every card-derived actor AND plugins are refused.
+    // (2.7) `task.gate_result` is the kernel's machine verdict; same narrow gate as (2.6).
     if matches!(event, Event::TaskGateResult { .. }) {
         match actor {
             ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
@@ -477,13 +353,8 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.8) `review.round` + `ratify.requested` are planner-only. ---
-    //
-    // Issue #760 slice 5b. These are policy records authored by the planner
-    // agent after it has correlated reviewer channels or decided a human
-    // ratify gate is needed. Unlike the older track-write/dispatch arms,
-    // User/Kernel/Plugin do NOT pass here: letting any non-planner actor forge
-    // `converged=true` or a ratify request would bypass the review protocol.
+    // (2.8) `review.round` + `ratify.requested` are planner-only; User/Kernel/Plugin
+    // do NOT pass, or a forged `converged=true` would bypass the review protocol.
     if matches!(
         event,
         Event::ReviewRound { .. } | Event::RatifyRequested { .. }
@@ -504,11 +375,7 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.9) `ratify.resolved` is User-only. ---
-    //
-    // The grant/deny decision is the human half of the ratify gate. It must
-    // not be forgeable by the planner, workers, plugins, or the kernel, or an
-    // AI actor could self-approve the pause.
+    // (2.9) `ratify.resolved` is User-only: the human half of the ratify gate.
     if matches!(event, Event::RatifyResolved { .. }) {
         match actor {
             ActorId::User => {}
@@ -520,17 +387,8 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.10) `proposal.submitted` is submitting-plugin-only. ---
-    //
-    // Issue #955 §5.4. The proposal channel's authority model: only a
-    // plugin may open a proposal, and only for itself — the payload's
-    // `plugin_id` (kernel-injected at the callback layer) must equal
-    // the envelope actor's plugin id. The gate is a pure function over
-    // `(actor, event, scope)`, so this field comparison IS the in-tx
-    // hard clause; the connection-injection itself happens upstream.
-    // Every other actor family (User, Kernel, planner, workers, sessions)
-    // is refused — a proposal forged by anything but the named plugin
-    // would corrupt the channel's attribution invariant (§5.3).
+    // (2.10) `proposal.submitted`: only a plugin, and only for itself — the
+    // payload's `plugin_id` must equal the envelope actor's.
     if let Event::ProposalSubmitted { plugin_id, .. } = event {
         match actor {
             ActorId::Plugin(id) if id == plugin_id => {}
@@ -543,20 +401,8 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.11) `proposal.resolved` splits by decision. ---
-    //
-    // Issue #955 §5.4, mirroring the ratify rule in (2.9):
-    //   * `accepted` / `rejected` / `stale` are the human half of the
-    //     adjudication (stale is the accept attempt whose in-tx
-    //     anchoring checks failed — still user-triggered). User-only:
-    //     a plugin, planner, or the kernel must never self-approve.
-    //   * `withdrawn` is the submitting plugin reclaiming its own
-    //     pending slot — `ActorId::Plugin(id)` with `id` equal to the
-    //     payload's submitter `plugin_id`, nothing else. The
-    //     "pending AND actually owned by this plugin" *factual* check
-    //     lived with the withdraw handler inside the same write tx before
-    //     the channel was withdrawn in #973; this clause pins the identity
-    //     half for historical events.
+    // (2.11) `proposal.resolved`: `accepted`/`rejected`/`stale` are User-only;
+    // `withdrawn` is the submitting plugin only.
     if let Event::ProposalResolved {
         plugin_id,
         decision,
@@ -587,24 +433,9 @@ pub fn enforce_role(
         }
     }
 
-    // --- (3) Worker/ReportCard self-scope check + (5) unknown-card deny. ---
-    //
-    // For AI worker actors: confirm the cache knows the card, and if
-    // the cached role is `Worker` or `ReportCard`, refuse anything
-    // broader than that card's own scope. The check is three-pronged:
-    //   * `scope.card == self_card` — the actor only writes into its
-    //     own card scope;
-    //   * `scope.track == cache.track_of(self_card)` — the supplied
-    //     `track` field must match the worker's home track (closes
-    //     issue #232: a Worker could otherwise forge `track: <ANY>`
-    //     and the kernel would route the event to that track's
-    //     subscribers).
-    //   * `scope.area == track_area_cache.area_of(home_track)` — the
-    //     supplied `area` must match the home track's persisted area
-    //     (closes issue #234: same fan-out spoof shape as #232 but
-    //     one level up). Area is immutable per track so the lookup is
-    //     stable for the card's lifetime.
-    //
+    // (3) Worker/ReportCard self-scope + (5) unknown-card deny. The scope's card,
+    // track AND area must all match the card's home: a forged `track` or `area`
+    // would fan the event out to another track's or area's subscribers.
     if let ActorId::AiPlannerSession(s) | ActorId::AiCodexSession(s) | ActorId::AiClaudeSession(s) =
         actor
     {
@@ -621,27 +452,13 @@ pub fn enforce_role(
             Some(CardRole::Worker) => {
                 enforce_card_self_scope(card_id, scope, cache, track_area_cache)?;
             }
-            // Lifecycle carveout — hook bridges run as subprocesses of
-            // their worker regardless of the card's role, and the REST
-            // planner-input route may receive the legacy `ai:codex` header
-            // before route context rebinds it to the planner card. These
-            // events are pure card-scoped observations, *not* track-level
-            // authority claims, so we accept them from an AI-worker
-            // planner-card actor as long as the scope matches the card's own
-            // home (card_id + track + area cached values — same shape as
-            // the Worker arm). Anything else from that actor is still
-            // refused; write authority for planner-roled cards lives with
-            // `AiPlanner`. Note that `Event::TrackUpdated` is already gated
-            // in section (2) above and unconditionally refuses any AI
-            // worker actor, so this carveout cannot regress the
-            // track-authority invariant.
+            // Lifecycle carveout: hook bridges run as subprocesses of their worker
+            // regardless of role, and these events are pure card-scoped observations, not
+            // authority claims. `TrackUpdated` is already refused in (2).
             Some(CardRole::Planner) if is_own_worker_lifecycle_event(actor, event) => {
                 enforce_card_self_scope(card_id, scope, cache, track_area_cache)?;
             }
-            // PR3 invariant: planner cards are bound to AiPlanner, not an AI
-            // worker actor. Anything other than the hook carveout above
-            // (which is a stateless bridge ingest path) from a
-            // worker-variant planner-card actor is rejected.
+            // Planner cards are bound to AiPlanner, not an AI worker actor.
             Some(CardRole::Planner) => {
                 return Err(RoleViolation::NotPlannerForTrack {
                     actor: format!(
@@ -650,42 +467,25 @@ pub fn enforce_role(
                     ),
                 });
             }
-            // Issue #679 PR7b-ii — ReportCard-bound actors have no
-            // cross-card/track authority; mirror the Worker self-scope
-            // rule for non-track-update/non-dispatch events.
+            // ReportCard-bound actors have no cross-card/track authority.
             Some(CardRole::ReportCard) => {
                 enforce_card_self_scope(card_id, scope, cache, track_area_cache)?;
             }
-            // #1189 — Assistant cards are the Worker self-scope rule
-            // loosened by exactly one card: their home track's report
-            // card. Everything else (Track/Area/System scope, another
-            // track's report card, someone else's worker card) is
-            // refused, which is what pins "an assistant can neither
-            // advance the lifecycle nor dispatch a task".
+            // Assistant cards are the Worker self-scope rule loosened by exactly one
+            // card: their home track's report card.
             Some(CardRole::Assistant) => {
                 enforce_assistant_scope(card_id, scope, cache, track_area_cache)?;
             }
         }
     }
 
-    // --- (4) User / Kernel / KernelDispatcher / Plugin: unrestricted. ---
-    //
-    // The match above already let them through. Documented here as a
-    // gate decision, not as code, so the policy is greppable.
+    // (4) User / Kernel / KernelDispatcher / Plugin: unrestricted.
 
     Ok(())
 }
 
-/// Cross-check that `scope` describes the card's own home — `card`
-/// matches, `track` matches the cached home track, `area` matches the
-/// home track's persisted area. Shared between the Worker and ReportCard
-/// arms (which use it for *every* event) and the Planner arm's `CodexHook`
-/// carveout (bug A — the codex bridge ingest path for a planner card).
-///
-/// Returns `Err(RoleViolation::WorkerOutOfScope)` on any mismatch. The
-/// variant name is historical (the check originated in the Worker
-/// path); the semantic — "this AiCodex actor is writing outside its
-/// own card scope" — applies equally to both call sites.
+/// Cross-check that `scope` describes the card's own home: `card`, `track`
+/// and `area` all match. The `WorkerOutOfScope` variant name is historical.
 fn enforce_card_self_scope(
     card_id: &CardId,
     scope: &EventScope,
@@ -702,19 +502,10 @@ fn enforce_card_self_scope(
     )
 }
 
-/// #1189 — [`enforce_card_self_scope`] loosened by exactly one card.
-///
-/// An `Assistant`-roled card may write into its own card scope **or**
-/// into the scope of its home track's report card (`role == ReportCard`
-/// **and** same home track — the report card of *another* track is
-/// refused). The `track` / `area` cross-checks are the same #232 / #234
-/// anti-spoof checks the Worker arm runs, so an assistant can neither
-/// fan an event out to a foreign track nor claim a foreign area.
-///
-/// Everything else is refused, including every non-`Card` scope. That
-/// last clause is what pins the two §2 non-capabilities: `Track`-scoped
-/// events (lifecycle transitions, dispatch requests) never reach an
-/// assistant-authored write.
+/// [`enforce_card_self_scope`] loosened by exactly one card: an `Assistant`
+/// may also write into its home track's report card scope. Every non-`Card`
+/// scope is refused, so an assistant can neither advance the lifecycle nor
+/// dispatch a task.
 fn enforce_assistant_scope(
     card_id: &CardId,
     scope: &EventScope,
@@ -735,11 +526,8 @@ fn enforce_assistant_scope(
     )
 }
 
-/// Shared body of [`enforce_card_self_scope`] and
-/// [`enforce_assistant_scope`]: the scope must be `EventScope::Card`,
-/// its `card` must satisfy `target_allowed`, and its `track` / `area`
-/// must match the acting card's home track and that track's persisted
-/// area.
+/// Shared body: the scope must be `EventScope::Card`, its `card` must satisfy
+/// `target_allowed`, and `track` / `area` must match the acting card's home.
 fn enforce_card_scope(
     card_id: &CardId,
     scope: &EventScope,
@@ -748,14 +536,9 @@ fn enforce_card_scope(
     target_allowed: &dyn Fn(&CardId, &TrackId) -> bool,
     violation: &dyn Fn(CardId, String) -> RoleViolation,
 ) -> Result<(), RoleViolation> {
-    // `get()` (in the caller) and `track_of()` are two independent DashMap
-    // lookups, so a card deleted between them makes `track_of` return
-    // `None`. Every denial below therefore has to be reachable without a
-    // successful `track_of`: the non-Card scopes are refused before it is
-    // consulted, and the lookup itself is fail-closed (see below) so that
-    // "Card scope naming the wrong card" — the out-of-bounds write path —
-    // is a clean violation under the same delete race, exactly as it was
-    // before the check was split into variant + target halves.
+    // `get()` (in the caller) and `track_of()` are independent DashMap lookups,
+    // so a card deleted between them makes `track_of` return `None`; every
+    // denial below must be reachable without it.
     let EventScope::Card {
         card: target,
         track: scope_track,
@@ -767,10 +550,7 @@ fn enforce_card_scope(
             format!("scope.card mismatch: {scope:?}"),
         ));
     };
-    // Fail closed: the acting card losing its cache entry between the
-    // caller's `get()` and this lookup means we can no longer prove the
-    // scope is the card's own home, and "cannot prove" is a denial, never
-    // a panic inside the kernel gate.
+    // Fail closed: "cannot prove" is a denial, never a panic inside the kernel gate.
     let Some(home_track) = cache.track_of(card_id) else {
         return Err(violation(
             card_id.clone(),
@@ -783,38 +563,16 @@ fn enforce_card_scope(
             format!("scope.card mismatch: {scope:?}"),
         ));
     }
-    // Target accepted. Now cross-check `scope.track` against the acting
-    // card's immutable home track.
     if scope_track != &home_track {
         return Err(violation(
             card_id.clone(),
             format!("scope.track mismatch: home={home_track}, scope={scope:?}"),
         ));
     }
-    // #234 — cross-check `scope.area` against the home track's persisted
-    // area. Fail closed on a miss, for the same reason the `track_of`
-    // lookup above does: a miss means we cannot prove the scope names the
-    // card's own home, and "cannot prove" is a denial.
-    //
-    // The lookup has two substrates and a miss means something different
-    // in each — which is why the denial is stated in terms of what they
-    // share rather than in terms of either one's invariants:
-    //
-    //   * write-through (`WriteContext`): `track_create_tx` populates and
-    //     `track_delete_tx` removes. A deleted track cascades its `cards`
-    //     rows away in SQL but does *not* clear `CardRoleCache` (only
-    //     `card_delete_tx` does), so a card the role cache still knows can
-    //     outlive its track's area entry.
-    //   * transaction-hydrated
-    //     (`decision_gate::hydrate_role_caches_from_tx`): the entry exists
-    //     iff `SELECT area_id FROM tracks WHERE id = ?1` returned a row, so
-    //     a miss is just "no row read", carrying no invariant claim at all.
-    //
-    // Under the second substrate the gate runs *inside* the caller's write
-    // transaction, so panicking here would abort a write mid-transaction
-    // instead of refusing it. `RoleLookupFailed` keeps the two substrates
-    // agreeing on the verdict (see the equivalence matrix in
-    // `decision_gate`).
+    // Fail closed on a miss. A deleted track cascades its `cards` rows in SQL but
+    // does not clear `CardRoleCache`, so a known card can outlive its track's
+    // area entry; under the tx-hydrated substrate the gate runs inside the write
+    // transaction, so panicking would abort a write mid-transaction.
     let Some(home_area) = track_area_cache.area_of(&home_track) else {
         return Err(RoleViolation::RoleLookupFailed {
             subject: format!("tracks.area_id({home_track})"),
@@ -915,9 +673,7 @@ mod tests {
         })
     }
 
-    /// Pre-seeded track→area cache the Worker tests use: track `w` lives
-    /// in area `c`. Tests that exercise mismatch paths override this
-    /// per-test (#234).
+    /// Track `w` lives in area `c`; mismatch tests override per-test.
     fn seeded_wcc() -> TrackAreaCache {
         let c = TrackAreaCache::new();
         c.insert(TrackId::from("w"), AreaId::from("c"));
@@ -976,8 +732,6 @@ mod tests {
 
     #[test]
     fn ai_planner_without_planner_role_cannot_update_track() {
-        // An AiPlanner actor whose cached role is `Worker` (mismatch
-        // between wire claim + persisted truth) is denied.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let id = CardId::from("c1");
@@ -1011,13 +765,8 @@ mod tests {
         );
     }
 
-    /// Belt-and-suspenders companion to the Worker test above: the
-    /// CodexHook carveout added for planner cards must not let `TrackUpdated`
-    /// through. Section 2 (`TrackUpdated` is planner-only via `AiPlanner`) runs
-    /// before section 3's `Some(CardRole::Planner) if CodexHook` arm, so
-    /// the invariant is structural — this test pins it explicitly so a
-    /// future refactor that reorders the sections can't silently regress
-    /// it.
+    /// Section 2 runs before section 3's Planner carveout arm, so the invariant
+    /// is structural; this pins it against a reorder.
     #[test]
     fn planner_codex_cannot_update_track() {
         let cache = CardRoleCache::new();
@@ -1042,16 +791,9 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
-        // Worker's home track is "w" — scope below must use the same.
         cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
-            // A non-track-updated event (AreaUpdated chosen because it
-            // also has no card semantics — but the scope is what we
-            // assert on, the event variant is irrelevant after the
-            // track-updated branch). Use a card-scoped event:
-            // OverlaySet would also work; AreaUpdated lets us exercise
-            // the scope check independent of payload shape.
             &area_updated(),
             &card_scope(id.as_str(), "w", "c"),
             &cache,
@@ -1066,7 +808,6 @@ mod tests {
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
         cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
-        // Track scope when caller is a worker → reject.
         let res = enforce_role(
             &ActorId::AiCodex(id),
             &area_updated(),
@@ -1095,11 +836,6 @@ mod tests {
 
     #[test]
     fn worker_with_mismatched_scope_track_rejected() {
-        // Issue #232: even with `scope.card == self`, the gate must
-        // reject a `scope.track` that doesn't match the Worker card's
-        // home track. Without this check, a Worker could forge any
-        // track id and the kernel would route the event to that track's
-        // subscribers.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         wcc.insert(TrackId::from("home-track"), AreaId::from("c"));
@@ -1108,7 +844,6 @@ mod tests {
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &area_updated(),
-            // Same card, but a different track — must reject.
             &card_scope(id.as_str(), "other-track", "c"),
             &cache,
             &wcc,
@@ -1125,13 +860,6 @@ mod tests {
 
     #[test]
     fn worker_with_mismatched_scope_area_rejected() {
-        // Issue #234: even with `scope.card == self` and
-        // `scope.track == home_track`, the gate must reject a
-        // `scope.area` that doesn't match the home track's persisted
-        // area. Without this check, a Worker could forge any area id
-        // and the kernel would route the event to that area's
-        // subscribers — cross-area isolation break, same shape as #232
-        // one level up.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         wcc.insert(TrackId::from("home-track"), AreaId::from("home-area"));
@@ -1140,8 +868,6 @@ mod tests {
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &area_updated(),
-            // Same card + same track, but a different area — must
-            // reject before the event row lands.
             &card_scope(id.as_str(), "home-track", "forged-area"),
             &cache,
             &wcc,
@@ -1158,14 +884,8 @@ mod tests {
 
     #[test]
     fn missing_home_track_area_denies_instead_of_panicking() {
-        // #1381 — the track→area lookup used to `expect(..)` on the claim
-        // that `track_create_tx` write-populates it unconditionally. A
-        // known card can still outlive its track's entry (a track delete
-        // cascades the `cards` rows in SQL but does not clear
-        // `CardRoleCache`), and under the transaction-hydrated substrate a
-        // miss carries no invariant claim at all. Either way the gate runs
-        // inside the caller's write transaction, so the miss must be a
-        // denial, not a panic.
+        // A known card can outlive its track's area entry, and the gate runs inside
+        // the caller's write transaction, so the miss must be a denial, not a panic.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let id = CardId::from("worker-1");
@@ -1217,9 +937,6 @@ mod tests {
 
     #[test]
     fn unknown_codex_card_rejected() {
-        // Defense-in-depth: an AiCodex actor whose card is not in the
-        // cache is denied. Covers two real cases — card was deleted
-        // between request and gate, or the id was fabricated.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let res = enforce_role(
@@ -1232,9 +949,7 @@ mod tests {
         assert!(matches!(res, Err(RoleViolation::UnknownCard { .. })));
     }
 
-    /// Build a `CodexHook` event payload — used by the bug-A carveout
-    /// tests below. Shape mirrors what `routes::codex::ingest_hook`
-    /// constructs (kind=`hook.codex.<event_name>`, opaque payload).
+    /// Shape mirrors what `routes::codex::ingest_hook` constructs.
     fn codex_hook(card: &str) -> Event {
         Event::CodexHook {
             card_id: CardId::from(card),
@@ -1264,13 +979,6 @@ mod tests {
 
     #[test]
     fn planner_codex_hook_in_own_scope_ok() {
-        // Bug A regression unit. The codex bridge runs as a subprocess
-        // of codex regardless of the card's role; for a planner card, the
-        // bridge still surfaces hook events through the
-        // `AiCodex(planner_card)` actor. The gate accepts `Event::CodexHook`
-        // from that actor as a pure lifecycle observation, scoped to the
-        // card's own home (card_id + track + area). Mirror of
-        // `worker_in_card_scope_ok` for the Planner arm.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("planner-1");
@@ -1309,12 +1017,6 @@ mod tests {
 
     #[test]
     fn planner_codex_non_hook_event_still_rejected() {
-        // The Planner-arm carveout is intentionally limited to pure
-        // lifecycle observations. Anything else from
-        // `AiCodex(planner_card)` is still refused — write authority for
-        // planner-roled cards lives with `AiPlanner`, not `AiCodex`.
-        // AreaUpdated chosen because it's outside that lifecycle set and
-        // is not a track-updated event variant.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("planner-1");
@@ -1334,10 +1036,6 @@ mod tests {
 
     #[test]
     fn planner_codex_hook_out_of_scope_rejected() {
-        // The carveout reuses the same scope cross-check as the Worker
-        // arm — an `AiCodex(planner_card)` CodexHook with a forged track id
-        // is still refused. This pins that the new helper is wired into
-        // the Planner arm, not just nominally accepted.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         wcc.insert(TrackId::from("home-track"), AreaId::from("c"));
@@ -1346,8 +1044,6 @@ mod tests {
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &codex_hook(id.as_str()),
-            // Same card, but a different track — must reject even on
-            // the carveout path.
             &card_scope(id.as_str(), "other-track", "c"),
             &cache,
             &wcc,
@@ -1473,26 +1169,6 @@ mod tests {
         );
         assert!(res.is_ok());
     }
-
-    // ---- PR4 of #136: new Event variants flow through enforce_role ------
-    //
-    // PR4 was schema-only — but the dispatcher (PR5) and its push
-    // delivery path (#293) rely on the gate's existing logic to route +
-    // authorize them. These tests lock in that behavior:
-    //
-    //   * a worker card emitting `codex.worker_requested` within its own
-    //     card scope is permitted (PR5's job request fan-out path);
-    //   * a worker card emitting `task.completed` within its own card
-    //     scope is permitted (the dispatcher push delivery path);
-    //   * an AiPlanner actor with an empty CardId is rejected via the
-    //     section-1 guard, even when the payload is a new variant — the
-    //     guard is variant-agnostic by design;
-    //   * the same goes for AiCodex with empty CardId.
-    //
-    // None of these write paths exist in PR4. The tests are forward-only:
-    // they assert what the gate *will* permit/reject when PR5 starts
-    // emitting these variants, so PR5 doesn't have to re-discover the
-    // contract from scratch.
 
     use crate::event::ArtifactRef;
 
@@ -1657,10 +1333,6 @@ mod tests {
 
     #[test]
     fn worker_cannot_emit_codex_worker_requested_after_583() {
-        // Issue #583. Section (2.5) of `enforce_role` now rejects any
-        // Worker-actor `CodexWorkerRequested` regardless of scope. Replaces
-        // the pre-#583 positive `worker_can_emit_codex_worker_requested_in_own_scope`
-        // which encoded the leaky pre-#583 behavior.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
@@ -1720,10 +1392,6 @@ mod tests {
 
     #[test]
     fn worker_cannot_emit_plan_updated_644() {
-        // Issue #644. `plan.updated` joins the section-(2.5) planner-only
-        // list: a worker AI actor must not commit task-plan revisions
-        // (the PR-B scheduler dispatches whatever the plan says, so this
-        // would be the #583 recursive-mint hole one hop removed).
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
@@ -1768,10 +1436,6 @@ mod tests {
 
     #[test]
     fn task_dispatched_is_kernel_only_644_pr_b() {
-        // Issue #644 PR-B. `task.dispatched` is the scheduler's claim
-        // record — every card-derived actor is refused, planner included
-        // (it is a kernel observation, not a card authority), while the
-        // kernel families pass.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let planner = CardId::from("planner-1");
@@ -1806,9 +1470,6 @@ mod tests {
 
     #[test]
     fn task_gate_result_is_kernel_only_644_pr_c() {
-        // Issue #644 PR-C. `task.gate_result` is the gate runner's
-        // machine verdict — every card-derived actor (planner included)
-        // and plugins are refused; the kernel families pass.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let planner = CardId::from("planner-1");
@@ -2075,8 +1736,6 @@ mod tests {
 
     #[test]
     fn worker_can_emit_task_completed_in_own_scope() {
-        // The dispatcher push delivery path: workers report
-        // task.completed scoped to themselves.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
@@ -2172,11 +1831,6 @@ mod tests {
 
     #[test]
     fn empty_codex_card_id_rejected_on_new_variant() {
-        // The section-1 empty-CardId guard is variant-agnostic — it
-        // refuses any payload from an AiCodex actor whose CardId is
-        // empty, including the new PR4 variants. Locks the contract so
-        // a future refactor can't accidentally route the empty case
-        // around the guard for a "harmless" new variant.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let res = enforce_role(
@@ -2191,9 +1845,6 @@ mod tests {
 
     #[test]
     fn empty_aispec_card_id_rejected_on_new_variant() {
-        // Mirror of the AiCodex case for AiPlanner — when PR5 wires the
-        // planner card as the requester of codex.worker_requested, the empty
-        // CardId path must still be rejected.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let res = enforce_role(
@@ -2205,8 +1856,6 @@ mod tests {
         );
         assert!(matches!(res, Err(RoleViolation::EmptyAiCardId)));
     }
-
-    // ---- Issue #955 §5.4: proposal-channel hard clauses ------------------
 
     use calm_types::proposal::{ProposalDecision, ProposalOp};
 
@@ -2241,7 +1890,6 @@ mod tests {
         let wcc = seeded_wcc();
         let event = proposal_submitted("dev.neige.invest");
 
-        // The submitting plugin itself passes.
         let res = enforce_role(
             &ActorId::Plugin("dev.neige.invest".into()),
             &event,
@@ -2251,7 +1899,6 @@ mod tests {
         );
         assert!(res.is_ok(), "submitting plugin must pass: {res:?}");
 
-        // A DIFFERENT plugin is refused — actor/payload id mismatch.
         let err = enforce_role(
             &ActorId::Plugin("dev.neige.other".into()),
             &event,
@@ -2326,8 +1973,7 @@ mod tests {
                 decision.as_str()
             );
 
-            // Everyone else is refused — INCLUDING the submitting
-            // plugin (no self-approval, §5.1 authority model).
+            // Everyone else is refused — INCLUDING the submitting plugin (no self-approval).
             for (actor, label) in [
                 (
                     ActorId::Plugin("dev.neige.invest".into()),
@@ -2368,7 +2014,6 @@ mod tests {
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = proposal_resolved("dev.neige.invest", ProposalDecision::Withdrawn);
 
-        // The submitter reclaims its own pending slot.
         let res = enforce_role(
             &ActorId::Plugin("dev.neige.invest".into()),
             &event,
@@ -2378,9 +2023,7 @@ mod tests {
         );
         assert!(res.is_ok(), "submitter must withdraw: {res:?}");
 
-        // Everyone else is refused — including the USER (withdraw is
-        // the plugin's exit; the user's exits are reject/accept) and a
-        // different plugin.
+        // Everyone else is refused — including the USER (withdraw is the plugin's exit).
         for (actor, label) in [
             (ActorId::User, "User"),
             (ActorId::Plugin("dev.neige.other".into()), "Plugin(other)"),
@@ -2408,21 +2051,8 @@ mod tests {
         }
     }
 
-    /// #1189 review round 2 — the delete race must be a *denial* on every
-    /// branch, not a panic on one of them.
-    ///
-    /// `enforce_role` looks the acting card up with `cache.get()`; this
-    /// helper then looks the same card up again with `cache.track_of()`.
-    /// The two are independent DashMap lookups, so a card deleted in
-    /// between makes the second one return `None`. Before the check was
-    /// split into "scope variant" + "target card" halves, BOTH refusals
-    /// were reached before `track_of` was ever consulted, so neither could
-    /// blow up under that race — the split must not cost that.
-    ///
-    /// The empty cache below is exactly that race's end state (the entry
-    /// is simply gone), so every scope shape must come back `Err`. A
-    /// `.expect()` on `track_of` fails this test by panicking on the
-    /// Card-scope rows.
+    /// The delete race must be a *denial* on every branch, not a panic: the empty
+    /// cache is exactly that race's end state, so every scope shape must be `Err`.
     #[test]
     fn card_scope_is_fail_closed_when_the_acting_card_vanished() {
         let vanished = CardRoleCache::new();
@@ -2432,8 +2062,7 @@ mod tests {
         for scope in [
             // Non-Card scope — refused before `track_of` in every version.
             track_scope("w", "c"),
-            // Card scope naming someone else's card: the actual
-            // out-of-bounds write path, and the one the split regressed.
+            // Card scope naming someone else's card: the actual out-of-bounds write path.
             card_scope("someone-elses-card", "w", "c"),
             // Card scope naming the acting card itself — still
             // unprovable once the cache entry is gone.

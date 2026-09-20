@@ -1,20 +1,4 @@
 //! What `template_id` does on `POST /api/tracks`.
-//!
-//! A matching `template_id` initializes the new track's report from a **Rust
-//! constant recipe** (`calm_server::templates`) inside the create transaction:
-//! no hidden track is minted, no overlay is written, and nothing is read from
-//! the database to find the content. An unknown `template_id` is a 400 decided
-//! before any write, and so — since #1321 S2 — is a `template_id` sent
-//! alongside a `fork_report_from`: each names a starting point, and naming two
-//! is refused rather than resolved by priority.
-//!
-//! #1110 S6 wrote this file against the opposite implementation — three seeded
-//! system-area template tracks, discovered through a `template_key` overlay and
-//! forked on create, hidden from lists but returned by detail. #1300 S2 deleted
-//! all of it (that seeding was the last production writer signing a report as
-//! `EditAuthor::User`). Cases that asserted the seeding are inverted rather
-//! than dropped, so the removal itself stays asserted; each one says so in its
-//! own doc comment.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,11 +29,6 @@ const ISSUE_DEVELOPMENT: &str = "issue-development";
 const SMALL_CHANGE: &str = "small-change";
 const INVESTIGATION: &str = "investigation";
 const INVESTMENT_RESEARCH: &str = "investment-research";
-// #1300 — a hand-copied `TEMPLATE_KEYS` array lived here, as the expected
-// roster for the seeding assertions. It is gone with them, and deliberately not
-// replaced: `calm_server::templates::TemplateRoster::builtin()` is the roster,
-// and a second copy in a test file is the drift #1209 spent a slice removing
-// from production. Cases that need the whole roster iterate the real one.
 
 struct Boot {
     app: axum::Router,
@@ -138,13 +117,7 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     (status, json)
 }
 
-/// Like [`post`], but returns the body as raw text.
-///
-/// Extractor-level rejections (`#1209` test #16) are produced by axum, not by
-/// this crate's `CalmError`, so they are `text/plain` and not the usual
-/// `{"error": ...}` envelope. Parsing them as JSON yields `null` and throws the
-/// message away, which would leave the assertions unable to tell an
-/// unknown-field rejection from any other 4xx.
+/// Like [`post`], but returns the body as raw text: extractor-level rejections are `text/plain`, not the JSON envelope.
 async fn post_text(app: axum::Router, uri: &str, body: Value) -> (StatusCode, String) {
     let resp = app
         .oneshot(
@@ -208,21 +181,7 @@ fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
     body
 }
 
-/// #1209 test #10/#12/#13 — a whole-database snapshot.
-///
-/// Every user table, every column, every row, rendered through SQLite's own
-/// `quote()` so NULL, text and integer stay distinguishable, ordered so the
-/// digest is stable. Deliberately **not** a hand-maintained list of tables or
-/// of overlay entity kinds: the failure mode these tests exist to catch is "a
-/// read quietly wrote something", and a snapshot that enumerates what it looks
-/// at silently stops covering whatever is added next.
-/// `kernel_template_overlays` below is the opposite shape — it only sees
-/// `kind == "template"` overlays — which is why these tests do not reuse it.
-///
-/// (The #1209 design predicted this had to be assembled from `Repo` trait
-/// accessors because tests "cannot write raw SQL". Not so in this file:
-/// `Repo::sqlite_pool` is public and `planner_harness_ops_for_track` above already
-/// uses it.)
+/// A whole-database snapshot: every user table, rendered through SQLite's `quote()`, ordered so the digest is stable.
 async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     let pool = repo.sqlite_pool().expect("sqlite pool");
     let tables: Vec<String> = sqlx::query_scalar(
@@ -258,27 +217,7 @@ async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     snapshot
 }
 
-/// Every `kernel` / `view` / `template` overlay, whatever its payload shape,
-/// as `(entity_id, payload)`.
-///
-/// #1300 — before S2 this measured "which of the three hidden template tracks
-/// has been seeded", and the tests below asserted it was non-empty. It is kept
-/// for the opposite job: nothing in the kernel writes this row any more, so
-/// this is how "creating from a template mints no hidden track" is *observed*
-/// rather than assumed. A removal with no assertion that it happened is not a
-/// removal anyone can keep.
-///
-/// #1318 S2 (第一轮评审 A2) — it used to be called `template_key_overlays` and
-/// skipped every row without a `template_key`, while its comment already
-/// claimed it observed "a template overlay of any shape". That gap was not
-/// theoretical: the payload the retired `as_template` branch wrote was
-/// `{"schemaVersion": 1}` with no `template_key` at all, so writing the retired
-/// row back onto the create path left every caller below green. The filter is
-/// now the row's identity only — plugin `kernel`, entity kind `view`, kind
-/// `template` — and the payload is returned rather than inspected, so no
-/// payload shape can slip past. The strings stay literals here deliberately:
-/// the constants they used to come from are deleted, and a test that names a
-/// row production can no longer mint must spell it out itself.
+/// Every `kernel` / `view` / `template` overlay, whatever its payload shape, as `(entity_id, payload)`.
 async fn kernel_template_overlays(repo: &Arc<dyn Repo>) -> Vec<(String, Value)> {
     let overlays = repo
         .overlays_by_kind("view")
@@ -314,39 +253,6 @@ fn task_blocks(payload: &TrackReportPayload) -> Vec<&Value> {
         .collect()
 }
 
-/// #1300 S2 — creating from a template mints **no** hidden track.
-///
-/// ## Why this replaced a test of the opposite property
-///
-/// This case used to be `matching_template_id_seeds_one_track_per_template_key`:
-/// it asserted the three hidden system-area template tracks *appeared*, that
-/// they stayed out of every track list, and that a second create did not
-/// duplicate them. All three were properties of the seeding this slice deletes.
-///
-/// Deleting them and stopping there would have left the removal unasserted:
-/// the old seeding could have survived in any form — an unused code path still
-/// minting rows, a later change reintroducing it — and every remaining test
-/// would still be green, because the rest of the suite only ever looks at the
-/// track the caller asked for. So the case is inverted rather than dropped.
-///
-/// ## One success path, where there used to be two
-///
-/// This loop used to have a second leg: `template_id` **plus** an explicit
-/// `fork_report_from`. It was worth naming because before #1300 the route
-/// seeded unconditionally on admission and only *then* checked whether an
-/// explicit fork had already claimed the report source (`tracks.rs`, the
-/// `if fork_report_from.is_none()` after `ensure_templates`), so that
-/// combination minted three tracks it did not use.
-///
-/// #1321 S2 made that combination a 400 — two named starting points are refused
-/// rather than resolved — so it is no longer a create at all and cannot be a leg
-/// of a "what did this create mint" loop. What replaced it is stronger than
-/// "it mints no hidden track": `a_template_and_an_explicit_fork_source_are_a_400`
-/// below asserts the whole database is byte-for-byte unchanged.
-///
-/// 第一轮评审 NIT-4 (#1321 S2) — with one leg left, the `for` over a
-/// single-element array and its `leg` label were scaffolding for a second leg
-/// that no longer exists. Flattened; the create is written out once.
 #[tokio::test]
 async fn creating_from_a_template_mints_no_hidden_track() {
     let boot = boot().await;
@@ -371,9 +277,6 @@ async fn creating_from_a_template_mints_no_hidden_track() {
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let created = body["id"].as_str().expect("track id").to_string();
 
-    // Exactly one new track, and it is the one the caller asked for. A
-    // count alone would pass if the create minted one hidden track and
-    // failed to mint the requested one.
     let after = boot.repo.tracks_window(None, None, None).await.unwrap();
     assert_eq!(
         after.len(),
@@ -398,82 +301,7 @@ async fn creating_from_a_template_mints_no_hidden_track() {
     );
 }
 
-/// Two tracks from one template are independent documents with the same content.
-///
-/// The old suite got this for free from the seeding: both forked the same
-/// hidden track, so "the same content" was true by construction and "independent"
-/// was the interesting half. With the hidden track gone both halves are claims
-/// about the new path, and neither is implied by the other — a shared mutable
-/// snapshot would satisfy the content check, and two independently *wrong*
-/// documents would satisfy the independence check.
-///
-/// ## Why the write leg exists
-///
-/// Reading both documents once and finding them equal is not independence; it
-/// is the *identical* half stated twice. The escape construction: make a report
-/// write fan out to every track carrying the same `template_id` (one extra
-/// `UPDATE ... WHERE template_id = ...` after `card_update_with_crdt_tx` in
-/// `track_report::write::write_report_row_and_project_tx`, the row write that
-/// `write::persist` and the structural door share). The two documents are then
-/// genuinely one document behind two ids, and a create-time-only comparison
-/// stays green. So
-/// this case edits one track and re-reads the other; independence is only
-/// asserted about a state the two could actually disagree in.
-///
-/// **Both `summary` and `body` are edited.** An earlier cut moved only the
-/// summary and passed `first.body` back byte-for-byte, which left a narrower
-/// escape open: a fan-out guarded on `incoming.body != current.body` — i.e.
-/// one that copies the body across same-`template_id` tracks only when it
-/// actually changed — never entered its own branch, so both body assertions
-/// held at their original values and the case stayed green while a real user
-/// edit would clobber the other track's document.
-///
-/// ## Which fan-out shapes this case can see, and which it cannot
-///
-/// Every leg reaches the same writer — `track_report::write::persist` — through
-/// the same door, `write::rest_user_replace`. What varies between them is the
-/// *shape of the edit*, because a conditional fan-out only betrays itself on an
-/// edit that enters its branch. Four legs, each chosen for one branch
-/// predicate:
-///
-/// 1. **Append a prose paragraph.** The body grows and gains text that was not
-///    there before. Catches a fan-out with no guard at all, and one keyed on
-///    "new text appeared". It is an append rather than a rewrite because
-///    `guard_non_prose_stomp` refuses a prose-channel write that modifies or
-///    deletes a non-prose block and the recipe body is almost entirely `task`
-///    fences: appending after the last fence carries every fence through
-///    verbatim, so the write fails on independence if it fails at all — never
-///    on the guard, whose repair would be to weaken the case.
-/// 2. **Rewrite that paragraph in place at exactly the same byte length.**
-///    Leg one never enters a branch guarded on `next.body.len() ==
-///    current.body.len()`; this one does.
-/// 3. **Edit a block the template itself minted** — the recipe's own intro
-///    prose (`SMALL_CHANGE_INTRO`), rewritten in place. Legs one and two only
-///    ever touch a paragraph leg one introduced, so a fan-out keyed on the
-///    *block identity* of the edited block — firing only for block ids the
-///    recipe minted — would never run. This block is prose, so the guard does
-///    execute here and does check every `task` fence: it permits the edit
-///    because the fences travel through byte-identical, not because it is
-///    bypassed.
-/// 4. **Delete that paragraph, shortening the body.** Legs one to three leave
-///    the body longer, equal, and equal, so an implementation that fans out
-///    only when `body_after.len() < body_before.len()` passes all three. This
-///    leg is the one that enters that branch. Deleting the appended prose is
-///    the only shrinking edit available that leaves every `task` fence intact.
-///
-/// So the covered set is: no guard, "text appeared", "length unchanged",
-/// "template-minted block id", "length shrank". What is **not** covered, and
-/// these are real gaps rather than a rounding error:
-///
-/// * a fan-out that fires only on writes arriving through a *different* door —
-///   `write::rest_user_block_op` or `write::agent_report_op`; this case drives
-///   the document leg only, and `report_write_characterization` is where the
-///   per-door behaviour lives;
-/// * a fan-out keyed on a predicate no leg happens to satisfy — an edit that
-///   touches a `task` fence (which this case deliberately never does, since
-///   the guard would reject it on the prose path), a summary-only write, a
-///   specific byte pattern, the Nth write, or the track's age. Four legs are
-///   four branch predicates, not a proof that the branch space is exhausted.
+/// Edits one track and re-reads the other; each leg targets a different fan-out guard shape.
 #[tokio::test]
 async fn two_tracks_from_one_template_are_independent_and_identical() {
     let boot = boot().await;
@@ -496,7 +324,7 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
     assert_eq!(first.summary, second.summary);
     assert_eq!(first.body, second.body);
 
-    // ---- independence: edit one, re-read the other ----
+    // Independence: edit one, re-read the other.
     const EDITED: &str = "first track's own summary";
     const APPENDED: &str = "A paragraph only the first track's author wrote.";
     assert_ne!(
@@ -561,14 +389,7 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
          tracks share a document"
     );
 
-    // ---- second edit: same length, no new text ----
-    //
-    // Everything above is an append: the body only ever grew and only ever
-    // gained a paragraph. A fan-out guarded on `next.body.len() ==
-    // current.body.len()` therefore never enters its own branch, and the
-    // assertions above hold while a real same-length user edit clobbers the
-    // other track. This leg rewrites the paragraph appended above in place,
-    // byte-for-byte the same size, so that branch is the one taken.
+    // Second edit: same length, no new text.
     const REPLACED: &str = "A paragraph only the first track's author typed.";
     assert_eq!(
         APPENDED.len(),
@@ -640,11 +461,7 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
          summary: the two tracks share a document"
     );
 
-    // ---- third edit: a block the template itself minted ----
-    //
-    // Both edits so far touch a paragraph leg one introduced, so a fan-out
-    // keyed on "this block id came from the recipe" would never fire. This one
-    // rewrites the recipe's own intro prose (`SMALL_CHANGE_INTRO`) in place.
+    // Third edit: a block the template itself minted.
     const RECIPE_PROSE: &str = "Short inspect";
     const RECIPE_PROSE_EDITED: &str = "Quick inspect";
     assert!(
@@ -698,16 +515,7 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
          the two tracks share a document"
     );
 
-    // ---- fourth edit: the body gets shorter ----
-    //
-    // Legs one to three make the body grow, stay the same length, and stay the
-    // same length again. So a fan-out guarded on `next.body.len() <
-    // current.body.len()` — an ordinary "the user deleted something, propagate
-    // it" shape — never enters its own branch, and all three legs pass while a
-    // real deleting edit clobbers the other track. This leg deletes the prose
-    // paragraph legs one and two added, which is the only shrinking edit
-    // available that touches nothing but prose: every `task` fence still
-    // travels through verbatim, so `guard_non_prose_stomp` permits it.
+    // Fourth edit: the body gets shorter.
     let appended_suffix = format!("\n\n{REPLACED}\n");
     let shortened_body = first_recipe_edited
         .body
@@ -844,110 +652,6 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
     );
 }
 
-/// #1321 S2 — `template_id` + `fork_report_from` is a 400, and the database is
-/// untouched when it is refused.
-///
-/// ## What this case is, and what it replaced
-///
-/// It replaces `explicit_fork_report_from_is_not_overwritten`, which pinned the
-/// behaviour this slice deletes: that combination used to be a 201 in which the
-/// fork silently won the report while the row still recorded `template_id` and
-/// `plugin_scope`. That property is gone with the behaviour and is not
-/// rewritten into something else — a priority rule cannot be preserved once the
-/// input it ranked is refused.
-///
-/// One half of what that case established does survive, because it never
-/// depended on naming two sources: **the fork really does copy the source
-/// track's current report**, so a create is not quietly given a default or a
-/// template plan instead. That half is the second leg below, sent as a
-/// fork-only create. It is kept here rather than left to `track_report_fork.rs`
-/// for one reason the fixture makes cheap: this file's source track carries a
-/// report the user *edited away* from anything a template would produce, so the
-/// leg discriminates between "the fork arrived" and "some other initialization
-/// arrived that happens to be non-empty".
-///
-/// ## Why the whole-database snapshot, and what it is worth
-///
-/// #1321's acceptance is "a stable 400 **and no DB write before the
-/// transaction**". A status assertion cannot see a write, so the refusal is
-/// bracketed by `db_snapshot` (every user table, every column, `quote()`d).
-///
-/// Mutation-verified (`MUTATION-1321S2-1`): deferring the exclusivity decision
-/// until after `create_track_with_planner_harness` has committed — the fork
-/// wins as it did before this slice, the create commits, and *then* the same
-/// 400 with the same message is returned — leaves this file's whole filtered
-/// suite green **except this case**, and inside it the failure is the snapshot
-/// assertion ("an ambiguous-source 400 must not write anything"; `left` carried
-/// a freshly committed `tracks`/`cards`/`area_folders` row set) while every
-/// status and message assertion above it passed. That is the discrimination the
-/// snapshot exists for: without it, the mutation is invisible.
-///
-/// The command, verbatim, so the numbers below are reproducible:
-///
-/// ```text
-/// env -u NEIGE_CODEX_BIN cargo nextest run --workspace --locked \
-///   --features calm-server/codex-e2e \
-///   -E 'test(recipe_instantiate) or test(template_tracks) or test(report_fork) or test(first_message)' \
-///   --test-threads 8 --no-fail-fast
-/// ```
-///
-/// Baseline **66 tests run, 66 passed**; under `MUTATION-1321S2-1`, **66 run,
-/// 65 passed, 1 failed**. (第一轮评审 NIT-1 — this block used to say 65/64/1
-/// and did not record the command. The filterset is matched on test *names*, so
-/// it also picks up `calm-truth`'s
-/// `events_prune::tests::first_message_dedup_kind_is_never_prunable` via
-/// `test(first_message)`; that 66th test is unrelated to this file and is
-/// green throughout. A recorded mutation number whose command is missing is
-/// not evidence, and this block's entire value is that it is.)
-///
-/// (`MUTATION-1321S2-2`, the coarser one — no exclusivity at all, last field
-/// named wins — turns four cases red on the same filter (66 run, 62 passed, 4
-/// failed): this one, `a_recipe_and_an_explicit_fork_source_are_a_400`,
-/// `template_id_and_recipe_id_together_are_a_400` and
-/// `template_id_and_recipe_id_with_a_fork_source_are_still_a_400`. It is the
-/// weaker evidence: it moves the status code, so it says nothing about the
-/// snapshot leg.)
-///
-/// What the snapshot is *not*: a proof that no code wrote anything. It is a
-/// per-table value digest with row order normalized, so it sees values, not
-/// storage — and `track_create_tx` writes `TrackAreaCache` (in memory, outside
-/// the transaction) on a path that a rollback does not undo. Same caveat as
-/// `assert_old_spelling_is_an_unknown_field`'s.
-///
-/// 第一轮评审 (#1321 S2) — the same blindness covers the **filesystem**: two
-/// snapshots of the SQLite tables would see nothing at all of a directory
-/// minted and left behind. So the leg's claim is "no *database* write before
-/// the transaction", which is what #1321's acceptance asks for — not "no side
-/// effect of any kind", a statement this file has no instrument for.
-///
-/// 第二轮评审 MAJOR-1 (#1321 S2) — that blindness is stated as a **limit of
-/// the instrument**, not as an observation, because in *this* case there is no
-/// directory to be blind to, and the reason is structural rather than
-/// measured-once:
-///
-/// * `create_body` (`:194-208`) sends `"cwd"` + `"attach_folder": true`
-///   unconditionally, and all three of this case's `POST /api/tracks` calls
-///   (the source, leg 1's refused one, leg 2's fork) go through it;
-/// * an explicit `cwd` is `cwd_omitted == false` in `routes/tracks.rs`, whose
-///   `workspace_plan` is then `TrackWorkspacePlan::AttachedFromCwd` (the
-///   `ManagedUnder` branch is the *omitted*-`cwd` one);
-/// * `workspace_materialize.rs`'s `materialize_workspace` answers
-///   `TrackWorkspaceKind::Attached => Ok(())` — attached workspaces point at
-///   directories the user owns, so that arm performs no filesystem operation
-///   whatsoever.
-///
-/// The branch that mints a server-owned directory is **managed**, and no
-/// create in this file takes it: `"cwd"` appears exactly three times here —
-/// `create_body`'s, and the two deliberately-bad ones in
-/// `pre_transaction_400_relative_cwd_with_template_does_not_seed` /
-/// `pre_transaction_400_non_repo_cwd_with_template_does_not_seed`, both of
-/// which 400 before any create. An earlier revision of this block asserted the
-/// opposite — that under `MUTATION-1321S2-1` `materialize_workspace` "really
-/// does mint the workspace directory, which then survives the 400" — which no
-/// run of that mutation supports and the three facts above contradict. Pinning
-/// the filesystem half would take a managed-workspace leg plus an instrument
-/// that looks at the workspace root; this file has neither, and says so rather
-/// than claiming the coverage.
 #[tokio::test]
 async fn a_template_and_an_explicit_fork_source_are_a_400() {
     let boot = boot().await;
@@ -959,10 +663,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={source}");
     let source_id = source["id"].as_str().unwrap().to_string();
-    // This case compares every user table around the rejected request. The
-    // source track's planner is unrelated to that contract, and leaving it
-    // live lets the report edit below race the snapshots by asynchronously
-    // persisting its observation queue.
+    // The source track's planner is stopped so its observation-queue persistence cannot race the snapshots.
     let source_worker_session_id: String = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 ORDER BY created_at_ms DESC LIMIT 1",
     )
@@ -1021,12 +722,8 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    // `code` separates the refusal from a panic body: a `500`/`internal` would
-    // also be a non-201 and would otherwise read as a pass.
     assert_eq!(body["code"], json!("bad_request"), "body={body}");
     let error = body["error"].as_str().unwrap_or("");
-    // The caller has to be able to tell *which two* fields collided; a generic
-    // "conflicting parameters" would leave a three-field request unactionable.
     assert!(
         error.contains("`template_id`") && error.contains("`fork_report_from`"),
         "the 400 must name both offending fields; body={body}"
@@ -1041,9 +738,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
         "an ambiguous-source 400 must not write anything"
     );
 
-    // Leg 2 — the surviving half: a fork-only create really does copy the
-    // source's edited report, so leg 1's refusal did not take a working
-    // behaviour with it.
+    // Leg 2 — a fork-only create still copies the source's edited report.
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -1106,48 +801,11 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
     }
 }
 
-/// A forged `template_key` overlay in the user's own area cannot influence
-/// what `template_id` produces.
-///
-/// ## What this used to test, and why the property had to be restated
-///
-/// Before #1300 the create path resolved `template_id` by *searching the
-/// database* for a system-area track carrying a matching `template_key` overlay.
-/// That search is an attack surface: this case forges the overlay on a track in
-/// the user's own area, stamps a recognizable plan into its report, and
-/// requires the lookup to reject it on the area check.
-///
-/// #1300 deletes the lookup — a template is a Rust constant, so there is no
-/// query to poison and no area check to get wrong. Left as written the case
-/// would be **vacuously green**: the forged track cannot lose a race that no
-/// longer happens.
-///
-/// It is restated rather than deleted, because the property is not "the area
-/// check works", it is *where the content comes from*. So the same forgery is
-/// set up, and the assertion becomes: the created report is the recipe, byte
-/// for byte, and carries nothing from the forged track. That stays falsifiable —
-/// reintroducing any database lookup for template content turns it red — while
-/// the old form would have stopped being able to fail.
-///
-/// (The last assertion of the old version was `kernel seed must still mint a
-/// system-area issue-development`. That one did not go vacuous, it went red,
-/// which is how this case surfaced: it was two properties in one test, and only
-/// one of them was about the attack.)
-///
-/// #1318 S2 kept it again, for the same reason. The forgery's *vehicle*
-/// changed — `as_template` is gone, so the planted track is an ordinary one —
-/// but the property under test never depended on the vehicle: template content
-/// comes from the Rust constant, and no row in the database can supply any of
-/// it. Reintroducing a database lookup for template content still turns this
-/// red.
 #[tokio::test]
 async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     let boot = boot().await;
 
-    // The forgery: a track in the *user's* area, wearing the
-    // `issue-development` key, holding recognizable content. Before #1318 S2
-    // it was created with `as_template: true`; that field is gone, and the
-    // planted overlay below is what the forgery ever rested on anyway.
+    // The forgery: a track in the user's area, wearing the `issue-development` key.
     let (status, stolen) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -1156,9 +814,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={stolen}");
     let stolen_id = stolen["id"].as_str().unwrap().to_string();
-    // #1297 closed the front door on this forge: `POST /api/overlays` now
-    // refuses the reserved `kernel` / `view` namespaces outright. Assert that
-    // first — it is the cheap layer, and it is the one a client can reach.
+    // `POST /api/overlays` refuses the reserved `kernel` / `view` namespaces; assert the cheap layer first.
     let (status, refused) = post(
         boot.app.clone(),
         "/api/overlays",
@@ -1173,16 +829,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={refused}");
 
-    // Then plant the stolen key anyway, bypassing the route entirely, so the
-    // deeper invariant this test exists for still gets exercised: even a row
-    // that *did* land — via a future internal bug, a restored backup, or a row
-    // predating #1297 — must not reach the created report.
-    //
-    // Every field is spelled out rather than built from a constant: #1300
-    // deleted the kernel's last writer of `template_key` and #1318 S2 deleted
-    // the `kernel`/`view`/`template` constants themselves, so reviving either
-    // as a test-only constructor would put a shape production cannot mint back
-    // into the tree.
+    // Then plant the stolen key anyway, bypassing the route, so the deeper invariant is still exercised.
     boot.repo
         .overlay_upsert(NewOverlay {
             plugin_id: "kernel".into(),
@@ -1235,9 +882,6 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     assert_eq!(status, StatusCode::OK, "detail={detail}");
     let payload = report_card_payload(&detail);
 
-    // The positive form, not `!contains("forged-user-area-plan")`: an
-    // implementation that produced an *empty* report would satisfy the negative
-    // and fail this.
     let (summary, expected_body, _) = instantiated_recipe(ISSUE_DEVELOPMENT);
     assert_eq!(payload.summary, summary);
     assert_eq!(
@@ -1246,39 +890,9 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     );
 }
 
-/// #1318 S2 — `tracks.template_id` stores the **roster's** key.
-///
-/// ## What this pins, and what it deliberately cannot
-///
-/// The create route overwrites `NewTrack::template_id` with `admission.key`
-/// before the insert, so the column and the recipe lookup read the same value.
-/// This case asserts the column, for every roster key, against the key
-/// spelled out in this file rather than echoed back from the request body —
-/// so "the row carries the roster's identity for this template" stays pinned
-/// no matter what the caller sent.
-///
-/// It is **not** a discriminating test of the overwrite itself, and saying so
-/// is the point. `admit_template` admits an id iff `TemplateRoster::get` matches
-/// it *exactly*, so the caller's string and `admission.key` are equal byte for
-/// byte on every input that reaches the insert; deleting the overwrite line
-/// leaves this case green. That was verified by running the mutation, not
-/// assumed. No input can separate the two today — a case-only variant like
-/// `"SMALL-CHANGE"` 400s at admission and never reaches the column at all.
-///
-/// The half that *is* discriminating lives at the source, where the two
-/// values are still distinguishable: `templates::tests::
-/// get_returns_the_rosters_own_borrow` asserts by pointer
-/// identity that the admitted key is the roster's `&'static str` and not a
-/// value derived from the caller's argument. Together they say: the route
-/// stores `admission.key`, and `admission.key` is the roster's. Neither on its
-/// own would survive the admission rule loosening, which is the exact moment
-/// the overwrite starts changing a stored value.
 #[tokio::test]
 async fn create_stores_the_roster_key_as_template_id() {
     let boot = boot().await;
-    // The roster is iterated rather than listed by hand so every entry —
-    // including the task-less `investment-research` — is covered, and a new
-    // one cannot land outside this loop.
     for key in calm_server::templates::TemplateRoster::builtin()
         .entries()
         .iter()
@@ -1305,9 +919,6 @@ async fn create_stores_the_roster_key_as_template_id() {
         );
     }
 
-    // A create with no `template_id` must still store NULL — without this the
-    // overwrite could be widened to "always stamp something" and the loop
-    // above would not notice.
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -1339,11 +950,6 @@ async fn unknown_template_id_still_400s() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    // #1209 — three legs, because the interesting regression is not "some 400
-    // happened" but "the 400 was decided by the roster". Leg 2 is the one that
-    // catches restoring the registry wording (and with it the registry as the
-    // admission authority); a `.contains("missing-template")`-only assertion
-    // was green both before and after that change.
     let error = body["error"].as_str().unwrap_or("");
     assert!(error.contains("known track template"), "body={body}");
     assert!(
@@ -1353,23 +959,8 @@ async fn unknown_template_id_still_400s() {
     assert!(error.contains("missing-template"), "body={body}");
 }
 
-/// #1209 test #8's fixture — a **running, trusted** plugin whose manifest
-/// declares the ids passed in.
-///
-/// Two things about it are load-bearing and must not be "tidied" into the
-/// shared `boot()`:
-///
-/// 1. **No `input_schema`.** Copying the stub in
-///    `tests/cases/track_templates_read.rs` verbatim brings one along, and its
-///    `required` list makes a create *without* `template_input` fail the
-///    required-input check (`validate_template_input_binding`) — a 400 that
-///    arrives no matter what the admission rule is. Test #8 would then be green
-///    even with the pre-#1209 plugin fallback restored, i.e. green precisely
-///    when the thing it exists to detect is back.
-/// 2. **It is a separate boot.** `boot()` starts no plugins, and
-///    `listed_template_keys_create_their_exact_recipes` depends on that.
-///    Merging the two fixtures would break that test for reasons that have
-///    nothing to do with admission.
+/// A running, trusted plugin declaring the given ids; no `input_schema` (its `required` list would 400 every
+/// create) and a separate boot from `boot()`, which starts no plugins.
 async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo: Arc<dyn Repo> = Arc::new(
@@ -1425,7 +1016,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
             "min_kernel_version": "0.0.1",
             "display_name": "Trusted template owner",
             "entrypoint": { "command": "bin/stub" },
-            // No `input_schema`: see this function's doc comment, point 1.
+            // No `input_schema`: its `required` list would 400 every create without `template_input`.
             "templates": templates,
             "permissions": {}
         })
@@ -1496,29 +1087,12 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
     }
 }
 
-/// #1209 test #8 — **the test the whole slice rests on.**
-///
-/// A running, trusted plugin declares a template id that is not in the kernel's
-/// template roster. Before #1209 that made the id creatable (201, with
-/// `plugin_scope` stamped and nothing to fork); the create path asked the
-/// plugin registry first and only consulted the roster as a fallback. #1209
-/// inverts that: the roster is the admission test and the binding is an
-/// attribute, so this create is a 400 — and the plugin's running/trusted state
-/// cannot change that answer.
-///
-/// The mutation this must catch is restoring the fallback (an
-/// `.or_else(|| resolve_template_binding(..))` inside `admit_template`, in any
-/// spelling). It then goes red on the **status code**, not on wording.
-/// Restoring only the old wording turns leg 2 of the error assertion red.
 #[tokio::test]
 async fn plugin_declared_non_template_id_is_rejected() {
     const NOT_A_TEMPLATE: &str = "not-a-template";
     let boot = boot_with_trusted_plugin(&[NOT_A_TEMPLATE, ISSUE_DEVELOPMENT]).await;
 
-    // Liveness control first: without it a broken fixture (plugin not running,
-    // not trusted, manifest not registered) would make the real assertion below
-    // pass for the wrong reason — an unbound id is rejected by *any* rule. This
-    // create proves the plugin really does bind, on this very app, right now.
+    // Liveness control: proves the plugin really binds on this app, so the rejection below is not for an unbound id.
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -1564,9 +1138,6 @@ async fn plugin_declared_non_template_id_is_rejected() {
         "body={body}"
     );
     assert!(error.contains(NOT_A_TEMPLATE), "body={body}");
-    // Cheap insurance, not a discriminating leg: a non-roster id does not seed
-    // under the correct code *or* under the named mutation. It does catch a
-    // fallback smuggled into the seeding branch (seed, then 500 on lookup).
     assert_eq!(
         db_snapshot(&boot.repo).await,
         before,
@@ -1574,20 +1145,7 @@ async fn plugin_declared_non_template_id_is_rejected() {
     );
 }
 
-/// #1209 test #12 — a whitespace-only `template_id` is rejected **by
-/// admission**.
-///
-/// #1209 deleted the dedicated `trim().is_empty()` guard: whitespace is simply
-/// not in the roster, so it takes the same path, the same status and the same
-/// message as any other unknown id. Nothing in the Rust suite covered this
-/// before, so deleting the guard would otherwise have deleted unpinned code.
-///
-/// The mutation this catches is the guard coming back as a *skip* —
-/// `if id.trim().is_empty() { /* treat as no template chosen */ }`, yielding
-/// 201, a null `plugin_scope` and no fork. `unknown_template_id_still_400s`
-/// sends `missing-template` and stays green through that change; this one does
-/// not. The request deliberately carries a valid `area_id`, no `cwd` and no
-/// `template_input`, so no other validation can supply the 400.
+/// Carries a valid `area_id`, no `cwd` and no `template_input`, so no other validation can supply the 400.
 #[tokio::test]
 async fn blank_template_id_is_rejected() {
     let boot = boot().await;
@@ -1614,25 +1172,7 @@ async fn blank_template_id_is_rejected() {
     );
 }
 
-/// #1209 test #13 — a pre-transaction 4xx leaves no seed behind.
-///
-/// Template seeding used to run first, so `POST /api/tracks` with a good
-/// template id and a bad `area_id` minted a system area, three template tracks
-/// and three reports and *then* returned 404. #1209 moves the seed after every
-/// check this handler can make before opening the transaction. All three of
-/// those checks are covered here; the mutation of moving the seed block back to
-/// its old position turns all three red.
-///
-/// Explicitly **not** covered, and not an oversight: the in-transaction 400s
-/// (an explicit `fork_report_from` that is missing or cross-area), the
-/// folder-claim 409, and post-commit materialize failures. Those are decided
-/// after the seed on purpose — the authoritative check has to live inside the
-/// transaction — and asserting "no side effect" for them would pin a promise
-/// the code does not make.
-/// Split into one test per leg on purpose: a single loop short-circuits on the
-/// first failing leg, so a mutation that breaks all three would only ever be
-/// observed on one of them and the other two would never have been shown to
-/// discriminate.
+/// Split into one test per leg: a single loop short-circuits on the first failing leg.
 async fn assert_pre_transaction_4xx_does_not_seed(
     name: &str,
     body_json: Value,
@@ -1691,10 +1231,7 @@ async fn pre_transaction_400_relative_cwd_with_template_does_not_seed() {
 
 #[tokio::test]
 async fn pre_transaction_400_non_repo_cwd_with_template_does_not_seed() {
-    // An absolute, existing directory that is not a git repository.
-    // `attach_folder` is deliberately left false: the guard keys off whether
-    // `cwd` was supplied at all, not off `attach_folder`, and setting the
-    // latter would suggest the check lives on that field.
+    // An absolute, existing directory that is not a git repository; `attach_folder` stays false because the guard keys off `cwd` alone.
     let non_repo = TempDir::new().expect("non-repo tempdir");
     assert_pre_transaction_4xx_does_not_seed(
         "cwd is not a git repository",
@@ -1710,17 +1247,6 @@ async fn pre_transaction_400_non_repo_cwd_with_template_does_not_seed() {
     )
     .await;
 }
-
-// ---------------------------------------------------------------------------
-// #1230 — the template picker read.
-//
-// #1230 also added a diff write endpoint (`PUT /api/track-templates/{id}`) and
-// a Settings editor on top of it. #1300 S1 removed both: they were built on
-// the seeded template track, which #1300 removes because it is the last
-// production path on which the kernel writes a report as `EditAuthor::User`.
-// The assertion that the route is gone (and wrote nothing on its way out)
-// lives in `track_templates_read.rs::put_is_not_routed_and_writes_nothing`.
-// ---------------------------------------------------------------------------
 
 fn listed_template<'a>(body: &'a Value, id: &str) -> &'a Value {
     body.as_array()
@@ -1739,35 +1265,11 @@ fn task_keys(template: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// A read of the picker returns the whole constant roster and writes nothing.
-///
-/// The snapshot comparison is the load-bearing half: returning the right
-/// constants proves nothing on its own, because the deleted seeding path would
-/// also have returned the right values. What must hold is that the read left
-/// the database as it found it.
-///
-/// The roster half used to be one title and one task key of `small-change`,
-/// which the name over-sold: a response hard-coded to "the correct
-/// `small-change`, and nothing else" satisfied it. It now asserts the exact set
-/// of ids the roster declares, in the roster's order, and that no fourth entry
-/// rode along. *Which* recipe each id names is
-/// `listed_template_keys_create_their_exact_recipes`' job, not this one's — this case
-/// owns "the listing is the roster and the read is read-only".
-///
-/// #1300 — this absorbed `listing_track_templates_does_not_materialize_seed_state`,
-/// which asserted the same "a GET writes nothing" property across an unseeded
-/// and a seeded database. Its second state cannot be built any more (there is
-/// nothing to seed), so it went red rather than vacuous; the two-state shape
-/// survives here as "empty" and "after a create", which is the distinction that
-/// still exists.
 #[tokio::test]
 async fn listing_templates_returns_constants_and_writes_nothing() {
     let boot = boot().await;
 
-    // Two states, because a read can only be shown not to write by comparing
-    // the database around it, and "before anything exists" is the easy half.
-    // The second leg runs after a real create, so the read is exercised against
-    // a populated database — which is where the deleted lazy seed used to fire.
+    // Two states: the second leg runs the read against a populated database.
     for leg in ["empty database", "after a create"] {
         let before = db_snapshot(&boot.repo).await;
         let (status, body) = get(boot.app.clone(), "/api/track-templates").await;
@@ -1787,11 +1289,7 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
             listed_ids, roster_ids,
             "{leg}: the listing is the roster, in the roster's order"
         );
-        // Every entry is a usable picker row. A roster id that came back with
-        // no title, or a plan template that came back with no tasks, is drift
-        // the id set alone cannot see. #1571 — `investment-research` is the one
-        // report-only template: its tasks array is present and empty, and a
-        // task showing up there is the same drift in the other direction.
+        // `investment-research` is the one report-only template: its tasks array is present and empty.
         for entry in body.as_array().expect("array body") {
             assert!(
                 entry["title"].as_str().is_some_and(|t| !t.is_empty()),
@@ -1829,55 +1327,7 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// #1209 PR-2 test #16 — the write side knows exactly one spelling.
-// ---------------------------------------------------------------------------
-
-/// Shared body of the legs below — the two pre-rename spellings (#1209) and
-/// the retired `as_template` (#1318 S2). The mechanism under test is the
-/// **serde extractor**: `CreateTrackRequest` carries
-/// `#[serde(deny_unknown_fields)]`, so a key it does not declare is an unknown
-/// field.
-///
-/// What the assertions below actually establish, and nothing wider
-/// (#1318 S2 第二轮评审 MINOR-2, narrowed again 第三轮): the response has the
-/// **shape** of serde's unknown-field rejection — status 422, the substring
-/// `unknown field`, and the retired key named — it does **not** carry the
-/// admission wording, and each table's all-column value digest is unchanged
-/// before and after.
-///
-/// Two things that phrasing deliberately stops short of. First, three string
-/// and status checks cannot establish *which component authored* the response;
-/// they are consistent with serde's rejection and would also pass for any
-/// other producer of the same shape. Second, `db_snapshot` is not a byte
-/// image: it is a per-table digest of every column rendered through SQLite's
-/// `quote()`, with row order normalized by `ORDER BY 1`, so it sees values and
-/// not storage. An
-/// earlier version of this comment went on to claim the handler "is never
-/// entered" and that `admit_template` "does not run" — that is a statement
-/// about control flow, and neither a response body nor a database snapshot
-/// observes control flow. It also would not have been safe to widen from the
-/// snapshot even if it were about writes: `calm_truth::db::sqlite::track::
-/// track_create_tx` writes `TrackAreaCache` *before* its transaction commits,
-/// and its own doc admits a rolled-back create leaves a stale in-memory entry
-/// behind, so "the database is unchanged" does not mean "no path wrote
-/// anything". The absent admission wording is the strongest evidence here
-/// about the handler, and it is evidence about the *rejection's shape*, not a
-/// proof of non-entry.
-///
-/// **Status is 422, not 400.** The #1209 design predicted 400; the observed
-/// behaviour is axum's `JsonRejection::JsonDataError`, which is
-/// `422 Unprocessable Entity` with a plain-text body. The ruling the design
-/// actually makes still holds — "reject loudly at the serde layer, do not
-/// declare the old key as a field" — and the status code is a consequence of
-/// the extractor, not something this slice chose. It is pinned here rather
-/// than customised, because customising it would mean declaring `workflow_id`
-/// on `CreateTrackRequest`, i.e. reintroducing the writeable alias #1209
-/// rejects.
-///
-/// The assertions therefore look for serde's own wording and explicitly
-/// require the admission wording to be **absent**: an admission-flavoured
-/// error would mean the old key had become a declared field again.
+/// `CreateTrackRequest` carries `#[serde(deny_unknown_fields)]`, so serde's own wording is expected and the admission wording must be absent.
 async fn assert_old_spelling_is_an_unknown_field(leg: &str, body_json: Value, unknown_key: &str) {
     let boot = boot().await;
     let before = db_snapshot(&boot.repo).await;
@@ -1907,18 +1357,6 @@ async fn assert_old_spelling_is_an_unknown_field(leg: &str, body_json: Value, un
     );
 }
 
-/// #1209 PR-2 (design §3.5, matrix row 18) — the pre-rename `template_id`
-/// spelling.
-///
-/// This is the only pin on the whole rejection policy: the request body is a
-/// live contract, so the old spelling must fail loudly rather than be silently
-/// accepted through an alias. Mutation: give `CreateTrackRequest` back a
-/// `workflow_id` field — even as a bare `#[serde(alias)]` — and this goes red
-/// (the request would then be accepted, so both the status and the body
-/// assertion fail).
-///
-/// Three separate tests, not a loop over three bodies: a loop stops at the
-/// first failure, so the later legs would never be shown to discriminate.
 #[tokio::test]
 async fn old_template_id_spelling_is_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
@@ -1935,10 +1373,6 @@ async fn old_template_id_spelling_is_an_unknown_field() {
     .await;
 }
 
-/// #1209 PR-2 (design §3.5, matrix row 19) — the pre-rename `template_input`
-/// spelling, paired with the *new* `template_id`. Half-migrated callers must
-/// fail too; accepting this shape would be the "partially works" outcome
-/// `docs/upgrade-stability.md` forbids.
 #[tokio::test]
 async fn old_template_input_spelling_is_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
@@ -1956,19 +1390,7 @@ async fn old_template_input_spelling_is_an_unknown_field() {
     .await;
 }
 
-/// #1318 S2 (第一轮评审 A1) — the retired `as_template` field.
-///
-/// S2 deleted the field from `CreateTrackRequest`, which is a breaking API
-/// change, and the commit stated the consequence without pinning it. This is
-/// the pin, and it pins the **observed** status: `422`, not the `400` the
-/// deletion commit first claimed. The rejection happens in axum's `Json`
-/// extractor (`JsonRejection::JsonDataError`) because of
-/// `#[serde(deny_unknown_fields)]`, exactly like the two pre-rename spellings
-/// above, so it reuses their assertion body — including "no write happened",
-/// which is what says the retired field cannot mint a track by any path.
-///
-/// Mutation: give `CreateTrackRequest` an `as_template: bool` field back and
-/// this goes red on the status assertion (the body would be accepted, 201).
+/// The retired `as_template` field; the observed status is `422` from axum's `Json` extractor, not `400`.
 #[tokio::test]
 async fn retired_as_template_is_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
@@ -1985,12 +1407,6 @@ async fn retired_as_template_is_an_unknown_field() {
     .await;
 }
 
-/// #1209 PR-2 (design §3.5, matrix row 20) — both spellings at once.
-///
-/// This leg is what pins "the write side knows exactly ONE name". Rows 18/19
-/// would both stay green under an implementation that accepted either spelling
-/// but not both; only this one fails if the rejected option B (a writeable
-/// alias) comes back through the side door.
 #[tokio::test]
 async fn both_spellings_together_are_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
@@ -2008,46 +1424,7 @@ async fn both_spellings_together_are_an_unknown_field() {
     .await;
 }
 
-// ---------------------------------------------------------------------------
-// #1300 S2 — what "create a track from a template" produces, derived not
-// transcribed.
-//
-// This is the characterization test the seeding removal is measured against.
-// It is written and verified green **against the old seeding path first**, and
-// must stay green after the implementation is replaced. That order is the whole
-// of the equivalence evidence: a test written after the switch can only say the
-// new code agrees with itself.
-// ---------------------------------------------------------------------------
-
-/// The report a template must instantiate to, derived from the recipe.
-///
-/// ## Why derived and not written out
-///
-/// Spelling the expected task payloads into this file would make the test a
-/// **change detector**: rewording one template goal would turn it red with no
-/// defect, and the fix would be to paste the new text — which teaches everyone
-/// that red here means "go update the expectation". Deriving keeps the two
-/// sides moving together for a content edit and apart for an implementation
-/// drift, which is the only difference this test exists to see.
-///
-/// It is still an oracle and not a tautology, because the two sides travel
-/// different roads: this walks the recipe's slices in the test process, while
-/// the value it is compared against came back over HTTP from a track the server
-/// created.
-///
-/// ## The one normalization, stated once
-///
-/// A template's task blocks are instantiated as `declared_by: "spec"` and
-/// `ready: false` — nothing in a recipe was decided for *this* track. Everything
-/// else about a block is carried verbatim.
-///
-/// ## Why every slice, not just the task fences
-///
-/// Concatenating only the normalized task fences would silently drop the
-/// maintenance-contract prefix (#1185 §1.5 B), the `# Plan` intro, and the
-/// newline-only prose slices the template file leaves between fences —
-/// and an implementation that lost all of them would still pass. Non-task
-/// slices are therefore carried through byte for byte.
+/// The report a template must instantiate to, derived from the recipe; non-task slices are carried through byte for byte.
 fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
     use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
 
@@ -2072,78 +1449,7 @@ fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
     (recipe.summary, body, tasks)
 }
 
-/// One roster pass carries the former three matrix tests: every listed key is
-/// creatable, each create contains the exact normalized production recipe,
-/// and a small hand-written oracle identifies which recipe each key names.
-/// `boot()` deliberately starts no plugins, so plugin input validation cannot
-/// turn a listed template into an unrelated 400.
-///
-/// The exact-payload comparison deliberately excludes generated block ids,
-/// revisions and CRDT bytes. They are per-track bookkeeping; the observable
-/// contract is the summary, flat body and ordered task payloads.
-///
-/// The hand-written half: **which** recipe each key names.
-///
-/// ## Why a derived oracle needs this, stated as what each side can and cannot
-/// see
-///
-/// The exact-recipe half of `listed_template_keys_create_their_exact_recipes`
-/// derives its expectation
-/// from `Template::recipe` on the roster entry, which is the production
-/// `key → recipe` association itself (#1321 S3 made the roster entry that
-/// association; it was a second `match`, `template_report`, before; since
-/// #1635 S4 the entry is a file, `templates/builtin/<key>.md`, and the
-/// association is the file's own front matter beside its body). That is the
-/// right call for *content* — it is what stops the
-/// case being a change detector over kilobytes of prose — but it means the two
-/// sides of that comparison share the mapping, so a class of drift moves both
-/// and stays green:
-///
-///   * two files' bodies swapped under their front matter (`small-change.md`
-///     carrying the investigation plan);
-///   * a recipe rewritten wholesale into a different workflow;
-///   * a file whose `title` no longer describes its `id`.
-///
-/// This case anchors part of that class. It pins, per key, only the two facts
-/// that identify *which* recipe answered:
-///
-///   * the roster title, and
-///   * the ordered task keys.
-///
-/// So it catches a swapped match arm, a retitled roster entry, and a renamed
-/// or reordered task. It does **not** catch the middle bullet in general: keep
-/// `inspect` / `implement` / `verify` as the keys and the title `Small change`
-/// while replacing every goal, acceptance criterion, `context` and dependency
-/// meaning, and `small-change` is a different workflow that both the derived
-/// oracle and this table accept. That residue is the same accepted gap the
-/// `templates` module doc records, for the same reason: the only way to close
-/// it is to transcribe the recipes by hand.
-///
-/// The `anchors.len() == roster.entries().len()` check below is likewise one-sided
-/// only. It stops a roster entry added or removed *without* touching this
-/// table; a change that edits both passes, as it must, since the table is
-/// hand-maintained. Nothing machine-checks that a row here still describes the
-/// workflow its key promises — human review of this table is the last step, and
-/// it is deliberately kept small enough to review.
-///
-/// ## What is deliberately NOT pinned here
-///
-/// Goals, acceptance criteria, `context`, `depends_on`, `no_gate_reason`, the
-/// intro prose, the contract prefix — none of it. Every one of those is
-/// content, all of it is already compared byte-for-byte by the derived oracle,
-/// and copying any of it here would rebuild the change detector this file's
-/// design note rejects: reword one goal and a maintainer would have two places
-/// to paste it into, which is how "red here means update the expectation" gets
-/// taught. Task keys and titles are the cheapest values that are *identities*
-/// rather than prose — a template's task keys are also what the picker and the
-/// plan projection address blocks by, so they do not churn on an edit.
-///
-/// ## Both roads, because the mapping is read twice
-///
-/// `GET /api/track-templates` reads the mapping to render the picker, and
-/// `POST /api/tracks` reads it to instantiate. A swap in only one of them is a
-/// real defect (the picker advertises one plan, create produces another), so
-/// both are asserted against the same hand-written row.
+/// `boot()` deliberately starts no plugins, so plugin input validation cannot turn a listed template into an unrelated 400.
 #[tokio::test]
 async fn listed_template_keys_create_their_exact_recipes() {
     // key, roster title, ordered task keys. Hand-written on purpose — this is
@@ -2173,8 +1479,7 @@ async fn listed_template_keys_create_their_exact_recipes() {
             "Investigation",
             &["gather-facts", "write-findings"],
         ),
-        // #1571 — a report-only template: the research contract and its seven
-        // empty sections, no pre-set tasks. The empty key list is the anchor.
+        // A report-only template: no pre-set tasks. The empty key list is the anchor.
         (INVESTMENT_RESEARCH, "Investment research", &[]),
     ];
     assert_eq!(
@@ -2218,9 +1523,6 @@ async fn listed_template_keys_create_their_exact_recipes() {
         assert_eq!(status, StatusCode::OK, "{key}: detail={detail}");
         let payload = report_card_payload(&detail);
         let (summary, expected_body, expected_tasks) = instantiated_recipe(key);
-        // The derived oracle parsed to task fences iff this hand-written row
-        // says the template pre-sets tasks — so a plan template whose recipe
-        // quietly lost its fences cannot pass on an empty-vs-empty comparison.
         assert_eq!(
             expected_tasks.is_empty(),
             expected_task_keys.is_empty(),
@@ -2255,9 +1557,7 @@ async fn listed_template_keys_create_their_exact_recipes() {
         }
     }
 
-    // Reverse-direction sample: IDs absent from the picker are also rejected
-    // by create. Keeping it in this matrix avoids booting and instantiating the
-    // full roster a second time just to compare the two surfaces.
+    // Reverse direction: ids absent from the picker are also rejected by create.
     for absent in ["definitely-not-a-template", "issue-development-x"] {
         let (status, body) = post(
             boot.app.clone(),

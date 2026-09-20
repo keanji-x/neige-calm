@@ -209,9 +209,7 @@ async fn boot() -> Boot {
     }
 }
 
-/// #1727 S1 — a gated tasks row on the boot track, bound to `worker_card_id`
-/// when given, in `status`. Returns the row (its `id` is the gate result's
-/// execution id).
+/// A gated tasks row on the boot track, bound to `worker_card_id` when given, in `status`.
 async fn seed_task(
     boot: &Boot,
     key: &str,
@@ -254,9 +252,7 @@ async fn seed_task(
     task
 }
 
-/// The positive control for the negative tests below: a `task.gate_result`
-/// (kernel-emitted; always a wake) for `task`, through the same live event
-/// path the quiet event took.
+/// The positive control for the negative tests below: a `task.gate_result` is always a wake.
 async fn emit_gate_result(boot: &Boot, task: &Task) {
     boot.repo
         .log_pure_event(
@@ -326,7 +322,7 @@ fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
         None,
         boot.harness_registry.clone(),
         boot.shared.clone(),
-        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        // Attached fixtures: materialization on lease is a no-op.
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         4,
     )
@@ -374,10 +370,7 @@ async fn wait_for_turn_text_containing(shared: &SharedCodexAppServer, needle: &s
         let turns = shared.started_turns_for_test();
         for (_thread_id, items) in &turns {
             assert_eq!(items.len(), 1);
-            // #1505 S6 added `InputItem::LocalImage`, so this is a match and
-            // not a binding. Nothing on this path attaches an image, and a
-            // non-text item here would mean the wake path grew one — which
-            // this helper must not silently step over.
+            // A non-text item here would mean the wake path grew one — not silently stepped over.
             let InputItem::Text { text } = &items[0] else {
                 panic!("the wake path issues one text item, got {:?}", items[0]);
             };
@@ -438,13 +431,8 @@ async fn worker_codex_stop_hook_reaches_planner_harness_observation_queue() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// #1727 S1 — `review.round` is planner-authored (the role gate admits no
-/// other author), so pushing it back was pure self-echo: it no longer
-/// reaches the harness queue or issues a turn. The wait is the harness's own
-/// `debounce_max_wait` plus a margin — had the event been queued, the
-/// hard-fire turn would have been issued well inside it. The gate result
-/// emitted afterwards is the positive control: the same live path, the same
-/// harness, one turn.
+/// The wait is the harness's own `debounce_max_wait` plus a margin — had the event been
+/// queued, the hard-fire turn would have been issued well inside it.
 #[tokio::test]
 async fn live_review_round_event_does_not_reach_the_planner_harness_or_issue_a_turn() {
     let boot = boot().await;
@@ -512,11 +500,8 @@ async fn live_review_round_event_does_not_reach_the_planner_harness_or_issue_a_t
     boot.harness.shutdown().await.unwrap();
 }
 
-/// #1727 S1 — a worker stop hook is a wake only while the card's tasks row
-/// is still `dispatched | running`; a `verifying` row means the gate result
-/// is the wake. The positive control is a second worker whose row is still
-/// `running`: its hook (posted after the stale one, through the same
-/// dispatcher) does arrive, and the stale one still has not.
+/// A worker stop hook is a wake only while the card's tasks row is still `dispatched | running`;
+/// a `verifying` row means the gate result is the wake.
 #[tokio::test]
 async fn live_worker_stop_hook_past_running_does_not_reach_the_planner_harness() {
     let boot = boot().await;
@@ -538,8 +523,7 @@ async fn live_worker_stop_hook_past_running_does_not_reach_the_planner_harness()
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let pending = wait_for_worker_hook_stop(&boot.harness, &running_worker).await;
-    // Both hooks went through the same dispatcher; give the stale one a
-    // further grace window before concluding it was suppressed, not late.
+    // Give the stale hook a further grace window before concluding it was suppressed, not late.
     tokio::time::sleep(Duration::from_millis(300)).await;
     let pending_after = boot.harness.pending_queue_for_test().await;
     for queue in [&pending, &pending_after] {

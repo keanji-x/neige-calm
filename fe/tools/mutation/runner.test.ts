@@ -185,9 +185,8 @@ describe('manifest is data, not runner infrastructure', () => {
     expect(ids(selectedEntries([alpha, beta, gamma], [path], [alpha, beta, gamma]))).toEqual(['alpha', 'beta', 'gamma']);
   });
 
-  // Why validateManifest insists mutation_id is a string: two distinct integers past
-  // Number.MAX_SAFE_INTEGER JSON.parse to the SAME Number, so canonical comparison would call an
-  // edited entry unchanged and skip it. As strings they stay distinct and the edit is caught.
+  // Two distinct integers past Number.MAX_SAFE_INTEGER JSON.parse to the SAME Number, so as numbers an
+  // edited id would compare unchanged and be skipped.
   it('distinguishes ids that collide once parsed as numbers, because they are strings', () => {
     expect(Number('9007199254740992')).toBe(Number('9007199254740993'));
     const numericBase = { ...entry('x'), mutation_id: Number('9007199254740992') } as unknown as MutationEntry;
@@ -243,18 +242,13 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
     'vitest.config.ts', 'tools/vitest/build-constants.ts',
     'package.json', 'package-lock.json',
     'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'tsconfig.core.json',
-    // run.mjs imports plugin.mjs to build the `arch-rule` namespace that validateManifest checks
-    // every entry's `defends` against.
+    // run.mjs imports plugin.mjs to build the `arch-rule` namespace validateManifest checks `defends` against.
     'tools/architecture/plugin.mjs',
   ])('treats %s as evidence-invalidating infrastructure', (path) => {
     expect(evidenceInvalidatingInfraChanged([path])).toBe(true);
   });
-  // Neighbours that must NOT trigger the sweep. `tools/vitestfoo.ts` / `tools/vitest-helpers/`
-  // guard the startsWith prefix bug; `web/src/tsconfig.json` guards the fe-ROOT-only tsconfig rule;
-  // `tools/architecture/other.mjs` guards against widening the one named architecture module into
-  // the whole directory, and `allowlists.mjs` is the concrete file that widening cost ~10min a PR
-  // (#1125) — it IS loaded every run via eslint.config.js, but only to feed two rules' `ignores`,
-  // so a bad edit can only add reds (loud) on the three `arch-rule:` entries that own it.
+  // Neighbours that must NOT trigger the sweep: startsWith-prefix guards, the fe-ROOT-only tsconfig rule, and
+  // `allowlists.mjs`, which is loaded every run but only feeds two rules' `ignores` (a bad edit can only add reds).
   it.each([
     manifestRelativePath, 'web/src/app.ts', 'tools/architecture/other.mjs', 'tools/mutation-other/run.mjs',
     'tools/architecture/allowlists.mjs',
@@ -270,7 +264,6 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
     expect(evidenceInvalidatingInfraChanged([manifestRelativePath, 'package-lock.json'])).toBe(true);
     expect(evidenceInvalidatingInfraChanged([])).toBe(false);
   });
-  // The whole point: the sweep must reach selectedEntries, not just the predicate.
   it.each([
     'fe/tools/mutation/runner.ts', 'fe/vitest.config.ts', 'fe/tools/vitest/build-constants.ts',
     'fe/package.json', 'fe/package-lock.json', 'fe/tsconfig.json', 'fe/tsconfig.app.json',
@@ -280,7 +273,6 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
   ])('selects the full manifest when %s changes', (path) => {
     const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
     expect(selectedEntries(entries, [path], entries)).toEqual(entries);
-    // …and with the manifest ALSO edited, where per-entry diff would otherwise have narrowed it.
     expect(selectedEntries(entries, [path, `fe/${manifestRelativePath}`], entries)).toEqual(entries);
   });
   it.each([
@@ -315,9 +307,8 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
     });
 });
 
-// The manifest's selection_paths is a HAND-MAINTAINED list, not a computed dependency closure. These
-// pin the shared test-harness modules that were measured selecting ZERO entries: a change to any of
-// them can flip the recorded expected_red of an entry whose own files did not move.
+// selection_paths is a HAND-MAINTAINED list, not a computed closure; these pin the shared harness
+// modules that were measured selecting ZERO entries.
 describe('shared test-harness dependencies reach the entries that need them', () => {
   const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8')) as MutationEntry[];
   const witnessCatalog = JSON.parse(readFileSync(
@@ -341,14 +332,8 @@ describe('shared test-harness dependencies reach the entries that need them', ()
       expect(select(path)).toEqual([]);
     });
 
-  // #1125: allowlists.mjs used to sit in the global fail-closed infra set, so a routine allowlist
-  // append swept all 66 entries (~10min). It is NOT unreachable from a mutation run —
-  // architecture.test.ts builds `new ESLint({ cwd: <fe root> })`, which loads it through
-  // eslint.config.js:9 — but there it only feeds two rules' `ignores`, and the allowlist self-checks
-  // in architecture-rules.test.ts run every time, so a bad edit surfaces as over-red (fail-closed),
-  // never as a silently flipped expected_red. architecture-rules.test.ts is the selection_paths file
-  // of exactly these three entries — so it must select THEM, not zero (which would leave their rule
-  // verdicts unverified) and not the whole manifest (which is the regression this pins).
+  // allowlists.mjs only feeds two rules' `ignores`, so a bad edit surfaces as over-red (fail-closed); it must
+  // select exactly these three entries — not zero, and not the whole manifest.
   it('the architecture allowlist selects exactly the three arch-rule entries', () => {
     expect(select('tools/architecture/allowlists.mjs').sort()).toEqual([
       'no-class-dom-query-drop-classname-api',
@@ -357,7 +342,7 @@ describe('shared test-harness dependencies reach the entries that need them', ()
     ]);
   });
 
-  // Its neighbour in the same directory that the RUNNER itself imports (run.mjs:7) stays global.
+  // Its neighbour in the same directory that the RUNNER itself imports stays global.
   it('the architecture plugin still selects the whole manifest', () => {
     expect(select('tools/architecture/plugin.mjs')).toHaveLength(manifest.length);
   });
@@ -567,10 +552,8 @@ describe('over-red failure detail evidence', () => {
     expect(unexpectedFailureDetails(['ghost'], [], {}).tests)
       .toEqual([{ test_id: 'ghost', messages: ['[no failureMessages for this test in the vitest JSON report]'] }]);
   });
-  // A vitest/TestingLibrary failure message is "verdict line, giant dump, stack": head-only
-  // truncation kept 2000 characters of sidebar boilerplate on the real captured flake (#1152,
-  // public.test.tsx:85) and threw away the part that would have closed the diagnosis. So both ends
-  // are kept, out of the SAME budget, with the cut announced at the seam.
+  // A failure message is "verdict line, giant dump, stack": both ends are kept out of the SAME budget,
+  // with the cut announced at the seam.
   it('keeps a head AND a tail, and announces both halves at the seam', () => {
     const long = `${'h'.repeat(messageHeadChars)}${'z'.repeat(37)}${'t'.repeat(messageTailChars)}`;
     const [only] = unexpectedFailureDetails(['big'], [], { big: [long] }).tests;
@@ -579,14 +562,8 @@ describe('over-red failure detail evidence', () => {
       + `\n[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail of ${long.length} characters]\n`
       + `${'t'.repeat(messageTailChars)}`,
     );
-    // Same budget as head-only truncation spent: the kept CONTENT is exactly `messageChars` (the
-    // exact-string assertion above is what pins that), and the only thing on top is the one-line
-    // notice.
     expect(only.messages[0].length - failureDetailMessageChars).toBeLessThan(80);
   });
-  // The property the head+tail split exists for, on a realistically SHAPED message rather than a run
-  // of 'x': a short verdict line, a very long middle, and the discriminating detail at the very end.
-  // A test that only checked lengths would have passed on the head-only version that lost it.
   it('keeps both the verdict line and the end of a TestingLibrary-shaped roles dump', () => {
     const verdict = 'TestingLibraryElementError: Unable to find an accessible element with the '
       + 'role "button" and name "Create track"';
@@ -602,10 +579,8 @@ describe('over-red failure detail evidence', () => {
       + `of ${message.length} characters]`);
     expect(emitted.length).toBeLessThan(failureDetailMessageChars + 100);
   });
-  // A per-MESSAGE bound bounds nothing on its own: parseVitestReport accumulates messages across
-  // colliding fullNames, so N x the char cap is unbounded in N. Measured before the per-test cap
-  // existed: one test id with 200 messages of 5000 chars emitted 409,274 bytes with `note: null`.
-  // So assert the bound that actually holds — on the WHOLE emitted block, not one message.
+  // parseVitestReport accumulates messages across colliding fullNames, so the bound must hold on the
+  // WHOLE emitted block, not per message.
   it('bounds the whole emitted block no matter how many huge messages one test collected', () => {
     const huge = 'x'.repeat(failureDetailMessageChars * 50);
     const details = unexpectedFailureDetails(['big'], [], { big: Array.from({ length: 200 }, () => huge) });
@@ -638,15 +613,8 @@ describe('over-red failure detail evidence', () => {
       + `${'t'.repeat(messageTailChars)}`,
     );
   });
-  // The `-0` guard in truncateFailureMessage, pinned. `slice(-tail)` is the natural spelling and is
-  // what any cleanup pass would reach for, but at tail === 0 the negative form is `-0` and
-  // `slice(-0) === slice(0)`, which appends the WHOLE message to a zero budget. Verified by mutation:
-  // restoring `slice(-tail)` reds the limit === 0 row of this table and nothing else in the suite.
-  // tail === 0 needs limit === 0, reachable only through an explicit `limits` budget and never from
-  // the production defaults — the invariant is what is pinned here, not a production path. The
-  // neighbouring small budgets are in the table so an off-by-one in EITHER slice reds too, and the
-  // head/tail strings are spelled out rather than recomputed from the fraction so that the expected
-  // values do not silently follow the code they are checking.
+  // `slice(-tail)` at tail === 0 is `slice(-0) === slice(0)`, which appends the WHOLE message to a zero
+  // budget. Head/tail strings are spelled out rather than recomputed from the fraction.
   it('emits no message content on a zero budget, and exactly the split content just above it', () => {
     const message = 'ABCDEFGHIJ';
     const notice = (head: number, tail: number): string =>
@@ -702,9 +670,7 @@ describe('over-red failure detail evidence', () => {
   });
 });
 
-// Capping `failure_details` alone did not bound the REPORT: run.mjs re-emits the same ids in
-// `actual_red` and in `verdict.errors[].test_ids`, both uncapped, and both an order of magnitude
-// bigger than the block that was capped when a mutation reds the whole suite (#1152).
+// run.mjs re-emits the same ids in `actual_red` and `verdict.errors[].test_ids`, both far larger than `failure_details`.
 describe('every id list in a report record is bounded', () => {
   const longId = (prefix: string, index: number): string =>
     `${prefix}${String(index).padStart(6, '0')}${'z'.repeat(failureDetailTestIdChars * 4)}`;
@@ -751,59 +717,11 @@ describe('every id list in a report record is bounded', () => {
     }
   });
 
-  // The bound that actually matters, and the one every OTHER size assertion in this file misses:
-  // each of those is written in terms of the constant it guards, so `failureDetailMessageChars` and
-  // friends could all be raised to 10^6 with the suite green. This one is a HARD-CODED number over a
-  // worst-case record assembled exactly the way run.mjs:141 assembles the real one.
-  //
-  // Where the number comes from: the worst case built below measures 111,844 bytes today
-  // (failure_details ~45 KB + verdict ~32 KB + expected_red ~21 KB + actual_red ~12 KB). The budget
-  // has to sit under the CHEAPEST single doubling, or that axis is unguarded. Measured, one at a
-  // time, against this exact record:
-  //
-  //   baseline                                111,844
-  //   failureDetailOmittedIdLimit  50 -> 100  124,295   <- the cheapest doubling
-  //   failureDetailOmittedIdLimit  50 -> 150  136,745
-  //   failureDetailMessageChars  2000 -> 4000 141,859
-  //   failureDetailMessagesPerTest    3 -> 6  142,984
-  //   failureDetailTestLimit          5 -> 10 144,877
-  //   reportTestIdLimit            50 -> 100  149,497
-  //   failureDetailTestIdChars    200 -> 400  179,075
-  //
-  // 118_000 is therefore the budget: every doubling above reds it. The earlier 131_072 did NOT —
-  // `failureDetailOmittedIdLimit` could be doubled with this test still green, so the comment that
-  // claimed "red if any single cap is doubled" was over-claiming on that axis. The price of the
-  // tighter number is honest and stated here: ~6.2 KB of headroom (5.2%) for the wording of the
-  // truncation notices, which move the total by tens of bytes, not kilobytes. A change that needs
-  // more than that is a change to how much this record emits, and should re-measure the table.
-  //
-  // `failureDetailMessageHeadFraction` is a WEAK axis of this table, not a free one, and the earlier
-  // "not an axis" claim over-stated it. What is true by construction is head + tail === messageChars,
-  // i.e. the kept CONTENT is the same COUNT the head-only version kept — but that count is in UTF-16
-  // code units, not bytes, and this budget is in bytes. Head-only truncation had the same property, so
-  // the gap is pre-existing and not what this PR introduced: 2000 kept code units of ASCII head plus
-  // CJK tail is ~5000 bytes, and the whole table above is measured against the ASCII fixtures built
-  // below, where a code unit is a byte. Within those fixtures the fraction still moves the record
-  // slightly, because the notice embeds the DECIMAL DIGITS of `head` and `tail`: measured, 0.25 ->
-  // 111,844, 0.5 -> 111,859, 0.999 -> 111,814. That is tens of bytes, the same order as the
-  // notice-wording caveat above, and it is why the headroom is stated rather than spent. Splitting
-  // the budget at all moved the baseline by exactly the extra wording: 111,574 -> 111,844, i.e.
-  // +18 bytes on each of the 5 tests x 3 messages the record truncates.
-  //
-  // Nothing clamps the fraction to [0, 1], and out of range it does buy characters rather than re-aim
-  // them: measured, 1.5 -> 126,874 and -0.5 -> 411,874. So this hard-coded byte budget is the only
-  // thing that reds an out-of-range split — the code that computes head/tail does not check, and every
-  // other size assertion in this file is written in terms of the constants. Load-bearing for more than
-  // the doubling table it was written for.
-  //
-  // `expected_red` is the one axis NOT capped: it is manifest data, authored by hand and gated by
-  // validateManifest (today at most 13 ids of at most 124 characters, ~1.7 KB). The worst case below
-  // still feeds it 26 ids of 800 characters, an order of magnitude over the real manifest, so the
-  // bound holds even if that axis grows a lot.
-  //
-  // `infrastructureDiagnosticBytes` is invisible to THIS record on purpose: judgeMutation suppresses
-  // over-red / under-red once `test-infrastructure-failed` is present, so the two record shapes are
-  // mutually exclusive. That axis gets its own budgeted worst case in the next test.
+  // A HARD-CODED byte budget over a worst-case record assembled the way run.mjs assembles the real one;
+  // every other size assertion is written in terms of the constant it guards. Measured baseline 111,844;
+  // the cheapest single doubling (`failureDetailOmittedIdLimit` 50 -> 100) is 124,295, so 118_000 reds
+  // every doubling. `expected_red` is uncapped manifest data; the fraction is unclamped and out of range
+  // buys characters (1.5 -> 126,874), so this budget is the only thing that reds it.
   it('keeps a worst-case report record under a hard-coded byte budget', () => {
     const reds = Array.from({ length: 2000 }, (_v, index) => longId('red', index));
     const failed = [...reds, ...reds.slice(0, 500)];
@@ -828,13 +746,9 @@ describe('every id list in a report record is bounded', () => {
     expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(118_000);
   });
 
-  // `test-infrastructure-failed` is the one code whose `test_ids` are NOT test ids — judgeMutation
-  // puts `test_infrastructure_errors` there. Two things have to hold at once, and they pull against
-  // each other, so both are pinned.
+  // `test-infrastructure-failed` is the one code whose `test_ids` are NOT test ids.
   it('leaves an infrastructure diagnostic uncapped and unmangled', () => {
-    // The real shape from run.mjs:118. It is one message, not a list of ids: capping it at
-    // `failureDetailTestIdChars` (200) and labelling the cut "kept N of M test ids" destroyed the
-    // exact evidence this record exists to carry.
+    // The real shape: one message, not a list of ids; capping it at `failureDetailTestIdChars` destroyed the evidence.
     const parseError = `report-parse-failed: Unexpected token '<', "${'x'.repeat(400)}"... is not valid JSON`;
     expect(parseError.length).toBeGreaterThan(failureDetailTestIdChars);
     const verdict = judgeMutation(baseEntry, { ...baseResult, test_infrastructure_errors: [
@@ -843,15 +757,12 @@ describe('every id list in a report record is bounded', () => {
     const infrastructure = bounded.errors.find(({ code }) => code === 'test-infrastructure-failed')!;
     expect(infrastructure.test_ids).toEqual([
       'global-unhandled-error', 'src/app/shell/drawer-seam.browser.test.tsx', parseError]);
-    // Not just "the prefix is there": nothing was appended either, so no `[capped: ...]` /
-    // `[truncated: ...]` notice claims a cut that did not happen.
+    // Nothing was appended either: no notice may claim a cut that did not happen.
     expect(infrastructure.test_ids.join('')).not.toContain('test ids');
     expect(infrastructure.test_ids.join('')).not.toContain('truncated');
   });
 
-  // Both notices `boundedInfrastructureDiagnostics` can emit are pinned here, for the reason
-  // `boundedTestIdList` pins its own: deleting BOTH notice branches left the whole suite green while
-  // 272 of 403 diagnostics vanished silently, which is precisely what the contract above forbids.
+  // Deleting both notice branches left the suite green while 272 of 403 diagnostics vanished silently.
   it('announces a truncated diagnostic in characters, and keeps the head that survived', () => {
     const huge = `report-parse-failed: ${'p'.repeat(infrastructureDiagnosticBytes * 3)}`;
     const bounded = boundedInfrastructureDiagnostics([huge]);
@@ -861,8 +772,7 @@ describe('every id list in a report record is bounded', () => {
     expect(announcement, only.slice(0, 120)).not.toBeNull();
     const [notice, keptChars, totalChars] = announcement!;
     expect(Number(totalChars)).toBe(huge.length);
-    // The number in the notice is the number of characters actually emitted — not a round constant
-    // that happens to look plausible — and what precedes it is that exact prefix, byte for byte.
+    // The number in the notice is the number of characters actually emitted, and what precedes it is that exact prefix.
     expect(only).toBe(`${huge.slice(0, Number(keptChars))}${notice}`);
     expect(Number(keptChars)).toBeGreaterThan('report-parse-failed: '.length);
     expect(Number(keptChars)).toBeLessThan(huge.length);
@@ -871,9 +781,7 @@ describe('every id list in a report record is bounded', () => {
   });
 
   it('announces how many diagnostics the byte budget dropped', () => {
-    // The many-SHORT-entries worst case. Charging only `diagnostic.length` made the quotes, the
-    // comma and six spaces of indentation free, so all 900 of these were admitted on an 8000-char
-    // budget while costing ~18 KB on the wire.
+    // Charging only `diagnostic.length` made quotes, comma and indentation free: 900 of these fit an 8000-char budget while costing ~18 KB.
     const diagnostics = Array.from({ length: 900 }, (_v, index) => `${index}.test.ts`);
     const bounded = boundedInfrastructureDiagnostics(diagnostics);
     const keptCount = bounded.length - 1;
@@ -883,19 +791,14 @@ describe('every id list in a report record is bounded', () => {
       + `diagnostics; the ${infrastructureDiagnosticBytes}-byte budget ran out]`);
   });
 
-  // An empty diagnostic used to cost nothing, so the contract admitted an unbounded list of them.
-  // judgeMutation dedupes, so production never had more than one — charging the per-element JSON
-  // overhead closes it anyway, and closes it by the same rule as everything else.
+  // Charging only content would make an empty diagnostic free, admitting an unbounded list of them.
   it('charges an empty diagnostic the per-element cost instead of nothing', () => {
     const bounded = boundedInfrastructureDiagnostics(Array.from({ length: 5000 }, () => ''));
     expect(bounded.length - 1).toBeLessThanOrEqual(infrastructureDiagnosticBytes / 10);
     expect(bounded.at(-1)).toContain('infrastructure diagnostics');
   });
 
-  // Two diagnostic fixtures, one budget: ONE long parse error (what actually happens) and many short
-  // legitimate filenames (what the char-only accounting let through). The second is the fixture that
-  // was missing — the first one's 400 entries of ~80 chars exhaust the budget after ~100 of them, so
-  // the per-element structural cost never mattered to it.
+  // Two fixtures, one budget: ONE long parse error, and many short filenames that char-only accounting let through.
   it.each<[string, string[]]>([
     ['one huge parse error', ['global-unhandled-error', 'global-reporter-error',
       ...Array.from({ length: 400 }, (_v, index) =>
@@ -923,23 +826,8 @@ describe('every id list in a report record is bounded', () => {
       verdict: boundedVerdict(verdict),
       failure_details: unexpectedFailureDetails(failed, declared, failureMessages),
     };
-    // Same discipline as the test above, re-measured over BOTH fixtures (parse-error / filenames):
-    //
-    //   baseline                                 104,325 / 105,434
-    //   infrastructureDiagnosticBytes 8k -> 16k  112,762 / 114,960   <- the cheapest doubling
-    //   failureDetailOmittedIdLimit    50 -> 100 116,776 / 117,885
-    //   failureDetailMessageChars    2000 -> 4000 134,340 / 135,449
-    //   failureDetailMessagesPerTest      3 -> 6  135,465 / 136,574
-    //   failureDetailTestLimit            5 -> 10 137,358 / 138,467
-    //   reportTestIdLimit              50 -> 100 129,327 / 130,436
-    //   failureDetailTestIdChars      200 -> 400 158,893 / 160,002
-    //
-    // 110_000 sits above the worse baseline (105,434) and below the cheaper of the two cheapest
-    // doublings (112,762), so every axis reds it on both fixtures. Same ~4% wording headroom caveat
-    // as the test above (the head+tail split spent 270 bytes of it: 104,055 -> 104,325). Mutation-
-    // verified: revert `boundedInfrastructureDiagnostics` to charging `diagnostic.length` and the
-    // filenames fixture measures 114,209 — OVER this budget — because all 800 entries are admitted
-    // for 8000 raw characters while costing ~18 KB on the wire.
+    // Re-measured over BOTH fixtures: baselines 104,325 / 105,434; cheapest doubling (`infrastructureDiagnosticBytes`
+    // 8k -> 16k) 112,762 / 114,960, so 110_000 reds every axis on both.
     expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(110_000);
   });
 });

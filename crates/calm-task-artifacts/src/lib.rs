@@ -1,11 +1,6 @@
 //! Kernel-owned immutable ordinary-file and restricted local Git snapshots.
-//!
-//! Callers MUST establish and retain a trusted write boundary throughout capture,
-//! exclude the store and preparation parent from worker writable mounts, and check
-//! consumption authority. A boundary ID is an assertion, not a runtime proof.
-//! Git only inspects index modes; it never transforms captured content. This crate
-//! does not assess acceptance, schedule work, or collect retained snapshots. See
-//! the crate README for persistence and recovery contracts.
+//! Callers MUST hold a trusted write boundary throughout capture and exclude the store from worker writable mounts;
+//! a boundary ID is an assertion, not a runtime proof.
 
 #[cfg(target_os = "linux")]
 mod capture;

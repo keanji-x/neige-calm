@@ -1,8 +1,4 @@
-//! PR3a (#410) — MCP request `_meta` passthrough infrastructure.
-//!
-//! These tests drive the real kernel-as-MCP-server transport over UDS.
-//! PR3b consumes per-request `_meta.threadId` to resolve identity before
-//! invoking handlers.
+//! MCP request `_meta` passthrough over the real kernel-as-MCP-server UDS transport.
 
 #![cfg(unix)]
 

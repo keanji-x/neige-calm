@@ -335,19 +335,14 @@ impl CodexRolloutFlowSource {
                 cursor.last_line_hash = Some(hash_line(&lines[line_index as usize]));
                 cursor.record_index += 1;
                 if cursor.record_index % self.options.cursor_persist_every.max(1) == 0 {
-                    // TODO(#704 followup): item insert + cursor write are two sqlite commits.
-                    // A crash between them re-inserts on restart since worker_flow_items has no
-                    // uniqueness constraint on (card_id, source_path, line). Followup: either
-                    // add a unique partial index in a new migration, OR introduce a combined
-                    // `worker_flow_item_insert_with_cursor` trait method that wraps both writes
-                    // in a single calm-truth transaction.
+                    // TODO: item insert + cursor write are two sqlite commits; a crash between them re-inserts on restart.
                     persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
                         .await?;
                 }
             }
 
             persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
-            // TODO(#704 followup): session_projection_complete_for_terminal bypasses event bus; canonicalize via Event emission.
+            // TODO: session_projection_complete_for_terminal bypasses the event bus; canonicalize via Event emission.
             if !self.runtime_is_alive().await {
                 tracing::info!(
                     card_id = %self.runtime.card_id,

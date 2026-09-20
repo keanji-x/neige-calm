@@ -1,8 +1,5 @@
-//! Issue #339 PR A — read-only track file MCP tools.
-//!
-//! Drives `calm.track.ls` / `calm.track.cat` through the default registry
-//! against an in-memory repo. The tools derive scope from the
-//! per-call `ToolCallIdentity`; none of the calls accepts a track id.
+//! Read-only track file MCP tools (`calm.track.ls` / `calm.track.cat`); scope comes from the
+//! per-call `ToolCallIdentity`, no call accepts a track id.
 
 #![cfg(unix)]
 
@@ -38,9 +35,7 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     sqlx_repo: Arc<SqlxRepo>,
     repo: Arc<dyn Repo>,
-    /// The CONFIGURED gate-logs dir wired into `AppContext` (PR #685
-    /// F3) — `calm.track.cat plan/<key>/gate.log` must read THIS dir,
-    /// never an env-recomputed default.
+    /// The configured gate-logs dir wired into `AppContext`; `calm.track.cat plan/<key>/gate.log` must read this dir, never an env-recomputed default.
     gate_logs_dir: std::path::PathBuf,
     area_id: AreaId,
     track_id: TrackId,
@@ -200,9 +195,7 @@ async fn boot() -> Boot {
         CardRole::Planner,
         track2.id.clone(),
     );
-    // #1189 §3.6 — the recorder gate reads `cards.role` in-tx, so the two
-    // planner cards must be persisted as such and not merely cached that way
-    // (`Repo::card_create` mints non-report cards as Worker).
+    // The recorder gate reads `cards.role` in-tx, so the planner cards must be persisted as such (`Repo::card_create` mints non-report cards as Worker).
     for card in [&planner_card.id, &other_planner_card.id] {
         crate::support::mcp::set_persisted_card_role(
             repo.as_ref(),
@@ -807,9 +800,6 @@ async fn card_conversation_md_reports_no_hook_events() {
 
 #[tokio::test]
 async fn card_conversation_md_renders_worker_flow_when_present() {
-    // #695 PR3: when the worker-flow capture table has rows for a card,
-    // conversation.md projects the captured transcript instead of the hook
-    // events.
     let boot = boot().await;
     let card_id = boot.worker_card_id.clone();
     let runtime = seed_codex_runtime(&boot, &card_id).await;
@@ -880,8 +870,6 @@ async fn card_conversation_md_renders_worker_flow_when_present() {
 
 #[tokio::test]
 async fn card_conversation_md_falls_back_to_hooks_when_no_flow_rows() {
-    // #695 PR3 no-regression: with NO worker_flow_items rows, conversation.md
-    // still renders the existing hook-event projection.
     let boot = boot().await;
     let card_id = boot.worker_card_id.clone();
     log_card_hook_event(
@@ -2378,10 +2366,6 @@ async fn track_json_uses_bound_track_metadata() {
     assert_eq!(track["created_at"], json!(repo_track.created_at));
 }
 
-// ---------------------------------------------------------------------------
-// Issue #644 PR-C — plan/<key>/gate.log (planner-role-gated, file-backed)
-// ---------------------------------------------------------------------------
-
 async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
     let task = calm_server::model::Task {
         id: format!("{}:{key}", boot.track_id.as_str()),
@@ -2448,14 +2432,12 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         .unwrap();
     let write = boot.ctx.write.clone();
 
-    // Planner role with access wired: reads the CURRENT attempt's log.
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
         .with_gate_log_access(CardRole::Planner, dir.clone());
     let content = view.cat(&track, "plan/gated/gate.log").await.expect("read");
     assert_eq!(content.content_type, "text/plain");
     assert!(content.content.contains("gate-log-body"), "{content:?}");
 
-    // Worker role: Forbidden (§6.7 — workers never read gate material).
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
         .with_gate_log_access(CardRole::Worker, dir.clone());
     let err = view
@@ -2464,7 +2446,6 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         .expect_err("worker forbidden");
     assert!(matches!(err, TrackFsError::Forbidden(_)), "{err:?}");
 
-    // Surface without gate-log access (HTTP track routes): Forbidden.
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write);
     let err = view
         .cat(&track, "plan/gated/gate.log")
@@ -2472,8 +2453,6 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         .expect_err("unwired surface forbidden");
     assert!(matches!(err, TrackFsError::Forbidden(_)), "{err:?}");
 
-    // No such task / no attempt yet: path not available, not an error
-    // leak.
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
         .with_gate_log_access(CardRole::Planner, dir.clone());
     let err = view
@@ -2488,8 +2467,6 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         .expect_err("no attempt yet");
     assert!(matches!(err, TrackFsError::PathNotAvailable(_)), "{err:?}");
 
-    // MCP wiring: a worker calling calm.track.cat on the gate log gets
-    // the Forbidden mapping (-32403), proving identity.role is threaded.
     let err = call_tool(
         &boot,
         TOOL_TRACK_CAT,
@@ -2500,10 +2477,6 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
     .expect_err("worker forbidden at the MCP surface");
     assert_eq!(err.code, -32403, "{err:?}");
 
-    // PR #685 F3 — the MCP read serves the CONFIGURED gate-logs dir
-    // threaded through `AppContext` (a stand-in for `--data-dir`
-    // without `CALM_DATA_DIR`), never an env-recomputed default: the
-    // log written into `boot.gate_logs_dir` is what the planner reads.
     std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
     std::fs::write(
         boot.gate_logs_dir.join(format!("{task_id}-g2.log")),

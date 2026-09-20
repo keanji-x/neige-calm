@@ -6,7 +6,6 @@ fn strings(values: &[&str]) -> Option<Vec<String>> {
     Some(values.iter().map(|value| (*value).to_owned()).collect())
 }
 
-/// The scope of the round-19 ledger task.
 fn round19() -> ClaudePermissionsScope {
     ClaudePermissionsScope {
         edit: strings(&["**"]),
@@ -72,7 +71,6 @@ fn round19_scope_renders_the_documented_block() {
             "deny": block.deny,
         })
     );
-    // A trailing slash on the cwd changes nothing.
     assert_eq!(
         render_claude_permissions("/workspaces/ledger/", &round19()).unwrap(),
         block
@@ -101,7 +99,7 @@ fn floor_is_ask_and_a_planner_deny_on_the_same_rule_keeps_both() {
     ] {
         assert!(block.ask.iter().any(|r| r == rule), "{rule} stays asked");
     }
-    // Seven floor prefixes, two of them `git <rest>` (#1729), plus `.git`.
+    // Seven floor prefixes, two of them `git <rest>`, plus `.git`.
     assert_eq!(block.ask.len(), CLAUDE_PERMISSIONS_FLOOR_BASH.len() + 3);
     assert_eq!(block.allow, Vec::<String>::new());
     // Nothing from the floor ever lands in deny, whatever the scope.
@@ -135,8 +133,7 @@ fn cwd_with_glob_or_rule_characters_is_refused() {
             "{cwd:?}: {err:?}"
         );
     }
-    // Parentheses and a space are rendered into the `Edit` rules; the space
-    // suppresses the `-C` spellings (#1729, see the next test).
+    // Parentheses and a space are rendered into the `Edit` rules; the space suppresses the `-C` spellings.
     let block = render_claude_permissions("/a b/(c)", &round19()).unwrap();
     assert_eq!(block.allow[0], "Edit(//a b/(c)/**)");
     assert_eq!(block.allow[3], "Bash(git diff *)");
@@ -152,11 +149,8 @@ fn cwd_with_glob_or_rule_characters_is_refused() {
     );
 }
 
-/// #1729 — a cwd with whitespace or a quote character gets NO `-C` variant
-/// in any list: `Bash(git -C /w x status *)` would tokenise as `-C /w`, then
-/// `x status`, and an `allow` variant of `git status` under `/w push` would
-/// admit `git -C /w push status …` — a push the `deny` variant never
-/// matches. The bare rules stay; the `Edit` rules still carry the cwd.
+/// A cwd with whitespace or a quote gets NO `-C` variant in any list: `Bash(git -C /w x status *)`
+/// would tokenise as `-C /w`, `x status`, admitting a push the `deny` variant never matches.
 #[test]
 fn a_cwd_with_whitespace_or_a_quote_gets_no_git_c_spelling_in_any_list() {
     let scope = ClaudePermissionsScope {
@@ -198,9 +192,7 @@ fn a_cwd_with_whitespace_or_a_quote_gets_no_git_c_spelling_in_any_list() {
     assert_eq!(block.deny.len(), 2);
 }
 
-/// #1729 — only the literal ASCII `git ` prefix is doubled: a prefix whose
-/// first token is `git` joined by a non-breaking space is ONE shell token,
-/// passes validation and renders one rule.
+/// A `git` joined by a non-breaking space is ONE shell token.
 #[test]
 fn a_git_prefix_joined_by_a_non_breaking_space_renders_one_rule() {
     let scope = ClaudePermissionsScope {
@@ -219,9 +211,6 @@ fn a_git_prefix_joined_by_a_non_breaking_space_renders_one_rule() {
     );
 }
 
-/// #1729 — (a) a `git <rest>` prefix renders its bare rule and, right after
-/// it, the `git -C <cwd> <rest>` spelling; (b) a bare `git` and (c) a
-/// non-git prefix render one rule each.
 #[test]
 fn a_git_prefix_also_renders_its_git_c_cwd_spelling_right_after_the_bare_rule() {
     let scope = ClaudePermissionsScope {
@@ -251,9 +240,6 @@ fn a_git_prefix_also_renders_its_git_c_cwd_spelling_right_after_the_bare_rule() 
     }
 }
 
-/// #1729 — (d) the floor's `git push` / `git reset --hard` get their
-/// `-C <cwd>` ask rules; (e) a declared deny `git push` is doubled in deny;
-/// the non-git floor prefixes stay single.
 #[test]
 fn floor_and_deny_git_prefixes_get_the_git_c_cwd_spelling_too() {
     let scope = ClaudePermissionsScope {
@@ -287,8 +273,6 @@ fn floor_and_deny_git_prefixes_get_the_git_c_cwd_spelling_too() {
     assert_eq!(block.allow, Vec::<String>::new());
 }
 
-/// #1729 — (f) the `-C` spelling carries the rule root: a trailing slash on
-/// the cwd is dropped, the path stays absolute and single-slashed.
 #[test]
 fn the_git_c_spelling_uses_the_cwd_without_a_trailing_slash() {
     let scope = ClaudePermissionsScope {
@@ -502,8 +486,7 @@ fn validate_scope_reasons() {
         let err = validate_scope(&scope).unwrap_err();
         assert_eq!(err, reason, "{input}");
     }
-    // Shape rows: `parse_scope` refuses what the schema does not
-    // advertise, before any entry is looked at.
+    // `parse_scope` refuses what the schema does not advertise, before any entry is looked at.
     let shape_cases: Vec<(serde_json::Value, &str)> = vec![
         (
             json!([["**"], null, []]),
@@ -537,10 +520,8 @@ fn validate_scope_reasons() {
     for (input, reason) in shape_cases {
         assert_eq!(parse_scope(&input).unwrap_err(), reason, "{input}");
     }
-    // The storage derive is a separate contract: lenient on unknown keys
-    // (#1704 S2 — a stored row written by a newer binary must still
-    // decode; only `parse_scope` refuses them), and it round-trips what
-    // `parse_scope` accepted.
+    // The storage derive is a separate contract: lenient on unknown keys (a stored row
+    // written by a newer binary must still decode; only `parse_scope` refuses them).
     assert_eq!(
         serde_json::from_value::<ClaudePermissionsScope>(json!({"allow": ["x"]})).unwrap(),
         ClaudePermissionsScope::default()
@@ -560,8 +541,7 @@ fn validate_scope_reasons() {
         parsed
     );
 
-    // The round-19 scope is accepted; entries come back trimmed, an
-    // empty deny is dropped, token-prefixes of floor commands pass.
+    // Entries come back trimmed, an empty deny is dropped, token-prefixes of floor commands pass.
     let mut untrimmed = round19();
     untrimmed.edit = strings(&[" ** "]);
     assert_eq!(validate_scope(&untrimmed).unwrap(), round19());

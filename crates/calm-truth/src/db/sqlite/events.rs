@@ -20,101 +20,16 @@ use crate::model::*;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
 
-/// The gate seam (#1252 S3′).
-///
-/// [`SqlxRepo::event_append_in_tx`] no longer takes an `(actor, scope, event)`
-/// triple — it takes an [`Authorized`](gated::Authorized), and the only way to
-/// obtain one is [`authorize`](gated::authorize) / [`authorize_with_caches`]
-/// (or, under `cfg(test)`, the loudly-named fixture bypass next to them).
-///
-/// [`authorize_with_caches`]: gated::authorize_with_caches
-///
-/// ## What the compiler guarantees, exactly
-///
-/// **In safe code, no path can reach this appender without a gate decision on
-/// the very triple it inserts.** The "in safe code" is not boilerplate:
-/// `calm-truth` has no `#![forbid(unsafe_code)]` (it cannot — `events_prune.rs`
-/// and `track_vcs/tests.rs` need `unsafe` for `std::env::set_var`), and
-/// `std::mem::transmute::<(&ActorId, &EventScope, &Event), gated::Authorized>`
-/// does compile. Everything below is a privacy/borrow argument, and privacy is
-/// not a safety boundary against `unsafe`. Three properties combine to give
-/// the guarantee:
-///
-///   * every field of `Authorized` is private to `gated`, so no module outside
-///     it — including this file's parent module — can literally construct one
-///     (E0451);
-///   * `Authorized` is only ever returned by a function that has just run the
-///     role gate on the triple it carries, so "appended without a gate
-///     decision" is not expressible;
-///   * those same private fields cannot be reassigned from outside `gated`
-///     (E0616), so a capability earned on one triple cannot be pointed at
-///     another before the insert. This is the load-bearing half: the
-///     *borrows* alone only stop a triple whose values have been dropped
-///     (E0716); they do nothing about swapping in another live value.
-///
-/// ## What the capability does *not* bind: the transaction
-///
-/// `Authorized` borrows `actor` / `scope` / `event` and nothing else — there
-/// is no `tx` field — so the type says "the gate allowed this triple", not
-/// "the gate allowed this triple *on this transaction*". Nothing here would
-/// reject `authorize(gate_tx, ..)` followed by
-/// `event_append_in_tx(write_tx, &authorized, ..)`.
-///
-/// That matters because `hydrate_role_caches_from_tx`'s safety argument
-/// (`decision_gate.rs`) is precisely that the verdict and the `events` insert
-/// share one transaction. Today they do, at every call site, and by
-/// construction rather than by convention: each mint and its append name the
-/// same local `tx` a few lines apart — `append_decision_event_in_tx` (`tx` to
-/// `gated::authorize`, then `tx` to `event_append_in_tx`), its batch form, and
-/// the four `RepoEventWrite` wrappers (`&mut tx` in both loops). Splitting a
-/// mint from its append across two transactions is the next shape of the bug
-/// this seam closes; it would have to be written deliberately.
-///
-/// ## Residual gap: this is not "the events table cannot be written"
-///
-/// The guarantee above is about *this appender*, not about the table.
-/// `RepoEventWrite::write_in_tx` (`db/mod.rs`) and its public wrappers hand a
-/// bare `Transaction<Sqlite>` to callers, and `SqlxRepo::pool` hands out the
-/// pool; either can `INSERT INTO events` directly and commit. No production
-/// code does today — every raw `events` insert outside this file is inside
-/// `tests/` or `#[cfg(test)]` — but nothing here makes that a compile error.
-/// Closing that is the job of #1252 S3′ PR-B's textual ratchet, not of this
-/// type.
-///
-/// ## Plumbing, plus one load-bearing arm
-///
-/// Turning the seam on changed no behaviour: every triple it refuses was
-/// already refused, either by the gate elsewhere on the path or by one of the
-/// eight manual `enforce_role` calls this slice deleted from the line above
-/// the append. But "it refuses nothing" would be false. The
-/// codex / claude / terminal create routes can reach the appenders with
-/// `ActorId::AiCodex(CardId(""))` — `X-Calm-Actor: ai:codex` survives
-/// `validate_header_actor`, becomes that value in `Actor::to_actor_id`, and
-/// travels to the adapter in the operation payload untouched — and the gate's
-/// empty-`CardId` arm denies it. With those eight guards gone this seam is now
-/// that triple's only rejection point. See
-/// `append_seam_gate_tests`'s module header for the full actor inventory.
-///
-/// The rest of the value is forward-looking: the *next* `role_gate` rule
-/// applies here without anyone re-auditing fifteen call sites.
+/// The gate seam: `event_append_in_tx` takes an [`Authorized`](gated::Authorized) capability whose fields are private
+/// to `gated`, so in safe code no path reaches the appender without a gate decision on the very triple it inserts and
+/// no earned capability can be retargeted. It does not bind the transaction: mint and append must share one `tx` by
+/// construction. It is also not "the events table cannot be written": `write_in_tx` and the pool can still insert raw.
 mod gated {
     use super::{ActorId, Event, EventScope};
     use crate::error::{CalmError, Result};
 
-    /// Proof that the role gate allowed this one `(actor, scope, event)`
-    /// triple.
-    ///
-    /// Every field is private to this module, which buys two distinct
-    /// properties. It is **unconstructible** from the parent module
-    /// (`Authorized { .. }` there is E0451), so a capability can only come
-    /// from a function in this module that has just run the gate. And it is
-    /// **un-retargetable**: `authorized.event = &something_else` in the parent
-    /// module is E0616, so the triple that reaches the insert is the same
-    /// triple the gate decided on, not merely *a* triple the gate saw.
-    ///
-    /// The accessors below hand out the borrows read-only. Do not add
-    /// setters, `pub` fields, or a `&mut` accessor — retargeting is exactly
-    /// what they would restore.
+    /// Proof that the role gate allowed this one `(actor, scope, event)` triple. Every field is private so it is
+    /// unconstructible (E0451) and un-retargetable (E0616) from outside; do not add setters, `pub` fields, or a `&mut` accessor.
     pub(in crate::db::sqlite::events) struct Authorized<'a> {
         actor: &'a ActorId,
         scope: &'a EventScope,
@@ -135,8 +50,7 @@ mod gated {
         }
     }
 
-    /// Run the role gate with `card → {role, home track}` and `track → area`
-    /// read live from `tx`, and mint the capability on success.
+    /// Run the role gate with `card → {role, home track}` and `track → area` read live from `tx`, and mint the capability on success.
     pub(in crate::db::sqlite::events) async fn authorize<'a, T>(
         tx: &mut T,
         actor: &'a ActorId,
@@ -156,14 +70,7 @@ mod gated {
         })
     }
 
-    /// Run the role gate against the caller's write-through caches, and mint
-    /// the capability on success.
-    ///
-    /// This is the entrance used by the four `RepoEventWrite` wrappers, which
-    /// already hold a `WriteContext` and have always gated on its caches. It
-    /// exists so those four keep their exact previous behaviour — same
-    /// function, same caches — while still being unable to append without a
-    /// decision.
+    /// Run the role gate against the caller's write-through caches (the `RepoEventWrite` wrappers' entrance), and mint the capability on success.
     pub(in crate::db::sqlite::events) async fn authorize_with_caches<'a, T>(
         tx: &mut T,
         actor: &'a ActorId,
@@ -192,12 +99,7 @@ mod gated {
         })
     }
 
-    /// **Deliberate bypass, `#[cfg(test)]` only.** Backs
-    /// `SqlxRepo::event_append_fixture`, whose whole job is to reconstruct an
-    /// event stream verbatim without driving the handler stack. It has been
-    /// ungated since it was written; this keeps that unchanged rather than
-    /// silently tightening a replay loader. There is no non-test build in
-    /// which this function exists.
+    /// **Deliberate bypass, `#[cfg(test)]` only.** Backs `SqlxRepo::event_append_fixture`, which reconstructs an event stream verbatim without driving the handler stack.
     #[cfg(test)]
     pub(in crate::db::sqlite::events) fn ungated_fixture_replay<'a>(
         actor: &'a ActorId,
@@ -212,32 +114,9 @@ mod gated {
     }
 }
 
-/// #1252 S3′ PR-B — the crate-internal escape probe.
-///
-/// Enabling `append-seam-escape-probe` compiles this module, whose only job is
-/// to **fail to compile**. Each function is one of the four bypasses that were
-/// written and compiled against PR-A's seam during review; the CI step asserts
-/// the exact diagnostic each one must produce, because "the build failed" is
-/// something any typo achieves.
-///
-/// **`calm-truth` can therefore never be built with `--all-features`.** That is
-/// the point of the feature, and the repository already pays this price for
-/// `calm-proc-supervisor`'s `pgid-escape-probe`. Enable features explicitly.
-///
-/// **Why this is not a `trybuild` case or a `compile_fail` doctest**: both
-/// compile the sample as an *external* crate, where `gated::Authorized`
-/// (`pub(in crate::db::sqlite::events)`) and `SqlxRepo::event_append_in_tx`
-/// (private to this module) cannot even be named, so the sample would "fail" on
-/// an unresolved path and the gate would pass vacuously. The property here is
-/// crate-internal, module-external visibility, so the sample has to live inside
-/// the crate — the same conclusion `calm-proc-supervisor/src/lib.rs` records
-/// next to its own probe. The cross-crate half *is* a `trybuild` suite; it is in
-/// `tests/append_seam_trybuild.rs` and it guards a different statement.
-///
-/// This module is a **descendant** of `events`, which is deliberate and is what
-/// makes the four samples sharp: a descendant can name `Authorized` and can
-/// name `event_append_in_tx`. Everything it still cannot do is what the seam is
-/// made of.
+/// The crate-internal escape probe: each feature compiles one bypass whose only job is to **fail to compile** with an
+/// exact diagnostic, so `calm-truth` can never be built with `--all-features`. It must live inside the crate (a
+/// descendant of `events`) because an external `trybuild` crate could not even name `Authorized` and would fail vacuously.
 #[cfg(any(
     feature = "append-seam-escape-probe-retarget",
     feature = "append-seam-escape-probe-forge",
@@ -254,18 +133,13 @@ mod append_seam_escape_probe {
     #[allow(unused_imports)]
     use sqlx::{Sqlite, Transaction};
 
-    /// P1 — retarget an earned capability at a different event before the
-    /// insert. This is the bypass that a review channel actually compiled
-    /// against PR-A's first draft, when the fields were `pub`. Must be
-    /// **E0616** (`field ... of struct ... is private`).
+    /// P1 — retarget an earned capability at a different event. Must be **E0616**.
     #[cfg(feature = "append-seam-escape-probe-retarget")]
     pub(super) fn retarget<'a>(authorized: &mut gated::Authorized<'a>, other: &'a Event) {
         authorized.event = other;
     }
 
-    /// P2 — forge a capability by literal construction, with no gate call
-    /// anywhere. Must be **E0451** (`field ... of struct ... is private`
-    /// in a struct expression).
+    /// P2 — forge a capability by literal construction. Must be **E0451**.
     #[cfg(feature = "append-seam-escape-probe-forge")]
     pub(super) fn forge<'a>(
         actor: &'a ActorId,
@@ -279,8 +153,7 @@ mod append_seam_escape_probe {
         }
     }
 
-    /// P3 — the functional-update spelling of P2: keep the gate's `actor` and
-    /// `scope`, swap the event. Must be **E0451**.
+    /// P3 — the functional-update spelling of P2. Must be **E0451**.
     #[cfg(feature = "append-seam-escape-probe-functional-update")]
     pub(super) fn functional_update<'a>(
         authorized: gated::Authorized<'a>,
@@ -292,10 +165,7 @@ mod append_seam_escape_probe {
         }
     }
 
-    /// P4 — reach the appender with a loose `(actor, scope, event)` triple, the
-    /// pre-PR-A signature. Must be **E0061** (wrong number of arguments): the
-    /// triple is not a thing this function accepts any more, so there is no
-    /// "call it without authorizing" to write.
+    /// P4 — reach the appender with a loose `(actor, scope, event)` triple. Must be **E0061** (wrong number of arguments).
     #[cfg(feature = "append-seam-escape-probe-ungated-append")]
     pub(super) async fn append_without_authorize(
         tx: &mut Transaction<'_, Sqlite>,
@@ -307,23 +177,9 @@ mod append_seam_escape_probe {
     }
 }
 
-/// #1252 S3′ negative nail. Records the `kind_tag` of every event that passes
-/// through the two public `append_decision_event*_in_tx` entrances, so a test
-/// can assert which write paths do — and above all do **not** — flow through
-/// this seam.
-///
-/// Why it exists: #1252's design claimed that once S2 routed fork / template /
-/// recipe creation through a unified apply, those events would start flowing
-/// through this seam, and asked for a test of that intersection. The
-/// intersection does not exist — fork goes through
-/// `write_with_actor_events_typed` → `write_with_actor_events`, one of the four
-/// `RepoEventWrite` wrappers, which was already gated. A test that asserted the
-/// intersection would have been asserting a fiction, so this probe pins the
-/// negative instead: it goes red the day a report/fork write starts arriving
-/// here.
-///
-/// A process-global recorder is correct here only because the gate command
-/// runs tests with `cargo nextest`, which gives every test its own process.
+/// Records the `kind_tag` of every event that passes through the two public `append_decision_event*_in_tx` entrances,
+/// so a test can assert which write paths do not flow through this seam. A process-global recorder is correct only
+/// because tests run under `cargo nextest`, one process per test.
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod append_probe {
     use std::sync::Mutex;
@@ -336,43 +192,22 @@ pub mod append_probe {
         }
     }
 
-    /// Forget everything recorded so far. Call this immediately before the
-    /// request under observation.
+    /// Forget everything recorded so far.
     pub fn reset() {
         if let Ok(mut kinds) = KINDS.lock() {
             kinds.clear();
         }
     }
 
-    /// Every event kind that reached the seam since the last [`reset`], in
-    /// order.
+    /// Every event kind that reached the seam since the last [`reset`], in order.
     pub fn kinds() -> Vec<&'static str> {
         KINDS.lock().map(|kinds| kinds.clone()).unwrap_or_default()
     }
 }
 
 impl SqlxRepo {
-    /// **Private.** The raw events-table insert. Lives off the trait per
-    /// design doc §1.4: only `Repo::write_with_event` and
-    /// `Repo::log_pure_event` may reach this path, so the commit-then-emit
-    /// invariant is unbypassable from the route / plugin host layers.
-    ///
-    /// Returns the auto-incremented row id, which is then stamped onto
-    /// the `BroadcastEnvelope` the wrapper emits on the bus.
-    ///
-    /// PR2 of #136:
-    ///   * `actor` is typed [`ActorId`] and stored as `serde_json::to_string(&actor)`
-    ///     in the `events.actor` TEXT column (forward-compatible with future
-    ///     actor enrichment).
-    ///   * `scope` is decomposed into the four `events.scope_*` columns added
-    ///     in migration 0007. `EventScope::System` writes `scope_kind='system'`
-    ///     with NULL ancestor cols; the other variants populate whatever
-    ///     prefix of the area → track → card chain they carry.
-    ///
-    /// #1252 S3′: the `(actor, scope, event)` triple arrives as an
-    /// [`Authorized`](gated::Authorized) capability rather than as three loose
-    /// arguments, so there is no way to reach this insert without a gate
-    /// decision on exactly the triple being inserted.
+    /// **Private.** The raw events-table insert; only the eventized wrappers reach it, so commit-then-emit is unbypassable
+    /// from the route / plugin host layers. `actor` is stored as JSON; `scope` is decomposed into the `events.scope_*` columns.
     async fn event_append_in_tx(
         tx: &mut Transaction<'_, Sqlite>,
         authorized: &gated::Authorized<'_>,
@@ -414,10 +249,7 @@ impl SqlxRepo {
         Ok(id)
     }
 
-    /// `#[cfg(test)]`-gated raw appender for fixture seeding / replay
-    /// loaders. Bypasses the wrapper deliberately so test scaffolds can
-    /// reconstruct an event stream verbatim (id-stamped) without driving
-    /// the full handler stack.
+    /// `#[cfg(test)]`-gated raw appender for fixture seeding / replay loaders; bypasses the wrapper deliberately.
     #[cfg(test)]
     pub async fn event_append_fixture(
         &self,
@@ -434,11 +266,7 @@ impl SqlxRepo {
     }
 }
 
-/// Append one event inside the caller's transaction, gated on the live
-/// `cards` / `tracks` rows in that same transaction.
-///
-/// #1252 S3′ removed the `gate: &G` parameter: there is no policy to inject
-/// any more. See the [`gated`] module for what replaced it.
+/// Append one event inside the caller's transaction, gated on the live `cards` / `tracks` rows in that same transaction.
 pub async fn append_decision_event_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     actor: &ActorId,
@@ -464,20 +292,9 @@ pub async fn append_decision_event_in_tx(
     Ok(event_id)
 }
 
-/// Batch form of [`append_decision_event_in_tx`], same seam, same removal of
-/// the injected policy.
-///
-/// The gate runs on **every** event before **any** of them is inserted. That
-/// ordering is what makes "a refused batch writes no events row" a property of
-/// this function rather than a property of what the caller does with the
-/// transaction afterwards: on the first refusal we return `Err` having issued
-/// no `INSERT`, so the claim holds even for a caller that goes on to commit.
-/// The interleaved form this replaced left every event before the refused one
-/// already inserted in the transaction.
-///
-/// Splitting the loops is verdict-preserving: the gate reads `cards`,
-/// `tracks` and `worker_sessions`, and `event_append_in_tx` writes only
-/// `events`, so no append can change the verdict of a later `authorize`.
+/// Batch form of [`append_decision_event_in_tx`]. The gate runs on **every** event before **any** is inserted, so a
+/// refused batch writes no events row even for a caller that goes on to commit; splitting the loops is verdict-preserving
+/// because the gate reads `cards`/`tracks`/`worker_sessions` and the append writes only `events`.
 pub async fn append_decision_events_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     actor: &ActorId,
@@ -509,13 +326,6 @@ pub async fn append_decision_events_in_tx(
     Ok(event_ids)
 }
 
-// ---------------------------------------------------------------------------
-// RepoEventWrite — the eventized write path. Every public write that the
-// sync engine cares about lands here: `write_with_event` (atomic entity-
-// write + event-log), `log_pure_event` (entity-less event log), and the
-// `events_*` cursor queries used by replay.
-// ---------------------------------------------------------------------------
-
 #[allow(deprecated)]
 #[async_trait]
 impl RepoEventWrite for SqlxRepo {
@@ -530,22 +340,15 @@ impl RepoEventWrite for SqlxRepo {
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        // Run the caller-supplied entity write.
         let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
         let event = match fut.await {
             Ok(ev) => ev,
             Err(e) => {
-                // Rollback is implicit on `tx` drop, but be explicit so the
-                // intent reads clearly.
                 let _ = tx.rollback().await;
                 return Err(e);
             }
         };
-        // PR3 (#136) — authorization gate. Runs after the closure
-        // produces an event so the closure can mint per-row roles
-        // (e.g. `card_create_with_id_tx` writes through the cache)
-        // before the gate checks them. Violations roll back: no
-        // entity write, no event row, no broadcast.
+        // The gate runs after the closure produces an event so the closure can mint per-row roles through the cache first.
         let authorized = match gated::authorize_with_caches(
             &mut tx,
             &actor,
@@ -562,7 +365,6 @@ impl RepoEventWrite for SqlxRepo {
                 return Err(e);
             }
         };
-        // Persist the event in the same txn.
         let event_id = match Self::event_append_in_tx(&mut tx, &authorized, correlation).await {
             Ok(id) => id,
             Err(e) => {
@@ -584,9 +386,8 @@ impl RepoEventWrite for SqlxRepo {
             let _ = tx.rollback().await;
             return Err(e);
         }
-        // Commit before any externally-visible side effect.
         tx.commit().await?;
-        // Commit-then-emit invariant: now (and only now) do we broadcast.
+        // Commit-then-emit invariant: broadcast only after commit.
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
@@ -607,8 +408,6 @@ impl RepoEventWrite for SqlxRepo {
     ) -> Result<Vec<i64>> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        // Run the caller-supplied entity write — closure returns one
-        // or more (scope, event) pairs for this tx.
         let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
         let events = match fut.await {
             Ok(v) => v,
@@ -617,20 +416,14 @@ impl RepoEventWrite for SqlxRepo {
                 return Err(e);
             }
         };
-        // Contract: at least one event per tx. An empty vec is a
-        // caller bug — refuse to commit so the closure's writes
-        // disappear with the rollback.
+        // At least one event per tx; an empty vec is a caller bug, so the closure's writes disappear with the rollback.
         if events.is_empty() {
             let _ = tx.rollback().await;
             return Err(CalmError::Internal(
                 "write_with_events: closure returned an empty event batch".into(),
             ));
         }
-        // PR3 (#136) — authorization gate, per event. The cache is
-        // already write-through for any role insert the closure
-        // performed, so a track-create-with-planner-card batch can mint
-        // the planner card in the closure and immediately have its
-        // role visible to the `TrackUpdated` enforce_role call below.
+        // Per-event gate; the cache is already write-through for any role insert the closure performed.
         let mut authorized_batch = Vec::with_capacity(events.len());
         for (scope, event) in &events {
             match gated::authorize_with_caches(
@@ -650,7 +443,6 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
-        // Persist every event in the same txn, in order.
         let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
         for authorized in &authorized_batch {
             match Self::event_append_in_tx(&mut tx, authorized, correlation).await {
@@ -686,10 +478,8 @@ impl RepoEventWrite for SqlxRepo {
                 return Err(e);
             }
         }
-        // Commit before any externally-visible side effect.
         tx.commit().await?;
-        // Commit-then-emit invariant: broadcast in the same order the
-        // closure produced.
+        // Commit-then-emit invariant: broadcast in the order the closure produced.
         for (id, (scope, event)) in event_ids.iter().zip(events) {
             bus.emit_envelope(BroadcastEnvelope {
                 id: *id,
@@ -809,12 +599,7 @@ impl RepoEventWrite for SqlxRepo {
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        // PR3 (#136) — gate. Pure events don't have an entity write to
-        // populate the cache from, so the role lookup uses the cache's
-        // current contents. `log_pure_event` callers (codex hook
-        // ingest, plugin state transitions) always supply a real actor
-        // identity; the gate's defense-in-depth checks (empty
-        // CardId, unknown card) still apply.
+        // Pure events have no entity write to populate the cache from, so the role lookup uses the cache's current contents.
         let authorized = match gated::authorize_with_caches(
             &mut tx,
             &actor,
@@ -863,12 +648,7 @@ impl RepoEventWrite for SqlxRepo {
         Ok(event_id)
     }
 
-    /// Issue #310 — event-less tx wrapper. Runs the caller-supplied
-    /// closure inside one sqlx transaction; commits on `Ok(())`, rolls
-    /// back on `Err(_)`. No event row is appended to the `events` log;
-    /// no broadcast is emitted. The caller is responsible for
-    /// broadcasting any downstream event via `log_pure_event` after
-    /// this returns. See [`crate::db::WriteInTxFn`] for the rationale.
+    /// Event-less tx wrapper: commits on `Ok(())`, rolls back on `Err(_)`; no event row, no broadcast.
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
         let mut tx = begin_immediate_tx(&self.pool).await?;
@@ -889,24 +669,10 @@ impl RepoEventWrite for SqlxRepo {
         since_id: i64,
         limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>> {
-        // Clamp so no caller-supplied value can reach sqlite's `LIMIT -1`
-        // "no limit" sentinel — the bound is load-bearing (issue #854: a
-        // cold WS replay against a 214k-row table pulled the entire log).
+        // Clamp so no caller-supplied value can reach sqlite's `LIMIT -1` "no limit" sentinel.
         let cap = limit.max(0);
-        // `event_version` is selected so the replay path can stamp the
-        // envelope with the version persisted on the row, not the current
-        // `SYNC_EVENT_VERSION` constant — old rows that predate migration
-        // 0006 backfill to `1` via the column default, and any future row
-        // written under a newer envelope schema must round-trip its own
-        // version, not the kernel's.
-        //
-        // `scope_*` columns (migration 0007) reconstruct the typed
-        // `EventScope`. Rows that predate the migration carry
-        // `scope_kind='system'` (column default) with NULL ancestor cols,
-        // which `EventScope::from_row` collapses to `EventScope::System`.
-        // The same fallback covers any malformed row whose declared
-        // `scope_kind` doesn't line up with its ancestor cols — replay
-        // never strands a client on a malformed scope.
+        // `event_version` is selected so replay stamps the version persisted on the row, not the current constant.
+        // Rows predating the scope columns (or with a malformed `scope_kind`) collapse to `EventScope::System`, so replay never strands a client.
         type ScopeRow = (
             i64,            // id
             String,         // kind
@@ -966,14 +732,7 @@ impl RepoEventWrite for SqlxRepo {
         since_id: i64,
         probe_limit: i64,
     ) -> Result<(i64, Option<i64>)> {
-        // Same clamp rationale as `events_since`: no caller-supplied value
-        // may reach sqlite's `LIMIT -1` "no limit" sentinel. The aggregates
-        // are taken over a LIMITed id-only subquery so the probe is bounded
-        // by `probe_limit` regardless of table size — this exists so the WS
-        // replay cap can be decided on RAW row count (pre-deserialization;
-        // see the trait doc for why the filtered `events_since` length is
-        // not a safe basis for that decision) and so the caller knows the
-        // raw end of the window it is about to read.
+        // Same clamp as `events_since`; the aggregates are taken over a LIMITed id-only subquery so the probe is bounded regardless of table size.
         let cap = probe_limit.max(0);
         let (n, max_id): (i64, Option<i64>) = sqlx::query_as(
             r#"SELECT COUNT(*), MAX(id)
@@ -1076,9 +835,7 @@ impl RepoEventWrite for SqlxRepo {
     }
 
     async fn events_earliest_id(&self) -> Result<Option<i64>> {
-        // `MIN(id)` over an empty table returns a single `NULL` row. Reading
-        // the column as `Option<i64>` surfaces that as `None`; non-empty
-        // tables return `Some(min)`.
+        // `MIN(id)` over an empty table returns a single `NULL` row, read as `None`.
         let row: (Option<i64>,) = sqlx::query_as("SELECT MIN(id) FROM events")
             .fetch_one(&self.pool)
             .await?;
@@ -1094,11 +851,7 @@ impl RepoEventWrite for SqlxRepo {
     }
 
     async fn events_latest_id(&self) -> Result<Option<i64>> {
-        // Mirror of `events_earliest_id`: `MAX(id)` over an empty table
-        // returns a single `NULL` row, surfaced as `None` here. Used by
-        // the WS handler to detect a client cursor that's ahead of the
-        // server's actual log tip (see the `events_latest_id` trait
-        // docstring for the reset detection contract). Issue #290.
+        // `MAX(id)` over an empty table returns a single `NULL` row, read as `None`.
         let row: (Option<i64>,) = sqlx::query_as("SELECT MAX(id) FROM events")
             .fetch_one(&self.pool)
             .await?;

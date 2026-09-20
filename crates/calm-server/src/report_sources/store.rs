@@ -1,10 +1,4 @@
-//! `report_sources` rows (#1669 §2.4): one per capture, keyed
-//! `(track_id, source_id)`.
-//!
-//! Writers take a transaction (the capture tool runs insert + quota check
-//! in one `write_in_tx`; the fork copies inside the create transaction).
-//! Readers run one autocommit statement on the pool — no deferred read
-//! transaction (#930). The default list read leaves `body` on disk.
+//! `report_sources` rows: one per capture, keyed `(track_id, source_id)`. Writers take a transaction; readers run one autocommit statement (no deferred read transaction). The default list read leaves `body` on disk.
 
 use std::collections::HashMap;
 
@@ -265,8 +259,7 @@ pub async fn anchor_index(
     Ok(index)
 }
 
-/// Fork (§2.4): copy every row of `source_track_id` to `target_track_id`
-/// inside the fork's own transaction, ids and anchors verbatim.
+/// Fork: copy every row of `source_track_id` to `target_track_id` inside the fork's own transaction, ids and anchors verbatim.
 pub async fn copy_rows_tx(
     tx: &mut Transaction<'_, Sqlite>,
     source_track_id: &str,

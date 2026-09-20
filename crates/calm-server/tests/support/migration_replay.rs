@@ -1,36 +1,5 @@
-//! Snapshot migration-replay harness — PR0-D of #679.
-//!
-//! Acceptance gate shared by the #679 sequence (PR2 migration-chain move,
-//! PR7 `root_session_id` backfill, PR9b retirement, PR11 historical
-//! replay): any DB staged at a supported historical schema version and
-//! replayed to head must end up **structurally identical** to a freshly
-//! created DB, and representative seeded data must survive the trip.
-//!
-//! Building blocks (each usable on its own):
-//!
-//!   * [`stage_db_at`]      — apply migrations, in order, up to version N
-//!     against a temp sqlite file. Uses the same `sqlx::migrate::Migrate`
-//!     machinery production boot uses (`db/sqlite.rs` `migrator.run()`),
-//!     so checksums recorded while staging are byte-identical to what
-//!     [`replay_to_head`]'s `Migrator::run` later validates.
-//!   * [`seed`]             — version-aware fixture seeding from JSON.
-//!     Rows declare a column superset; columns that don't exist at the
-//!     staged version are filtered out, rows for tables that don't exist
-//!     (yet / anymore) are skipped, and `min_version` / `max_version`
-//!     gates handle value-level constraints that changed over time
-//!     (e.g. `cards.role = 'plain'` is trigger-rejected from 0037 on).
-//!   * [`replay_to_head`]   — run the remaining migrations exactly like
-//!     production boot does.
-//!   * [`schema_fingerprint`] / [`assert_schema_matches`] — full
-//!     structural diff (tables, columns, indexes, triggers, views, FKs)
-//!     against a fresh `Migrator::run` DB, with a per-object diff report
-//!     on mismatch.
-//!
-//! External prod snapshots: the `migration_replay_harness.rs` test reads
-//! `NEIGE_SNAPSHOT_DB` (path to a — sanitized — production sqlite file),
-//! copies it into a tempdir, replays it to head and runs the same schema
-//! diff. When the env var is unset the test self-skips with an explicit
-//! marker, following the codex-e2e self-skip pattern.
+//! Snapshot migration-replay harness: a DB staged at a supported historical schema version and
+//! replayed to head must be structurally identical to a fresh DB, and seeded data must survive.
 
 use sqlx::migrate::Migrate;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -38,13 +7,9 @@ use sqlx::{Row, SqlitePool};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// The production migration chain, embedded by calm-truth.
 pub use calm_truth::MIGRATOR;
 
-/// The oldest schema version supported as an upgrade source.
-///
-/// This matches the production database served on localhost:4040 when the
-/// support floor was established. Older deployed schemas require a fresh DB.
+/// The oldest schema version supported as an upgrade source; older deployed schemas require a fresh DB.
 const MIN_SUPPORTED_MIGRATION_VERSION: i64 = 75;
 
 /// Every supported (up) migration version, ascending.
@@ -60,8 +25,7 @@ pub fn migration_versions() -> Vec<i64> {
     versions
 }
 
-/// Open (creating if missing) a sqlite file with the same pragmas the
-/// production pool uses (FK enforcement on, WAL).
+/// Open (creating if missing) a sqlite file with the same pragmas the production pool uses (FK enforcement on, WAL).
 pub async fn open_sqlite(path: &Path) -> SqlitePool {
     let opts = SqliteConnectOptions::new()
         .filename(path)
@@ -75,9 +39,8 @@ pub async fn open_sqlite(path: &Path) -> SqlitePool {
         .unwrap_or_else(|e| panic!("open sqlite at {}: {e}", path.display()))
 }
 
-/// Apply migrations in version order up to and including `version`,
-/// recording them in `_sqlx_migrations` exactly as `Migrator::run` would
-/// (same checksum bookkeeping, same per-migration transaction semantics).
+/// Apply migrations in version order up to and including `version`, recording them in
+/// `_sqlx_migrations` exactly as `Migrator::run` would (same checksum bookkeeping).
 pub async fn stage_db_at(pool: &SqlitePool, version: i64) {
     let mut conn = pool.acquire().await.expect("acquire conn");
     conn.ensure_migrations_table()
@@ -98,9 +61,7 @@ pub async fn stage_db_at(pool: &SqlitePool, version: i64) {
     }
 }
 
-/// Apply every remaining migration, exactly like production boot
-/// (`db/sqlite.rs`): `Migrator::run` validates the checksums recorded
-/// while staging, then applies what's missing.
+/// Apply every remaining migration exactly like production boot: `Migrator::run` validates the checksums recorded while staging.
 pub async fn replay_to_head(pool: &SqlitePool) {
     MIGRATOR
         .run(pool)
@@ -108,13 +69,8 @@ pub async fn replay_to_head(pool: &SqlitePool) {
         .expect("replay to head via Migrator::run");
 }
 
-// ---------------------------------------------------------------------------
-// Fixture seeding
-// ---------------------------------------------------------------------------
-
-/// JSON fixture: `{ "tables": [ { "table": "...", "rows": [ ... ] } ] }`.
-/// Tables are seeded in declaration order (FK parents first). Each row is
-/// `{ "min_version"?: N, "max_version"?: N, "columns": { col: value } }`.
+/// JSON fixture: `{ "tables": [ { "table": "...", "rows": [ ... ] } ] }`, seeded in declaration order (FK parents first).
+/// Each row is `{ "min_version"?: N, "max_version"?: N, "columns": { col: value } }`.
 #[derive(serde::Deserialize)]
 pub struct Fixture {
     pub tables: Vec<TableFixture>,
@@ -128,12 +84,10 @@ pub struct TableFixture {
 
 #[derive(serde::Deserialize)]
 pub struct RowFixture {
-    /// Skip this row when staging strictly below this version (e.g. the
-    /// value only became expressible / legal at that version).
+    /// Skip this row when staging strictly below this version.
     #[serde(default)]
     pub min_version: Option<i64>,
-    /// Skip this row when staging strictly above this version (e.g. the
-    /// value is rejected by a CHECK/trigger introduced later).
+    /// Skip this row when staging strictly above this version (e.g. rejected by a CHECK/trigger introduced later).
     #[serde(default)]
     pub max_version: Option<i64>,
     pub columns: serde_json::Map<String, serde_json::Value>,
@@ -145,8 +99,7 @@ impl Fixture {
     }
 }
 
-/// One successfully seeded row, addressable for post-replay survival
-/// checks via its primary-key column.
+/// One successfully seeded row, addressable for post-replay survival checks via its primary-key column.
 pub struct SeededRow {
     pub table: String,
     pub pk_col: String,
@@ -210,9 +163,7 @@ fn bind_json_value<'q>(
     }
 }
 
-/// Seed the fixture into a DB staged at `staged_version`. Tables that
-/// don't exist at that version are skipped wholesale; per-row version
-/// gates and missing columns are filtered as documented on [`Fixture`].
+/// Seed the fixture into a DB staged at `staged_version`; tables that don't exist at that version are skipped wholesale.
 pub async fn seed(pool: &SqlitePool, fixture: &Fixture, staged_version: i64) -> SeedReport {
     let mut seeded = Vec::new();
     for table_fixture in &fixture.tables {
@@ -276,10 +227,8 @@ pub async fn seed(pool: &SqlitePool, fixture: &Fixture, staged_version: i64) -> 
     SeedReport { rows: seeded }
 }
 
-/// Assert every seeded row whose table still exists at head is still
-/// present (by primary key). Tables retired by later migrations (e.g.
-/// `planner_push_queue` at 0033, `card_codex_threads` at 0034) are skipped —
-/// the schema diff already proves they were dropped.
+/// Assert every seeded row whose table still exists at head is still present (by primary key);
+/// tables retired by later migrations are skipped, the schema diff already proves they were dropped.
 pub async fn assert_rows_survive(pool: &SqlitePool, report: &SeedReport, context: &str) {
     let mut checked = 0usize;
     for row in &report.rows {
@@ -306,18 +255,12 @@ pub async fn assert_rows_survive(pool: &SqlitePool, report: &SeedReport, context
     assert!(checked > 0, "[{context}] survival check covered no rows");
 }
 
-// ---------------------------------------------------------------------------
-// Schema fingerprint + diff
-// ---------------------------------------------------------------------------
-
 fn normalize_sql(sql: &str) -> String {
     sql.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Structural description of every schema object: `type:name` →
-/// normalized DDL plus (for tables) the column / FK / index structure
-/// from the pragma interface. Internal `sqlite_*` objects (autoindexes,
-/// sqlite_sequence) are excluded.
+/// Structural description of every schema object: `type:name` → normalized DDL plus (for tables) the
+/// column / FK / index structure. Internal `sqlite_*` objects are excluded.
 pub async fn schema_fingerprint(pool: &SqlitePool) -> BTreeMap<String, String> {
     let mut fingerprint = BTreeMap::new();
     let objects = sqlx::query(
@@ -378,8 +321,7 @@ pub async fn schema_fingerprint(pool: &SqlitePool) -> BTreeMap<String, String> {
     fingerprint
 }
 
-/// Build the reference fingerprint: a brand-new DB taken straight to head
-/// by the production `Migrator::run` path.
+/// The reference fingerprint: a brand-new DB taken straight to head by the production `Migrator::run` path.
 pub async fn fresh_head_fingerprint() -> BTreeMap<String, String> {
     let dir = tempfile::tempdir().expect("tempdir for fresh head DB");
     let pool = open_sqlite(&dir.path().join("fresh.sqlite")).await;
@@ -389,8 +331,7 @@ pub async fn fresh_head_fingerprint() -> BTreeMap<String, String> {
     fingerprint
 }
 
-/// Structural diff. Panics with a per-object report (missing / extra /
-/// differing) when the replayed schema deviates from the fresh one.
+/// Structural diff; panics with a per-object report (missing / extra / differing).
 pub fn assert_schema_matches(
     replayed: &BTreeMap<String, String>,
     fresh: &BTreeMap<String, String>,
@@ -423,8 +364,6 @@ pub fn assert_schema_matches(
     );
 }
 
-/// Convenience wrapper: fingerprint `pool` and diff it against a freshly
-/// built head DB.
 pub async fn assert_schema_matches_fresh(pool: &SqlitePool, context: &str) {
     let fresh = fresh_head_fingerprint().await;
     let replayed = schema_fingerprint(pool).await;

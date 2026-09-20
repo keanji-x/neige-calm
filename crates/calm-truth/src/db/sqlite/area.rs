@@ -8,10 +8,6 @@ use super::session_row::{
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
-// ---------------------------------------------------------------------------
-// `_tx` helpers — composable inside `Repo::write_with_event` closures.
-// ---------------------------------------------------------------------------
-
 pub async fn area_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewArea) -> Result<Area> {
     let sort = match p.sort {
         Some(s) => s,
@@ -19,14 +15,7 @@ pub async fn area_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewArea) -> Res
     };
     let now = now_ms();
     let id = new_id();
-    // Issue #175: user-facing creates always land as `AreaKind::User`.
-    // The `areas.kind` column was added in migration 0009 with DEFAULT
-    // 'user'; we bind the variant explicitly here (mirroring the
-    // `card_create_with_id_tx` pattern that binds `CardRole::Worker`)
-    // so the storage shape stays self-documenting and a future kind
-    // addition surfaces here as a compile error rather than silently
-    // accepting the DB default. The system area is minted exclusively
-    // via `area_create_system_tx` below.
+    // User-facing creates always land as `AreaKind::User`; the system area is minted exclusively via `area_create_system_tx`.
     sqlx::query(
         r#"INSERT INTO areas (id, name, color, sort, kind, created_at, updated_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
@@ -104,30 +93,13 @@ pub async fn area_create_bind_tx(
     Ok(())
 }
 
-/// Issue #175 — mint the singleton system area that hosts the default
-/// Today terminal's track + card. The unique partial index on
-/// `areas(kind) WHERE kind = 'system'` from migration 0009 enforces the
-/// at-most-one invariant DB-side; the upsert endpoint
-/// (`POST /api/areas/system`) checks for existence before calling this
-/// helper, so a healthy production path never trips the index. We
-/// don't translate a uniqueness violation into a typed conflict here
-/// — if two callers race past the existence check we want the txn to
-/// roll back and the loser to retry via the upsert endpoint, which
-/// will re-read the now-existing row.
-///
-/// `name`, `color`, and `sort` are sentinel values the user never sees
-/// (system areas are filtered out of `GET /api/areas`). They exist
-/// because the underlying columns are `NOT NULL`; the chosen sentinels
-/// (`name = 'system'`, `color = '#000'`, `sort = -1.0`) are documented
-/// here so a debugger landing on a system row knows it's looking at
-/// scaffolding, not user data.
+/// Mint the singleton system area. The partial unique index on `areas(kind) WHERE kind = 'system'` enforces at-most-one;
+/// a uniqueness violation is deliberately not translated into a typed conflict — the loser retries via the upsert endpoint.
+/// `name`/`color`/`sort` are sentinels the user never sees (the columns are `NOT NULL`).
 pub async fn area_create_system_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<Area> {
     let now = now_ms();
     let id = new_id();
-    // Sort sentinel: -1.0 places the system area below any user area
-    // (which start at 1.0 via `next_sort_scoped_in_tx`) if a debugger
-    // ever asks for `areas ORDER BY sort`. Hidden from `GET /api/areas`
-    // either way; this is just a debugger-friendly default.
+    // -1.0 places the system area below any user area (which start at 1.0).
     let sort = -1.0_f64;
     sqlx::query(
         r#"INSERT INTO areas (id, name, color, sort, kind, created_at, updated_at)
@@ -186,20 +158,15 @@ pub async fn area_update_tx(
     if let Some(v) = p.default_cwd {
         c.default_cwd = v;
     }
-    // Area responses and `area.updated` events race on the client. Make this a
-    // strict row version, not merely a wall-clock sample, so two writes in one
-    // millisecond still have an unambiguous order and an older HTTP response
-    // cannot overwrite the later event.
+    // Area responses and `area.updated` events race on the client: make this a strict row version, not merely a
+    // wall-clock sample, so an older HTTP response cannot overwrite the later event.
     let next_version = c
         .updated_at
         .checked_add(1)
         .ok_or_else(|| CalmError::Internal(format!("area {id} updated_at overflow")))?;
     c.updated_at = now_ms().max(next_version);
 
-    // `kind` is intentionally absent from `AreaPatch` — issue #175
-    // forbids re-tagging an area between user/system through the regular
-    // PATCH surface. The system area is minted exactly once via
-    // `area_create_system_tx` and never demoted; user areas stay user.
+    // `kind` is intentionally absent from `AreaPatch`: an area is never re-tagged between user/system through PATCH.
     sqlx::query(
         r#"UPDATE areas
            SET name = ?1, color = ?2, sort = ?3, default_template_id = ?4,
@@ -233,7 +200,7 @@ pub async fn area_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
             .bind(&track_id)
             .execute(&mut **tx)
             .await?;
-        // #644 — `tasks` has no FK to `tracks`; mirror `track_delete_tx`.
+        // `tasks` has no FK to `tracks`; mirror `track_delete_tx`.
         sqlx::query(
             "DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE track_id = ?1)",
         )
@@ -271,19 +238,8 @@ pub async fn area_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
     Ok(())
 }
 
-/// Issue #250 PR 2 — in-tx variant of
-/// [`SqlxRepo::area_folder_create`](crate::db::RepoOutOfDomain::area_folder_create).
-///
-/// Needed because the track-create path with `attach_folder = true`
-/// claims a folder and writes the track row in the **same** transaction:
-/// either both land or neither does. The route layer
-/// (`routes::tracks::create_track`) hands path normalization +
-/// conflict-classification responsibilities here (mirror of the route
-/// layer in `routes::area_folders::create_folder`), but the conflict
-/// scan reuses the existing in-memory pass over `area_folders_list_all`
-/// inside the same tx so a concurrent claim from another connection is
-/// detected by the UNIQUE constraint at INSERT time. Returns the
-/// inserted row; the caller emits whatever event/cache write it needs.
+/// In-tx variant of `area_folder_create`: the track-create path with `attach_folder = true` claims a folder and
+/// writes the track row in the **same** transaction, so either both land or neither does.
 pub async fn area_folder_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     area_id: &str,
@@ -318,11 +274,7 @@ pub async fn area_folder_create_tx(
     }
 }
 
-/// Issue #250 PR 2 — in-tx variant of `area_folders_list_all`. Used by
-/// the track-create `attach_folder = true` path so the conflict scan
-/// reads consistent state alongside the row insert. SQLite serializes
-/// writers anyway, but routing through the same tx future-proofs the
-/// path against per-connection isolation surprises.
+/// In-tx variant of `area_folders_list_all`, so the conflict scan reads consistent state alongside the row insert.
 pub async fn area_folders_list_all_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<Vec<AreaFolder>> {
     let rows = sqlx::query_as::<_, crate::db::rows::AreaFolderRow>(
         r#"SELECT id, area_id, path, created_at

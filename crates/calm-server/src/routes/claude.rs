@@ -1,10 +1,5 @@
-//! `/internal/claude/hook` — receive Claude Code hook events from the
-//! bridge subprocess and re-emit them on the WS event bus.
-//!
-//! This is the Claude sibling of `routes::codex`: the shared ingest helper
-//! resolves `card_id`, stamps the provider-specific AI actor, derives the
-//! `hook.claude.<snake_case_name>` kind, and persists an opaque hook payload
-//! as `Event::ClaudeHook`.
+//! `/internal/claude/hook` — receive Claude Code hook events from the bridge subprocess and re-emit
+//! them on the WS event bus.
 
 use crate::actor::Actor;
 use crate::error::Result;

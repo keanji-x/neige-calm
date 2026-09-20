@@ -33,17 +33,10 @@ export type {
 } from './host.js';
 export type { CardHostCapabilities, CardSlotStore } from './contracts.js';
 export { createCardHost } from './host.js';
-// Built-in composition. `cards-public-entry-only` forbids deep imports into
-// this module, so this is the only door onto `builtins/`.
+// `cards-public-entry-only` forbids deep imports, so this is the only door onto `builtins/`.
 export type { BuiltinCardType } from './builtins/register.js';
 export { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './builtins/register.js';
-// The planner discriminator itself, not a copy of it. Whether a card is hidden
-// from CARDS and whether the conversation drawer exists are the same question,
-// so app must ask the entry's own predicate rather than re-implement it.
 export { isPlannerHarnessPayload } from './builtins/planner.js';
-// The track-assistant discriminator, on the same terms (#1189): app decides
-// whether a card opens the conversation drawer, and it must decide it with the
-// entry's own predicate rather than a second copy of the payload check.
 export { isAssistantHarnessPayload } from './builtins/assistant.js';
 export type {
   UnknownCardSlot,

@@ -128,10 +128,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
 
     let app = track_router_for_fixture(&fx);
 
-    // #891 / #1110 S2 — the shipped plugin Manifest declares an
-    // `input_schema` with required fields, so the happy-path bind must
-    // carry a conforming `template_input` (F8: issue_number is
-    // integer-encoded).
+    // The shipped Manifest declares an `input_schema` with required fields, so the happy-path bind must carry a conforming `template_input`.
     let bound_input = json!({
         "issue_url": "https://github.com/o/r/issues/888",
         "repo": "o/r",
@@ -183,8 +180,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
             .expect("stored template_input parses");
     assert_eq!(stored_input, bound_input);
 
-    // #891 — `template_input` without `template_id` is a 400 before any
-    // DB write.
+    // `template_input` without `template_id` is a 400 before any DB write.
     let orphan_input_dir = track_cwd_tempdir("wf-input-orphan").expect("orphan input cwd");
     let (status, body) = post_track(
         app.clone(),
@@ -204,9 +200,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
         "body={body}"
     );
 
-    // #891 slice ② — the shipped schema has required fields, so a bound
-    // create WITHOUT `template_input` is a 400 naming them (fail before any
-    // DB write).
+    // Bound create WITHOUT `template_input` is a 400 naming the required fields.
     let required_dir = track_cwd_tempdir("wf-input-required").expect("required input cwd");
     let (status, body) = post_track(
         app.clone(),
@@ -226,8 +220,6 @@ async fn git_forge_template_registers_and_track_create_binds() {
     for field in ["issue_url", "repo", "issue_number"] {
         assert!(error.contains(field), "missing {field} in body={body}");
     }
-    // #891 slice ② review fix — the 400 must short-circuit before any DB
-    // write: no track row may exist for the rejected create.
     assert_eq!(
         track_count_by_title(&fx.repo, "bound without required input").await,
         0,
@@ -260,8 +252,6 @@ async fn git_forge_template_registers_and_track_create_binds() {
             .contains("template_input.issue_number"),
         "body={body}"
     );
-    // #891 slice ② r2 — partial-input 400 must also short-circuit before
-    // any DB write.
     assert_eq!(
         track_count_by_title(&fx.repo, "bound with partial input").await,
         0,
@@ -296,15 +286,13 @@ async fn git_forge_template_registers_and_track_create_binds() {
             .contains("template_input.merge_policy"),
         "body={body}"
     );
-    // #891 slice ② review fix — schema-violation 400 likewise leaves no
-    // track row behind.
     assert_eq!(
         track_count_by_title(&fx.repo, "bound with invalid input").await,
         0,
         "schema-violation 400 must not create a track row"
     );
 
-    // INV-1110-003 — extra key against additionalProperties:false is still 400.
+    // Extra key against additionalProperties:false is still 400.
     let extra_dir = track_cwd_tempdir("wf-input-extra").expect("extra-key input cwd");
     let (status, body) = post_track(
         app.clone(),
@@ -338,17 +326,13 @@ async fn git_forge_template_registers_and_track_create_binds() {
         "extra-key 400 must not create a track row"
     );
 
-    // #891 / #1110 S2 — F2 fail-closed still holds for schema-less plugins:
-    // mutate the fixture Manifest to DROP the shipped input_schema and
-    // re-insert it into the running registry.
+    // Fail-closed for schema-less plugins: drop the shipped input_schema and re-insert into the running registry.
     let mut schemaless = read_manifest();
     schemaless.input_schema = None;
     schemaless
         .validate()
         .expect("schema-less mutation stays a valid manifest");
-    // `install_path = None` keeps the registry's existing on-disk path.
-    // #1196 S1 — a runtime registry write needs the id's lifecycle guard; the
-    // test takes the real one (`try_lock_lifecycle` is `pub` for exactly this).
+    // `install_path = None` keeps the registry's existing on-disk path; a runtime registry write needs the id's lifecycle guard.
     {
         let g = fx
             .plugin_host
@@ -376,15 +360,13 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let error = body["error"].as_str().unwrap_or("");
     assert!(error.contains("does not declare"), "body={body}");
     assert!(error.contains("plugin"), "body={body}");
-    // #891 slice ② r2 — schema-less fail-closed 400 likewise leaves no
-    // track row behind.
     assert_eq!(
         track_count_by_title(&fx.repo, "input against schema-less template").await,
         0,
         "schema-less-input 400 must not create a track row"
     );
 
-    // Schema-less bound create without input stays valid (design §1.4 row 4).
+    // Schema-less bound create without input stays valid.
     {
         let mut schemaless = read_manifest();
         schemaless.input_schema = None;
@@ -434,13 +416,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    // #1209 — create's admission test is "is this id in the template roster",
-    // which has nothing to do with plugin trust. So this case no longer pins a
-    // trust-check wording (there is no such check on the create path any more);
-    // it pins that the 400 names the roster as the reason and names the
-    // rejected id. The observable consequence of the trust gate is carried by
-    // the "untrusted ⇒ 201 with a null plugin_scope" leg further down in this
-    // same test.
+    // Create's admission test is "is this id in the template roster", which has nothing to do with plugin trust.
     let error = body["error"].as_str().unwrap_or("");
     assert!(error.contains("known track template"), "body={body}");
     assert!(
@@ -464,9 +440,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
         }),
     )
     .await;
-    // #1110 S6 — `issue-development` is also a seeded template key, so an
-    // untrusted git-forge no longer 400s the create. Plugin tools stay
-    // unbound (`plugin_scope` is null); the template report is still forked.
+    // `issue-development` is also a seeded template key, so an untrusted git-forge does not 400 the create; plugin tools stay unbound.
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     assert_eq!(body["template_id"], TEMPLATE_ID);
     assert!(
@@ -1069,7 +1043,7 @@ async fn dual_review_converges_then_merges() {
 
     let fx = boot_fixture().await;
     let design_round = emit_review_round(&fx, &ReviewRoundInput::design("760")).await;
-    // Scripted dispatch: CI lacks the real scheduler/Codex path, matching this slice's scripted verdict spine.
+    // Scripted dispatch: CI lacks the real scheduler/Codex path.
     let impl_dispatch = emit_scripted_impl_dispatch(&fx, "760").await;
     let pr = drive_pr_to_diff(
         &fx,
@@ -1162,7 +1136,6 @@ async fn cap_exhausted_give_up_fails_terminal() {
     .await;
     assert_eq!(failed.payload["from"], "reviewing");
     assert!(cap_round.id < failed.id);
-    // Scripted-event-spine coverage: the spine ordering/cap guard is in scope; production merge intent is not.
     assert!(
         event_rows(&fx.repo, "forge.pr.merged")
             .await
@@ -1249,7 +1222,6 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         }),
         "ASK-HUMAN must not use a direct reviewing->blocked edge"
     );
-    // Scripted-event-spine coverage: pre-grant merge absence scopes the cap guard, not production Codex bytes.
     assert!(
         event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
         "merge must be absent while latest subject round is unconverged before grant"
@@ -1277,8 +1249,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         "resume review after grant",
     )
     .await;
-    // Post-grant extension round (#888): the kernel accepts exactly
-    // previous cap + 2 (cap 1 -> 3), backed by the fresh grant above.
+    // Post-grant extension round: the kernel accepts exactly previous cap + 2 (cap 1 -> 3).
     let converged = emit_review_round(
         &fx,
         &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 2, 3, true),
@@ -1304,12 +1275,6 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         .expect("stop git-forge plugin");
 }
 
-/// #1727 S1 — `review.round` no longer wakes the planner
-/// (`dispatcher::event_warrants_planner_push_with_role` returns false for it)
-/// and boot catch-up (`harness::catch_up::observations_since`) filters with
-/// the same predicate, so it must not replay either. The two ratify rows are
-/// the positive control: the same recovered queue that holds them holds no
-/// `ReviewRound`.
 #[tokio::test]
 async fn review_round_does_not_recover_into_pending_queue_but_ratify_events_do() {
     let _env_lock = FORGE_ENV_LOCK
@@ -1863,8 +1828,7 @@ async fn post_track(app: axum::Router, body: Value) -> (StatusCode, Value) {
     (status, json)
 }
 
-// #891 slice ② review fix — rejected creates must leave zero track rows;
-// titles are unique per case in this file, so a by-title count is decisive.
+// Titles are unique per case in this file, so a by-title count is decisive.
 async fn track_count_by_title(repo: &SqlxRepo, title: &str) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE title = ?1")
         .bind(title)
@@ -2451,18 +2415,8 @@ async fn drive_pr_to_diff(
     }
 }
 
-/// Run `gh.pr.checks` and block until its forge op has actually landed.
-///
-/// `gh.pr.checks` lowers to a **parked** forge action: `tools/call` returns
-/// `{op_id, parked: true}` as soon as the op is submitted, long before the op
-/// reaches a terminal phase. Every forge action is targeted at the track (see
-/// `target_from_payload`), so an un-awaited checks op keeps the track-global
-/// teardown fence (`any_track_has_active_forge_action`) armed and makes any
-/// later "teardown succeeds" assertion flaky. Awaiting the `forge.pr.checks`
-/// event is the happens-before edge: the phase flip to `succeeded` and the
-/// event append share one transaction, so a visible event proves the op is
-/// terminal. Call this helper instead of `call_tool(PR_CHECKS_TOOL, ..)` so
-/// the wait cannot be forgotten.
+/// Run `gh.pr.checks` and block until its forge op has actually landed: the tool returns `{op_id, parked: true}`
+/// before the op is terminal, and an un-awaited checks op keeps the track-global teardown fence armed.
 async fn run_pr_checks(fx: &Fixture, id: i64, repo_arg: &str, pr_number: u64) -> EventRow {
     let checks_resp = call_tool(
         fx,
@@ -2987,11 +2941,8 @@ fn setup_forge_env() -> ForgeTestEnv {
     }
 }
 
-/// #1147 S3 — `POST /api/tracks` now validates an attached `cwd`: absolute,
-/// existing, inside a Git work tree. Every `cwd` this file posts is a throwaway
-/// directory nothing ever reads, so make it a real (empty) repository. Used
-/// even where the create is expected to 400 on `template_input` binding first,
-/// so no site depends on which check fires first.
+/// `POST /api/tracks` validates an attached `cwd` (absolute, existing, inside a Git work tree), so every
+/// throwaway cwd is a real empty repository.
 fn track_cwd_tempdir(prefix: &str) -> std::io::Result<TempDir> {
     let dir = short_tempdir(prefix)?;
     run_git(dir.path(), ["init", "-b", "main"]);

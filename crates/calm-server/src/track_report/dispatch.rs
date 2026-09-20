@@ -42,11 +42,8 @@ pub(crate) enum DispatchArgs {
     },
 }
 
-/// What the current Track may delegate, snapshotted before the report
-/// transaction (#1668). Only `eligible` decides admission; `denied` carries
-/// the refusal text per requested name — keyed by the name as it appears in
-/// `DispatchArgs::plugin_tools` after resolution — so the Forbidden names
-/// the tool and the reason instead of a blanket verdict.
+/// What the current Track may delegate, snapshotted before the report transaction. Only
+/// `eligible` decides admission; `denied` carries the refusal text per requested name.
 #[derive(Clone, Debug)]
 pub(crate) struct PluginToolAdmission {
     pub(crate) eligible: BTreeSet<String>,
@@ -111,9 +108,7 @@ impl DispatchArgs {
             }
         }
     }
-    /// Replace the requested grants with their resolved registry names
-    /// (#1668). The frozen contract must carry registry names: the Worker
-    /// side matches them exactly.
+    /// Replace the requested grants with their resolved registry names; the Worker side matches them exactly.
     pub(crate) fn with_plugin_tools(mut self, resolved: Vec<String>) -> Self {
         let (Self::Empty { plugin_tools, .. } | Self::VerifiedCandidate { plugin_tools, .. }) =
             &mut self;
@@ -224,11 +219,9 @@ pub(super) async fn authorize_tx(
     .map_err(|error| CalmError::Forbidden(error.to_string()))
 }
 
-/// The grants an earlier dispatch under this Track-local `name` froze, read
-/// outside the report transaction (#1668); empty when there is no receipt.
-/// `calm.task.dispatch` resolves sanitized spellings against these before
-/// today's delegable set, so a replay after revocation still finds its
-/// receipt instead of resolving to a live collider and conflicting.
+/// The grants an earlier dispatch under this `name` froze, read outside the report transaction.
+/// Sanitized spellings resolve against these before today's delegable set, so a replay after
+/// revocation still finds its receipt instead of resolving to a live collider.
 pub(crate) async fn frozen_plugin_tools(
     repo: &dyn crate::db::RepoEventWrite,
     track: &TrackId,

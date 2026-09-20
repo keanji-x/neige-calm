@@ -13,8 +13,7 @@ use tokio::time::timeout;
 const NEIGE_BIN: &str = env!("CARGO_BIN_EXE_neige");
 const TEST_BUDGET: Duration = Duration::from_secs(5);
 
-/// #1439: socket 路径由 `calm_test_sockets` 发放短路径；这里再断言一次，
-/// 越限时把路径和它的字节数一起打出来。
+/// socket 路径由 `calm_test_sockets` 发放短路径；这里再断言一次，越限时把路径和它的字节数一起打出来。
 fn listen(socket_path: &Path) -> UnixListener {
     calm_test_sockets::assert_fits(socket_path);
     UnixListener::bind(socket_path).unwrap_or_else(|e| {

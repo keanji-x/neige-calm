@@ -15,8 +15,6 @@ pub(crate) async fn observations_since(
     watermark: i64,
     through: Option<i64>,
 ) -> Result<Vec<(i64, Observation)>> {
-    // The kind list is the dispatcher's, not a mirror of it: exactly the
-    // kinds the push predicate below can answer `true` for.
     let rows = repo
         .events_for_track(
             track_id.as_str(),
@@ -33,16 +31,12 @@ pub(crate) async fn observations_since(
         if !dispatcher::event_warrants_planner_push_with_role(&row.event, &row.actor, |_| role) {
             continue;
         }
-        // Issue #644 PR-C (§6.5) — the SAME gated-self-report
-        // consultation the live push branch runs: a crash between the
-        // emit tx and the live push must not replay a gated task's
-        // raw self-report to the planner.
+        // Same gated-self-report consultation the live push branch runs: a crash between the emit
+        // tx and the live push must not replay a gated task's raw self-report.
         if dispatcher::is_gated_self_report(repo, &row.event).await {
             continue;
         }
-        // #1727 S1 — the SAME stale-worker-stop consultation the live
-        // hook arm runs: a stop hook whose tasks row already left
-        // `dispatched | running` is not replayed either.
+        // Same stale-worker-stop consultation the live hook arm runs.
         if dispatcher::is_stale_worker_stop_hook(repo, &row.event).await {
             continue;
         }

@@ -5,19 +5,8 @@ use calm_server::{
     harness::{Observation, PlannerHarness},
     operation::{OperationRepo, SqlxOperationRepo},
 };
-/// The review's OWN settlement notice — `isolated_codex::review_settled::render`
-/// of a briefing whose `review_attempt_id` is `id` — and nothing else.
-///
-/// It used to count any system line holding `id`, "settled" and
-/// "calm.plan.list". A settlement catch-up replays the track's earlier
-/// observations first (`dispatcher::observe_harness_under_lock` enqueues the
-/// prefix, then the settlement), and the producer's publication and
-/// verification notices in that prefix are re-rendered at replay time with
-/// the CURRENT delivery view, which by then names the review attempt: they
-/// matched, so `observed` could return while the review's notice was still
-/// behind two `persist_snapshot` writes, and the first drain then went out
-/// without it. Under CI's contended sqlite that is the whole failure of
-/// `candidate_review_settlement_actual_briefing_never_binds_recover`.
+/// The review's OWN settlement notice and nothing else: replayed earlier notices are re-rendered with the
+/// current delivery view and would otherwise match before the review's notice has been persisted.
 pub(super) fn notices(snapshot: &calm_server::harness::HarnessSnapshot, id: &str) -> usize {
     let attempt = format!("\"review_attempt_id\": \"{id}\"");
     snapshot
@@ -346,8 +335,7 @@ async fn candidate_review_settlement_actual_briefing_never_binds_recover() {
             brief.get("failure").is_none() && brief.get("planner_recovery").is_none(),
             "{brief}"
         );
-        // No task-recovery briefing frame anywhere in the turn (#1635 S1c:
-        // the frame is the fragment's opening, not a copy of its words).
+        // No task-recovery briefing frame anywhere in the turn (the frame is the fragment's opening, not a copy of its words).
         let briefing_head = include_str!("../../prompts/recovery-briefing/briefing.md")
             .split_once("{briefing_json}")
             .unwrap()

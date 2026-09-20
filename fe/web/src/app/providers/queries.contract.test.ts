@@ -335,9 +335,8 @@ describe('delete mutation wiring', () => {
     });
     await waitFor(() => expect(send).toHaveBeenCalledOnce());
 
-    // `area_update_tx` assigns the later PATCH a strictly greater row version
-    // even when both writes share one wall-clock millisecond. Its event reaches
-    // this cache before the older HTTP response.
+    // `area_update_tx` assigns the later PATCH a strictly greater row version even within one
+    // wall-clock millisecond; its event reaches this cache before the older HTTP response.
     const newerEvent = {
       ...original,
       name: 'Remote edit',
@@ -482,22 +481,9 @@ describe('delete mutation wiring', () => {
   });
 });
 
-/*
- * ── What the card mutations do to the cache ────────────────────────────────
- *
- * The row the board draws comes out of `['track', trackId]`, and both of these
- * write it directly rather than waiting for the refetch they also queue. That is
- * not an optimisation in either direction:
- *
- *   * `removeCard` — the card's surface is unmounted by this write, and a
- *     terminal card left on screen for the length of a round-trip keeps a PTY
- *     attached to a card the kernel has already torn down.
- *   * the creates — the caller navigates to `?card=<id>` in the same tick, and
- *     the board can only draw a card the detail cache already holds.
- *
- * Nothing here is observing `['track', trackId]`, so the invalidation these
- * mutations queue cannot refetch: what the assertions read is the write itself.
- */
+/* Both mutations write `['track', trackId]` directly: a terminal card left on screen for a round-trip
+ * keeps a PTY attached to a torn-down card, and the board can only draw a card the cache already holds.
+ * Nothing observes the key, so the queued invalidation cannot refetch — the assertions read the write. */
 describe('track detail mutation cache writes', () => {
   const cardWire = (id: string) => ({
     id, track_id: 'w1', kind: 'terminal', title: null, sort: 1, payload: {},
@@ -558,8 +544,7 @@ describe('track detail mutation cache writes', () => {
       .toEqual(['card-a', 'card-b', 'card-new']);
   });
 
-  /* A replayed create answers with a row the cache already holds. Appending it
-     again would put the same card on the board twice. */
+  /* A replayed create answers with a row the cache already holds. */
   it('does not duplicate a card the cached detail already carries', async () => {
     const transport: ApiTransportPort = {
       send: (request) => (request.method === 'POST'
@@ -655,21 +640,10 @@ describe('planner history pagination', () => {
   });
 });
 
-/*
- * The track page's task-verdict timer, at the two states the query can be in.
- *
- * This is the whole convergence story for `worker_card_id`: the kernel's
- * `mark_running` stamps it without emitting anything, so if this callback
- * returns `false` at the wrong moment the panel's click-through to the worker
- * card is simply dead until the tab is reloaded.
- */
+/* The kernel's `mark_running` stamps `worker_card_id` without emitting anything, so a wrong `false`
+ * here leaves the panel's click-through dead until reload. */
 describe('task-verdict poll interval', () => {
-  /*
-   * The declarations are part of the input now, and that is the fix this
-   * describe grew: the live branch asks whether the *panel* has a live row, not
-   * whether the wire has a live verdict. The two differ for a verdict that
-   * produces no row — see the last two cases.
-   */
+  /* The live branch asks whether the PANEL has a live row, not whether the wire has a live verdict. */
   const declaration = (id: string, key: string) => ({
     id, kind: 'task', rev: 1, payload: { key, kind: 'codex', declared_by: 'spec', ready: true, goal: 'g' },
   });
@@ -692,66 +666,38 @@ describe('task-verdict poll interval', () => {
     expect(interval(state({ data: [] }))).toBe(false);
   });
 
-  /* A failed *refetch* keeps react-query's last good data, so this branch is
-     unchanged by an error: a live run stays live and the timer that will fetch
-     it again keeps running. */
+  /* A failed refetch keeps react-query's last good data, so an error leaves this branch unchanged. */
   it('keeps polling a live run through a failed refetch, on the retained data', () => {
     expect(interval(state({ data: at('running'), errorUpdateCount: 3 })))
       .toBe(3000);
   });
 
-  /*
-   * The defect: when the FIRST load fails there is no data at all, so
-   * `hasLiveTaskRun` is vacuously false and the timer never starts. Once
-   * react-query has exhausted its retries nothing in the page ever asks again,
-   * and a track that was mid-dispatch shows declaration words with no
-   * click-through for as long as the tab stays open.
-   */
+  /* When the FIRST load fails there is no data, so `hasLiveTaskRun` is vacuously false. */
   it('still schedules a retry when the initial load failed and there is no data', () => {
     expect(interval(state({ errorUpdateCount: 1 }))).toBe(15_000);
   });
 
-  /* Bounded, because `GET /api/tracks/{id}/report` also fails *permanently*: a
-     deleted track 404s and a track missing its `track-report` card 500s
-     (`resolve_report_for_track`). An unconditional poll on "no data" would leave
-     a stale tab hitting a dead route every few seconds forever. */
+  /* Bounded: the report route also fails permanently (deleted track 404s, missing report card 500s). */
   it('gives up after a bounded number of failed loads rather than hammering a dead route', () => {
     expect(interval(state({ errorUpdateCount: 4 }))).toBe(15_000);
     expect(interval(state({ errorUpdateCount: 5 }))).toBe(false);
     expect(interval(state({ errorUpdateCount: 99 }))).toBe(false);
   });
 
-  /* And no timer while the very first fetch is still on the wire — there is
-     already a request in flight to wait for. */
+  /* No timer while the very first fetch is still on the wire. */
   it('does not schedule anything before the first fetch has resolved', () => {
     expect(interval(state({}))).toBe(false);
   });
 
-  /*
-   * ── A live verdict that produces no row must not start the timer ─────────
-   *
-   * The kernel synthesises a verdict for a declaration that has been deleted
-   * from the document — `blockId: ''`, naming no block this report has. No row
-   * is built for it, so nothing on screen can converge, and a 3 s refetch on
-   * its account is the unbounded cost this callback's comment says it does not
-   * pay.
-   *
-   * The sibling case — a key two live declarations both claim — used to be
-   * asserted here too, against a fixture where both verdicts carried
-   * `status: 'running'`. The kernel no longer produces that shape: an
-   * ambiguous key is answered `status: null` on every block that names it
-   * (#1160), so the fixture would be testing a wire shape that cannot occur.
-   * `report.test.ts` covers the reachable one.
-   */
+  /* The kernel synthesises a verdict for a deleted declaration (`blockId: ''`); no row is built for it,
+   * so nothing on screen can converge and a refetch on its account is unbounded cost. */
   it('does not poll for an in-flight run the report has no row for', () => {
     expect(interval(state({
       data: [{ blockId: '', key: 'deleted', schedulable: true, status: 'running', workerCardId: 'c-9' }],
     }))).toBe(false);
   });
 
-  /* Premise for both of the above: the identical verdict on a declaration this
-     report DOES have still polls, so the two are refusals and not a timer that
-     stopped working. */
+  /* Premise for both of the above: the same verdict on a declaration this report DOES have still polls. */
   it('still polls a live run whose declaration is in the document', () => {
     expect(taskVerdictsRefetchInterval(blocks([declaration('b-1', 'deleted')]))(state({
       data: [{ blockId: '', key: 'deleted', schedulable: true, status: 'running', workerCardId: 'c-9' }],
@@ -759,14 +705,8 @@ describe('task-verdict poll interval', () => {
   });
 });
 
-/*
- * #1628 D5 / A16b — one `chart.series` block's data.
- *
- * The key carries the block's rev and the query turns a 409 into a value.
- * Both are what let a report edit refetch only the blocks it changed: an
- * unchanged block keeps its key, a changed one mounts a new one, and a query
- * that outran the document waits instead of failing.
- */
+/* The key carries the block's rev and the query turns a 409 into a value, so a report edit refetches
+ * only the blocks it changed and a query that outran the document waits instead of failing. */
 describe('chart.series query', () => {
   const pending = { status: 'pending', view: 'line', field: 'close', period: 'day', range: '1Y' };
   const signal = new AbortController().signal;
@@ -786,8 +726,7 @@ describe('chart.series query', () => {
   it('stale rev 409 is a wait, not an error', async () => {
     const { transport } = recordingTransport(() => ({ status: 409, statusText: 'Conflict', body: { current_rev: 5 } }));
     const options = trackReportSeriesQueryOptions(transport, 'w1', 'b-1', 4, unauthorized);
-    // Resolves — no throw, so react-query has nothing to retry and no error
-    // state to render; the block reads `stale-rev` and waits for the document.
+    // Resolves, so react-query has nothing to retry; the block reads `stale-rev` and waits.
     await expect(options.queryFn({ signal })).resolves.toEqual({ status: 'stale-rev', current_rev: 5 });
     // Every other failure is still a failure.
     const failing = recordingTransport(() => ({ status: 500, statusText: 'Internal Server Error', body: {} }));
@@ -812,12 +751,7 @@ describe('chart.series query', () => {
   });
 });
 
-/*
- * #1669 §2.5 — one captured source, read when its citation is opened.
- *
- * The 404 is data: a dangling citation is a state the design admits, and the
- * panel says "来源缺失" for it rather than retrying a read that cannot change.
- */
+/* The 404 is data: a dangling citation is a state the design admits. */
 describe('track source query', () => {
   const signal = new AbortController().signal;
   const row = {

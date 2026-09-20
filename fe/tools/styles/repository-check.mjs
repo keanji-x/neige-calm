@@ -25,10 +25,7 @@ export const DATA_ATTRIBUTE_SOURCE_FORMS = Object.freeze([
   'computed-static-string', 'computed-static-template', 'set-attribute-static-string',
   'variable-key-known-escape',
 ]);
-// Empty by design: `data-variant` was the last entry and is gone (§0.3 — the
-// dialog's confirm button now carries `data-nc-action`, whose `destructive` value
-// is the same word §4 uses everywhere else). A stale exemption is a violation in
-// its own right, so entries leave this map the moment their subject does.
+// Empty by design: a stale exemption is a violation in its own right, so entries leave this map the moment their subject does.
 const LEGACY_DATA_ATTRIBUTES = new Map([]);
 
 function filesUnder(directory) {
@@ -75,11 +72,8 @@ export function auditDataAttributes(code, file) {
   return violations;
 }
 
-// A `@layer` name is a cascade position, not a directory name. `app` is the
-// composition layer: its shell styles must sit at the same cascade position as
-// the features it composes, so they declare `@layer features`. Giving `app` its
-// own layer would desync the eight-layer order frozen in styles/entry.css
-// (architecture §4), which this slice is not allowed to change.
+// A `@layer` name is a cascade position, not a directory name: `app` composes features, so its
+// shell styles declare `@layer features`.
 export function auditModuleLayer(css, file) {
   const expected = file.startsWith('web/src/ui/') ? 'ui'
     : file.startsWith('web/src/features/') || file.startsWith('web/src/app/') ? 'features' : undefined;
@@ -88,11 +82,8 @@ export function auditModuleLayer(css, file) {
   return violations.map(({ message }) => `${file}: ${message}`);
 }
 
-// Architecture §3 disease 6: components may import `*.module.css` and nothing
-// else; ordinary `.css` still enters only through styles/entry.css. The window
-// is deliberately narrow — same-directory specifier, no query and no fragment,
-// and only from the three layers that own components. `?inline` / `?raw` hand
-// back a string instead of the class-name map, so they stay violations.
+// Components may import a same-directory `*.module.css` and nothing else; ordinary `.css` enters only
+// through styles/entry.css. `?inline` / `?raw` hand back a string, not the class-name map, so they stay violations.
 const CSS_MODULE_IMPORTER_ROOTS = Object.freeze(['web/src/ui/', 'web/src/features/', 'web/src/app/']);
 const COLOCATED_CSS_MODULE = /^\.\/[^/?#]+\.module\.css$/;
 

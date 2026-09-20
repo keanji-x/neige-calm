@@ -1,24 +1,6 @@
-//! The connection loop (#1699). One task, one `select!` over the two
-//! wires, lines parsed on both sides so the pump knows which requests
-//! the kernel still owes an answer to.
-//!
-//! When the kernel hangs up while codex's stdin is still open, the pump
-//! reconnects on the same path with exponential backoff, replays the
-//! cached token-injected `initialize`, swallows the replayed handshake
-//! response, and resumes. Requests that were written but unanswered at
-//! the moment of the hang-up get a synthesized `-32000` error right
-//! then (the kernel may have executed them; see
-//! [`frames::lost_error_frame`]); a request whose socket write failed
-//! was never queued and is re-sent after the handshake (notifications
-//! and other frames are not). Socket writes are driven one `write` at a
-//! time from inside the same `select!`, so the socket keeps being read
-//! while a large request is in flight: the kernel is serial and would
-//! otherwise block writing a response while we block writing a request.
-//! The kernel side of this contract is
-//! `calm-server/src/mcp_server/transport.rs` (`handle_connection`): one
-//! identity per connection, bound by `initialize`; serial
-//! request/response; notifications dropped; the kernel never sends
-//! requests.
+//! The connection loop: one task, one `select!` over the two wires. Reconnects with
+//! backoff while stdin is open and replays the cached `initialize`; socket writes are
+//! one `write` per turn so the serial kernel is never blocked on a response.
 
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
@@ -58,10 +40,8 @@ enum Ended {
     Clean,
     /// Socket EOF/error, or a socket write failure, with stdin open.
     Lost,
-    /// An `initialize` (original or replayed) answered -32603. The
-    /// kernel drops the connection after any handshake error, so this
-    /// is an outage too; it runs under the same budget as `Lost` but
-    /// nothing was lost, so the stderr line says what happened instead.
+    /// An `initialize` answered -32603. The kernel drops the connection after any
+    /// handshake error, so this is an outage too, under the same budget as `Lost`.
     InitializeRetry,
     /// A handshake response with a non-retryable error.
     Rejected,
@@ -83,14 +63,10 @@ enum WriteKind {
     /// A request from codex: its id joins `outstanding` on completion;
     /// on failure the frame becomes `held`.
     Request(serde_json::Value),
-    /// The held request being re-sent after a handshake; same
-    /// bookkeeping as `Request`.
+    /// The held request being re-sent after a handshake.
     Held(serde_json::Value),
-    /// The cached `initialize`, original or replayed: the cache is the
-    /// record, so nothing is recorded either way.
     Initialize,
-    /// A notification, response or unclassifiable line: forwarded once,
-    /// never re-sent.
+    /// A notification, response or unclassifiable line: forwarded once, never re-sent.
     Passthrough,
 }
 
@@ -126,25 +102,18 @@ struct Pump {
     stdin_eof: bool,
     stdout: Stdout,
     init: Option<CachedInitialize>,
-    /// ids of requests written to the kernel and not yet answered, in
-    /// send order.
+    /// ids of requests written to the kernel and not yet answered, in send order.
     outstanding: Vec<serde_json::Value>,
-    /// A request whose socket write failed or was still in flight when
-    /// the connection ended, re-sent after the next handshake. A write
-    /// to a dead peer fails before the first byte, and a frame cut
-    /// short has no newline, so the kernel's `read_line` framer never
-    /// dispatches it either way.
+    /// A request whose socket write failed or was cut short when the connection ended,
+    /// re-sent after the next handshake; the kernel's `read_line` never dispatched it.
     held: Option<(serde_json::Value, Vec<u8>)>,
-    /// Set from the moment a connection is lost until a handshake on a
-    /// new one is accepted; the -32603 retry path keeps it set so one
-    /// budget covers the whole outage.
+    /// Set from connection loss until a new handshake is accepted; one budget covers
+    /// the whole outage.
     reconnecting: bool,
     /// The socket write in flight, if any. stdin is not read while it
     /// is set (backpressure); the socket is.
     pending: Option<PendingWrite>,
-    /// The most recent thing that went wrong in the current outage (a
-    /// connect error, a -32603 answer, an unanswered replay), for the
-    /// exit-3 and exit-5 lines.
+    /// The most recent failure in the current outage, for the exit-3 and exit-5 lines.
     last_error: String,
 }
 
@@ -231,10 +200,9 @@ enum ConnectEnd {
 }
 
 impl Pump {
-    /// Connect with backoff under `budget`. `attempt_first` is true for
-    /// the initial connection; after a hang-up the first delay comes
-    /// first, and doubles as the window in which a stdin EOF that raced
-    /// the hang-up (codex tearing down both ends) is observed.
+    /// Connect with backoff. `attempt_first` is true for the initial connection; after a
+    /// hang-up the first delay comes first and is the window in which a racing stdin EOF
+    /// is observed.
     async fn connect_loop(
         &mut self,
         budget: &mut ReconnectBudget,
@@ -272,12 +240,9 @@ impl Pump {
         }
     }
 
-    /// Drive one connection until it ends. While `reconnecting`, the
-    /// cached `initialize` is written first and nothing is forwarded
-    /// until its response arrives (the kernel answers pre-handshake
-    /// requests with -32002 and drops the connection). Whatever write
-    /// was in flight when the connection ended is held or dropped by
-    /// [`Pump::hold_pending`].
+    /// Drive one connection until it ends. While `reconnecting`, the cached `initialize` is written
+    /// first and nothing is forwarded until its response arrives (the kernel rejects
+    /// pre-handshake requests).
     async fn pump_connection(&mut self, stream: UnixStream, budget: &ReconnectBudget) -> Ended {
         let (rd, wr) = stream.into_split();
         let mut awaiting_handshake = false;
@@ -289,8 +254,6 @@ impl Pump {
                 ));
                 awaiting_handshake = true;
             } else {
-                // Nothing cached (first frame was not an initialize):
-                // resume forwarding directly.
                 self.reconnected(budget);
             }
         }
@@ -301,10 +264,8 @@ impl Pump {
         ended
     }
 
-    /// The connected `select!`. The socket read branch is always active;
-    /// the write branch while a frame is pending; stdin while nothing is
-    /// pending (a line read, or only an EOF probe while the handshake is
-    /// pending, D2); the deadline while the handshake is pending.
+    /// The connected `select!`: socket read always; write while a frame is pending;
+    /// stdin while nothing is pending (only an EOF probe while the handshake is pending).
     async fn drive(
         &mut self,
         mut sock: BufReader<OwnedReadHalf>,
@@ -346,8 +307,8 @@ impl Pump {
                                 Replay::Rejected => return Ended::Rejected,
                             }
                         } else {
-                            // The kernel only writes responses; anything
-                            // else is passed through untouched.
+                            // The kernel only writes responses; anything else is passed
+                            // through untouched.
                             self.write_stdout(&line).await;
                         }
                     } else if let Some(ended) = self.on_socket_line(line, frame).await {
@@ -369,9 +330,8 @@ impl Pump {
                 Event::Written(_) => return Ended::Lost,
                 Event::Stdin(Ok(Some(line))) => self.on_stdin_line(line),
                 Event::Stdin(Ok(None)) | Event::Stdin(Err(_)) => {
-                    // codex closed our stdin: half-close so the kernel
-                    // reads EOF and drops the connection, then keep
-                    // draining its side until it does.
+                    // Half-close so the kernel reads EOF and drops the connection, then keep
+                    // draining its side.
                     self.stdin_eof = true;
                     let _ = wr.shutdown().await;
                 }
@@ -402,10 +362,8 @@ impl Pump {
         self.pending.take().map(|p| p.kind)
     }
 
-    /// The connection is over. A request still pending has not had its
-    /// trailing newline written, so the kernel's `read_line` never
-    /// dispatched it: it is held for re-sending. Anything else pending
-    /// is dropped.
+    /// A request still pending has not had its trailing newline written, so the kernel
+    /// never dispatched it: it is held for re-sending. Anything else pending is dropped.
     fn hold_pending(&mut self) {
         if let Some(p) = self.pending.take()
             && let WriteKind::Request(id) | WriteKind::Held(id) = p.kind
@@ -435,8 +393,7 @@ impl Pump {
         match error_code {
             None => {
                 if !init.acked {
-                    // codex never saw a response to its initialize
-                    // (the first connection died with it in flight).
+                    // codex never saw a response to its initialize.
                     init.acked = true;
                     self.write_stdout(line).await;
                 }
@@ -456,16 +413,14 @@ impl Pump {
         }
     }
 
-    /// A line from the kernel on an established connection.
     async fn on_socket_line(&mut self, line: Vec<u8>, frame: Frame) -> Option<Ended> {
         if let Frame::Response { id, error_code } = frame {
             if let Some(init) = self.init.as_mut()
                 && !init.acked
                 && init.id == id
             {
-                // The original handshake response. An error here is the
-                // same decision as for a replayed one: -32603 retries on
-                // a fresh connection, anything else ends the shim.
+                // The original handshake response: -32603 retries on a fresh connection,
+                // anything else ends the shim.
                 match error_code {
                     None => init.acked = true,
                     Some(RPC_INTERNAL_ERROR) => return Some(Ended::InitializeRetry),
@@ -486,9 +441,8 @@ impl Pump {
         None
     }
 
-    /// A line from codex becomes the pending socket write: an
-    /// `initialize` is token-injected and cached first, any other
-    /// request is remembered by id once written.
+    /// An `initialize` is token-injected and cached first; any other request is
+    /// remembered by id once written.
     fn on_stdin_line(&mut self, line: Vec<u8>) {
         let (kind, bytes) = match classify(&line) {
             Frame::Request { id, method } if method == "initialize" => {
@@ -512,18 +466,16 @@ impl Pump {
         self.pending = Some(PendingWrite::new(kind, bytes));
     }
 
-    /// D5-b: every request the kernel owed an answer to gets the
-    /// synthesized error now; the kernel may or may not have run it.
+    /// Every request the kernel owed an answer to gets the synthesized error now; the
+    /// kernel may or may not have run it.
     async fn fail_outstanding(&mut self) {
         for id in std::mem::take(&mut self.outstanding) {
             self.write_stdout(lost_error_frame(&id).as_bytes()).await;
         }
     }
 
-    /// Terminal exits: outstanding, then an unacknowledged initialize,
-    /// then the held frame. Lines still unread in the stdin pipe get
-    /// nothing; the process exit closes stdout and codex fails them as
-    /// transport-closed itself.
+    /// Lines still unread in the stdin pipe get nothing; the process exit closes stdout
+    /// and codex fails them itself.
     async fn fail_all(&mut self) {
         self.fail_outstanding().await;
         if let Some(init) = self.init.as_mut()
@@ -557,10 +509,8 @@ impl Pump {
         ));
     }
 
-    /// The total for an outage starting now. Until codex has a response
-    /// to its `initialize` it is inside its MCP startup timeout, which
-    /// [`INITIAL_CONNECT_BUDGET`] is sized for; afterwards it is inside a
-    /// `tools/call` timeout, which [`RECONNECT_BUDGET`] is sized for.
+    /// Until codex has a response to its `initialize` it is inside its MCP startup timeout;
+    /// afterwards it is inside a `tools/call` timeout.
     fn outage_budget(&self) -> Duration {
         if self.init.as_ref().is_some_and(|init| init.acked) {
             RECONNECT_BUDGET
@@ -590,8 +540,7 @@ enum Event {
     Deadline,
 }
 
-/// The stdin side of the connected `select!`: a probe while a replayed
-/// handshake is pending, a line read otherwise.
+/// A probe while a replayed handshake is pending, a line read otherwise.
 async fn stdin_step(stdin: &mut BufReader<Stdin>, acc: &mut Vec<u8>, probe_only: bool) -> Event {
     if probe_only {
         Event::Probe(stdin_probe(stdin).await)
@@ -600,11 +549,9 @@ async fn stdin_step(stdin: &mut BufReader<Stdin>, acc: &mut Vec<u8>, probe_only:
     }
 }
 
-/// Read one `\n`-terminated line (trailer kept) into `acc`, returning
-/// it complete, or `None` at EOF. Each step is one cancellation-safe
-/// `fill_buf`; consumed bytes move into `acc` before the next await, so
-/// dropping this future inside `select!` loses nothing. An unterminated
-/// last line at EOF is dropped; codex terminates every frame.
+/// Read one `\n`-terminated line (trailer kept) into `acc`, or `None` at EOF. Each step is one
+/// cancellation-safe `fill_buf` and consumed bytes move into `acc` before the next await, so
+/// dropping this future inside `select!` loses nothing.
 async fn next_line<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     acc: &mut Vec<u8>,
@@ -641,8 +588,7 @@ async fn stdin_probe(stdin: &mut BufReader<Stdin>) -> Probe {
     }
 }
 
-/// One `write` of what is left of the pending frame. tokio's `write` is
-/// cancel-safe: when another `select!` branch wins first, nothing was
+/// tokio's `write` is cancel-safe: when another `select!` branch wins first, nothing was
 /// written. No `flush`: on a `UnixStream` it is a no-op.
 async fn write_step(wr: &mut OwnedWriteHalf, pending: &Option<PendingWrite>) -> io::Result<usize> {
     let p = pending

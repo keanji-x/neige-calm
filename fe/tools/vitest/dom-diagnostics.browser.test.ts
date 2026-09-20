@@ -1,16 +1,5 @@
-/*
- * The #1161 failure report, driven through the real query path.
- *
- * Every case here calls an actual `@testing-library` query and reads the
- * message off the error it throws, because the whole point of the module under
- * test is that it is installed on the *shipped* `getElementError` by a setup
- * file. A fixture that called `report()` directly would still pass if the
- * `configure()` call were deleted.
- *
- * This is a `.browser.test.ts` because `inert` and `aria-hidden` are
- * accessibility-tree semantics, and jsdom's answers about the accessibility
- * tree are not the platform's.
- */
+/* Driven through the real query path, so the setup file's `configure()` is what is under test. A
+ * `.browser.test` because jsdom's answers about the accessibility tree are not the platform's. */
 import { afterEach, describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 
@@ -27,11 +16,7 @@ const mount = (html: string): HTMLElement => {
   return host;
 };
 
-/**
- * The message of the error a failing query throws. A query that *succeeds* is
- * itself a result worth asserting on, so this reports that rather than hiding
- * it behind a timeout.
- */
+/** The message of the error a failing query throws; a query that succeeds is reported, not hidden behind a timeout. */
 const failureMessage = (query: () => unknown): string => {
   try {
     query();
@@ -44,12 +29,7 @@ const failureMessage = (query: () => unknown): string => {
 /** A role nothing in the page or the fixtures ever has. */
 const missing = () => screen.getByRole('meter', { name: 'nothing has this' });
 
-/**
- * Just the appended report. Assertions have to be scoped to it: the DOM dump
- * above it contains every fixture this file mounts, so `toContain` against the
- * whole message would pass on the dump alone and prove nothing about the
- * report — which is how the decoration case first "passed".
- */
+/** Just the appended report: the DOM dump above it contains every fixture, so `toContain` on the whole message proves nothing. */
 const reportOf = (message: string): string => {
   const start = message.indexOf('[nc-a11y]');
   expect(start).toBeGreaterThan(-1);
@@ -65,11 +45,9 @@ describe('the a11y failure report (#1161)', () => {
     mount('<div aria-hidden="true"><button>Save</button></div>');
     const message = failureMessage(() => screen.getByRole('button', { name: 'Save' }));
 
-    // Delegation: DTL's own text and its DOM dump are still there …
     expect(message).toContain('Unable to find an accessible element with the role "button"');
     expect(message).toContain('<button>');
-    // … and the report is *after* them, which is what makes it survive the
-    // mutation runner's head+tail truncation of captured failure messages.
+    // The report is after DTL's text, which is what makes it survive the mutation runner's head+tail truncation.
     expect(message.indexOf('[nc-a11y]')).toBeGreaterThan(message.indexOf('Unable to find'));
   });
 
@@ -80,16 +58,8 @@ describe('the a11y failure report (#1161)', () => {
     expect(reportOf(message)).toContain('<div class="wrapper-under-test"> — aria-hidden');
   });
 
-  /*
-   * The trap this exists for. `inert` removes a subtree from the accessibility
-   * tree in a browser, but Testing Library's own `isInaccessible` does not read
-   * it — it looks at `display`, `visibility`, `hidden` and `aria-hidden` only.
-   * So a query keeps *finding* an inert element, and every dialog in this app
-   * writes `inert` and `aria-hidden` together. The report states `inert`
-   * because a human reading a CI failure needs to know it is there; the
-   * assertion below records that DTL disagrees, so that if DTL ever starts
-   * honouring `inert` this test says so instead of silently changing meaning.
-   */
+  /* Testing Library's `isInaccessible` does not read `inert`, so a query keeps finding an inert element;
+   * the first assertion records that disagreement so a change in DTL says so. */
   it('reports inert subtrees even though Testing Library does not treat them as hidden', () => {
     mount('<div class="inert-wrapper" inert><button>Save</button></div>');
     expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
@@ -97,13 +67,7 @@ describe('the a11y failure report (#1161)', () => {
     expect(reportOf(failureMessage(missing))).toContain('<div class="inert-wrapper"> — inert');
   });
 
-  /*
-   * The case the attribute selector is blind to, and the reason the CSS scan
-   * exists. `ui/dialog/public.tsx:139` puts `display: none` on `.dialog-body`
-   * whenever a child view is showing, and #1161's missing `Create track` button
-   * lives inside it — so a report that said "no hidden subtree holds anything
-   * queryable" here would be actively wrong about the one thing it is for.
-   */
+  /* `display: none` is what the attribute selector is blind to, and why the CSS scan exists. */
   it('finds a subtree hidden by CSS, which no attribute selector can express', () => {
     mount('<div class="css-hidden-wrapper" style="display: none"><button>Save</button></div>');
     const report = reportOf(failureMessage(missing));
@@ -120,18 +84,8 @@ describe('the a11y failure report (#1161)', () => {
     expect(report).toContain('<div class="hidden-attr-wrapper"> — hidden');
   });
 
-  /*
-   * The walk must name the subtree root, not each hidden button: a reader wants
-   * "this container went away", not fifty lines of its contents.
-   *
-   * **`visibility`, not `display`.** The obvious `display: none` fixture cannot
-   * tell outermost-wins from innermost-wins: `display` is not inherited, so an
-   * inner wrapper never computes as hidden and is never a candidate root — the
-   * assertion holds under either policy. `visibility: hidden` *is* inherited,
-   * so `.inner` computes hidden too and the two policies give different
-   * answers. Verified by mutation: switching the walk to keep the first hidden
-   * ancestor instead of the highest turns this red.
-   */
+  /* `visibility`, not `display`: `display` is not inherited, so an inner wrapper never computes hidden
+   * and cannot tell outermost-wins from innermost-wins. */
   it('names the outermost hidden ancestor once, not every element under it', () => {
     mount('<div class="outer-hidden" style="visibility: hidden"><div class="inner"><button>A</button>'
       + '<button>B</button><button>C</button></div></div>');
@@ -141,10 +95,7 @@ describe('the a11y failure report (#1161)', () => {
     expect(report).not.toContain('class="inner"');
   });
 
-  /*
-   * `visibility` is inherited but overridable, so an ancestor walk that trusted
-   * the ancestor rather than the element called this visible button hidden.
-   */
+  /* `visibility` is inherited but overridable, so the element, not the ancestor, must be trusted. */
   it('does not call an element hidden when it overrides visibility back to visible', () => {
     // The genuinely hidden sibling is the positive control: without it a scan
     // that found *nothing at all* would satisfy the absence assertion below.
@@ -157,11 +108,7 @@ describe('the a11y failure report (#1161)', () => {
     expect(report).not.toContain('class="veiled"');
   });
 
-  /*
-   * `querySelector` does not match the element it is called on, so a hidden node
-   * that is *itself* the queryable one was filtered out as decoration — the
-   * report denying exactly what it was asked about.
-   */
+  /* `querySelector` does not match the element it is called on. */
   it('counts a hidden element that is itself the queryable one', () => {
     mount('<button class="hidden-button" aria-hidden="true">Save</button>');
     const report = reportOf(failureMessage(missing));
@@ -169,38 +116,20 @@ describe('the a11y failure report (#1161)', () => {
     expect(report).toContain('<button class="hidden-button"> — aria-hidden');
   });
 
-  /*
-   * Testing Library builds "Found multiple elements" by calling
-   * `getElementError(null, element)` once per match. Appending a report to each
-   * of those put reports *between* the element dumps, and the strip then cut the
-   * message at the first one — destroying the second dump and DTL's own
-   * `*AllBy*` hint. Making an existing message worse is the one thing a
-   * diagnostic may never do.
-   */
+  /* DTL builds "Found multiple elements" by calling `getElementError(null, element)` once per match;
+   * appending a report to each put reports between the dumps and the strip then cut at the first one. */
   it('leaves the multiple-matches message whole', () => {
     mount('<p>dupdup</p><p>dupdup</p>');
     const message = failureMessage(() => screen.getByText('dupdup'));
 
     expect(message).toContain('If this is intentional');
-    // Three dumps: one per match, built into Testing Library's own text, plus
-    // the container dump its outer wrap adds. The broken version had two — the
-    // number this assertion would have been calibrated to if it had been
-    // written from the output rather than from what the output should be.
+    // Three dumps: one per match plus the container dump the outer wrap adds.
     expect(message.split('Ignored nodes:').length - 1).toBe(3);
     expect(message.split(`${MARKER} document.body children`).length - 1).toBe(1);
   });
 
-  /*
-   * The worst failure this file ever had, and the reason the guard tests for a
-   * string rather than for `null`.
-   *
-   * `wait-for.js` calls `getElementError(error.message, …)` with whatever the
-   * callback threw. A `waitFor` whose callback throws a non-`Error` arrives with
-   * `message === undefined`; `undefined.indexOf` then threw out of `onTimeout`,
-   * which runs inside a `setTimeout`, so the promise never settled and the test
-   * **hung** instead of failing. The race below is the assertion: a hang cannot
-   * be caught by `expect`, so it has to be turned into a value.
-   */
+  /* `wait-for.js` passes `error.message` of whatever the callback threw; a non-`Error` leaves it undefined,
+   * and a throw inside `onTimeout`'s `setTimeout` hangs the promise instead of failing it. */
   it('lets waitFor settle when its callback throws a non-Error', async () => {
     const outcome = await Promise.race([
       // Throwing a non-Error is the entire subject of this test: it is what
@@ -214,12 +143,7 @@ describe('the a11y failure report (#1161)', () => {
     expect(outcome).toBe('rejected');
   });
 
-  /*
-   * `querySelectorAll` cannot return the element it is called on, so an
-   * `aria-hidden` body was invisible to the attribute scan — the same gap as a
-   * `display:none` body was to the CSS scan, discovered one round later on the
-   * other half.
-   */
+  /* `querySelectorAll` cannot return the element it is called on, so an `aria-hidden` body was invisible to the attribute scan. */
   it('names body itself when body carries a hiding attribute', () => {
     mount('<button>Save</button>');
     document.body.setAttribute('aria-hidden', 'true');
@@ -230,12 +154,7 @@ describe('the a11y failure report (#1161)', () => {
     }
   });
 
-  /*
-   * `<html>`, the third and last root to be found missing. The scan is rooted at
-   * the document precisely so this needed no third special case — if it had
-   * been patched like the previous two, the next ancestor would have been a
-   * fourth bug.
-   */
+  /* The scan is rooted at the document, so `<html>` needs no special case. */
   it('names the documentElement when the hiding attribute is on <html>', () => {
     mount('<button>Save</button>');
     document.documentElement.setAttribute('aria-hidden', 'true');
@@ -246,12 +165,8 @@ describe('the a11y failure report (#1161)', () => {
     }
   });
 
-  /*
-   * A class value may legally contain a newline. The report's own lines have to
-   * stay single-line, because `REPORT_TAIL` recognises a previous report by its
-   * indented shape — one stray newline made it unmatchable, so the timeout
-   * re-wrap appended a second report and stranded the first mid-message.
-   */
+  /* A class value may contain a newline, but the report's lines must stay single-line: `REPORT_TAIL`
+   * recognises a previous report by its indented shape. */
   it('collapses whitespace in class names so the report stays strippable', async () => {
     const host = mount('<div><button>Save</button></div>');
     host.firstElementChild?.setAttribute('aria-hidden', 'true');
@@ -267,33 +182,17 @@ describe('the a11y failure report (#1161)', () => {
     expect(message.split(`${MARKER} document.body children`).length - 1).toBe(1);
   });
 
-  /*
-   * A message may legitimately *contain* the report's opening text, because a
-   * query's own search string is printed back in `Unable to find an element
-   * with the text: …`. Cutting at the first occurrence deleted everything after
-   * it, including Testing Library's own trailing sentence. The strip is
-   * end-anchored so only a real trailing report matches.
-   */
+  /* A query's own search string is printed back in the message, so the strip is end-anchored. */
   it('keeps content that merely looks like a report in the middle of a message', () => {
     mount('<button>Save</button>');
     const decoy = `\n\n${MARKER} document.body children (5):\nTAIL-MUST-SURVIVE`;
     const message = failureMessage(() => screen.getByText(decoy));
 
-    /*
-     * Asserting on `TAIL-MUST-SURVIVE` would prove nothing: Testing Library
-     * prints the *normalized* text first and the raw one after it, so the tail
-     * appears earlier in the message and survives even when the strip has eaten
-     * the raw copy. The load-bearing assertion is DTL's own closing sentence,
-     * which really is last and really did disappear.
-     */
+    /* DTL prints the normalized text first and the raw one after, so `TAIL-MUST-SURVIVE` appears earlier
+     * and proves nothing; DTL's own closing sentence really is last. */
     expect(message).toContain('This could be because the text is broken up by multiple elements');
   });
 
-  /*
-   * A page whose own `body` is hidden. The ancestor walk used to stop one level
-   * short of `body`, so this reported "none" — the whole page invisible and the
-   * report saying nothing is out of the accessibility tree.
-   */
   it('names body itself when the whole page is hidden', () => {
     mount('<button>Save</button>');
     const previous = document.body.style.display;
@@ -305,12 +204,7 @@ describe('the a11y failure report (#1161)', () => {
     }
   });
 
-  /*
-   * The re-wrap path, asserted on *position* and not only on count. Declining to
-   * re-append leaves the report stranded in the middle followed by a second
-   * `prettyDOM` dump, which is precisely what the runner's head+tail truncation
-   * would discard.
-   */
+  /* Asserted on position, not only count: a report stranded mid-message is what head+tail truncation would discard. */
   it('keeps the report last through the findBy timeout re-wrap', async () => {
     mount('<div aria-hidden="true"><button>Save</button></div>');
     let message = '';
@@ -325,29 +219,17 @@ describe('the a11y failure report (#1161)', () => {
     expect(message.lastIndexOf(MARKER)).toBeGreaterThan(message.lastIndexOf('Ignored nodes:'));
   });
 
-  /*
-   * The strip is prefix-exact rather than a marker search, so a query whose own
-   * text contains the marker is not mistaken for a re-wrap and silently denied
-   * its report.
-   */
+  /* The strip is prefix-exact, not a marker search. */
   it('does not truncate a message whose own query text contains the marker', () => {
     mount('<div aria-hidden="true"><button>Save</button></div>');
     const message = failureMessage(() => screen.getByText(`${MARKER} not present`));
 
-    // The load-bearing half: searching for the bare marker instead of the exact
-    // report prefix would cut Testing Library's own sentence off right here, and
-    // the report would still be appended — so asserting only that a report
-    // exists proves nothing.
+    // Searching for the bare marker would cut DTL's own sentence off here while still appending a report.
     expect(message).toContain(`Unable to find an element with the text: ${MARKER} not present`);
     expect(reportOf(message)).toContain('document.body children');
   });
 
-  /*
-   * Both halves in one fixture on purpose. Asserting only that decoration is
-   * absent passes just as well against a list that is *always* empty — which is
-   * exactly what a gutted implementation produces. The queryable sibling is the
-   * positive control that makes the absence mean something.
-   */
+  /* The queryable sibling is the positive control: an always-empty list would also satisfy the absence assertion. */
   it('leaves decoration out while still listing a real hidden subtree', () => {
     mount('<div class="decorative-wrapper" aria-hidden="true"><svg></svg></div>'
       + '<div class="substantive-wrapper" aria-hidden="true"><button>Save</button></div>');
@@ -357,10 +239,7 @@ describe('the a11y failure report (#1161)', () => {
     expect(report).not.toContain('decorative-wrapper');
   });
 
-  /*
-   * Headings have an implicit role and no `role` attribute, so an earlier
-   * version of `MEANINGFUL` called this subtree decoration and omitted it.
-   */
+  /* Headings have an implicit role and no `role` attribute. */
   it('counts an implicit role as queryable, not as decoration', () => {
     mount('<div class="heading-wrapper" aria-hidden="true"><h1>Title</h1></div>');
     const report = reportOf(failureMessage(missing));
@@ -379,22 +258,15 @@ describe('the a11y failure report (#1161)', () => {
     // The counts are the load-bearing half: "one body child" and "two body
     // children, the second one aria-hidden" are different diagnoses.
     const count = (message: string) => /document\.body children \((\d+)\)/.exec(message)?.[1];
-    // Both captures are asserted to exist first. Without this, deleting the
-    // counts from the report entirely makes each side `NaN`, and `toBe` uses
-    // `Object.is`, under which `NaN` equals `NaN` — the comparison below passes
-    // against a report that no longer states any count at all.
+    // Both captures are asserted to exist first: `toBe` uses `Object.is`, under which `NaN` equals `NaN`,
+    // so a report stating no count at all would pass the comparison.
     expect(count(before)).toMatch(/^\d+$/);
     expect(count(after)).toMatch(/^\d+$/);
     expect(Number(count(before))).toBe(Number(count(after)) + 1);
   });
 
-  /*
-   * The query string defeats the module cache, so the setup module's top-level
-   * body runs a second time against a config that already holds the wrapper —
-   * which is what a second `configure()` would do for real if `web-dom` ever
-   * turns `isolate` off (#1123). Without the install guard the report is
-   * appended twice.
-   */
+  /* The query string defeats the module cache, so the setup module's top-level body runs again against
+   * a config that already holds the wrapper. */
   it('does not stack a second report when the setup module is evaluated again', async () => {
     // @ts-expect-error -- a Vite cache-busting specifier, not a path TypeScript
     // can resolve; the directive also fails loudly if that ever changes.
@@ -405,22 +277,12 @@ describe('the a11y failure report (#1161)', () => {
     expect(message.split('[nc-a11y] document.body children').length - 1).toBe(1);
   });
 
-  /*
-   * If the message cannot be written, the *failure notice* cannot be written
-   * either — it is the same assignment to the same frozen object. A bare
-   * try/catch that reports the problem by appending would therefore throw out
-   * of the catch and replace a real query failure with a `TypeError`. The
-   * original error, unchanged, is the outcome that loses the least.
-   */
+  /* The failure notice is the same assignment to the same frozen object, so a try/catch that reported
+   * by appending would throw out of the catch; the original error unchanged loses the least. */
   it('returns the original error untouched when its message cannot be written', async () => {
     const { configure, getConfig } = await import('@testing-library/react');
     const installed = getConfig().getElementError;
-    /*
-     * One producer serving both halves. Freezing *every* error would let a
-     * wrapper that does nothing at all pass, since the producer already returns
-     * exactly the asserted message; the writable branch is the positive control
-     * that proves the wrapper's body actually runs.
-     */
+    /* One producer serving both halves: the writable branch is the positive control that proves the wrapper's body runs. */
     configure({
       getElementError: (message: string | null) => (message?.includes('FROZEN') === true
         ? Object.freeze(new Error('frozen baseline'))
@@ -452,19 +314,9 @@ describe('the a11y failure report (#1161)', () => {
     expect(report).toContain('… and 1 more, not shown');
   });
 
-  /*
-   * The two halves of #1538's deferral, pinned from opposite directions.
-   *
-   * Deferring *every* build — the shape this file shipped first — reported
-   * `<body />`, `document.body children (0)` and `subtrees … (0)` for a
-   * synchronous `getBy*` in the shape that is all over this repo:
-   * `try { screen.getByRole(…) } finally { app.dispose() }`
-   * (`web/src/app/router/task-artifact-files.test.tsx`). The teardown ran before
-   * Vitest read `.message`, so the diagnostic described the empty page instead
-   * of the UI that failed. Both tests here go through the real query path; the
-   * discriminator is `_disableExpensiveErrorDiagnostics`, which `wait-for.js`
-   * sets around a poll and nothing else does.
-   */
+  /* Deferring every build reported an empty page for a synchronous `getBy*` torn down in `finally`
+   * before Vitest read `.message`. The discriminator is `_disableExpensiveErrorDiagnostics`, which
+   * only `wait-for.js` sets around a poll. */
   it('reports the DOM eagerly when a synchronous query fails', () => {
     const host = mount('<div class="unmounted-before-read" aria-hidden="true"><button>Save</button></div>');
     let caught: Error | undefined;
@@ -491,13 +343,8 @@ describe('the a11y failure report (#1161)', () => {
 
   it('still defers the report on a waitFor poll', async () => {
     const host = mount('<div class="polled-then-unmounted" aria-hidden="true"><button>Save</button></div>');
-    /*
-     * The error from a *poll* — not the timeout re-wrap. `wait-for.js` drops
-     * every poll error but the last, so this one is exactly the build #1538 is
-     * about: nobody reads it, and it must therefore cost nothing. Capturing and
-     * rethrowing keeps the poll a normal failing poll; `.message` is
-     * deliberately not read inside the callback, which would force the build.
-     */
+    /* The error from a poll, not the timeout re-wrap: `wait-for.js` drops every poll error but the last,
+     * so it must cost nothing. `.message` is deliberately not read inside the callback. */
     let polled: Error | undefined;
     try {
       await waitFor(() => {
@@ -512,13 +359,8 @@ describe('the a11y failure report (#1161)', () => {
     expect(polled).toBeDefined();
 
     host.remove();
-    /*
-     * Reading only now. A deferred build runs against the page as it is *here*,
-     * so the fixture is absent — that lost evidence is the price of the
-     * deferral, and it is the only observable that distinguishes deferred from
-     * eager without instrumenting the module. If this ever reads back the
-     * fixture, the poll path went eager again and #1538's cost is back.
-     */
+    /* Reading only now: a deferred build runs against the page as it is here, so the fixture is absent.
+     * If this ever reads back the fixture, the poll path went eager again. */
     expect(polled!.message).not.toContain('<div class="polled-then-unmounted">');
   });
 });

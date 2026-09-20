@@ -281,9 +281,8 @@ struct SupervisorConfig {
     stop_grace: Duration,
     calm_listen: Option<String>,
     persist_identity_to: Option<PathBuf>,
-    /// #1282 — the plugin-autospawn entry of the `/upgrade/apply` healthcheck
-    /// boot budget for this child. Required, not defaulted: it is a term of a
-    /// deadline whose under-estimation rolls back healthy boots.
+    /// Required, not defaulted: it is a term of the healthcheck boot deadline whose
+    /// under-estimation rolls back healthy boots.
     boot_plugin_budget: Duration,
 }
 
@@ -629,9 +628,7 @@ impl Supervisor {
         }
         #[cfg(unix)]
         {
-            // System mode owns the whole calm-server process tree. Put the
-            // child in a fresh process group so restart/shutdown signals reach
-            // descendants spawned under the supervised kernel.
+            // Fresh process group so restart/shutdown signals reach descendants of the child.
             cmd.process_group(0);
         }
 
@@ -1107,9 +1104,8 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("bind admin API on {admin_listen}"))?;
 
     let tailnet = if let Some(config) = &cfg.tailnet {
-        // Conflicting declared providers remain a configuration error. The
-        // optional subsystem's files, state version and sockets cannot stop
-        // local kernel/proc startup, nor may unreadable intent become disabled.
+        // Conflicting declared providers are a configuration error; other tailnet
+        // failures must not stop kernel/proc startup.
         config.validate_provider_conflicts(&cfg.child.extra_args)?;
         match config
             .validate(&cfg.child.extra_args)
@@ -1307,8 +1303,6 @@ async fn upgrade_apply(
     headers: HeaderMap,
     Json(req): Json<apply::UpgradeRequest>,
 ) -> Result<Response, ApiError> {
-    // Applies are serialized with `try_lock` so a second request gets an
-    // immediate 409 instead of queueing behind a minutes-long upgrade.
     let _guard = state.apply_lock.try_lock().map_err(|_| {
         ApiError::new(
             StatusCode::CONFLICT,
@@ -1349,8 +1343,6 @@ async fn upgrade_full_reboot(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    // Full reboot is serialized with apply/rollback and rejects concurrent
-    // upgrade work immediately rather than queueing behind it.
     let _guard = state.apply_lock.try_lock().map_err(|_| {
         ApiError::new(
             StatusCode::CONFLICT,
@@ -1406,8 +1398,6 @@ async fn upgrade_rollback(
     headers: HeaderMap,
     Json(req): Json<RollbackRequest>,
 ) -> Result<Response, ApiError> {
-    // Rollback mutates the same symlinks, installed state, history, and DB
-    // backup paths as apply, so it also rejects concurrent upgrade work.
     let _guard = state.apply_lock.try_lock().map_err(|_| {
         ApiError::new(
             StatusCode::CONFLICT,
@@ -1424,9 +1414,7 @@ async fn upgrade_applied_id(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    // TODO(#396): this sentinel is currently admin-authenticated, which makes
-    // unauthenticated browser polling awkward. Revisit with a proper frontend
-    // refresh/event design instead of loosening auth in this PR.
+    // TODO: this sentinel is admin-authenticated, which makes unauthenticated browser polling awkward.
     require_bearer(&headers, state.admin_token.as_deref())?;
     let release_id = apply::read_last_upgrade_id_blocking(&state.cfg).await?;
     Ok((
@@ -1444,10 +1432,7 @@ fn schedule_exec_self(
     tailnet: Option<Arc<tailnet::TailnetManager>>,
 ) {
     tokio::spawn(async move {
-        // Axum has no per-response flush hook here. This delay gives hyper time
-        // to write the 202 body before this process image is replaced; a slow
-        // or dropped client may still observe the connection close first and
-        // should confirm success through /upgrade/history after reconnecting.
+        // Give hyper time to write the 202 body before this process image is replaced.
         tokio::time::sleep(Duration::from_millis(2000)).await;
         if let Err(err) = supervisor.force_stop_and_wait().await {
             tracing::warn!(error = %err, "failed to stop calm-server before exec-self");

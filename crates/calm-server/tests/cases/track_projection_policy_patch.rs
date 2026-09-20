@@ -175,18 +175,11 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "parent_track_id",
     "tree_task_budget",
     "plugin_scope",
-    // #1147 S1 — migration 0077 replaced `cwd` (dropped, see above) with the
-    // typed workspace.
     "workspace_kind",
     "workspace_path",
     "workspace_frozen_at",
-    // #1292 S3 — migration 0085. Which user recipe this track was built from
-    // and at which revision of it. Both NULL unless the track came from one;
-    // a cross-column CHECK refuses one without the other.
     "recipe_id",
     "recipe_revision",
-    // #1704 S2 — migration 0109. The tree root's Claude Code permission
-    // policy; NULL on every child and on every track without one.
     "claude_permissions_policy",
 ];
 
@@ -477,23 +470,12 @@ async fn tree_budget(repo: &Arc<dyn Repo>, track_id: &str) -> Option<i64> {
         .unwrap()
 }
 
-/// #985 slice 6 PR-B — `tree_task_budget` reaches the column through the SAME
-/// production PATCH surface as `planner_task_ceiling`, with the same four
-/// behaviors (write, present-null reset, non-user 403, negative 400) plus the
-/// root-only rule. Without a write surface the column would be permanently
-/// pinned at the kernel default and every test would have to poke it with raw
-/// SQL — a fixture bypassing the production route.
 #[tokio::test]
 async fn tree_task_budget_patch_matches_the_planner_task_ceiling_surface() {
     let (state, track_id, repo) = boot().await;
     assert_eq!(tree_budget(&repo, &track_id).await, None);
     let before = event_count(&repo).await;
 
-    // Non-user actors are refused, with no row and no event. The REASON is
-    // asserted, not just the status: an `ai:codex` REST request is also
-    // refused further downstream (its legacy header path carries an empty
-    // card id), so a bare 403 assertion here would stay green with the
-    // user-only gate deleted.
     let response = patch(
         state.clone(),
         &track_id,
@@ -513,7 +495,6 @@ async fn tree_task_budget_patch_matches_the_planner_task_ceiling_surface() {
     assert_eq!(tree_budget(&repo, &track_id).await, None);
     assert_eq!(event_count(&repo).await, before);
 
-    // Negative values are refused.
     let response = patch(
         state.clone(),
         &track_id,
@@ -524,9 +505,7 @@ async fn tree_task_budget_patch_matches_the_planner_task_ceiling_surface() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(tree_budget(&repo, &track_id).await, None);
 
-    // The whole-tree rebuild runs in the write transaction. Its configured
-    // budget (and therefore N, because member admission requires N<=B) has a
-    // fixed production ceiling rather than allowing an unbounded writer hold.
+    // The tree budget has a fixed production ceiling.
     let response = patch(
         state.clone(),
         &track_id,
@@ -650,9 +629,6 @@ async fn tightening_policy_immediately_deletes_pending_projection_and_emits_plan
     assert_eq!(plan_events, 1);
 }
 
-/// `tree_task_budget` is an input to schedulability even for an N=1 root when
-/// explicitly configured. Tightening it must use the same in-transaction
-/// reprojection seam as the other policy fields.
 #[tokio::test]
 async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits_plan_updated() {
     let (state, track_id, repo) = boot().await;
@@ -704,10 +680,6 @@ async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits
     assert_eq!(plan_events, 1);
 }
 
-/// Gate policy is an admission input just like the planner ceiling. Tightening
-/// it must remove an already-pending ungated row before the scheduler poke can
-/// claim it, announce the changed projection, and leave the read verdict with
-/// the server-owned NotAdmitted explanation.
 #[tokio::test]
 async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeup() {
     let (state, track_id, repo) = boot().await;
@@ -781,9 +753,6 @@ async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeu
     }));
 }
 
-/// The root budget determines every descendant's share. The PATCH transaction
-/// must therefore invalidate descendant projections too; otherwise this old
-/// pending row remains directly claimable without any later child edit.
 #[tokio::test]
 async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_claimed() {
     let (state, root_id, repo) = boot().await;
@@ -830,9 +799,6 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
     tx.rollback().await.unwrap();
 }
 
-/// Removing a leaf changes N in the root's B/N split. The delete transaction
-/// must reproject the surviving members so a declaration whose share grows is
-/// admitted immediately, without waiting for another report edit or restart.
 #[tokio::test]
 async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
     let (state, root_id, repo) = boot().await;
@@ -913,9 +879,6 @@ async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
     );
 }
 
-/// Pending overage is removable, but already-dispatched work is not. A budget
-/// PATCH that would make an in-flight member exceed its new share must roll
-/// back instead of publishing a root budget smaller than the live inventory.
 #[tokio::test]
 async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomically() {
     let (state, root_id, repo) = boot().await;
@@ -972,9 +935,6 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
     );
 }
 
-/// Unlike a tree-budget change, a per-track ceiling may be committed below
-/// immutable in-flight occupancy. Every persistent task column is preserved,
-/// and new admission remains frozen until occupancy converges to the ceiling.
 #[tokio::test]
 async fn tightening_planner_ceiling_below_inflight_inventory_commits_degraded_state() {
     let (state, track_id, repo) = boot().await;

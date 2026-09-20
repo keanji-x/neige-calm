@@ -1,27 +1,4 @@
-// The report document — the main column on a track and an area.
-//
-// **A report is a sequence of typed blocks, not one Markdown string** (§8.3).
-// `prose` blocks render through `core/markdown`'s sanitized AST; `table`,
-// `chart.candles`, `chart.series`, `task` and `app` render themselves.
-//
-// **Every block is the same width.** The blocks used to break out from the
-// prose measure to the full document width, on the theory that a table wants
-// room; what that actually produced was a document with two left-to-right
-// rhythms, where the eye had to re-find the column at every figure. One
-// measure for every kind is the simpler promise, and the one a reader can see.
-//
-// A v1 report has no blocks, only the flat `body` projection. That renders as
-// a single prose block, which is exactly what it is; it simply has no block
-// ids, so it has no outline and no deep links.
-//
-// Raw HTML is dropped by `sanitizeAstPolicy`, so nothing reaches the DOM that
-// the parser did not classify. There is no `dangerouslySetInnerHTML` anywhere
-// on this path — every node below is a React element built from typed fields.
-//
-// It lives in `features/` and not `ui/`: it reads `core/domain` and
-// `core/markdown`, and `ui/**` may import `core` *types* from three files only.
-// The area and track pages therefore receive it by injection from `app/router`,
-// the same way they receive the track list.
+// The report document — the main column on a track and an area: a sequence of typed blocks.
 
 import { useEffect, type ReactNode } from 'react';
 
@@ -53,7 +30,7 @@ export type ReportDocumentProps = Readonly<{
   report: TrackReport | null;
   /** What the empty state should offer, which differs per route. */
   empty: ReactNode;
-  /** The outline rail (§6.16), which hangs in the document's leading gutter. */
+  /** The outline rail, which hangs in the document's leading gutter. */
   rail?: ReactNode;
   /** The byline row (`Planner Agent · 2h`), composed by `app/router`. */
   byline?: ReactNode;
@@ -63,13 +40,7 @@ export type ReportDocumentProps = Readonly<{
   onOpenLink?: (target: ReportLinkTarget) => void;
   /** A file link admitted beneath `fileRoot` was activated. */
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
-  /**
-   * A `neige://source/…` citation was activated (#1669). Absent ⇒ citations
-   * render as an inline badge plus their label. Surfaces without a Track
-   * (Today, a Markdown file) use this form — see `Inline`'s `link` case.
-   * A `table` block's cell that is exactly one such link is the same
-   * citation, with the same handler (#1687).
-   */
+  /** A `neige://source/…` citation was activated. Absent ⇒ citations render as an inline badge plus their label. */
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   /** Absolute root used to admit relative or already-absolute workspace links. */
   fileRoot?: string;
@@ -83,29 +54,13 @@ export type ReportDocumentProps = Readonly<{
   taskRows?: readonly ReportTaskRow[];
   /** App-owned current/history query and recovery action, scoped to a task. */
   renderTaskExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
-  /**
-   * Resolves a live `table` block's `source` to the payload a plugin last
-   * pushed there. Absent ⇒ live tables say so instead of rendering; a surface
-   * that does not load overlays (Today, the file viewer) is not lying about
-   * live data, it just does not have it.
-   */
+  /** Resolves a live `table` block's `source` to the payload a plugin last pushed there. Absent ⇒ live tables say so instead of rendering. */
   resolveLiveTable?: (source: string) => unknown;
-  /**
-   * Resolves a `chart.series` block, by its id and the revision it was
-   * rendered from, to the app's query of the kernel's resolved data (#1628
-   * D5). Absent ⇒ series blocks say the view carries no such data, for the
-   * same reason live tables do.
-   */
+  /** Resolves a `chart.series` block, by id and rev, to the app's query of the kernel's resolved data. Absent ⇒ series blocks say the view carries no such data. */
   resolveSeries?: (blockId: string, rev: number) => SeriesResolution | undefined;
 }>;
 
-/**
- * INV-A11Y-061 — a report is prose, not navigation. It emits no `<a href>`:
- * a typed Track citation or workspace file becomes a `<button>` plus a
- * callback, and every other link keeps its label and drops its destination.
- * That keeps this surface consistent with every other one in the app rather
- * than making the document the single place a native link exists.
- */
+/** A report is prose, not navigation: it emits no `<a href>`; typed citations become buttons and every other link keeps its label and drops its destination. */
 export function ReportDocument({
   report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath,
   resolveLiveTable, resolveSeries,
@@ -119,18 +74,11 @@ export function ReportDocument({
   if (report === null) return <>{empty}</>;
 
   return (
-    /* `calm-prose` is the app's one prose recipe (base.css) — measure, serif,
-       size, leading, and the block rhythm. The module class beside it adds only
-       what is specific to a *report*: the numbered sections, the outline
-       gutter and the sidenote. Two prose definitions is how the question
-       "what does prose look like" stops having one answer. */
     <article className={`calm-prose ${styles.doc}`} data-nc-report="" tabIndex={-1}>
       {rail}
       {byline !== undefined && <div className={styles.byline}>{byline}</div>}
       {report.blocks === null
         ? (
-          // A v1 report is one prose block that happens to have no id: same
-          // column, same measure, just nothing to anchor to.
           <div className={styles.row}>
             <div className={styles.block}>
               <ProseBlock
@@ -146,28 +94,6 @@ export function ReportDocument({
           </div>
         )
         : (() => {
-          /*
-           * ── The document, then the reference section ──────────────────────
-           *
-           * The report is meant to be a deliverable, and it was not reading as
-           * one. Measured on a real track: 8141 characters of body, 11 blocks —
-           * four prose and seven `task`. The prose a reader is meant to take
-           * away was about 700 characters; the rest was worker prompts,
-           * acceptance criteria and gate shell commands, set inline at content
-           * weight, between the paragraphs that were the actual conclusions.
-           *
-           * Those are not the report's argument, they are the machinery that
-           * produced it. So they come out of the flow and go to the end, inside
-           * one collapsed section. The reading column is then what the track
-           * *concluded*; the appendix is how it got there, one line each, for
-           * the reader who wants to check.
-           *
-           * **`processBlocks` is a predicate, not a list of tasks.** The
-           * section is named `Reference` rather than `Tasks` because the split
-           * it draws is "argument / machinery", and everything procedural the
-           * report grows later belongs on the same side of it. Adding a kind
-           * here is the whole change.
-           */
           const documentBlocks = report.blocks.filter((block) => !isProcessBlock(block));
           const processBlocks = report.blocks.filter(isProcessBlock);
           return (
@@ -186,9 +112,6 @@ export function ReportDocument({
                   resolveSeries={resolveSeries}
                 />
               ))}
-              {/* §6.1 — a section with zero rows is not rendered. A report that
-                  declared no tasks has no machinery to account for, and a
-                  permanent empty appendix would make that look like a gap. */}
               {processBlocks.length > 0 && (
                 <ReportReference blocks={processBlocks} backlinkCounts={backlinkCounts}
                   tasks={taskRows ?? deriveReportTasks(report.blocks, taskVerdicts)} renderTaskExecution={renderTaskExecution} />
@@ -200,40 +123,10 @@ export function ReportDocument({
   );
 }
 
-/**
- * Blocks that record how the work was driven rather than what it concluded.
- * Today that is `task`; the predicate exists so the next one is a one-line
- * change rather than a second mechanism.
- *
- * **The predicate is `core/domain`'s**, not a copy. Three projections ask
- * "is this a task" — the outline, the panel's inventory and this section — and
- * a local copy here is exactly how they came to disagree about a block whose
- * payload failed to parse. See `isTaskBlock` for the case and the cost.
- */
 function isProcessBlock(block: ReportBlock): boolean {
   return isTaskBlock(block);
 }
 
-/**
- * The appendix, closed.
- *
- * **Closed by default, and the earlier argument against that does not carry
- * over.** When each task was its own fold in the middle of the prose, opening
- * closed would have been the app deciding, for a reader who never asked, that
- * part of the document's own argument was not worth showing. This is the
- * opposite shape: one labelled section, at the end, holding only the things
- * that are *not* the argument. Nothing the report concluded is behind it.
- *
- * One fold, not N. Eight collapsed task rows scattered through the prose still
- * cost eight interruptions and eight decisions; this costs one, and the reader
- * who never opens it reads a clean document.
- *
- * The rows inside keep their block ids, which is what makes this safe: a
- * `neige://wave/x#b_task` link from another report, and the panel's task
- * inventory, both still land — `revealReportAnchor` opens every `<details>` it
- * lands inside before it measures where to scroll, so arriving here unfolds
- * the section and the row together.
- */
 function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }: {
   blocks: readonly ReportBlock[];
   backlinkCounts?: ReadonlyMap<string, number>;
@@ -245,39 +138,16 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
     <div className={styles.row}>
       <details className={styles.reference} data-nc-report-reference="">
         <summary className={styles.referenceSummary}>
-          {/*
-            * A real heading, and `<h2>` because that is what the report's own
-            * numbered sections are (`document`'s `.h1` class is worn by an
-            * `<h2>` element) — so this lands at the same level in the heading
-            * outline a screen-reader user navigates by, which is what it is.
-            *
-            * The heading wraps *everything* in the summary rather than sitting
-            * beside the chevron and the count. `<summary>`'s content model is
-            * phrasing content **or one heading element**; a heading with two
-            * spans for company would be neither.
-            */}
+          {/* `<summary>` takes phrasing content or one heading element, so the h2 wraps the chevron and the count. */}
           <h2 className={styles.referenceHead}>
             <span className={styles.referenceMarker}><Icon name="chevron-right" size="sm" /></span>
             <span className={styles.referenceTitle}>Reference</span>
-            {/* The count is the reason to open it, and the only thing the closed
-                row can say about what is inside. Tabular figures so a document
-                with two of these does not jitter. */}
             <span className={styles.referenceCount}>
               {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
             </span>
           </h2>
         </summary>
-        {/*
-          * Not `BlockSlot`, and that is a layout fact rather than a preference.
-          * A slot is `display: contents` over the *article's* three-column grid
-          * — leading gutter, measure, sidenote gutter — and this `<details>` is
-          * not that grid, so a slot nested here would drop its `grid-column: 2`
-          * and the backlink marker would have no gutter to sit in. The entries
-          * therefore carry the two things a slot exists for, directly: the block
-          * id (which is the anchor every deep link and the TASKS panel address)
-          * and the backlink count, which moves inline because there is no
-          * trailing gutter inside an appendix.
-          */}
+        {/* Not `BlockSlot`: a slot is `display: contents` over the article's grid, and this `<details>` is not that grid. */}
         {blocks.map((block) => {
           const backlinks = backlinkCounts?.get(block.id) ?? 0;
           return (
@@ -299,13 +169,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
   );
 }
 
-/**
- * One block, plus the sidenote that belongs to it.
- *
- * The slot — not the block renderer — owns the id and the column, so every
- * kind lands on the same left edge and every kind can be cited by id without
- * each renderer having to remember to carry one.
- */
+/** One block, plus the sidenote that belongs to it. */
 function BlockSlot({
   block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, resolveLiveTable, resolveSeries,
 }: {
@@ -336,9 +200,6 @@ function BlockSlot({
               resolveLiveTable={resolveLiveTable} resolveSeries={resolveSeries} />}
       </div>
       {backlinks > 0 && (
-        // In the trailing gutter, aligned to the block's first line. Inside the
-        // prose it would interrupt the reading; out here peripheral vision
-        // finds it and nothing is in the way if you ignore it.
         <span className={styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
           ◂ {backlinks}
         </span>
@@ -347,11 +208,10 @@ function BlockSlot({
   );
 }
 
-/** One bad block may not cost the page: an unknown kind, or a known kind whose
- *  payload did not parse, degrades to one line and the document goes on. */
+/** One bad block may not cost the page: an unknown kind or an unparsable payload degrades to one line. */
 function BlockBody({ block, task, renderTaskExecution, onOpenSourceLink, resolveLiveTable, resolveSeries }: {
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
-  /** A table cell that is one source citation is the same control the prose paints (#1687). */
+  /** A table cell that is one source citation is the same control the prose paints. */
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
   resolveSeries?: ReportDocumentProps['resolveSeries'];
@@ -375,24 +235,7 @@ function BlockBody({ block, task, renderTaskExecution, onOpenSourceLink, resolve
   }
 }
 
-/**
- * The rendered-Markdown half of a report block: `core/markdown`'s `parse`, the
- * outline's own heading ids, and `sanitizeAstPolicy`.
- *
- * **Exported for the recipe editor** (#1292), which is the same picture — a
- * saved report body, rendered — and which lives inside `features/report/` for
- * exactly this reason. Two rules bracket that placement and neither leaves a
- * second option: `features-no-cross-domain` forbids any other `features/*`
- * from importing this file, and INV-DUP-004/005 make `core/markdown` the
- * single Markdown path (`systems/fs-viewers/public.tsx` records that
- * `react-markdown` was deleted on purpose to hold that line). A recipe editor
- * anywhere else would have had to write a second renderer to violate both.
- *
- * The `failed` branch below renders the **source**, not an error, and that
- * behaviour is doubly right for a recipe: the author is editing raw Markdown,
- * so the text they wrote is the most useful thing to show them when it will
- * not parse.
- */
+/** The rendered-Markdown half of a report block. Exported for the recipe editor. */
 export function ProseBlock({
   markdown, blockId, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath,
 }: {
@@ -405,19 +248,11 @@ export function ProseBlock({
   fileBasePath?: string;
 }) {
   const parsed = parse(markdown);
-  // A report that will not parse is still a report; showing the source beats
-  // showing an error, because the source is what the agent actually wrote.
   if (parsed.status === 'failed') {
     return <pre className={styles.raw}>{markdown}</pre>;
   }
 
-  /*
-   * Heading ids come from the same `extractOutline` call the outline itself
-   * uses, keyed by source offset. Counting headings a second time here would
-   * be a second implementation of "which headings are sections", and the two
-   * would drift the first time the policy changed — leaving an outline whose
-   * entries scroll to nothing.
-   */
+  // Heading ids come from the same `extractOutline` call the outline uses, so the two cannot drift.
   const headingIds = blockId === null
     ? new Map<number, string>()
     : new Map(extractOutline([{ context: { blockId }, ast: parsed.value }], {
@@ -429,31 +264,6 @@ export function ProseBlock({
     }).map((heading) => [heading.position.start.offset ?? -1, heading.id]));
 
   const ast = sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' });
-  /*
-   * **This early return changes no DOM.** Returning `null` and returning an
-   * empty fragment produce the same thing — React emits no children either
-   * way — so nothing downstream can tell them apart, and no test measures the
-   * difference. It is here to say out loud that "sanitized to nothing" is a
-   * state this component expects, for the reader who arrives at the CSS below
-   * wondering how a block ends up `:empty`.
-   *
-   * What actually keeps an emptied block off the page is
-   * `.row:has(> .block:empty)` in `document.module.css`, and the test that
-   * covers it is `carrier.browser.test.tsx` — a real browser, because `:empty`,
-   * `display` and `row-gap` are layout and jsdom computes no layout. Deleting
-   * this early return leaves every one of those assertions green; deleting the
-   * CSS rule turns them red.
-   *
-   * The case that makes any of it real is a document that carries its own
-   * maintenance contract in a leading HTML comment (#1185): `rawHtml: 'drop'`
-   * removes the one node it has.
-   *
-   * Emptiness is judged *here*, after the one pipeline, rather than in the
-   * block filter above: judging it up there would parse and sanitize every
-   * prose block a second time — a second implementation of this pipeline, and
-   * one that could not structurally avoid the `failed` branch, so it would
-   * hide the screen that shows an agent the source it broke.
-   */
   if (ast.children.length === 0) return null;
   return <>{ast.children.map((block, index) => (
     <Block
@@ -482,11 +292,7 @@ function Block({ block, headingIds, ...rest }: { block: SafeBlock } & BlockConte
   const context: BlockContext = { headingIds, ...rest };
   switch (block.type) {
     case 'heading': {
-      // The kernel derives sections by splitting at H1, so H1 is a *section*
-      // rule here, not a page title — the page title is the track's name in the
-      // header, and a document may not carry a second one. H1 and H2 are all
-      // `REPORT_MAX_DEPTH` admits; anything deeper renders as H2 rather than
-      // vanishing, because dropping a heading loses the text under it.
+      // H1 is a section rule, not a page title; anything deeper than H2 renders as H2 rather than vanishing.
       const id = headingIds.get(block.position.start.offset ?? -1);
       if (block.depth !== 1) {
         return (
@@ -496,11 +302,6 @@ function Block({ block, headingIds, ...rest }: { block: SafeBlock } & BlockConte
         );
       }
       return (
-        // The section's text is wrapped so the trailing rule can be a flex
-        // sibling that takes the space the words leave. The rule used to be a
-        // 100%-wide pseudo-element pulled back by a negative margin, which
-        // worked only under a clip — and the clip would have taken the margin's
-        // section number with it once that moved out of the heading.
         <h2 className={styles.h1} id={id}>
           <span className={styles.headingText}><Inlines nodes={block.children} {...context} /></span>
         </h2>
@@ -522,21 +323,10 @@ function Block({ block, headingIds, ...rest }: { block: SafeBlock } & BlockConte
         <Tag className={styles.list} start={block.ordered && block.start !== null ? block.start : undefined}>
           {block.children.map((item, index) => (
             <li key={index} className={styles.item}>
-              {/* A task list keeps its box, disabled: the report states what was
-                  done, and a checkbox you can tick would be claiming this
-                  surface writes back. It does not. */}
               {item.checked !== null && (
                 <input type="checkbox" className={styles.check} checked={item.checked} disabled readOnly />
               )}
               {item.children.map((child, childIndex) => (
-                /*
-                 * A *tight* list item renders its paragraph's inlines directly,
-                 * with no `<p>` around them. That is Markdown's own rule, not a
-                 * style choice: `spread` is exactly the parser telling us the
-                 * author wrote the items on consecutive lines. Wrapping them in
-                 * a block instead put every bullet's text on the line below its
-                 * marker, and a task item's label below its checkbox.
-                 */
                 !block.spread && child.type === 'paragraph'
                   ? <Inlines key={childIndex} nodes={child.children} {...context} />
                   : <Block key={childIndex} block={child} {...context} />
@@ -548,8 +338,7 @@ function Block({ block, headingIds, ...rest }: { block: SafeBlock } & BlockConte
     }
     case 'table':
       return (
-        // Its own scroll container: a wide table may not make the page scroll
-        // sideways (§3.2).
+        // Its own scroll container: a wide table may not make the page scroll sideways.
         <div className={styles.tableWrap}>
           <table className={styles.table}>
             <tbody>
@@ -598,11 +387,7 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
     case 'break':
       return <br />;
     case 'link': {
-      // The three typed in-app destinations become buttons: a Track citation,
-      // a source citation (#1669), and a local file proven to sit beneath the
-      // current workspace root. Everything else loses its destination. A
-      // report is agent-authored, so a bare `<a href>` here would let
-      // untrusted text steer the browser.
+      // A report is agent-authored, so a bare `<a href>` here would let untrusted text steer the browser.
       const target = parseReportLink(node.destination);
       if (target !== null && onOpenLink !== undefined) {
         return (
@@ -611,16 +396,7 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
           </button>
         );
       }
-      /*
-       * A source citation is a control whenever there is a panel to open, and
-       * that includes one whose id or anchor will not parse: the panel says
-       * "来源缺失" and prints the destination, which is how an author sees the
-       * typo (the kernel's receipt warns about the same links). Degrading it
-       * to prose would hide exactly the citation that needs fixing. Without a
-       * panel it is a badge and its label — `ReportSourceCitation` owns both
-       * forms, and a table cell that is one citation paints the same element
-       * (#1687), so the choice is made in exactly one place.
-       */
+      /* A source citation stays a control even when its id or anchor will not parse: the panel is where the typo is reported. */
       const sourceTarget = parseReportSourceLink(node.destination);
       if (sourceTarget !== null) {
         return (

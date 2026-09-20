@@ -1,19 +1,5 @@
-//! Integration test (#177): `POST /api/tracks` threads `theme: { fg, bg }`
-//! through to the auto-minted planner card's terminal renderer startup
-//! argv as `--terminal-fg=r,g,b --terminal-bg=r,g,b`.
-//!
-//! Pre-#177 the track-create route auto-minted a planner card and spawned
-//! its codex daemon via `spawn_terminal_for` (the no-opts shim that
-//! ignored theme). That meant codex's OSC 10/11 startup probe got no
-//! answer from the daemon, so the composer painted against codex's
-//! built-in default and visually clashed with the surrounding card.
-//! PR #193 had already fixed the user-created codex-card path but
-//! missed the planner-card spawn — this test is the regression guard.
-//!
-//! Strategy: use the fixture-backed proc supervisor so the renderer
-//! receives the terminal row's theme during EnsureProc. Fire the
-//! track-create POST with a `theme` body, wait for the renderer entry
-//! to land, and assert its startup config carries the exact RGB.
+//! `POST /api/tracks` threads `theme: { fg, bg }` through to the auto-minted planner card's terminal
+//! renderer startup config, via the fixture-backed proc supervisor.
 
 #![cfg(unix)]
 
@@ -83,10 +69,7 @@ async fn boot() -> Boot {
                 track_area_cache.clone(),
             ),
         )),
-        // #293 cutover — `POST /api/tracks` now boots a kernel-owned codex
-        // app-server before returning 201. Point `codex_bin` at the
-        // `osc-probe-child` fake app-server fixture so the boot succeeds
-        // without a real codex on PATH (see `tests/common/mod.rs`).
+        // Point `codex_bin` at the fake app-server fixture so the boot succeeds without a real codex on PATH.
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache.clone()),
         Some(track_area_cache.clone()),
@@ -106,10 +89,8 @@ async fn boot() -> Boot {
     }
 }
 
-/// Returns `(status, json_or_null, raw_text)`. Axum's 422 surface from a
-/// serde-rejected `Json<T>` is `text/plain` (not JSON); we keep both
-/// shapes so the missing-theme test below can substring-match against
-/// the raw text while the happy-path test still drills into the JSON.
+/// Returns `(status, json_or_null, raw_text)`. Axum's 422 from a serde-rejected `Json<T>` is `text/plain`,
+/// not JSON, so the raw text is kept for the missing-theme substring match.
 async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, String) {
     let resp = app
         .oneshot(
@@ -129,31 +110,12 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, 
     (status, json, text)
 }
 
-/// Happy path: track-create body carries `theme: { fg, bg }` — the
-/// planner card's renderer config must carry the dark-theme RGB the web
-/// client stamps for a dark host browser.
-/// Required-field gate (#177 followup): track-create body without
-/// `theme` must be rejected at the deserialize layer. Previously this
-/// test asserted back-compat — the route silently fell back to "no
-/// theme args, daemon stays silent on OSC 10/11". That fallback was
-/// exactly the bug source: a web client that forgot to include theme
-/// (e.g. `useTodayTerminal.ts:168` before #177's track-create theme
-/// thread-through) ended up with a mis-tinted composer with no signal
-/// at any layer. Forcing the field at the API boundary means a missing
-/// theme surfaces immediately as a 422 — the bug becomes a compile-
-/// time / first-request failure instead of a visual artifact.
-///
-/// `serde` returns 422 (Unprocessable Entity) on `Json<NewTrack>`
-/// deserialize failures when a non-Option field is absent.
+/// A track-create body without `theme` is rejected at the deserialize layer (422).
 #[tokio::test]
 async fn track_create_without_theme_is_rejected() {
     let boot = boot().await;
 
-    // Body includes every other required field (cwd, attach_folder); only
-    // `theme` is missing. Without this guard the body's first missing
-    // required field (e.g. `cwd`) could fire the 422 instead, leaving the
-    // theme-required contract silently un-tested. The body-substring
-    // assertion below pins `theme` as the rejected field.
+    // Body includes every other required field so the 422 fires on the missing `theme` and not some other field.
     let (status, _body, text) = post(
         boot.app.clone(),
         "/api/tracks",

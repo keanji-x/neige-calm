@@ -11,18 +11,11 @@ import {
 } from '../keys/mcp-tools.js';
 import { sha256Hex } from './sha256.js';
 
-/**
- * What kind of thing the conversation is, from the reader's point of view.
- *
- * The first four spellings match `WorkerSessionKind` in
- * `core/api/generated/wire.ts`. A `'track-assistant'` (#1189) is an ordinary
- * codex-card session, and the server derives this reader-facing value from the
- * card's own marker rather than from its worker session kind.
- */
+/** What kind of thing the conversation is; `'track-assistant'` is derived server-side from the card's own marker. */
 export type ConversationKind =
   | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'track-assistant';
 
-/** Mirrors `WorkerSessionState` — the session state machine (#679 §1). */
+/** Mirrors `WorkerSessionState`. */
 export type ConversationState =
   | 'starting' | 'running' | 'idle' | 'turn_pending' | 'exited' | 'failed' | 'superseded';
 
@@ -30,93 +23,39 @@ export type Conversation = Readonly<{
   id: string;
   trackId: string;
   /**
-   * The track's title, resolved by whoever knows about tracks — absent when
-   * nobody does.
-   *
-   * Optional because a per-Track conversation list does not repeat the Track
-   * title already named by its request path. A surface that names Tracks must
-   * resolve it from the surrounding Track; `undefined` makes that obligation
-   * visible instead of rendering `", on undefined"`.
+   * The track's title; absent when a per-Track list does not repeat it, so surfaces that name
+   * tracks must resolve it.
    */
   trackTitle?: string;
-  /**
-   * The conversation's own name, or null before it has one.
-   *
-   * The kernel's session card carries a `title`; this mirrors it. It is not the
-   * track's title and must never be filled with one — a track holds several
-   * conversations, and naming them all after their track names none of them.
-   */
+  /** The conversation's own name, or null; never the track's title. */
   title: string | null;
   kind: ConversationKind;
-  /**
-   * The live session's state, or `null` when there is no live session to read.
-   *
-   * `null` is a fact, not a gap: the conversation list is a LEFT JOIN restricted to the
-   * four live states, so a card whose session exited, failed or was superseded
-   * — and a card minted seconds ago that has none yet — both arrive as `null`.
-   * Substituting `'exited'` or `'failed'` would assert a state nobody read.
-   *
-   * **No indicator reads this** (#1722 §5.3, INV-APP-118): a row's dot comes
-   * from the kernel's `activity.cards` verdict, and the drawer's live mark from
-   * the same verdict plus the sender's own in-flight send. What still reads it
-   * is the open row's local phase (`describeConversation`) and the drawer's
-   * baseline `scope.state`.
-   */
+  /** The live session's state, or `null` when there is no live session to read — a fact, not a gap. */
   state: ConversationState | null;
   /** Last turn, or the session's own update time when it has no turns yet. */
   updatedAt: number;
   /**
-   * When the last non-interrupted turn ended (#1722 §4.7), `null` before any
-   * has — the read receipt's comparison point: `updatedAt` also moves when the
-   * reader queues a message, so it cannot say "something finished".
-   *
-   * Optional for the same reason `turns` is: a surface that produced the row
-   * without the kernel's completion column (a terminal or codex row assembled
-   * elsewhere) cannot say, and absent — like `null` — is never unread.
+   * When the last non-interrupted turn ended, `null` before any has; `updatedAt` also moves when
+   * the reader queues a message.
    */
   lastTurnCompletedAt?: number | null;
-  /**
-   * Turn count, or absent when the surface that produced the row cannot count.
-   *
-   * Optional because the conversation list will not: counting turns means re-parsing
-   * every `harness_items.params` blob, and a count that silently disagrees with
-   * the drawer is worse than no count (`TrackConversationSummary`). Zero is
-   * still legal and still means zero.
-   */
+  /** Turn count, or absent when the surface that produced the row cannot count. */
   turns?: number;
 }>;
 
-/** What a session is called when it has no name of its own. `kind` is its
- *  identity, not decoration — a nameless Codex session is "Codex". */
+/** What a session is called when it has no name of its own. */
 export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>> = Object.freeze({
   terminal: 'Terminal',
   codex: 'Codex',
   claude: 'Claude',
   'shared-spec': 'Planner',
-  /* A track can hold several conversations, so the fallback names which kind
-     this is rather than repeating the Track title. */
   'track-assistant': 'Assistant',
 });
 
 /**
- * Who is entitled to say what state a conversation of this kind is in.
- *
- * `'server'` — the row arrives from a list endpoint that read
- * `worker_sessions.state`, so the value it carries is a *reading* and must be
- * shown as sent. `run_status_for` writes `turn_pending` and never `running` for
- * a headless harness, and everything outside the four live states arrives as
- * `null`; substituting a locally-invented `'idle'` for that `null` would assert
- * a state nobody read.
- *
- * `'route'` — nothing listed this conversation. The surface reading its harness
- * is the only thing that knows anything about it, so its own phase is the whole
- * answer.
- *
- * It is a total `Record` on purpose. The branch this replaces was written
- * `scopeKind === 'track-assistant' ? … : …`, and a new kind falling into that
- * `else` **silently** dropped the server's state — no compile error, no failing
- * type. A missing row here is a compile error instead, which is the only reason
- * this table exists rather than a two-armed conditional.
+ * Who is entitled to say what state a conversation of this kind is in: `'server'` when a list
+ * endpoint read `worker_sessions.state`, `'route'` when only the surface reading its harness
+ * knows. A total `Record` so a new kind is a compile error.
  */
 export const CONVERSATION_STATE_SOURCE: Readonly<Record<ConversationKind, 'server' | 'route'>> = Object.freeze({
   terminal: 'route',
@@ -126,27 +65,12 @@ export const CONVERSATION_STATE_SOURCE: Readonly<Record<ConversationKind, 'serve
   'track-assistant': 'server',
 });
 
-/**
- * The one name a conversation shows, wherever it is shown.
- *
- * It lives here because two surfaces show it — the list in the panel and the
- * drawer's own head — and they must not disagree. The drawer used to show the
- * *track's* title, which made every conversation on a track look like the same
- * conversation.
- */
+/** The one name a conversation shows, wherever it is shown. */
 export function conversationName(conversation: Conversation): string {
   return conversation.title ?? CONVERSATION_KIND_LABEL[conversation.kind];
 }
 
-/**
- * A name taken from the first thing said, which is what a conversation is
- * about far more reliably than anything chosen up front.
- *
- * One line — a message that opens with a paragraph and then pastes a stack
- * trace is about its first line. `--panel-w` fits roughly this many characters
- * at `--text-base`, and a name that has to be truncated on every surface that
- * shows it is not a name.
- */
+/** A name taken from the first line said; roughly what `--panel-w` fits at `--text-base`. */
 export const CONVERSATION_NAME_MAX = 48;
 
 export function conversationNameFrom(text: string): string | null {
@@ -162,14 +86,7 @@ export function byRecency(left: Conversation, right: Conversation): number {
   return right.updatedAt - left.updatedAt;
 }
 
-/**
- * Who wrote a turn.
- *
- * Two, and only two, because this is who *spoke*. The kernel's vocabulary is
- * wider — tool calls, shell runs, reasoning, file edits — and those are not
- * speech: they arrive as `ConversationActivity`, share the transcript, and are
- * rendered as one quiet line each rather than as a third voice.
- */
+/** Who wrote a turn. Tool calls, shell runs and the like are not speech; they arrive as `ConversationActivity`. */
 export type TurnAuthor = 'you' | 'agent';
 
 export type ConversationTurn = Readonly<{
@@ -178,73 +95,32 @@ export type ConversationTurn = Readonly<{
   /** Verbatim. Line breaks are the author's and are preserved on render. */
   text: string;
   atMs: number;
-  /**
-   * #1505 S6 — images this turn carried, each with the server-built url its
-   * bytes are read back from.
-   *
-   * Optional because most turns have none and because every entry minted
-   * before this slice has none; absent and empty mean the same thing here,
-   * which is why nothing branches on which one it is.
-   */
+  /** Images this turn carried; absent and empty mean the same thing. */
   attachments?: readonly PlannerAttachment[];
-  /**
-   * #1667 D3 — set when the agent said this through `calm.user.notify`
-   * rather than as an ordinary reply. Same bubble either way; what differs
-   * is what the quiet-sync fold does with it (`conversation-quiet-sync.ts`):
-   * an ordinary reply inside a report-edit turn is folded away as background
-   * work, a notify is speech meant for the reader and stays outside the
-   * fold. Absent on every other turn.
-   */
+  /** Set when the agent said this through `calm.user.notify`; the quiet-sync fold keeps it outside the fold. */
   origin?: 'notify';
 }>;
 
-/** A user turn accepted optimistically, carrying the newest persisted item the
- * sender had observed before that request. The provenance survives route
- * remounts through the conversation registry. */
+/**
+ * A user turn accepted optimistically, carrying the newest persisted item the sender had observed
+ * before that request.
+ */
 export type OptimisticConversationTurn = ConversationTurn & Readonly<{
   serverHighWaterBefore: number;
   /**
-   * True when the kernel put this message on the harness `pending_queue`
-   * instead of issuing it as a turn — decided by `kernelQueuesInput` against
-   * the phase at the moment of the press.
-   *
-   * **Required rather than optional, and the reason is the direction a missing
-   * flag falls.** Absent, it is `undefined`, which is falsy, which reads as
-   * *not* queued — and that is the dangerous side: an echo the kernel really
-   * queued but the client believes it issued is an echo waiting for a
-   * persisted transcript row that cannot arrive until the queue drains, i.e. a
-   * composer that goes dead (#1505). Typing it required puts that on the
-   * compiler rather than on whoever adds the next mint site. `isQueuedConversationTurn`
-   * is the read side of the same rule: it answers false for anything that is
-   * not an optimistic turn carrying the flag, so a server row — which has no
-   * such field — is never mistaken for a queued one.
-   *
-   * It is a fact about the *send*, not a live status, so nothing recomputes it:
-   * the echo it belongs to is reconciled away the moment the server hands the
-   * message back, which is exactly when it stops being queued.
+   * True when the kernel put this message on the harness `pending_queue` instead of issuing it
+   * as a turn. Required rather than optional: an absent flag would read as *not* queued, and an
+   * echo the client believes it issued but the kernel queued is a composer that goes dead.
    */
   queued: boolean;
   /**
-   * The pending-queue entry this send landed in, once the server has said so
-   * (#1505 PR4), and `null` until then or when there is none to name.
-   *
-   * The echo is minted at the keypress and this value cannot be known until
-   * the `POST /planner/input` is answered, so it is a *claim made later*, not
-   * a condition of minting. Nothing about when the echo appears depends on it;
-   * what depends on it is who draws the message afterwards — an echo that has
-   * claimed an id whose entry is in `pending` is being drawn by the queue
-   * region, and drawing it here as well is the same sentence twice.
-   *
-   * `null` therefore has to fall on the side of "this side keeps drawing it":
-   * a send that folded onto a pre-#1505 entry, a server too old to answer with
-   * an id, or an answer that has not arrived yet all mean the queue region
-   * cannot show this message, and the reader must not be left with nothing.
+   * The pending-queue entry this send landed in once the server has said so, and `null` until
+   * then or when there is none to name; `null` means this side keeps drawing the message.
    */
   entryId: string | null;
 }>;
 
-/** A kernel observation delivered through Codex's user-message transport.
- * It is transcript content, but nobody in the conversation authored it. */
+/** A kernel observation delivered through Codex's user-message transport; nobody in the conversation authored it. */
 export type ConversationSystemEntry = Readonly<{
   id: string;
   author: 'system';
@@ -254,15 +130,8 @@ export type ConversationSystemEntry = Readonly<{
   text: string;
   atMs: number;
   /**
-   * #1667 D3 — set when this report-edit observation was the WHOLE of the
-   * batch that opened its turn: every segment of the persisted item is
-   * `system_report_edited`. That is the kernel's own definition of a
-   * background sync (`run_loop.rs` `queue_is_only_report_edits`: the quiet
-   * debounce, the omitted patch), and it is what the transcript folds
-   * (`conversation-quiet-sync.ts`). A report edit that shared its batch with
-   * a user message or a task event opened an ordinary turn — the planner
-   * answers the user or the event in it — and is NOT marked: folding that
-   * turn would hide the reply. Absent on every other entry; never `false`.
+   * Set when this report-edit observation was the WHOLE of its batch (the kernel's definition of a
+   * background sync). Never `false`.
    */
   quiet?: true;
 }>;
@@ -285,10 +154,7 @@ const plannerAttachmentSchema: z.ZodType<PlannerAttachment> = z.object({
 const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.object({
   presentation: harnessInputPresentationSchema,
   text: z.string(),
-  /* Defaulted rather than required: every segment persisted before #1505 S6
-     has no such key, and a transcript row that fails to decode is a row that
-     disappears from the conversation. An old segment has no attachments, which
-     is a fact rather than a fallback. */
+  /* Defaulted rather than required: older segments have no such key, and a row that fails to decode disappears. */
   attachments: z.array(plannerAttachmentSchema).optional().default([]),
 });
 
@@ -305,55 +171,18 @@ const harnessPhaseSchema = z.enum([
 ]);
 
 /**
- * Whether a message posted *now* goes on the harness pending queue rather than
- * straight into a turn.
- *
- * This is `HarnessState::can_issue_turn()` (`crates/calm-server/src/harness/
- * state.rs`) read from the other side: the kernel starts a turn from `Idle` and
- * `TurnCompleted` and from nothing else, so every other phase queues. Stated
- * against the kernel's own two-name whitelist rather than against any front-end
- * notion of "busy", because the two are not the same set and a near-miss here
- * is not cosmetic — an input the kernel queued but the client thinks it issued
- * is an echo waiting for a row that cannot arrive until the queue drains, i.e.
- * a composer that goes dead (#1505).
- *
- * The near-miss that produced this function was `working`, i.e. `issuing_turn ||
- * turn_running`. It omits four queueing phases: `issuing_interrupt`,
- * `pending_thread_start`, `resumed` — which reads as idle in the session
- * projection but is *not* in `can_issue_turn` — and `wedged`, where the queue
- * never drains at all (#1507).
- *
- * **`null` is not a phase and is deliberately read as queueing.** It means the
- * client does not know: the run query has not answered yet, or it answered
- * `{worker_session_id: null, phase: null}` because no live harness is registered
- * (`get_planner_run`'s `dormant`). What the POST then does is decided by
- * `ensure_live_planner_harness` (`routes/cards.rs`), not by this value — it
- * either 409s as dormant (the send fails, the echo is dropped, and this flag
- * never matters), 503s while a start is in flight, or lazily recovers a harness
- * from its snapshot, whose restored state is unknown to us and is frequently
- * one that queues. So the honest reading of `null` is "unknown", and the two
- * ways of being wrong about an unknown are not symmetric: guessing *queued* on
- * a conversation that was really idle costs one wrong caption for the single
- * round trip until the server hands the message back and the echo reconciles;
- * guessing *issued* on a conversation that really queued is the dead composer
- * above, with no round trip that ends it. It fails toward the recoverable side.
+ * Whether a message posted *now* goes on the harness pending queue rather than straight into
+ * a turn: `HarnessState::can_issue_turn()` accepts only `Idle` and `TurnCompleted`.
+ * `null` (unknown) is deliberately read as queueing: guessing *issued* on a conversation that
+ * really queued is a dead composer with no round trip that ends it.
  */
 export function kernelQueuesInput(phase: HarnessPhaseTag | null): boolean {
   return !(phase === 'idle' || phase === 'turn_completed');
 }
 
 /**
- * One addressable message waiting in the harness pending queue (#1505).
- *
- * `entry_id` is minted by the kernel and persisted with the entry, so it is the
- * same value a `POST /planner/input` handed back and the same value a restart
- * reads out of the snapshot. `rev` is the compare-and-swap token: it goes up
- * every time the text changes, including when the kernel folds a later send
- * into this entry under backpressure, and an edit or a delete that names a
- * stale one is refused rather than applied to text the reader has not seen.
- *
- * Entries written before #1505 PR1 have no id at all and so cannot appear
- * here; `pending_overflow` counts them (and everything past the page) instead.
+ * One addressable message waiting in the harness pending queue. `rev` is the compare-and-swap
+ * token; entries written before ids existed cannot appear here and are counted by `pending_overflow`.
  */
 export type PendingQueueEntry = Readonly<{
   entry_id: string;
@@ -376,63 +205,30 @@ export type PlannerRun = Readonly<{
   /** The addressable page of the pending queue, in queue order. */
   pending: readonly PendingQueueEntry[];
   /**
-   * How many queued user messages this page does not show — entries past the
-   * page limit, and entries too old to be addressable.
-   *
-   * It is a count and not a list on purpose: the kernel has no id to name
-   * them by, so there is nothing an edit or a delete could be pointed at. The
-   * UI's job is to say they exist, not to pretend they can be touched.
+   * How many queued user messages this page does not show; a count, not a list, because the kernel
+   * has no id to name them by.
    */
   pending_overflow: number;
-  /** #1505 S4-3 — the conversation's model selection; `null` follows the default. */
+  /** The conversation's model selection; `null` follows the default. */
   model: string | null;
   reasoning_effort: string | null;
   /**
-   * Why the queue is not draining, or `null` when there is nothing worth
-   * saying — which is almost always.
-   *
-   * Three things fill it: a selection that cannot be determined (the text
-   * names the choice that fixes it), a turn codex refused (the text says the
-   * message was NOT sent), and an outage long enough that silence would look
-   * like a hang (the text says the message is still coming). Render all three
-   * as one standing notice; `null` is not evidence that anything succeeded.
-   *
-   * It does not diagnose a turn that failed mid-flight.
+   * Why the queue is not draining, or `null`; render as one standing notice. `null` is not evidence
+   * that anything succeeded.
    */
   blocked_reason: string | null;
   /**
-   * #1505 S6 — whether this card can take image attachments.
-   *
-   * False on a track whose workspace is a folder the person owns, where the
-   * server refuses uploads. Defaulted to false rather than true: an
-   * unavailable control with a reason is a smaller wrong than a control that
-   * looks live and then refuses, and this field is absent exactly when the
-   * server is older than the feature.
+   * Whether this card can take image attachments; defaulted to false, which is absent exactly when
+   * the server is older than the feature.
    */
   attachments_supported: boolean;
-  /**
-   * #1255 S3 — how full the model's context is, or `null` when the harness has
-   * never reported it (a dormant card, a thread that has not had a response
-   * yet, a server older than the feature).
-   */
+  /** How full the model's context is, or `null` when the harness has never reported it. */
   token_usage: PlannerRunTokenUsage | null;
 }>;
 
 /**
- * The context-occupancy reading, exactly as the server ships it.
- *
- * **`percent` is the server's number and the only thing a meter may be drawn
- * from.** It is not `used_tokens / context_window`: the kernel subtracts the
- * prompt-and-tools floor every thread starts with from *both* sides, so the
- * two ratios differ and only one of them is the one upstream's own bar shows.
- * `crates/calm-server/src/harness/token_usage.rs` states the rule and holds
- * the constant; nothing here re-derives it, and nothing here should.
- *
- * `percent` is `null` when no honest percentage exists — no known window, a
- * window at or below that floor, or a count that overshot the window (a real,
- * measured, 0.002%-of-frames anomaly the kernel refuses to clamp into a
- * plausible-looking full bar). A reader that wants to distinguish the last
- * case can: it has both numbers.
+ * The context-occupancy reading, exactly as the server ships it. `percent` is the server's
+ * number and the only thing a meter may be drawn from — it is NOT `used_tokens / context_window`.
  */
 export type PlannerRunTokenUsage = Readonly<{
   /** Tokens in the model's context as of its most recent response. */
@@ -441,8 +237,7 @@ export type PlannerRunTokenUsage = Readonly<{
   context_window: number | null;
   /** Context occupancy in `0..=100`, or `null` — see above. */
   percent: number | null;
-  /** Wall clock of the codex frame this came from. The reading survives a
-   *  reboot, so a rehydrated one can be months old and says so. */
+  /** Wall clock of the codex frame this came from; a rehydrated reading can be months old. */
   at_ms: number;
 }>;
 
@@ -469,38 +264,22 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
     method: 'GET', path: `/api/cards/${encodeURIComponent(cardId)}/planner/run`,
     responseSchema: z.object({
       card_id: z.string(), worker_session_id: z.string().nullable().optional(), phase: harnessPhaseSchema.nullable().optional(),
-      /* Defaulted rather than required: a dormant card and every server built
-         before #1505 PR1 answer without them, and the honest reading of an
-         absent queue page is an empty one. */
+      /* Defaulted rather than required: a dormant card and older servers answer without them. */
       pending: z.array(pendingQueueEntrySchema).optional().default([]),
       pending_overflow: z.number().optional().default(0),
-      /* `.nullable()` and NOT `.nullable().optional()`, unlike the two above.
-         The server always sends these — `model`/`reasoning_effort` are read off
-         the card, which always exists on this route, and `blocked_reason` is
-         `null` rather than absent when nothing is wrong — so accepting their
-         absence would only hide the day one of them stopped being sent. */
+      /* `.nullable()` and NOT `.optional()`: the server always sends these, so accepting absence
+         would hide the day one stopped being sent. */
       model: z.string().nullable(), reasoning_effort: z.string().nullable(),
       blocked_reason: z.string().nullable(),
-      /* Absent on a server older than #1505 S6, and false is the safe read:
-         a control that looks live and then refuses is the worse wrong. */
+      /* Absent on older servers, and false is the safe read. */
       attachments_supported: z.boolean().optional().default(false),
-      /* Absent on a server older than #1255 S3, and absent on this one
-         whenever the harness has never reported a usage frame — a dormant
-         card, or a thread nothing has answered in yet. `null` is the reading
-         for all of those, and it is the one that draws no meter. */
+      /* Absent on older servers and whenever the harness has never reported a usage frame; `null` draws no meter. */
       token_usage: plannerRunTokenUsageSchema.nullable().optional().default(null),
     }),
   };
 }
 
-/**
- * What one conversation has chosen. Both members always present; `null` is the
- * value that means "follow whatever this installation is configured to use".
- *
- * There is deliberately no "unset" beyond `null`: `PUT
- * /api/cards/{id}/planner/model` requires both keys and answers 422 without
- * them, so a partial selection is not a state this type may represent.
- */
+/** What one conversation has chosen; `null` means "follow the installation default". The server requires both keys. */
 export type ModelSelection = Readonly<{ model: string | null; reasoning_effort: string | null }>;
 
 export const FOLLOW_INSTALLATION_DEFAULT: ModelSelection = Object.freeze({
@@ -514,26 +293,20 @@ const reasoningEffortOptionSchema = z.object({
 });
 
 const catalogModelSchema = z.object({
-  /* The preset identifier. A React key and nothing else — the value that
-     travels to the server is `model`. */
+  /* A React key and nothing else — the value that travels to the server is `model`. */
   id: z.string(),
   model: z.string(),
   display_name: z.string(),
   description: z.string(),
-  /* Which entry codex's own picker highlights. NOT an answer to "what does
-     this installation follow" — that is `default` below. */
+  /* Which entry codex's own picker highlights, NOT what this installation follows (that is `default` below). */
   is_default: z.boolean(),
   supported_reasoning_efforts: z.array(reasoningEffortOptionSchema),
   default_reasoning_effort: z.string(),
 });
 
 /**
- * `GET /api/models` — what can be chosen, and what is followed when nothing is.
- *
- * `source` and `default_source` are separate answers to separate questions and
- * must not be collapsed: a live daemon can report an empty catalog (an account
- * with nothing selectable), which reads identically to "codex is not running"
- * unless the two are kept apart.
+ * `GET /api/models`. `source` and `default_source` are separate answers: an empty live catalog
+ * reads like "codex is not running" otherwise.
  */
 export const modelCatalogSchema = z.object({
   models: z.array(catalogModelSchema),
@@ -545,15 +318,7 @@ export const modelCatalogSchema = z.object({
 
 export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 
-/**
- * The catalog resolved against one card's workspace, or without a workspace
- * for a new track when `cardId` is null.
- *
- * `card_id` is not decoration: config layers are per-directory, so the default
- * this card follows can differ from the global one. Without it the server
- * answers `default_source: 'unknown'` rather than passing off a global value
- * as this conversation's.
- */
+/** Config layers are per-directory, so without `card_id` the server answers `default_source: 'unknown'`. */
 export function modelCatalogOperation(cardId: string | null): ApiOperation<ModelCatalog> {
   return {
     method: 'GET',
@@ -570,55 +335,9 @@ export type ModelSelectionResult = Readonly<{
 }>;
 
 /**
- * Store this conversation's whole selection.
- *
- * The body names both keys explicitly rather than spreading `selection`: the
- * server requires both, and a spread of a value that lost one would be a 422
- * discovered at runtime instead of a type error here.
- *
- * The answer is echoed back rather than assumed. `effort_adjusted` says the
- * effort asked for is not one the chosen model supports and has been moved to
- * that model's own default; `unknown_model` says the slug is not in the
- * catalog codex currently reports. Neither is an error and neither prevents
- * the write — but a caller that drops them shows a value that is not what will
- * run.
- */
-/**
- * Run writes one at a time, and drop the ones a later intent has superseded.
- *
- * #1505 S4 review. `PUT /planner/model` does codex catalog work before it
- * writes, so two requests issued back to back can finish in the other order —
- * click a model, then click "Default" while the first request is still out,
- * and Default commits first and the model commits over it. The person's last
- * choice loses to their previous one, silently, and no amount of transaction
- * isolation fixes it: `BEGIN IMMEDIATE` orders the two writes, not the two
- * intentions behind them.
- *
- * So the writes are serialised, and while one is in flight only the LATEST
- * waiting intent is kept — pressing four options quickly sends two requests
- * (the one already gone, and the last one), not four. The intermediate ones
- * are answered with the outcome of the write that superseded them, because
- * that is what the stored value will be.
- *
- * ## A rejected write hands the queue on; it does not strand or resurrect it
- *
- * The first cut of this function ran the queue inside `while (queuedIsSet)`
- * *after* an `await write(args)` that could throw — so a rejection jumped past
- * the loop with `queuedIsSet` still true. That is the defect this function
- * exists to remove, restored twice over: the person's latest intent was
- * dropped and never sent, and the NEXT, unrelated click resurrected it and
- * committed it LAST. Click a model while offline, click Default, then later
- * click a third: the server ends on Default and the pill shows the third.
- *
- * A failed write is superseded like any other, so the loop below takes the
- * queue on both arms and only leaves when the queue is empty — at which point
- * `queuedIsSet` is provably false whichever way it leaves. The chain's promise
- * carries the outcome of the LAST write it actually performed, because that is
- * the one that decided what is stored.
- *
- * What this does NOT do, stated so nobody reads it as more than it is: it
- * orders one client's own writes. Two browser tabs racing each other are still
- * last-write-wins, exactly like every other REST write on this surface.
+ * Run writes one at a time, keeping only the LATEST waiting intent while one is in flight;
+ * a rejected write hands the queue on rather than stranding it. Orders one client's own
+ * writes only.
  */
 export function createSerialWriter<TArgs, TResult>(
   write: (args: TArgs) => Promise<TResult>,
@@ -634,8 +353,7 @@ export function createSerialWriter<TArgs, TResult>(
       try {
         result = await write(current);
       } catch (error) {
-        /* Nothing superseded this one, so its failure is the chain's answer.
-           The queue is empty here, so nothing is left behind to resurrect. */
+        /* Nothing superseded this one, so its failure is the chain's answer. */
         if (!queuedIsSet) throw error;
         current = takeQueued();
         continue;
@@ -658,9 +376,7 @@ export function createSerialWriter<TArgs, TResult>(
       inFlight = run;
       return run;
     }
-    /* Supersede rather than append: an intent nobody can still see the effect
-       of is not worth a round trip, and sending it would put the store through
-       a value the person never ended on. */
+    /* Supersede rather than append: an intent nobody can still see the effect of is not worth a round trip. */
     queued = args;
     queuedIsSet = true;
     return inFlight;
@@ -685,43 +401,14 @@ export function setPlannerModelOperation(
 }
 
 /**
- * What became of one send, for a caller that has to decide whether the text is
- * still the reader's to hold (#1449).
- *
- * The five cases are not degrees of success. They differ in what the caller may
- * conclude about the server's store:
- *
- * - `delivered` — the server answered 2xx. It has the text.
- * - `refused` — the server answered that it stored nothing. Only a refusal the
- *   server *names* qualifies; see `isSendRefusalCode`.
- * - `unresolved` — every other rejection the send saw. Some of them do say
- *   what happened to the text (a 400 stored nothing); some of them are raised
- *   after a 2xx, by the success handler itself. What they share is that this
- *   value does not tell them apart, so a caller may not act on the text's
- *   fate. `POST /planner/input` carries no `Idempotency-Key`, so re-sending
- *   here can deliver the message twice and start a second turn.
- * - `not-sent` — the send never left the browser, refused by a guard in this
- *   tab. Nothing was stored and nothing failed.
- * - `abandoned` — the answer arrived after the reader moved on, so it is no
- *   longer about the conversation in front of them.
- *
- * Whether to put the text back in front of the reader is the caller's rule,
- * not this type's; the composer's is at its `onSubmit`.
+ * What became of one send. `unresolved` covers every rejection whose effect on the text is not
+ * known; `POST /planner/input` carries no `Idempotency-Key`, so re-sending can deliver twice.
  */
 export type SendOutcome = 'delivered' | 'refused' | 'unresolved' | 'not-sent' | 'abandoned';
 
 /**
- * Whether an `ErrorBody.code` names a refusal decided before any write.
- *
- * Both are raised while the route is still looking for a runtime to hand the
- * message to (`routes/cards.rs`, `ensure_live_planner_harness` and the
- * superseded check), so the send provably stored nothing and the text is
- * unspent. It does not follow that sending it again succeeds — a dormant card
- * stays dormant until it is reset — only that the reader still has it.
- *
- * The generic `conflict` is deliberately out. `harness/run_loop.rs` closes a
- * runtime at a point where the write may already have been persisted, and this
- * endpoint carries no `Idempotency-Key`, so a retry there is a second delivery.
+ * Whether an `ErrorBody.code` names a refusal decided before any write, so the text is unspent.
+ * The generic `conflict` is deliberately out: the write may already have been persisted.
  */
 export function isSendRefusalCode(code: string | null): boolean {
   return code === 'planner_harness_runtime_superseded' || code === 'planner_harness_dormant';
@@ -731,15 +418,7 @@ export function isSendRefusalCode(code: string | null): boolean {
 export type SentPlannerInput = Readonly<{
   card_id: string;
   worker_session_id: string;
-  /**
-   * The queue entry the text is now sitting in, or `null` when there is none
-   * to name.
-   *
-   * `null` is not an error and not a missing feature. It is what the kernel
-   * says when the text folded into a queue entry written before #1505 PR1 —
-   * an entry that has never had an id and never gains one. A caller that
-   * cannot name the entry cannot address it, which is exactly true.
-   */
+  /** The queue entry the text is now sitting in, or `null` when it folded into an entry that has no id. */
   entry_id: string | null;
 }>;
 
@@ -748,12 +427,8 @@ export function sendPlannerInputOperation(
 ): ApiOperation<SentPlannerInput> {
   return {
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`,
-    /* The key is omitted when there is nothing in it rather than sent empty.
-       The field is `#[serde(default)]` on the server, so both spellings are
-       accepted; sending the empty array would change the bytes of every
-       text-only send this app has ever made, for no gain, and the tests that
-       pin those bodies would then be asserting this slice rather than the
-       thing they were written for. */
+    /* The key is omitted when empty: the field is `#[serde(default)]` on the server, and an empty
+       array would change the bytes of every text-only send. */
     body: attachments.length === 0 ? { text } : { text, attachments },
     responseSchema: z.object({
       card_id: z.string(),
@@ -763,15 +438,7 @@ export function sendPlannerInputOperation(
   };
 }
 
-/**
- * The four image formats the upload endpoint accepts.
- *
- * A strict subset of what codex can decode, chosen server-side: these are the
- * ones whose source bytes it keeps. It is restated here only to fill the file
- * picker's `accept` and to refuse a wrong pick before a round trip — the
- * server's magic-number sniff is the judgement, and a file that lies about its
- * type is refused there, not here.
- */
+/** The image formats the upload endpoint accepts; the server's magic-number sniff is the judgement. */
 export const ATTACHABLE_IMAGE_TYPES = Object.freeze(
   ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const,
 );
@@ -780,12 +447,8 @@ export const ATTACHABLE_IMAGE_TYPES = Object.freeze(
 export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 
 /**
- * Upload one image and get back the id a message names it by.
- *
- * The body is raw bytes, not multipart and not base64: the endpoint takes the
- * file itself and decides its format from the magic number. `content-type` is
- * declared here because the operation's own headers are merged *over* the
- * `application/json` the client adds for any body.
+ * Upload one image as raw bytes; `content-type` here is merged *over* the `application/json` the
+ * client adds for any body.
  */
 export function uploadPlannerAttachmentOperation(
   cardId: string, bytes: Uint8Array, contentType: string,
@@ -822,20 +485,6 @@ function plannerInputPath(cardId: string, entryId: string): string {
   return `/api/cards/${encodeURIComponent(cardId)}/planner/input/${encodeURIComponent(entryId)}`;
 }
 
-/*
- * There is no `editPlannerInputOperation`, and that is deliberate.
- *
- * `PATCH .../planner/input/{entry_id}` is still served and is not going
- * anywhere; what was removed is the browser's way of reaching it. The queue
- * strip offers one control, and it removes the message — editing a queued
- * message in place has no front end at all — so the only queue write this
- * client makes is the delete below. Exported dead code invites the next reader
- * to wire it back up under a UI that does not exist.
- *
- * Same shape as the missing `resetPlannerOperation` a few lines down: an
- * endpoint the server keeps and the client no longer calls.
- */
-
 /** Remove one queued message, refusing if somebody moved it first. */
 export function deletePlannerInputOperation(
   cardId: string, entryId: string, ifEntryRev: number,
@@ -847,7 +496,7 @@ export function deletePlannerInputOperation(
   };
 }
 
-/** What `POST …/planner/input/{entry_id}/steer` answers on success (#1625 P3). */
+/** What `POST …/planner/input/{entry_id}/steer` answers on success. */
 export type PlannerSteer = Readonly<{
   card_id: string;
   entry_id: string;
@@ -865,13 +514,9 @@ const plannerSteerSchema: z.ZodType<PlannerSteer> = z.object({
 });
 
 /**
- * Send one queued message into the turn that is running right now (#1625 P3),
- * refusing if somebody moved it first — the same compare-and-swap token as the
- * delete. A 409 with code `planner_steer_no_running_turn` means no turn took
- * it (none was running, or codex declined); the message is still queued and
- * goes with the next turn. A 409 with code `planner_steer_unknown_outcome`
- * means codex never answered: the message is queued again just the same, but
- * whether it also reached the running turn is not known.
+ * Send one queued message into the running turn, with the same compare-and-swap token as the
+ * delete. 409 `planner_steer_no_running_turn`: no turn took it. 409 `planner_steer_unknown_outcome`:
+ * codex never answered, and whether it reached the turn is not known.
  */
 export function steerPlannerInputOperation(
   cardId: string, entryId: string, ifEntryRev: number,
@@ -883,15 +528,7 @@ export function steerPlannerInputOperation(
   };
 }
 
-/**
- * The server's side of a lost compare-and-swap, or `null` if this failure was
- * not one.
- *
- * A 409 from these two endpoints carries the text and revision the entry
- * actually holds. Reading them is what lets the UI say "somebody changed this
- * while you were typing, here is what it says now" instead of letting the edit
- * disappear — which is the confusion the whole slice exists to remove.
- */
+/** The server's side of a lost compare-and-swap (the text and revision the entry actually holds), or `null`. */
 export type PlannerInputStale = Readonly<{ entry_id: string; text: string; rev: number }>;
 
 const plannerInputStaleSchema = z.object({
@@ -909,13 +546,7 @@ export function plannerInputStaleFrom(failure: ApiFailure | null): PlannerInputS
     : null;
 }
 
-/**
- * Whether a failure means the entry is no longer in the queue.
- *
- * A 404 here is not "wrong URL": the queue drained, or somebody else deleted
- * it. Either way the message is beyond editing, and the reader needs to be
- * told that rather than shown a retry that can never succeed.
- */
+/** A 404 here means the queue drained or somebody else deleted the entry: beyond editing. */
 export function isPlannerInputGoneFailure(failure: ApiFailure | null): boolean {
   return failure !== null && failure.kind === 'http' && failure.status === 404;
 }
@@ -923,45 +554,21 @@ export function isPlannerInputGoneFailure(failure: ApiFailure | null): boolean {
 const plannerSteerRefusedSchema = z.object({ code: z.literal('planner_steer_no_running_turn') });
 const plannerSteerUnansweredSchema = z.object({ code: z.literal('planner_steer_unknown_outcome') });
 
-/**
- * Whether a failure is the steer's own 409 (#1625 P3): no turn took the
- * message. It is still queued, unchanged, and goes with the next turn — so
- * unlike `stale` there is nothing to retry against, and unlike `gone` the
- * message has not left.
- */
+/** The steer's own 409: no turn took the message, and it is still queued unchanged. */
 export function isPlannerSteerNotRunningFailure(failure: ApiFailure | null): boolean {
   return failure !== null && failure.kind === 'http' && failure.status === 409
     && plannerSteerRefusedSchema.safeParse(failure.body).success;
 }
 
-/**
- * Whether a failure is the steer's OTHER 409 (#1625 P3 review round 1): codex
- * never answered, so the kernel does not know whether the running turn took
- * the message. It is queued again and goes with the next turn either way;
- * what differs from `not_running` is the claim — "nothing happened" cannot be
- * made here, and the notice must not make it.
- */
+/** The steer's other 409: codex never answered, so "nothing happened" cannot be claimed. */
 export function isPlannerSteerUnansweredFailure(failure: ApiFailure | null): boolean {
   return failure !== null && failure.kind === 'http' && failure.status === 409
     && plannerSteerUnansweredSchema.safeParse(failure.body).success;
 }
 
 /**
- * What one write to the pending queue turned into.
- *
- * Six cases, and they are not degrees of failure — they differ in what the
- * reader is now holding. `done`: the server has their text. `stale`: it does
- * not, and the entry says something else, quoted here so they can decide.
- * `gone`: the entry left the queue (drained into a turn, or somebody else
- * deleted it), so there is nothing left to write to. `not_running` (#1625 P3,
- * the steer only): the entry is exactly where it was, because no turn was
- * there to take it. `unanswered` (the steer only): the entry is back in the
- * queue, and whether the running turn ALSO got it is not known — codex never
- * replied. `failed`: unknown.
- *
- * Collapsing `stale` and `gone` into one "did not work" is the shape this
- * slice exists to avoid: they call for opposite next moves — retry against the
- * quoted revision, versus stop, the message is on its way.
+ * What one write to the pending queue turned into. `stale` and `gone` call for opposite next
+ * moves: retry against the quoted revision, versus stop, the message is on its way.
  */
 export type PlannerQueueWriteOutcome =
   | Readonly<{ kind: 'done' }>
@@ -990,42 +597,15 @@ export function interruptPlannerOperation(cardId: string): ApiOperation<{ stoppe
   };
 }
 
-/*
- * There is no `resetPlannerOperation`, and that is deliberate (#1139).
- *
- * `POST /api/cards/:id/planner/reset` still exists on the server and is not going
- * anywhere; what was removed is every *front-end* way to reach it. Clearing one
- * conversation in place has no value here, because conversations are not
- * singular: an area's chat track carries as many `harness_profile: plain_chat`
- * cards as you like, side by side. A thread that has gone wrong is answered by
- * opening a new one — the old one stays in the list, readable — which is the
- * model codex and Claude Code both use. "Empty this one" only makes sense when
- * "this one" is all you get.
- */
-
 const conversationStateSchema = z.enum([
   'starting', 'running', 'idle', 'turn_pending', 'exited', 'failed', 'superseded',
 ]);
 
-/** The longest first message the server accepts, checked before it is sent so
- * a rejected message costs no round trip. */
+/** The longest first message the server accepts, checked before it is sent. */
 export const CONVERSATION_TEXT_MAX = 32768;
 
-/* ── Track conversations (#1189) ─────────────────────────────────────────────
- *
- * A track's conversations are `harness_profile: assistant` cards on the track
- * itself — its own list, its own endpoint (`§4.1`), and its own row type on the
- * wire, which the server explains at `TrackConversationSummary`: the area row's
- * contract says `trackTitle` is absent *because every row lives on one hidden
- * track*, and on a real track that reasoning is simply false. The fields coincide
- * today; the contracts do not, so the schema is written out rather than aliased
- * to the area one — an alias would make the next divergence a silent one.
- *
- * Same reason as the area block above for living here and not in
- * `core/api/schemas.ts`: that module mirrors the kernel's *event* vocabulary,
- * and `kind: 'track-assistant'` is not in it — the wire spells the field as a
- * bare string derived from a card marker, and narrowing it is this layer's job.
- */
+/* Track conversations: written out rather than aliased to the area schema, and living here
+   rather than in `core/api/schemas.ts` because `kind: 'track-assistant'` is not in the event vocabulary. */
 
 const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.object({
   id: z.string(),
@@ -1034,25 +614,13 @@ const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.ob
   kind: z.string(),
   state: conversationStateSchema.nullable(),
   updatedAt: z.number(),
-  // #1722 S1b — required and nullable, as the kernel sends it (API v9): the
-  // instant the last non-interrupted turn ended, `null` before any has. An
-  // older kernel's rows lack it and are rejected, which is what the WEB 29
-  // curtain exists for. `toTrackConversation` carries it to the read receipt.
+  // Required and nullable, as the kernel sends it; an older kernel's rows lack it and are rejected.
   lastTurnCompletedAt: z.number().nullable(),
 });
 
 /**
- * The wire row as this app's own `Conversation`.
- *
- * `trackTitle` is absent because this endpoint does not send it (every row
- * belongs to the track in the request path, so whoever asked already knows it).
- * Inventing one here would be this function's fiction; a caller that names
- * tracks resolves it from the track it asked about. `turns` is absent because the
- * server will not count them.
- *
- * `kind` is pinned to `'track-assistant'` because that is the only value this
- * endpoint produces — the wire's `string` is a ts-rs artefact, not a variation
- * point.
+ * `trackTitle` is absent because this endpoint does not send it; `kind` is pinned because it is the
+ * only value this endpoint produces.
  */
 export function toTrackConversation(row: TrackConversationSummary): Conversation {
   return {
@@ -1075,10 +643,8 @@ export function trackConversationsOperation(trackId: string): ApiOperation<Conve
 }
 
 /**
- * Mint a track assistant conversation and deliver its first message (#1189 §4.1).
- *
- * `idempotencyKey` identifies the draft, so a key minted per call would be a
- * new key per attempt and could create a second conversation after a timeout.
+ * `idempotencyKey` identifies the draft, so a key minted per call could create a second
+ * conversation after a timeout.
  */
 export function createTrackConversationOperation(
   trackId: string, text: string, idempotencyKey: string, selection: ModelSelection,
@@ -1095,34 +661,15 @@ export function createTrackConversationOperation(
   };
 }
 
-/**
- * A failed create has to be able to ask "is **my** row there?" rather than
- * "did the list grow?".
- *
- * `derive_track_conversation_keys` (`crates/calm-server/src/conversation_keys.rs`)
- * is `"conv-" + sha256("wave-conversation:{track_id}:{idempotency_key}")[..32]`,
- * lower-case hex, and its doc comment names this function as the mirror it must
- * be written against. The server's own golden is asserted here too
- * (`conversation.test.ts`), because two implementations of one formula that
- * agree only by inspection agree until one of them is edited.
- *
- */
+/** Mirror of the server's `derive_track_conversation_keys`; its golden is asserted in `conversation.test.ts`. */
 export function trackConversationCardId(trackId: string, idempotencyKey: string): string {
   return `conv-${sha256Hex(`wave-conversation:${trackId}:${idempotencyKey}`).slice(0, 32)}`;
 }
 
-/**
- * What a failed create means for the draft that caused it.
- *
- * Every arm exists because the *same* draft has to be treated differently
- * afterwards, and none of them is "409, so it already worked, ignore it": a 409
- * here is four distinguishable situations and three of them still have no
- * conversation behind them.
- */
+/** What a failed create means for the draft; a 409 here is four distinguishable situations. */
 export type ConversationCreateFailure = Readonly<
   | {
-    /** Ambiguous: the attempt may have committed. Keep the key and the text,
-     *  re-read the list, and adopt a row if one appeared. */
+    /** Ambiguous: the attempt may have committed. Keep the key and the text, re-read the list. */
     kind: 'retry';
     message: string;
   }
@@ -1132,35 +679,14 @@ export type ConversationCreateFailure = Readonly<
     message: string;
   }
   | {
-    /** Refused before anything could commit, so the key is unspent and the text
-     *  is still the draft's to keep. What has to change before a retry can
-     *  succeed differs by cause: a 409 `has no claimed folder` is fixed outside
-     *  the draft (claim one, then resend these very words), while a 400 is a
-     *  refusal *of the body itself* — resending the same text will be rejected
-     *  again, and the composer is still open precisely so it can be rewritten. */
+    /** Refused before anything could commit, so the key is unspent; a 400 is a refusal of the body itself. */
     kind: 'blocked';
     message: string;
   }
   | {
     /**
-     * A 503 — the agent service is not running, or something behind it is
-     * saturated. It says the *service* could not do the work; it does **not**
-     * say the request never committed, and on this endpoint it usually means
-     * the opposite.
-     *
-     * The conversation endpoint mints the card through the operation runtime
-     * first and only then delivers the first message; every 503 the route can
-     * raise comes from that second half (`send_planner_input` → "planner harness is
-     * starting", "app-server not running", "observation queue full"), by which
-     * point the card exists. Operation failures never map to 503 at all
-     * (`calm_error_from_operation_failure` yields 400/404/409/500 only), and a
-     * 503 invented by a proxy in front of the server proves nothing either
-     * way.
-     *
-     * So this is exactly as ambiguous as `'retry'` and is resolved the same
-     * way: keep the key and the text, re-read the list, and adopt the row this
-     * key derives — a check that cannot mistake anyone else's conversation for
-     * this one. The kind stays separate because the *sentence* shown differs.
+     * A 503 says the *service* could not do the work; on this endpoint every 503 comes after the
+     * card was minted, so it is exactly as ambiguous as `'retry'` and resolved the same way.
      */
     kind: 'unavailable';
     message: string;
@@ -1192,9 +718,7 @@ export function conversationCreateFailure(failure: ApiFailure): ConversationCrea
   const { message } = failure;
   if (failure.code === 'idempotency_key_exhausted') return { kind: 'exhausted', message };
   if (failure.status === 404) return { kind: 'gone', message };
-  /* Its own kind for its own sentence — "the agent service is down" is not
-     "something went wrong" — but not its own resolution: see the variant's doc
-     comment for why a 503 here does not mean the card was never minted. */
+  /* Its own kind for its own sentence, but not its own resolution. */
   if (failure.status === 503) return { kind: 'unavailable', message };
   if (failure.status === 400) return { kind: 'blocked', message };
   if (failure.status === 409) {
@@ -1218,14 +742,8 @@ Record<Exclude<HarnessInputPresentation, 'user'>, string>
   system_task_failed: 'Task failed',
 });
 
-/*
- * Live data uses the camelCase spellings: all 162 rows checked on a real card
- * were `agentMessage` / `userMessage`. The kernel stores `item.type` verbatim,
- * though: `planner_harness_items_persist.rs` proves that with a synthetic
- * `agent_message` notification. That does not prove codex emits snake_case; we
- * accept it as a precaution so such a stored message remains a turn instead of
- * falling through to a generic `Worked agent_message` activity.
- */
+/* Live data uses the camelCase spellings; snake_case is accepted as a precaution since the kernel
+   stores `item.type` verbatim. */
 const AGENT_MESSAGE = 'agentMessage';
 const AGENT_MESSAGE_SNAKE_CASE = 'agent_message';
 const USER_MESSAGE = 'userMessage';
@@ -1240,21 +758,8 @@ function isUserMessage(itemType: string | null): boolean {
 }
 
 /*
- * #1667 D3 — `calm.user.notify` is speech, not an action. The planner calls
- * it to reach the reader from a background (report-edit) turn, so the row is
- * a message: an agent turn whose text is `arguments.text`, verbatim.
- *
- * Only a SUCCESSFUL `item/completed` mints it (round-4 N1). The kernel
- * refuses a call whose text is blank or over 2000 characters, and a refused
- * call is not something the agent said: it is a failed action, and the row
- * carries `error` / `status: 'failed'` to say so. Such a row, like every
- * other tool call, falls through to the activity line, which reads `Failed`
- * with the kernel's reason. The `item/started` row does the same — it is
- * the running line while the call is in flight — and `buildTranscript` keys
- * the notify turn on the same wire item as that line, so the bubble replaces
- * the running line in place rather than standing beside it. A text that is
- * empty after trimming is likewise not a message (the kernel refuses it as
- * invalid params).
+ * `calm.user.notify` is speech: the row is an agent turn whose text is `arguments.text`. Only a
+ * SUCCESSFUL `item/completed` mints it; a refused call falls through to the failed activity line.
  */
 function userNotifyToTurn(
   item: Readonly<{
@@ -1273,8 +778,7 @@ function userNotifyToTurn(
     tool?: unknown; arguments?: unknown; error?: unknown; status?: unknown;
   };
   if (payload.tool !== USER_NOTIFY_TOOL) return null;
-  /* The same failure reading the activity line applies to every action:
-     an MCP error member, or a status the wire itself calls failed. */
+  /* The same failure reading as the activity line: an MCP error member, or a failed status. */
   if ((payload.error !== undefined && payload.error !== null) || payload.status === 'failed') {
     return null;
   }
@@ -1308,15 +812,12 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
         completedAtMs = (parsed as { completedAtMs?: unknown }).completedAtMs;
       }
     } catch {
-      // The structured segments are first-party persisted data and remain
-      // usable even when the opaque upstream notification cannot be decoded.
+      // The structured segments remain usable even when the upstream notification cannot be decoded.
     }
     const atMs = typeof completedAtMs === 'number' && Number.isFinite(completedAtMs)
       ? completedAtMs : item.created_at_ms;
-    /* #1667 D3 — the batch is a background sync only when it is nothing
-       but report edits; see `ConversationSystemEntry.quiet`. Decided over
-       the whole item, before the per-segment map, because it is a fact
-       about the batch and not about any one segment in it. */
+    /* A background sync only when the batch is nothing but report edits — a fact about the batch,
+       not any one segment. */
     const quiet = segments.every((segment) => segment.presentation === 'system_report_edited');
     return segments.flatMap<ConversationMessage>((segment, index) => {
       let text = segment.text;
@@ -1325,10 +826,7 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
       }
       text = text.trim();
       const attachments = segment.attachments;
-      /* #1505 S6 — an image with no words is a message. Dropping on empty text
-         alone would make the most common thing this feature is for — paste a
-         screenshot, press enter — vanish from the transcript it was just added
-         to, while the agent had in fact received it. */
+      /* An image with no words is a message. */
       if (text === '' && attachments.length === 0) return [];
       const id = segments.length === 1
         ? String(item.id) : `${item.id}:${index}`;
@@ -1371,22 +869,8 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
   }];
 }
 
-/* ── What the agent did between two things it said ──────────────────────────
- *
- * A planner turn is mostly not messages. In a captured four-minute session the 36
- * persisted rows were: 4 agent messages, 2 user messages, and **11 actions** —
- * 7 reasoning, 3 shell runs, 1 `calm.report.write`. Rendering only the messages
- * is what made the agent look like it answered by silently editing the report:
- * the edit *was* the answer, and the only row that said so was dropped.
- *
- * These lines are not a second transcript and not a log viewer. One line each,
- * a verb and its target, in the quietest type the surface has (§3 — emphasis is
- * a budget, and the prose is what gets read). The kernel already persists both
- * `item/started` and `item/completed` for every action (`harness/run_loop.rs`
- * `should_persist_item_method`), so the running state is real data, not a
- * spinner: the line appears in the present tense when the action starts and
- * settles into the past tense when it completes.
- */
+/* What the agent did between two things it said: one line each, a verb and its target.
+   The kernel persists both `item/started` and `item/completed`, so the running state is real data. */
 export type ActivityState = 'running' | 'done' | 'failed';
 
 export type ConversationActivity = Readonly<{
@@ -1399,36 +883,18 @@ export type ConversationActivity = Readonly<{
   target: string | null;
   state: ActivityState;
   /**
-   * How long the action took, straight off `item/completed`'s own `durationMs`.
-   * `null` while it is still running, and `null` on the rows codex does not
-   * time. It is a measured number, not a difference of two timestamps: pairing
-   * `started` with `completed` would measure our poll, not the action.
+   * Straight off `item/completed`'s own `durationMs`; pairing `started` with `completed` would
+   * measure our poll, not the action.
    */
   durationMs: number | null;
-  /**
-   * Why it failed, in one clipped line. `null` on anything that did not fail —
-   * see `failureDetail` for why that asymmetry is the rule and not an omission.
-   */
+  /** Why it failed, in one clipped line; `null` on anything that did not fail. */
   detail: string | null;
-  /**
-   * #1678 A4 — the wire name of the tool on an `mcpToolCall` row, verbatim
-   * (`calm.report.commit`); `null` on every other item type. `verb` is the
-   * English for the reader; this is the fact the quiet-sync fold reads to
-   * say whether the sync changed the report.
-   */
+  /** The wire name of the tool on an `mcpToolCall` row, verbatim; `null` on every other item type. */
   tool: string | null;
   atMs: number;
 }>;
 
-/**
- * #1625 P1 — how a turn ended. One per finished codex turn, from the
- * `turn/completed` row the kernel writes after its own completion gates.
- *
- * `completed` entries are kept in the transcript — they are the anchors a
- * later slice will group exchanges by turn on — but render as nothing. Only
- * `interrupted` and `failed` are drawn, because those are the two the reader
- * cannot infer from the transcript going quiet.
- */
+/** How a turn ended. `completed` entries are kept but render as nothing; only `interrupted` and `failed` are drawn. */
 export type TurnOutcomeStatus = 'completed' | 'interrupted' | 'failed';
 
 export type ConversationTurnOutcome = Readonly<{
@@ -1439,17 +905,11 @@ export type ConversationTurnOutcome = Readonly<{
   status: TurnOutcomeStatus;
   /** codex's own `error.message`, verbatim. Only a `failed` turn carries one. */
   message?: string;
-  /**
-   * `error.codexErrorInfo` as one token: the bare enum string
-   * (`contextWindowExceeded`, `usageLimitExceeded`, …) or, for the object
-   * form (`{ httpConnectionFailed: { httpStatusCode } }`), its single key.
-   */
+  /** `error.codexErrorInfo` as one token: the bare enum string or, for the object form, its single key. */
   code?: string;
   /**
-   * The wire `status` when it was not one of the three above. Such a row is
-   * surfaced as `failed` rather than dropped — an unknown terminal status is
-   * still a turn that did not end the way the reader expects — and this is
-   * what it actually said.
+   * The wire `status` when it was not one of the three above; such a row is surfaced as `failed`
+   * rather than dropped.
    */
   rawStatus?: string;
   atMs: number;
@@ -1457,14 +917,12 @@ export type ConversationTurnOutcome = Readonly<{
 
 export type TranscriptEntry = ConversationMessage | ConversationActivity | ConversationTurnOutcome;
 
-/** The speakers: what the conversation's turn count and echo reconciliation
- *  are about. Neither an activity line nor a turn outcome is one. */
+/** The speakers; neither an activity line nor a turn outcome is one. */
 export function isConversationMessage(entry: TranscriptEntry): entry is ConversationMessage {
   return entry.author === 'you' || entry.author === 'agent' || entry.author === 'system';
 }
 
-/** `bash -lc 'neige state'` is how codex spells every command; the wrapper is
- *  noise on every single line, so the line shows what was actually run. */
+/** `bash -lc '…'` is how codex spells every command; the line shows what was actually run. */
 const SHELL_WRAPPER = /^(?:\S*\/)?(?:ba|z|)sh\s+-l?c\s+(['"])([\s\S]*)\1$/;
 
 export function readableCommand(command: string): string {
@@ -1485,14 +943,8 @@ function clip(text: string): string | null {
 type ActivityShape = Readonly<{ running: string; done: string; target: string | null }>;
 
 /**
- * The tools whose names are worth saying in English. Anything else keeps its
- * wire name — an unknown tool is still a fact, and inventing a phrase for it
- * would be the one place this surface could lie about what happened.
- *
- * Reads and writes are told apart deliberately, and it is the most useful
- * distinction on the line: "it looked at the report" and "it rewrote the
- * report" are the two things a reader is actually trying to tell apart when
- * they scan back through a turn.
+ * The tools whose names are worth saying in English; an unknown tool keeps its wire name rather
+ * than an invented phrase.
  */
 function toolShape(tool: string): ActivityShape {
   if (REPORT_WRITE_TOOLS.includes(tool)) {
@@ -1513,18 +965,11 @@ function toolShape(tool: string): ActivityShape {
   if (tool === PLAN_LIST_TOOL) {
     return { running: 'Reading plan', done: 'Read plan', target: null };
   }
-  // #1211 S3 — the one `calm.track.*` tool that changes the track rather than
-  // looking at it. It has to be tested before the prefix fallback below, and it
-  // is why that fallback is no longer "everything under the prefix is a look".
+  // The one `calm.track.*` tool that changes the track; it must be tested before the prefix fallback below.
   if (tool === TRACK_RENAME_TOOL) {
     return { running: 'Naming the track', done: 'Named the track', target: null };
   }
-  // `cat`, `ls`, `state`, `log`, `diff` — the track's tree and history. These
-  // are looks; one phrase covers them because which one it was is a detail of
-  // how the agent went looking, not of what happened. The prefix as a whole no
-  // longer implies "read" (see `calm.track.rename` above), so any new
-  // `calm.track.*` WRITE needs its own branch ahead of this one rather than
-  // falling in here.
+  // `cat`, `ls`, `state`, `log`, `diff` are looks; any new `calm.track.*` WRITE needs its own branch ahead of this one.
   if (tool.startsWith(TRACK_TOOL_PREFIX)) {
     return { running: 'Reading the track', done: 'Read the track', target: null };
   }
@@ -1534,9 +979,7 @@ function toolShape(tool: string): ActivityShape {
 function activityShape(itemType: string, item: Record<string, unknown>): ActivityShape | null {
   switch (itemType) {
     case 'reasoning':
-      // No summary text on the line: the point of this one is that *time is
-      // passing*, and a half-sentence of the model's inner monologue is the
-      // loudest possible way to say it. The detail stays one fetch away.
+      // No summary text on the line: the point is that time is passing.
       return { running: 'Thinking', done: 'Thought', target: null };
     case 'commandExecution':
       return {
@@ -1552,8 +995,7 @@ function activityShape(itemType: string, item: Record<string, unknown>): Activit
     }
     case 'mcpToolCall':
       return toolShape(typeof item.tool === 'string' ? item.tool : '');
-    // Curated subset of the codex binary's embedded `ThreadItem.ts` union;
-    // unknown variants intentionally fall through to the generic line below.
+    // Curated subset of codex's `ThreadItem` union; unknown variants fall through to the generic line.
     case 'webSearch':
       return { running: 'Searching the web', done: 'Searched the web', target: null };
     case 'imageGeneration':
@@ -1581,91 +1023,8 @@ function activityShape(itemType: string, item: Record<string, unknown>): Activit
   }
 }
 
-/**
- * ── The reason a failed line has, and a done line does not ──────────────────
- *
- * `item/completed` has carried `durationMs` and — for a shell run —
- * `aggregatedOutput` from the beginning; the verbatim capture in
- * `conversation.test.ts` has both. The kernel stores `params` unfiltered
- * (`out_of_domain.rs` writes the payload as it arrived). It was *this* function
- * that read `exitCode`/`status`/`error`, decided the line said `Failed`, and
- * then threw away the only text that said what failed. A reader looking at a
- * red line in the drawer had to leave the drawer to find out why.
- *
- * **Only on failure.** `aggregatedOutput` is the whole captured stdout+stderr —
- * kilobytes on a normal build. On a line that succeeded, its tail is noise
- * printed under every `Ran` in a 364px column, which is precisely the "drawer
- * becomes a log viewer" that `.activity`'s own stylesheet note refuses. On a
- * line that failed it is the one thing the reader wants, and it is usually the
- * last line of it: that is where a shell puts the error and where a test runner
- * puts the count.
- *
- * **Clipped here, not in the view.** This "domain" is already a presentation
- * domain — `verb` is an English phrase and `target` is `clip()`ed right beside
- * this — so the invariant "an activity field is one short line, never a
- * payload" is a property of the type, provable in a domain test, rather than a
- * discipline every renderer of that type has to remember.
- *
- * **One rule for both carriers: the informative line is the last non-empty
- * one.** `aggregatedOutput` and `error` look like different kinds of text — a
- * kilobyte transcript against a short message — but they are read the same way,
- * and for the same reason: both are *machine* strings, and a machine writes the
- * thing it is finally reporting last. A shell prints its progress and then its
- * error. An anyhow-style chain prints its outermost wrapper and then its
- * `Caused by:` root. Reading `error` from the front is how the drawer used to
- * throw away exactly the sentence the reader opened the line for — the two
- * failed `mcpToolCall` rows in the production database are both
- * `tool call error: tool call failed for \`calm/…\`` followed by a blank line,
- * `Caused by:`, and then the only useful clause
- * (`Mcp error: -32602: message must be non-empty`;
- * `` `tasks` must be a non-empty array ``). So `informativeLine` is one
- * function used by both, not because the code was duplicated but because the
- * two carriers must not be allowed to drift back apart.
- *
- * **Measured, not assumed.** Against every failed row in the production
- * database: 24 failed `commandExecution` rows, and the last non-empty line is
- * the real reason in 22 of them — `NameError: name 'PY' is not defined`,
- * `jq: error (at <stdin>:13885): Cannot index number with string "event_id"`,
- * `ls: 无法访问 'docs/player-capabilities.md': 没有那个文件或目录`,
- * `========================= 1 failed, 16 passed in 0.50s =========================`.
- * The worst of the two misses is a bare `^`, the caret a SQL error points at a
- * column with. And 2 failed `mcpToolCall` rows, both carrying `error` as an
- * object with a multi-line `message` and **neither** carrying an
- * `aggregatedOutput` at all — for them `error` is not a fallback, it is the
- * only source there is.
- *
- * **`error` before the tail, because a statement outranks a guess.** These two
- * sources are not two spellings of one fact. `error` is the machine *stating*
- * why it stopped; the tail of `aggregatedOutput` is us *inferring* it from
- * whatever happened to be printed last. Where they co-occur the difference
- * decides the line: a killed or timed-out command would carry `error: 'command
- * timed out after 600s'` and an `aggregatedOutput` that is a partial capture,
- * whose tail is some unrelated line of progress (`Compiling serde v1.0.219`),
- * and reading it loses the only sentence that explains the red. Honestly
- * though, this ordering is defensive rather than load-bearing today: **none of
- * the 24 failed `commandExecution` rows carries an `error` member at all**, so
- * on current data the two branches never compete. It is written this way
- * because `harnessItemToActivity` already treats `error != null` as a failure
- * signal for *every* item type, so the day a shell row does carry one, that
- * model has already promised which of the two wins.
- *
- * **The tail's known hole, stated rather than patched.** With `error` handled
- * above, the tail is what is left when the machine said nothing — the best
- * available guess, and the 22-of-24 above is what that guess is worth on real
- * data: `cargo`, `npm`, nextest, pytest and vitest all end on their own failure
- * summary. It is wrong for a compound command that ends on a success line
- * (`make && ./run`, where `make` prints `Build succeeded.` and `./run` exits
- * non-zero quietly): the reader gets a cheerful sentence under a red `Failed`.
- * Scanning the capture for lines that "look like an error" would trade this for
- * a heuristic on unknown output that is wrong in less predictable ways, so it
- * is not done. What carries the weight instead is the *register*: the detail is
- * rendered as quoted machine output beside a red `Failed`, never as our own
- * prose about the failure, so the worst case is a line of transcript that does
- * not help — not a line that lies.
- */
-/** The last non-empty line of a machine string, clipped — the single reading
- *  rule `failureDetail` applies to both of its sources. `null` when there is no
- *  such line, so an all-blank string reports nothing rather than emptiness. */
+/* `aggregatedOutput` is kilobytes on a normal build; clipped here so "one short line, never a payload" is a property of the type. `error` outranks its tail. */
+/** The last non-empty line of a machine string, clipped; `null` when there is no such line. */
 function informativeLine(text: string): string | null {
   const lines = text.split('\n');
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -1676,9 +1035,7 @@ function informativeLine(text: string): string | null {
 }
 
 function failureDetail(payload: Record<string, unknown>): string | null {
-  // What the machine said, in both spellings that are on our wire — a string in
-  // some servers, `{ message }` in others. A blank one states nothing and falls
-  // through to the tail rather than blanking the line.
+  // What the machine said, in both wire spellings; a blank one falls through to the tail.
   const error = payload.error;
   const stated = typeof error === 'string' ? error
     : (typeof error === 'object' && error !== null
@@ -1688,8 +1045,7 @@ function failureDetail(payload: Record<string, unknown>): string | null {
     const line = informativeLine(stated);
     if (line !== null) return line;
   }
-  // Otherwise the tail: a shell puts its error there and a test runner puts its
-  // count there.
+  // Otherwise the tail: a shell puts its error there and a test runner its count.
   const output = payload.aggregatedOutput;
   if (typeof output === 'string') return informativeLine(output);
   return null;
@@ -1722,14 +1078,7 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
     verb: done ? shape.done : shape.running,
     target: shape.target,
     state: failed ? 'failed' : (done ? 'done' : 'running'),
-    /* `done &&` is belt-and-braces, and knowingly so. On the 1970 `item/started`
-       rows in the production database `durationMs` is *present* — as JSON
-       `null`, not absent — which the `typeof` test already rejects on its own.
-       The gate is kept because what it states is the rule (a line still saying
-       `Running` must not print an interval that has not ended) rather than the
-       shape one emitter happens to send; a started payload is the item as codex
-       knew it at the start, and nothing in the protocol stops a number riding
-       along on it tomorrow. */
+    /* `done &&` is deliberate: a line still saying `Running` must not print an interval that has not ended. */
     durationMs: done && typeof payload.durationMs === 'number'
       && Number.isFinite(payload.durationMs)
       ? payload.durationMs : null,
@@ -1740,21 +1089,9 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
   };
 }
 
-/* The stored `turn/completed` params: codex's `Turn` minus its items. Only
-   the fields the outcome line reads are named; everything else passes through
-   `z.object`'s default stripping. `codexErrorInfo` is a schema `oneOf` — a
-   bare enum string, or a single-key object for the variants that carry an
-   HTTP status — so it is accepted as either and reduced to one token below.
-
-   Lenient by design below `status`: a malformed `error` (no `message`, a
-   non-string `message`, a `codexErrorInfo` of a shape this code does not
-   know, or `error` not being an object at all) costs only the detail it
-   sits in, never the line. The row is the record that the turn ended; the
-   error fields decorate it. `status` is `z.unknown()` rather than
-   `z.string()` for the same reason: a status that is present but not a
-   string is still a turn that ended in a way this code does not know, and
-   the function below renders exactly that. Absence stays the reader's
-   problem to report (see `transcriptRowToTurnOutcome`). */
+/* The stored `turn/completed` params: codex's `Turn` minus its items. Lenient below `status`:
+   a malformed `error` costs only the detail, never the line, and `status` is `z.unknown()` so a
+   non-string status still renders as a turn that ended in an unknown way. */
 const turnOutcomeParamsSchema = z.object({
   id: z.string().optional().catch(undefined),
   status: z.unknown(),
@@ -1772,24 +1109,9 @@ function codexErrorCode(info: string | Readonly<Record<string, unknown>> | null 
 }
 
 /**
- * #1625 P1 — the outcome line for one `turn/completed` row.
- *
- * `null` in exactly four cases, and the first three are "this is not a turn
- * outcome row at all": the method is not `turn/completed`; `params` is not
- * parseable JSON or not a JSON object; the object has no `status` key. The
- * fourth is a row with no turn id anywhere — neither the row's `turn_id`
- * column nor a string `id` in `params` — which cannot be attributed to a
- * turn. Nothing else returns `null`: a `status` that is present but is none
- * of `completed | interrupted | failed` (or is not even a string) comes back
- * as `failed` with `rawStatus` set, and a malformed `error` block only loses
- * the detail it sits in, because a turn that ended in a way this code does
- * not know is exactly the case the reader should see.
- *
- * `atMs` is the kernel's `created_at_ms`, the same clock every other row is
- * stamped from, rather than codex's `completedAt` (whole seconds, a different
- * clock): the transcript is ordered by row id and `atMs` only decides where a
- * time separator prints, so the row's own clock is the one that keeps the
- * separators honest against their neighbours.
+ * The outcome line for one `turn/completed` row; `null` only when it is not an outcome row at all
+ * or has no turn id. `atMs` is the kernel's `created_at_ms`, the same clock every other row uses,
+ * not codex's whole-second `completedAt`.
  */
 export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnOutcome | null {
   if (item.method !== 'turn/completed') return null;
@@ -1817,71 +1139,25 @@ export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnO
 }
 
 /**
- * The only notification methods the transcript knows how to render.
- *
- * Second line of defence, not the first: as of #1255 the server narrows
- * `GET /api/cards/:id/harness/items` to the same two methods, because the page
- * `limit` this module sends (`HARNESS_ITEMS_PAGE_LIMIT`) has to be a budget of
- * renderable rows — dropping rows here, after they were counted against the
- * page, pushes real transcript rows behind "Load earlier". This gate stays for
- * the case where a row reaches `buildTranscript` from somewhere else.
- *
- * An allowlist rather than a skip-list of the one method that prompted it
- * (`turn/plan/updated`, codex's per-turn TODO checklist, which #1255 started
- * writing into `harness_items` so its real shape can be read out of production
- * before any UI is designed for it). Every *other* method — anything upstream
- * adds tomorrow, not just today's plan — is then inert by construction here,
- * instead of by two unrelated converters each independently happening to
- * reject it.
- *
- * Honest about what this does and does not buy: `harnessItemToTurns`,
- * `harnessItemToActivity` and `transcriptRowToTurnOutcome` check the method
- * themselves, and must keep doing so (they are exported and called directly —
- * `harnessItemToTurns` from `fe/web/src/app/router/public.tsx`). So *deleting*
- * this gate leaves the suite green: the converters still reject everything it
- * rejects. *Narrowing* it is a different matter — drop `turn/completed` from
- * the list and outcome rows are gone before `transcriptRowToTurnOutcome` sees
- * them (`renders a turn/completed row as a turn outcome` goes red), which is
- * the gate doing its job. It is a fail-closed backstop, and stating the
- * allowlist in the loop is what makes "the transcript renders `item/*` and
- * `turn/completed` and nothing else" readable in one place rather than
- * inferable from three callees.
- *
- * `turn/completed` (#1625 P1) is the per-turn outcome row; the server-side
- * allowlist (`TRANSCRIPT_METHOD_PREDICATE`) names the same three.
+ * The only notification methods the transcript renders. A fail-closed backstop: the server
+ * narrows `GET …/harness/items` to the same methods so the page limit is a budget of renderable
+ * rows, and the converters check the method themselves too.
  */
 function isTranscriptMethod(method: string): boolean {
   return method === 'item/started' || method === 'item/completed' || method === 'turn/completed';
 }
 
 /**
- * The transcript: messages and actions in one list, in the order they happened.
- *
- * Two collapses, both there because the raw list is unreadable without
- * them:
- *
- * 1. **`started` and `completed` are one line, not two.** They are paired on
- *    `item_uuid`; the completed row overwrites the started row *in the started
- *    row's position*, so a line never jumps down the column when it finishes.
- * 2. **A finished `Thought` survives only as the tail.** Seven of them in a row
- *    is what the raw data looks like, and it says nothing seven times; once
- *    anything follows, that the agent thought first is not news. Thinking that
- *    is still the last thing that happened *is* news — running or just
- *    finished, it is the difference between "working" and "wedged".
- *
- * `Thinking` (the unfinished one) is never dropped: it is the whole reason this
- * layer exists.
+ * The transcript: messages and actions in one list. `started` and `completed` pair on `item_uuid`
+ * into one line in the started row's position, and a finished `Thought` survives only as the tail.
  */
 export function buildTranscript(items: readonly HarnessItem[]): readonly TranscriptEntry[] {
   const order: string[] = [];
   const byKey = new Map<string, TranscriptEntry>();
 
   for (const item of [...items].sort((left, right) => left.id - right.id)) {
-    // Only methods the transcript understands get past here — see
-    // `isTranscriptMethod` for what this backstop is and is not worth.
     if (!isTranscriptMethod(item.method)) continue;
-    // A turn outcome is its own line, keyed by its own row: nothing pairs
-    // with it and nothing overwrites it.
+    // A turn outcome is its own line, keyed by its own row: nothing pairs with or overwrites it.
     const outcome = transcriptRowToTurnOutcome(item);
     if (outcome !== null) {
       order.push(outcome.id);
@@ -1891,10 +1167,8 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     const turns = harnessItemToTurns(item);
     if (turns.length > 0) {
       for (const turn of turns) {
-        /* #1667 D3 — a notify bubble takes the key of the activity line its
-           own `item/started` row minted (below), so the line becomes the
-           bubble in place: one row of the transcript, not a `Calling` line
-           followed by what was said. */
+        /* A notify bubble takes the key of the activity line its own `item/started` row minted, so
+           the bubble replaces the line in place. */
         const key = turn.author === 'agent' && turn.origin === 'notify'
           ? `activity-${item.item_uuid ?? item.id}` : `turn-${turn.id}`;
         if (!byKey.has(key)) order.push(key);
@@ -1904,8 +1178,7 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     }
     const activity = harnessItemToActivity(item);
     if (activity === null) continue;
-    // Pair on the wire's own item id when it has one; a row without one can
-    // only ever be its own line.
+    // Pair on the wire's own item id when it has one; a row without one is its own line.
     const key = `activity-${item.item_uuid ?? item.id}`;
     if (!byKey.has(key)) order.push(key);
     byKey.set(key, { ...activity, id: key });
@@ -1920,23 +1193,8 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
 }
 
 /**
- * Collapse 2 from `buildTranscript`, as the one rule both callers apply: a
- * finished `Thought` survives only while nothing but turn outcomes follows
- * it. A run of thoughts collapses into its last one, and the run goes
- * entirely once anything else — a message, another activity, an optimistic
- * echo — comes after it.
- *
- * A turn outcome does not count as "something followed": it is not a new
- * thing the agent did, and the turn's last thought stays the last thing that
- * happened, whether the turn then completed, was stopped, or failed.
- *
- * Shared rather than restated because the two callers see the same rows at
- * different moments. `mergeTranscript` sees `[you, Thought, Stopped]` plus an
- * optimistic echo; when the echo's server row lands, `buildTranscript` sees
- * `[you, Thought, Stopped, you]`. If the two did not agree on which thought
- * is "followed", the thought line would be drawn under the echo and then
- * vanish the moment the row arrived — a copy of the rule that checked only
- * the last entry did exactly that.
+ * A finished `Thought` survives only while nothing but turn outcomes follows it. Shared by
+ * `buildTranscript` and `mergeTranscript` so the two agree on which thought is "followed".
  */
 function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {
   return entries.filter((entry, index) => {
@@ -1962,18 +1220,8 @@ function userTextMatchesEcho(userText: string, echoText: string): boolean {
 }
 
 /**
- * Whether a persisted row is the same send as an echo that had no words.
- *
- * #1505 S6. `userTextMatchesEcho` requires both sides to be non-empty, and it
- * is right to: two blank strings are not evidence of anything. But an
- * image-only message is exactly that — a blank string — so without a second
- * criterion its echo can never be reconciled, and an echo that is never
- * reconciled is counted as an unresolved send forever, which is the dead
- * composer this slice must not reintroduce.
- *
- * The criterion is the attachment ids, and they are the right one because they
- * are minted by the server, one per upload: two sends cannot share one, and a
- * row carrying the id IS the row that carried that image.
+ * Whether a persisted row is the same send as an echo that had no words: attachment ids are server-
+ * minted, one per upload.
  */
 function userAttachmentsMatchEcho(
   turn: ConversationTurn, echo: ConversationTurn,
@@ -2011,12 +1259,8 @@ export function isOptimisticConversationTurn(
 }
 
 /**
- * Whether this transcript entry is a message the kernel has queued behind the
- * turn that was running when it was sent.
- *
- * Asked of a `TranscriptEntry` rather than of an echo, because the renderer
- * holds the merged transcript and has no other way to tell the two apart —
- * a queued message and a message being worked on look identical otherwise.
+ * Whether this entry is a message the kernel queued; asked of a `TranscriptEntry` because the
+ * renderer holds the merged transcript.
  */
 export function isQueuedConversationTurn(entry: TranscriptEntry): boolean {
   return isOptimisticConversationTurn(entry) && entry.queued;
@@ -2028,9 +1272,8 @@ export function serverItemHighWater(items: readonly Readonly<{ id: number }>[]):
 }
 
 /**
- * Reconcile each optimistic echo only against server rows that did not exist
- * before that send. Echoes may come from older route instances, so matching is
- * one-to-one across the whole remembered set rather than local to one caller.
+ * Reconcile each echo only against server rows that did not exist before that send; one-to-one
+ * across the whole remembered set.
  */
 export function reconcileOptimisticConversationTurns(
   serverTurns: readonly ConversationMessage[],
@@ -2049,29 +1292,14 @@ export function reconcileOptimisticConversationTurns(
   });
 }
 
-/**
- * An *exchange* is one thing you said and everything that came back before you
- * said the next thing. It is the unit a reader actually scans for, and the unit
- * the layout groups by: tight inside, loose between.
- *
- * This returns, per turn, whether it opens an exchange — which is exactly
- * "authored by you, and the turn before it was not".
- */
+/** An exchange opens at a turn authored by you whose predecessor was not. */
 export function opensExchange(turns: readonly TranscriptEntry[], index: number): boolean {
   const turn = turns[index];
   if (turn === undefined) return false;
   return turn.author === 'you' && turns[index - 1]?.author !== 'you';
 }
 
-/**
- * The gap after which a transcript is worth stamping with a time.
- *
- * A timestamp on every turn is eight repetitions of "now" down a 396px column —
- * it states the thing you already know (this is the conversation you are in)
- * and never the thing you would want (that you walked away for an hour in the
- * middle of it). So the time is a *separator*, printed only where the
- * conversation actually stopped and restarted.
- */
+/** The gap after which a transcript is worth stamping with a time; the time is a separator, not a label. */
 export const CONVERSATION_GAP_MS = 10 * 60 * 1000;
 
 export function opensAfterGap(turns: readonly TranscriptEntry[], index: number): boolean {

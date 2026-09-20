@@ -1,21 +1,12 @@
-//! Ordinary receipts must reach the actual transport, not just a formatter.
-//!
-//! Which detail branch a receipt took, and with which values, is asserted
-//! through the branch's own fragment, never through a copy of its sentence:
-//! the `.md` under `prompts/result-receipt/` is the pinned wording (#1635
-//! S1c). The oracle is built here by plain `str::replace` on the fragment
-//! with values the TEST supplies — it does not go through `render_detail`,
-//! the code under test, so a hole bound to the wrong value in production is
-//! a visible difference and not a shared mistake.
+//! Ordinary receipts must reach the actual transport, not just a formatter. The oracle is built
+//! by plain `str::replace` on the fragment, not through `render_detail`, the code under test.
 use super::completed_commit_tests::Fixture;
 use super::*;
 use crate::db::RepoRead;
 use crate::harness::result_receipt::{RECORDED_LEGACY, RECORDED_WITH_EVENT, UNAVAILABLE};
 use serde_json::json;
 
-/// The bytes every recorded-detail rendering opens with, up to the advertised
-/// address. Both recorded fragments share this opening, and the assertion is
-/// what keeps the negative checks below (`!text.contains(..)`) complete.
+/// The bytes every recorded-detail rendering opens with, up to the advertised address.
 fn recorded_locator() -> &'static str {
     let (prefix, _) = RECORDED_WITH_EVENT
         .split_once("{path_json}")
@@ -24,10 +15,8 @@ fn recorded_locator() -> &'static str {
     prefix
 }
 
-/// The run address the actual turn text advertises, parsed out of the text
-/// through the fragment's own shape. Used by `read_details` to prove the
-/// advertised address resolves through the real reader; never fed into the
-/// oracle below, whose path comes from the fixture.
+/// The run address the actual turn text advertises; never fed into the oracle, whose path
+/// comes from the fixture.
 fn advertised_path(text: &str) -> String {
     let locator = recorded_locator();
     let start = text.find(locator).expect("verified detail locator") + locator.len();
@@ -57,15 +46,8 @@ fn expected_detail(fragment: &str, identity: &str, kind: &str, event_id: i64) ->
         .replace("{event_id}", &event_id.to_string())
 }
 
-/// The turn text carries exactly one recorded-detail rendering, and it is
-/// `fragment` with these fixture-supplied values in its holes.
-///
-/// `events.<kind>` is additionally asserted as a token: it is the path the
-/// planner prompt names for the run record (`prompts/planner.md` line 138,
-/// `events.completed.payload.result` / `events.failed`) and the key
-/// `read_details` reads back, so the fragment must keep `{kind}` there —
-/// a hole swap inside the `.md` would otherwise render an oracle that
-/// follows the swap.
+/// The turn text carries exactly one recorded-detail rendering. `events.<kind>` is asserted as
+/// a token because the planner prompt names that path for the run record.
 fn assert_only_detail(text: &str, fragment: &str, identity: &str, kind: &str, event_id: i64) {
     let expected = expected_detail(fragment, identity, kind, event_id);
     assert!(text.contains(&expected), "actual Planner input: {text}");

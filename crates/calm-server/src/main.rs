@@ -29,24 +29,17 @@ async fn main() -> anyhow::Result<()> {
     }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
-    // Template roster, then storage, then the state — `AppState::boot` owns
-    // that order (#1635 S5): a refused `--templates-dir` exits here with no
-    // database file, no WAL and no directory created. The storage policy
-    // (`mock` ⇒ in-memory `SqlxRepo`, otherwise `cfg.db_url`) lives in `boot`
-    // too, so the tests on it open exactly what this process opens.
+    // Template roster, then storage, then the state — `AppState::boot` owns that order: a
+    // refused `--templates-dir` exits here with no database file, WAL or directory created.
     let state = AppState::boot(&cfg).await?;
 
     calm_server::assert_worker_sessions_card_id_complete_on_boot(&state).await?;
 
-    // #275 / #1109 — refuse to serve on an ambiguous `area_folders`
-    // table. Overlapping claims are unreachable through today's atomic
-    // writer, but a pre-#275 database can hold them, and folder
-    // resolution would then hand a track to an arbitrary area.
+    // Refuse to serve on an ambiguous `area_folders` table: folder resolution would hand a
+    // track to an arbitrary area.
     calm_server::assert_area_folders_disjoint_on_boot(&state).await?;
 
-    // #410 — shared codex app-server boot/takeover. The shared daemon is the
-    // only codex app-server path; failures are logged so boot can still bind
-    // and routes surface the daemon failure when a codex card is used.
+    // Shared codex app-server boot/takeover failures are logged so boot can still bind.
     if let Err(e) = calm_server::boot_harnesses(&state).await {
         tracing::warn!(
             error = %e,
@@ -54,8 +47,6 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // #388 Phase 3b — reconcile non-exited terminal rows with the
-    // supervisor PTY registry. No daemon binary respawn happens here.
     calm_server::reconcile_supervisor_on_boot(&state).await;
 
     if let Err(e) = calm_server::worker_flow::start_on_boot(&state).await {
@@ -76,16 +67,11 @@ async fn main() -> anyhow::Result<()> {
 
     calm_server::reaper_on_boot();
 
-    // Issue #644 PR-B — scheduler boot sweep. Must follow operation
-    // recovery (design §8 boot order; asserted in `boot_order_tests`).
+    // Scheduler boot sweep. Must follow operation recovery.
     calm_server::scheduler_sweep_on_boot(&state).await;
 
-    // Optional session-recording — when `RECORD_SESSION=<path>` is set,
-    // every event broadcast on the bus is appended to that file as
-    // line-delimited JSON in the replay-fixture per-event shape. The
-    // result is directly playable by `cargo run --bin replay`. See
-    // `calm_server::replay::spawn_session_recorder` for caveats
-    // (notably: actor is recorded as `"unknown"`, see design doc §6.3).
+    // When `RECORD_SESSION=<path>` is set, every event on the bus is appended to that file as
+    // line-delimited JSON, directly playable by `cargo run --bin replay`.
     if let Ok(path) = std::env::var("RECORD_SESSION") {
         calm_server::replay::spawn_session_recorder(&state.events, path.into());
     }
@@ -105,21 +91,8 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers(cors_allowed_headers())
         .allow_credentials(true);
 
-    // Issue #189 — global session gate.
-    //
-    // We split the route tree into three buckets so the session middleware
-    // is applied to exactly the protected surface:
-    //   * `auth_routes`   — login/whoami/logout. Public; do NOT gate.
-    //   * `public_routes` — /api/version + /api/openapi.json. Public.
-    //   * `protected_routes` + WS — every REST business endpoint + the
-    //     WS upgrade routes. Gated by `auth::require_session` (HTTP) /
-    //     `auth::require_session_ws` (WS) so unauthenticated requests get
-    //     a clean 401 / WS upgrade rejection.
-    //
-    // Auth config is derived from `cfg`; the boot fails fast if
-    // `auth_dev_autologin = false` and no `auth_password` is set (per
-    // issue #189 acceptance — operators must explicitly opt into either
-    // owner credentials OR dev autologin).
+    // Global session gate: `auth_routes` and `public_routes` are public; `protected_routes` + WS
+    // are gated by `auth::require_session` / `auth::require_session_ws`.
     let auth_config = AuthConfig::from_config(&cfg)?;
     if auth_config.dev_autologin {
         tracing::warn!(
@@ -194,21 +167,10 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "calm-server listening");
     calm_server::spawn_hook_fallback_replay(cfg.codex_ingest_url_resolved());
-    // #954 defect 4 — graceful shutdown: SIGTERM/SIGINT stops accepting and
-    // drains in-flight HTTP, bounded by SHUTDOWN_DRAIN_MAX (long-lived WS
-    // connections would otherwise hold the drain open past neige-app's 5s
-    // stop_grace). In-flight daemon transitions get no wait and no abort: a
-    // spawn transition runs seconds-minutes, a ≤3s wait almost never
-    // completes it and can't abort it safely mid-reap; runtime teardown
-    // aborts the detached transition task at an await point and the
-    // TERM-only guard belt covers the child. sqlite WAL is durable
-    // per-commit; nothing needs an explicit flush.
-    //
-    // INVARIANT: calm-server shutdown NEVER signals the shared codex
-    // daemon; the daemon is deliberately left running for the next boot's
-    // takeover (#953 re-stamp). This is why `SharedCodexAppServer` has no
-    // `Drop` impl (#954) — one would fire right here, after serve returns,
-    // and silently defeat takeover.
+    // Graceful shutdown: SIGTERM/SIGINT stops accepting and drains in-flight HTTP, bounded by
+    // SHUTDOWN_DRAIN_MAX. In-flight daemon transitions get no wait and no abort.
+    // INVARIANT: calm-server shutdown NEVER signals the shared codex daemon; it is left running
+    // for the next boot's takeover, which is why `SharedCodexAppServer` has no `Drop` impl.
     let served = serve_until_shutdown(
         std::future::IntoFuture::into_future(
             axum::serve(
@@ -267,8 +229,7 @@ fn mount_frontends(
     app
 }
 
-/// #954 defect 4 — bound on the post-signal HTTP drain. A code invariant
-/// under neige-app's 5s `stop_grace` default, not a knob.
+/// Bound on the post-signal HTTP drain; a code invariant under neige-app's 5s `stop_grace`, not a knob.
 const SHUTDOWN_DRAIN_MAX: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Resolves on SIGTERM or SIGINT (ctrl_c).
@@ -282,10 +243,8 @@ async fn shutdown_signal() {
     }
 }
 
-/// Run the serve future until it finishes its graceful drain, but never
-/// longer than `drain_max` past the shutdown signal — then return anyway
-/// (exit code 0). Split out of `main` so the select shape is testable with
-/// mock serve/shutdown futures.
+/// Run the serve future until it finishes its graceful drain, but never longer than
+/// `drain_max` past the shutdown signal — then return anyway (exit code 0).
 async fn serve_until_shutdown<S, F>(
     serve: S,
     shutdown: F,
@@ -394,9 +353,8 @@ mod tests {
         let baseline = routes.clone();
         let app = super::mount_frontends(routes, Some(web.path()), Some(fe.path()));
 
-        // `/api/version` carries `nowMs`, the server clock at response time
-        // (#1722 S1b), so two reads of the same route differ there by design;
-        // it is erased before the byte comparison, and only there.
+        // `/api/version` carries `nowMs`, the server clock at response time, so it is erased before
+        // the byte comparison.
         fn without_now_ms(
             uri: &str,
             (status, body): (StatusCode, Vec<u8>),
@@ -448,9 +406,7 @@ mod tests {
         );
     }
 
-    /// #1635 S5 — a boot `Config` for these tests: every runtime path under
-    /// `runtime`, storage at `runtime/calm.db` (an on-disk sqlite URL of the
-    /// exact form neige-app configures), templates from `templates_dir`.
+    /// A boot `Config` with every runtime path under `runtime` and storage at `runtime/calm.db`.
     fn boot_config(runtime: &std::path::Path, templates_dir: &std::path::Path) -> Config {
         let mut cfg = Config::parse_from([
             "calm-server",
@@ -480,17 +436,8 @@ mod tests {
         ]
     }
 
-    /// #1635 S5 — `--templates-dir` pointing at a directory with a file that
-    /// does not load fails the boot **before storage exists**: `AppState::boot`
-    /// (the one thing `main` calls) returns `Err` naming the file, and the
-    /// database file that `cfg.db_url` names was never created — nor its WAL,
-    /// nor any runtime directory. `main`'s `?` turns the `Err` into a non-zero
-    /// exit. Tested on the function, not the binary; the fail-closed variants
-    /// per file shape live in `templates::site_dir_tests`.
-    ///
-    /// `a_templates_dir_reaches_the_picker_through_the_boot` below is the
-    /// positive control for the absence assertions: the same `Config` shape
-    /// with a loadable directory does create `calm.db` at that path.
+    /// A `--templates-dir` with a file that does not load fails the boot BEFORE storage exists:
+    /// no database file, WAL, or runtime directory is created.
     #[tokio::test]
     async fn a_bad_templates_dir_fails_the_boot_before_storage_exists() {
         let runtime = tempfile::tempdir().unwrap();
@@ -511,9 +458,7 @@ mod tests {
             error.contains("must open with a `+++`"),
             "and carry the loader's reason: {error}"
         );
-        // Fail-closed means nothing persistent precedes the refusal: the
-        // roster is validated before storage is opened and before
-        // `AppState::new` creates any directory.
+        // Fail-closed means nothing persistent precedes the refusal.
         for path in persistent_paths(runtime.path()) {
             assert!(
                 !path.exists(),
@@ -528,14 +473,8 @@ mod tests {
         );
     }
 
-    /// #1635 S5 — the happy path through the real boot: `AppState::boot`
-    /// with a loadable `--templates-dir` → `routes::router()` → the picker
-    /// lists `site/x` with the file's title after the builtin entries.
-    ///
-    /// This is the test that holds `AppState::new`'s hand-over of the roster
-    /// into `RouteState.templates`: writing `TemplateRoster::builtin()` there
-    /// instead of the parameter leaves every loader test green and turns
-    /// this one red (the listing then lacks `site/x`).
+    /// This test holds `AppState::new`'s hand-over of the roster into `RouteState.templates`:
+    /// writing `TemplateRoster::builtin()` there instead of the parameter turns it red.
     #[tokio::test]
     async fn a_templates_dir_reaches_the_picker_through_the_boot() {
         let runtime = tempfile::tempdir().unwrap();
@@ -550,8 +489,7 @@ mod tests {
         let state = calm_server::state::AppState::boot(&cfg)
             .await
             .expect("a loadable templates dir boots");
-        // Positive control for the refusal test's absence assertions: this
-        // is the path a successful boot creates the database at.
+        // Positive control for the refusal test's absence assertions.
         assert!(
             runtime.path().join("calm.db").exists(),
             "a successful boot creates the configured sqlite file"
@@ -621,9 +559,7 @@ mod tests {
         );
     }
 
-    /// #954 defect 4 — the drain is BOUNDED: a serve future held open past
-    /// the signal (long-lived WS) is abandoned `drain_max` after the
-    /// shutdown signal, and main returns Ok (exit 0).
+    /// A serve future held open past the signal is abandoned `drain_max` later, and main returns Ok.
     #[tokio::test]
     async fn serve_until_shutdown_bounds_the_drain_after_signal() {
         let started = std::time::Instant::now();
@@ -641,8 +577,6 @@ mod tests {
         );
     }
 
-    /// A serve future that completes on its own (clean drain before the
-    /// bound) returns its own result immediately.
     #[tokio::test]
     async fn serve_until_shutdown_returns_serve_result_when_drain_completes() {
         super::serve_until_shutdown(

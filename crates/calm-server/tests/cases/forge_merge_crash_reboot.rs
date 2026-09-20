@@ -1,44 +1,6 @@
-//! #840 slices (e2, e3) — real-kernel crash windows around the forge merge.
-//!
-//! e2 — SIGABRT inside the "gh merge landed, fence not yet committed" window
-//! must not double-merge (danger-point-2).
-//!
-//! e3 — SIGABRT inside the "op parked + wrapper spawned + go token NOT yet
-//! written" window (danger-point-3): the held launcher exits 75, the gh
-//! action never runs, and reboot resolves the parked op via the read-only
-//! probe without ever re-launching (see
-//! `kernel_abort_pre_go_token_then_reboot_never_runs_action`).
-//!
-//! The e2 story:
-//!
-//! The in-process analog (`git_forge_merge_crash_recovers_once_via_probe`,
-//! forge_template_e2e.rs) already proves the recovery *code path*; this test's
-//! sole value-add is **real process death + real binary reboot**:
-//!
-//!   boot#1 the shipped `calm-server` binary (fixtures build, so the
-//!   `test_seams::crash_point` seam exists) with
-//!   `CALM_TEST_CRASH_AT=forge-pre-fence-commit:forge.pr.merged` → drive a
-//!   real PR through the kernel MCP socket + git-forge plugin + gh shim →
-//!   `gh.pr.merge` runs the irreversible action, then the kernel aborts
-//!   **immediately before `tx.commit()`** of the completion fence
-//!   (`complete_forge_op_succeeded`) → boot#2 the same binary against the
-//!   same durable tempdir with the seam unarmed → recovery replays the
-//!   durable result file (never re-runs gh).
-//!
-//! Invariant: gh-shim `pr_merge_count == 1` across abort+reboot, exactly one
-//! `forge.pr.merged` event, op phase `succeeded`, and the fence tx
-//! demonstrably rolled back at the crash (op still `parked`, zero merged
-//! events, in the crash window).
-//!
-//! Anti-vacuity: step "wait for boot#1 to die" asserts the exit was SIGABRT —
-//! if the seam were compiled out or never reached, boot#1 keeps running and
-//! the test fails on that assert; no silent pass is possible.
-//!
-//! Safety: same tier as e1 — spawns ONLY the calm-server binary + the
-//! git-forge plugin stub + a hermetic `gh` shim inside a throwaway tempdir
-//! (env-cleared allowlist, ephemeral non-4040 port, nonexistent codex/claude
-//! binaries, Drop-guard SIGKILL). Self-skips if the sandbox denies a loopback
-//! bind. No real codex, no real gh, CI-safe.
+//! Real-kernel crash windows around the forge merge: the shipped `calm-server` binary is booted
+//! with a `CALM_TEST_CRASH_AT` seam armed, SIGABRTed mid-merge, and rebooted against the same
+//! durable tempdir; the gh action must run exactly once (or never) across abort + reboot.
 
 #![cfg(target_os = "linux")]
 
@@ -80,19 +42,16 @@ const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
 const CRASH_POINT: &str = "forge-pre-fence-commit:forge.pr.merged";
 const PRE_GO_CRASH_POINT: &str = "forge-pre-go-token:forge.pr.merged";
 
-/// How long boot#1 gets to run the merge action and hit the abort seam, and
-/// how long boot#2's recovery gets to reach `succeeded`. Generous: the real
-/// binary path is plugin lower → wrapper spawn → gh shim → observer.
+/// Generous: the real binary path is plugin lower → wrapper spawn → gh shim → observer.
 const CRASH_TIMEOUT: Duration = Duration::from_secs(30);
 const ORACLE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How long the reparented (subreaper-owned) wrapper gets to hit stdin EOF
-/// and exit 75 after the kernel abort. Normally near-instant.
+/// How long the reparented wrapper gets to hit stdin EOF and exit 75 after the kernel abort.
 const WRAPPER_REAP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
-    // ---- prod-safety hard guards (never touch the real DB / port) ---------
+    // prod-safety hard guards (never touch the real DB / port)
     let tmp: TempDir = socket_safe_tempdir().expect("tempdir");
     let tmp_path: PathBuf = tmp.path().to_path_buf();
     let db_path = tmp_path.join("calm.db");
@@ -109,7 +68,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     );
     let db_url = format!("sqlite://{db_str}?mode=rwc");
 
-    // ---- world seeding (before boot#1) -------------------------------------
+    // world seeding (before boot#1)
     let track_cwd = tmp_path.join("track-cwd");
     std::fs::create_dir_all(&track_cwd).expect("create track cwd");
     let origin_repo = tmp_path.join("origin.git");
@@ -122,10 +81,8 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
 
     install_git_forge_plugin_files(&tmp_path);
 
-    // ONE reader pool for the whole test, opened BEFORE boot#1 (this also runs
-    // the migrations). Never re-`open()` against a live kernel — the migration
-    // check would race a live writer; all polls below go through this pool and
-    // tolerate transient SQLITE_BUSY while a kernel is writing.
+    // ONE reader pool for the whole test, opened BEFORE boot#1: re-`open()` against a live kernel
+    // would race the migration check with a live writer.
     let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
     let seeded = seed_world(&repo, &track_cwd).await;
     seed_plugin_row(&repo, &tmp_path).await;
@@ -138,16 +95,15 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
 
     let path_value = prepend_to_path(&shim_dir);
     let base_env: Vec<(&str, OsString)> = vec![
-        // The wrapper/probe subprocess env re-reads the *kernel's* PATH
-        // (`apply_forge_subprocess_env`), so prepending the shim dir here
-        // guarantees `gh` can only ever resolve to the shim, on BOTH boots.
+        // The wrapper/probe subprocess env re-reads the kernel's PATH, so prepending the shim dir
+        // guarantees `gh` resolves to the shim on BOTH boots.
         ("PATH", path_value),
         ("NEIGE_TRUSTED_FORGE_PLUGINS", OsString::from(PLUGIN_ID)),
     ];
     let mut crash_env = base_env.clone();
     crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(CRASH_POINT)));
 
-    // ---- boot#1: crash seam armed ------------------------------------------
+    // boot#1: crash seam armed
     let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "boot-1", &crash_env) else {
         return; // sandbox denied loopback bind — CI-safe skip
     };
@@ -157,8 +113,6 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     let repo_arg = origin_repo.display().to_string();
     let head = "slice-840-e2-merge-crash";
 
-    // Branch + commit + push directly in the lease worktree (no forge op
-    // needed for setup), then open the PR through the kernel MCP socket.
     run_git(&seeded.lease_abs, ["checkout", "-b", head]);
     stage_git_change(&seeded.lease_abs, "merge-crash.txt", "merge crash e2\n");
     run_git(&seeded.lease_abs, ["commit", "-m", "merge crash e2"]);
@@ -184,9 +138,8 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     let opened = wait_for_event_rows(repo.pool(), "forge.pr.opened", 1, ORACLE_TIMEOUT).await;
     let pr_number = opened[0]["pr_number"].as_u64().expect("pr number");
 
-    // Send the merge WITHOUT awaiting the reply: the abort races the response
-    // write, so a reply-reading client could see EOF/timeout and panic for the
-    // wrong reason. Hold the connection open across the crash window.
+    // Send the merge WITHOUT awaiting the reply: the abort races the response write, so a
+    // reply-reading client could see EOF and panic for the wrong reason.
     let _merge_conn = send_tool_call_without_reply(
         &socket_path,
         &seeded.raw_token,
@@ -207,9 +160,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     );
     let op_id = wait_for_operation_id(repo.pool(), &merge_idem_key, ORACLE_TIMEOUT).await;
 
-    // ---- the crash: SIGABRT from the seam, nothing else --------------------
-    // Anti-vacuity: a clean exit, any other signal, or a 30s survival all fail
-    // here — the seam demonstrably fired in the harness-spawned binary.
+    // The crash: a clean exit, any other signal, or a 30s survival all fail here.
     let status = wait_exit_with_timeout(&mut boot1, CRASH_TIMEOUT);
     assert_eq!(
         status.signal(),
@@ -217,10 +168,8 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
         "boot#1 must die by the CALM_TEST_CRASH_AT abort seam, got {status:?}"
     );
 
-    // ---- crash-window oracle (kernel dead; direct file-DB + shim state) ----
-    // The fence tx must have rolled back: op still parked, zero merged events —
-    // while the irreversible action itself demonstrably ran exactly once
-    // (durable result file present with exit code 0, shim merge counter == 1).
+    // Crash-window oracle: the fence tx must have rolled back while the irreversible action
+    // demonstrably ran exactly once.
     assert_eq!(
         query_operation_phase(repo.pool(), &op_id).await,
         "parked",
@@ -252,9 +201,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
         "crash window: gh must have merged exactly once before the abort"
     );
 
-    // ---- boot#2: same tempdir, seam unarmed ---------------------------------
-    // Recovery runs synchronously before the HTTP listener binds, so ready ⇒
-    // recovery done; poll-with-timeout anyway for robustness.
+    // boot#2: same tempdir, seam unarmed. Recovery runs before the HTTP listener binds.
     let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "boot-2", &base_env) else {
         return;
     };
@@ -262,7 +209,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     let merged = wait_for_event_rows(repo.pool(), "forge.pr.merged", 1, ORACLE_TIMEOUT).await;
     boot2.sigkill_and_reap();
 
-    // ---- final oracle: exactly-once merge across abort + reboot ------------
+    // final oracle: exactly-once merge across abort + reboot
     assert_eq!(
         query_operation_phase(repo.pool(), &op_id).await,
         "succeeded"
@@ -303,43 +250,17 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     );
 }
 
-/// #840 slice (e3), danger-point-3: abort the kernel in the "op durably
-/// parked + wrapper spawned + go token NOT yet written" window
-/// (`forge-pre-go-token:forge.pr.merged`, the first statement of the observer
-/// future in `spawn_side_effect`). The exit-75 held launcher is still blocked
-/// on `read -r _go`; kernel death closes the go pipe's only write end, so the
-/// wrapper reads EOF and exits 75 — every result-file write in the wrapper
-/// comes after a successful read, so it leaves ZERO artifacts and gh never
-/// runs. Boot#2 must resolve the parked op WITHOUT re-launching anything.
-///
-/// Recovery chain pinned by this test (boot#2, NOT the deadline sweep):
-/// `abandoned_running_operations_on_boot` includes `'parked'` →
-/// `plan_recovery_for` yields `RecoveryItem::VerifyParked` (applied BEFORE
-/// `sweep_parked_for_boot`) → spawn artifacts dead →
-/// `recover_parked(alive=false, RecoveryMode::Boot)` → no result file → the
-/// read-only `gh pr view --json state` probe (the merge call deliberately
-/// omits `expected_head_sha`: the head-match probe shape would use
-/// `--json state,headRefOid`, which the shim rejects with exit 2 → the probe's
-/// `|| exit 3` → Unknown → `gate-infra` instead of the class under test) →
-/// shim reports `OPEN` → probe exit 1 → `NotLanded` → op `failed` with
-/// `last_error_class == "action-not-landed"`. No recovery path ever re-spawns
-/// a wrapper or writes a go token; the only recovery gh invocation is the
-/// read-only, uncounted `pr view` probe.
-///
-/// Subreaper oracle: `PR_SET_CHILD_SUBREAPER` on the test process (BEFORE
-/// boot#1) makes the setsid'd wrapper reparent to us at kernel death, so
-/// `waitpid(wrapper_pid)` reads the actual exit status — 75 proves the
-/// wrapper existed, was blocked on `read`, and died on the EOF path (a
-/// written go token would have run gh: shim count > 0, different exit code).
+/// Abort in the "op parked + wrapper spawned + go token NOT yet written" window: kernel death
+/// closes the go pipe's only write end, so the held wrapper reads EOF and exits 75 leaving zero
+/// artifacts, and boot#2 resolves the parked op via the read-only `gh pr view` probe without
+/// re-launching. The merge call omits `expected_head_sha` because the shim rejects the
+/// head-match probe shape (`--json state,headRefOid`) with exit 2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
-    // Subreaper FIRST, before any kernel (and thus any wrapper) exists, so
-    // the reparenting guarantee covers the whole run. Process-wide — see
-    // `become_subreaper` for why this coexists safely with the e2 test
-    // running concurrently in this same process.
+    // Subreaper FIRST, before any kernel (and thus any wrapper) exists.
     become_subreaper();
 
-    // ---- prod-safety hard guards (never touch the real DB / port) ---------
+    // prod-safety hard guards (never touch the real DB / port)
     let tmp: TempDir = socket_safe_tempdir().expect("tempdir");
     let tmp_path: PathBuf = tmp.path().to_path_buf();
     let db_path = tmp_path.join("calm.db");
@@ -356,7 +277,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     );
     let db_url = format!("sqlite://{db_str}?mode=rwc");
 
-    // ---- world seeding (before boot#1) -------------------------------------
+    // world seeding (before boot#1)
     let track_cwd = tmp_path.join("track-cwd");
     std::fs::create_dir_all(&track_cwd).expect("create track cwd");
     let origin_repo = tmp_path.join("origin.git");
@@ -380,9 +301,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     );
 
     let path_value = prepend_to_path(&shim_dir);
-    // Same base_env on BOTH boots: the recovery probe's `gh` must resolve to
-    // the shim on boot#2 too (`apply_forge_subprocess_env` re-reads the
-    // kernel's PATH).
+    // Same base_env on BOTH boots: the recovery probe's `gh` must resolve to the shim on boot#2 too.
     let base_env: Vec<(&str, OsString)> = vec![
         ("PATH", path_value),
         ("NEIGE_TRUSTED_FORGE_PLUGINS", OsString::from(PLUGIN_ID)),
@@ -390,9 +309,8 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     let mut crash_env = base_env.clone();
     crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(PRE_GO_CRASH_POINT)));
 
-    // ---- boot#1: pre-go crash seam armed ------------------------------------
-    // The seam is event-kind-qualified, so the setup `gh.pr.create` op (same
-    // observer path, kind `forge.pr.opened`) sails through it.
+    // boot#1: pre-go crash seam armed. The seam is event-kind-qualified, so the setup
+    // `gh.pr.create` op sails through it.
     let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "e3-boot-1", &crash_env) else {
         return; // sandbox denied loopback bind — CI-safe skip
     };
@@ -423,14 +341,11 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     )
     .await;
     assert_tool_succeeded(&create_resp, "gh.pr.create");
-    // Anti-vacuity for every later `== 0` assert: the opened event proves the
-    // shim state dir is live and counting.
+    // The opened event proves the shim state dir is live and counting.
     let opened = wait_for_event_rows(repo.pool(), "forge.pr.opened", 1, ORACLE_TIMEOUT).await;
     let pr_number = opened[0]["pr_number"].as_u64().expect("pr number");
 
-    // Send the merge WITHOUT awaiting the reply (the abort races the response
-    // write) and WITHOUT `expected_head_sha` (keeps the recovery probe on the
-    // shim-supported `--json state` shape — see the doc comment).
+    // Send the merge WITHOUT awaiting the reply and WITHOUT `expected_head_sha`.
     let _merge_conn = send_tool_call_without_reply(
         &socket_path,
         &seeded.raw_token,
@@ -451,11 +366,8 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     );
     let op_id = wait_for_operation_id(repo.pool(), &merge_idem_key, ORACLE_TIMEOUT).await;
 
-    // ---- the crash: SIGABRT from the seam, nothing else --------------------
-    // Anti-vacuity: a clean exit, any other signal, or a 30s survival all fail
-    // here — the seam demonstrably fired in the harness-spawned binary. This
-    // also REAPS boot#1, so from here on the orphaned wrapper is already
-    // reparented to us (reparenting happens at parent death, not at reap).
+    // The crash. This also REAPS boot#1; the orphaned wrapper was reparented to us at parent
+    // death, not at reap.
     let status = wait_exit_with_timeout(&mut boot1, CRASH_TIMEOUT);
     assert_eq!(
         status.signal(),
@@ -463,10 +375,8 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         "boot#1 must die by the CALM_TEST_CRASH_AT abort seam, got {status:?}"
     );
 
-    // ---- crash-window oracle (kernel dead; direct file-DB + shim state) ----
-    // Spawn artifacts are recorded durably in `spawn_side_effect` BEFORE the
-    // driver parks and spawns the observer — their presence proves the wrapper
-    // spawn preceded the seam (the crash window is real, not pre-spawn).
+    // Spawn artifacts are recorded durably BEFORE the driver parks, so their presence proves the
+    // wrapper spawn preceded the seam.
     let artifacts = spawn_artifacts_json(repo.pool(), &op_id).await;
     let wrapper_pid = i32::try_from(artifacts["pid"].as_i64().expect("wrapper pid"))
         .expect("wrapper pid fits i32");
@@ -489,14 +399,9 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
          committed before the observer — and thus the seam — ever ran)"
     );
 
-    // Reap the wrapper NOW — this is BOTH the sharpest oracle and a HARD
-    // ordering invariant. Oracle: exit code 75 is the `read -r _go || exit 75`
-    // EOF path — the wrapper existed, was held, and was never released.
-    // Ordering: an unreaped zombie keeps its /proc/<pid>/stat entry with the
-    // original starttime, so boot#2's `parked_artifacts_alive` would report
-    // the wrapper ALIVE and VerifyParked would take the reattach branch and
-    // poll forever while we hold the zombie — the phase-`failed` wait below
-    // would time out. Reaping first guarantees recovery sees dead artifacts.
+    // Reap the wrapper NOW: exit 75 is the `read -r _go || exit 75` EOF path, and an unreaped
+    // zombie keeps its /proc/<pid>/stat entry, so boot#2's `parked_artifacts_alive` would report
+    // it ALIVE and VerifyParked would poll forever.
     let wrapper_code = wait_reparented_exit(wrapper_pid, WRAPPER_REAP_TIMEOUT);
     assert_eq!(
         wrapper_code, 75,
@@ -510,8 +415,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         0,
         "crash window: gh merge must never have run"
     );
-    // Counter-absence is not vacuous: the PR's own state file must exist (the
-    // create op wrote it) and still read `false`.
+    // The PR's own state file must exist (the create op wrote it) and still read `false`.
     let merged_file = shim_state
         .join("prs")
         .join(pr_number.to_string())
@@ -532,7 +436,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         "crash window: no forge.pr.merged event may exist"
     );
 
-    // ---- boot#2: same tempdir, seam unarmed, shim PATH still present --------
+    // boot#2: same tempdir, seam unarmed, shim PATH still present
     let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "e3-boot-2", &base_env) else {
         return;
     };
@@ -562,7 +466,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     );
     boot2.sigkill_and_reap();
 
-    // ---- final oracle: the held action never ran, and never will ------------
+    // final oracle: the held action never ran, and never will
     assert_eq!(
         query_event_rows(repo.pool(), "forge.pr.merged").await.len(),
         0,
@@ -603,10 +507,6 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// World seeding
-// ---------------------------------------------------------------------------
-
 struct Seeded {
     track_id: String,
     card_id: String,
@@ -615,13 +515,9 @@ struct Seeded {
     lease_abs: PathBuf,
 }
 
-/// Mirror of forge_template_e2e's `boot_fixture`/`create_worker_caller`
-/// seeding, against the durable file DB: area + track (cwd = git clone of the
-/// bare origin), Worker card keeping its `raw_token`, runtime + thread
-/// binding, and a `held` workspace lease with **`boot_id` NULL** (the boot
-/// reclaim predicate only reclaims when BOTH boot_ids are non-NULL and
-/// unequal, so a NULL lease is never reclaimed) and a generous
-/// `lease_until_ms = now + 1h` (don't depend on the TTL being unchecked).
+/// Seed area + track + Worker card + runtime/thread binding + a `held` workspace lease with
+/// `boot_id` NULL (the boot reclaim predicate only reclaims when BOTH boot_ids are non-NULL and
+/// unequal) and `lease_until_ms = now + 1h`.
 async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
     let as_repo: Arc<dyn Repo> = repo.clone();
     let area = as_repo
@@ -765,11 +661,8 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     tx.commit().await.expect("commit runtime tx");
 }
 
-/// Install the git-forge plugin the way the REAL boot loads it: an install
-/// dir under `CALM_PLUGINS_DIR` (`<tmp>/plugins/<id>/{manifest.json,bin/…}`)
-/// for `PluginRegistry::load_from_dir`, plus an enabled `plugins` DB row for
-/// `PluginHost::autospawn_enabled`. The plugin binary exits on stdin EOF when
-/// the kernel dies, so the abort leaks no orphan.
+/// Install the git-forge plugin the way the REAL boot loads it: an install dir under
+/// `CALM_PLUGINS_DIR` plus an enabled `plugins` DB row. The plugin binary exits on stdin EOF.
 fn install_git_forge_plugin_files(tmp: &Path) {
     let install_dir = tmp.join("plugins").join(PLUGIN_ID);
     let bin_dir = install_dir.join("bin");
@@ -843,11 +736,8 @@ fn ensure_worktree_root_excluded(repo: &Path) {
     writeln!(file, "{WORKTREE_EXCLUDE}").expect("write worktree exclude");
 }
 
-// ---------------------------------------------------------------------------
-// BUSY-tolerant polling oracles (boot#1/boot#2 are live WAL writers on the
-// same file DB — treat transient query errors as "not yet", panic with the
-// last error only at the deadline).
-// ---------------------------------------------------------------------------
+// BUSY-tolerant polling oracles: boot#1/boot#2 are live WAL writers on the same file DB, so
+// transient query errors mean "not yet".
 
 async fn query_scalar_retry<T>(pool: &SqlitePool, sql: &str, bind: &str) -> T
 where
@@ -996,10 +886,6 @@ async fn operation_result_path(pool: &SqlitePool, op_id: &str) -> PathBuf {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
-
 fn assert_tool_succeeded(resp: &Value, label: &str) {
     assert!(
         resp.get("error").is_none(),
@@ -1017,19 +903,9 @@ fn assert_tool_succeeded(resp: &Value, label: &str) {
     );
 }
 
-/// Make this test process a child subreaper (e3): when a kernel dies, its
-/// setsid'd forge wrapper reparents HERE instead of to init, so the test can
-/// `waitpid` the wrapper's real exit status (75).
-///
-/// This flag is process-wide and therefore shared with the e2 test running
-/// concurrently in this same test binary. That coexistence is safe under ONE
-/// discipline: nothing in this process may ever call `waitpid(-1, ..)` (in
-/// any form, including a WNOHANG "drain") — a wildcard wait could steal e2's
-/// aborted kernel between its SIGABRT and its own `wait_exit_with_timeout`
-/// reap, making that `try_wait` fail with ECHILD and panic. Only ever waitpid
-/// a specific pid. The cost of that discipline is a few unreaped zombies
-/// (e.g. plugin stubs reparented at kernel death) that the OS clears when the
-/// test process exits — bounded and harmless.
+/// Make this test process a child subreaper so a dead kernel's setsid'd wrapper reparents HERE
+/// and can be `waitpid`ed. The flag is process-wide: nothing in this process may ever call
+/// `waitpid(-1, ..)` (even WNOHANG), or it could steal another test's aborted kernel.
 fn become_subreaper() {
     // SAFETY: plain prctl(2) on our own process; no pointer arguments.
     let rc = unsafe {
@@ -1049,15 +925,9 @@ fn become_subreaper() {
     );
 }
 
-/// Reap the reparented wrapper — a SPECIFIC pid only (see `become_subreaper`)
-/// — and return its exit code.
-///
-/// ECHILD is asserted loudly at once, never retried to the deadline: the
-/// kernel that owned the wrapper was already reaped (`wait_exit_with_timeout`
-/// runs first), and reparenting happens at parent DEATH, not at reap — so
-/// with that ordering ECHILD can only mean the subreaper prctl never applied
-/// and the wrapper went to init instead. Retrying would just convert a real
-/// bug into a slow timeout.
+/// Reap the reparented wrapper — a SPECIFIC pid only — and return its exit code. ECHILD is
+/// asserted at once: the owning kernel was already reaped, so it can only mean the subreaper
+/// prctl never applied.
 fn wait_reparented_exit(pid: i32, timeout: Duration) -> i32 {
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -1089,9 +959,7 @@ fn wait_reparented_exit(pid: i32, timeout: Duration) -> i32 {
     }
 }
 
-/// Durable `operations.spawn_artifacts_json` for an op — written by
-/// `spawn_side_effect` BEFORE the driver parks (and thus before the pre-go
-/// seam can fire), so it is readable while the kernel is dead.
+/// Durable `operations.spawn_artifacts_json` for an op, readable while the kernel is dead.
 async fn spawn_artifacts_json(pool: &SqlitePool, op_id: &str) -> Value {
     let raw: String = query_scalar_retry(
         pool,
@@ -1102,12 +970,8 @@ async fn spawn_artifacts_json(pool: &SqlitePool, op_id: &str) -> Value {
     serde_json::from_str(&raw).expect("spawn_artifacts_json parses")
 }
 
-/// Assert the exit-75 wrapper left ZERO result artifacts for this op: every
-/// write in the rendered wrapper (`.stdout` redirect, `.code` tmp+rename)
-/// comes only after `read -r _go` succeeds, so the EOF path must leave the
-/// results dir clean of anything with this op's result-path stem (including
-/// `.tmp.$$` staging names). The dir itself was create_dir_all'd by
-/// `spawn_side_effect`, so it must exist — its absence would be its own bug.
+/// Every write in the rendered wrapper comes only after `read -r _go` succeeds, so the EOF path
+/// must leave the results dir clean of this op's stem (including `.tmp.$$` staging names).
 fn assert_no_result_files(result_path: &Path, when: &str) {
     let dir = result_path.parent().expect("forge result dir");
     let stem = result_path
@@ -1142,10 +1006,8 @@ fn prepend_to_path(dir: &Path) -> OsString {
     value
 }
 
-/// The kernel derives its MCP UDS at `<tempdir>/data/mcp/kernel.sock`, and
-/// `sockaddr_un` caps paths at ~108 bytes — if the ambient temp dir is deeply
-/// nested (long `TMPDIR`), fall back to literal `/tmp` (still within the
-/// prod-safety guard's allowed roots).
+/// `sockaddr_un` caps paths at ~108 bytes; if the ambient temp dir is deeply nested, fall back
+/// to literal `/tmp` (still within the prod-safety guard's allowed roots).
 fn socket_safe_tempdir() -> std::io::Result<TempDir> {
     let ambient = std::env::temp_dir();
     let base = if ambient.as_os_str().len() <= 40 {

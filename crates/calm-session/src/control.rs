@@ -1,8 +1,4 @@
 //! Control-plane messages between calm-server and calm-proc-supervisor.
-//!
-//! Phase 1 keeps this narrow: the supervisor is only a stable fork broker for
-//! session daemons. The daemon/browser protocol remains in `crate::ClientMsg`
-//! and `crate::DaemonMsg`.
 
 use serde::{Deserialize, Serialize};
 
@@ -98,12 +94,8 @@ pub enum ProcSignal {
     Hup,
 }
 
-/// Two-phase reply: supervisor emits `Spawned` immediately after fork
-/// (so the client can persist pid + handle before readiness — the
-/// pre-#388 ordering the dispatcher's fast-exit-preserve discriminator
-/// depends on), then emits `Ready` or `Failed` after the ready-fd
-/// handshake or child-exit drains. A `SpawnFailed` short-circuits when
-/// the fork itself fails — no `Spawned` arrives in that case.
+/// Two-phase reply: `Spawned` immediately after fork, then `Ready` or `ReadyFailed` after the ready-fd
+/// handshake; `SpawnFailed` short-circuits when the fork itself fails and no `Spawned` arrives.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ControlReply {
     /// Process forked; pid is final. Client persists pid + handle now.
@@ -112,15 +104,12 @@ pub enum ControlReply {
     },
     /// Daemon wrote its ready signal. Spawn fully succeeded.
     Ready,
-    /// Readiness failed after spawn: child exited early without ready,
-    /// or the ready-fd backstop timed out. `pid` is still valid for
-    /// rollback reap.
+    /// Readiness failed after spawn (child exited early or the ready-fd backstop timed out); `pid` is still valid for rollback reap.
     ReadyFailed {
         error: String,
         child_already_reaped: bool,
     },
-    /// Fork itself failed (e.g. ENOENT on program path). No pid; the
-    /// stream closes after this frame.
+    /// Fork itself failed. No pid; the stream closes after this frame.
     SpawnFailed {
         error: String,
         child_already_reaped: bool,
@@ -131,10 +120,8 @@ pub enum ControlReply {
     },
     ResizeOk,
     SignalOk,
-    /// #996: "这条 proc 已排期回收"，**不是**"已经从 registry 消失"。
-    /// supervisor 收到 `Cleanup` 时把到期时刻提前到"立刻"并就地扫一次；常态下
-    /// entry 当场消失，但安全闸（sticky exit 已落定 + pty master 已 EOF）尚未
-    /// 满足时移除会推迟到后续某次周期性清扫。客户端不得据此断言 entry 已不在。
+    /// "This proc is scheduled for reclaim", **not** "already gone from the registry": removal can be deferred
+    /// to a later periodic sweep, so clients must not assert the entry is absent.
     CleanupOk,
     ProbeOk {
         supervisor_version: u32,

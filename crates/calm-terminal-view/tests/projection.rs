@@ -36,9 +36,7 @@ fn history_scroll_is_read_only_and_alternate_screen_restores() {
     view.feed(b"\x1b[?1049l");
     assert_eq!(view.frame(0).unwrap().text, live.text);
 }
-/// #1696: rmux stores an attributed line (any SGR, so every Claude Code
-/// line) to its written extent and pads only plain lines, so a history view
-/// must pad the missing cells itself instead of failing the whole frame.
+/// rmux stores an attributed line to its written extent and pads only plain lines, so a history view must pad the missing cells itself.
 #[test]
 fn history_view_pads_attributed_lines_stored_to_their_written_extent() {
     let mut view = TerminalView::new(20, 3, [220, 220, 220], [15, 20, 24]).unwrap();
@@ -48,8 +46,7 @@ fn history_view_pads_attributed_lines_stored_to_their_written_extent() {
     let live = view.frame(0).unwrap();
     assert_eq!(live.history_rows, 4);
     assert_eq!(live.text, ["red4", "red5", ""]);
-    // The live viewport is always full width; its blank cells are the
-    // reference for what a padded history cell must look like.
+    // The live viewport is always full width; its blank cells are the reference for a padded history cell.
     let blank = &live.cells[live.cells.len() - 1];
     assert_eq!(blank.text, " ");
     for offset in 1..=live.history_rows {
@@ -71,11 +68,6 @@ fn history_view_pads_attributed_lines_stored_to_their_written_extent() {
         assert_ne!(frame.cells[0].foreground, blank.foreground);
     }
 }
-/// #1710: `find_text` returns the absolute row (the index `frame` reads
-/// through `absolute_line_view`) of the latest or earliest row whose plain
-/// text contains the pattern; a live-screen match is at or past the
-/// history; the alternate screen searches its live rows only; the plain
-/// text is per row, so a pattern split by an SGR boundary still matches.
 #[test]
 fn find_text_locates_history_and_live_rows_by_occurrence() {
     let mut view = TerminalView::new(20, 3, [220, 220, 220], [15, 20, 24]).unwrap();
@@ -87,30 +79,24 @@ fn find_text_locates_history_and_live_rows_by_occurrence() {
     let live = view.frame(0).unwrap();
     let history = live.history_rows;
     assert!(history >= 30, "{history}");
-    // Line k sits at absolute row k (nothing scrolled out of the 2000-row
-    // scrollback); the last marker is line30.
+    // Nothing scrolled out of the 2000-row scrollback, so line k sits at absolute row k.
     assert_eq!(view.find_text("MARK", Occurrence::Latest), Some(30));
     assert_eq!(view.find_text("MARK", Occurrence::Earliest), Some(0));
     assert_eq!(view.find_text("line7", Occurrence::Latest), Some(7));
     assert_eq!(view.find_text("absent", Occurrence::Latest), None);
     assert_eq!(view.find_text("absent", Occurrence::Earliest), None);
-    // The found row's text is what a frame scrolled to it shows first.
     let scrolled = view.frame(history - 30).unwrap();
     assert_eq!(scrolled.text[0], "line30 MARK");
-    // A pattern only on the live screen: an index at or past the history.
     let prompt = view.find_text("prompt>", Occurrence::Latest).unwrap();
     assert!(prompt >= history, "{prompt} vs {history}");
     assert_eq!(live.text[prompt - history], "prompt>");
-    // Case-sensitive substring.
     assert_eq!(view.find_text("mark", Occurrence::Latest), None);
-    // An SGR boundary inside the pattern: the plain text is per row. Three
-    // more lines push the split row into the history.
+    // The plain text is per row, so an SGR boundary inside the pattern still matches.
     view.feed(b"\r\n\x1b[31msplit\x1b[0m-\x1b[1mword\x1b[0m\r\nA\r\nB\r\nC\r\n");
     let split = view.find_text("split-word", Occurrence::Latest).unwrap();
     let history = view.history_rows();
     assert!(split < history, "{split} vs {history}");
     assert_eq!(view.frame(history - split).unwrap().text[0], "split-word");
-    // The alternate screen: only its live rows, never the scrollback.
     view.feed(b"\x1b[?1049h\x1b[2J\x1b[Hmenu MARK");
     let history = view.history_rows();
     assert_eq!(view.find_text("line30", Occurrence::Latest), None);

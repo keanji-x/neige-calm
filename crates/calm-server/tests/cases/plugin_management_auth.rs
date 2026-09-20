@@ -1,5 +1,4 @@
-//! #1413: owner authorization at the production plugin management boundary.
-//! Real routes, SQL persistence and echo child; no real Codex processes.
+//! Owner authorization at the production plugin management boundary.
 
 #![cfg(unix)]
 
@@ -197,8 +196,7 @@ impl Fixture {
             let before = self.snapshot().await;
             let (status, body) = self.post(path, body.clone(), cookie).await;
             let after = self.snapshot().await;
-            // A deliberately broken fence can start/restart the echo child.
-            // Clean it up before failing, including during mutation verification.
+            // A broken fence can start/restart the echo child; clean it up before failing.
             if status != StatusCode::UNAUTHORIZED || before != after {
                 let _ = self.host.stop(ID).await;
             }
@@ -260,8 +258,7 @@ async fn reload_requires_owner_without_side_effects() {
     let fx = Fixture::new().await;
     fx.install().await;
     fx.enable().await;
-    // A valid pending disk change makes an accidental reload observable in
-    // both DB/registry and process/token state; an unchanged fixture would not.
+    // A valid pending disk change makes an accidental reload observable; an unchanged fixture would not.
     let path = fx.source.join("manifest.json");
     let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     manifest["display_name"] = json!("Reloaded fixture");
@@ -297,11 +294,8 @@ async fn reload_requires_owner_without_side_effects() {
     assert_ne!(fx.repo.plugin_token_get(ID).await.unwrap(), old_token);
 }
 
-/// #1480 — the connector install source is behind the same fence, and the
-/// unauthorized arm has one side effect the local-path arm cannot have: this
-/// route *writes a credential to disk*. So the assertion is not only "no row"
-/// but the tree snapshot `assert_rejected` takes, which would show a
-/// `secrets.json` an anonymous request had planted.
+/// The connector install route writes a credential to disk, so the unauthorized arm must
+/// also show no `secrets.json` was planted.
 #[tokio::test]
 async fn connector_install_requires_owner_and_writes_no_credential() {
     let fx = Fixture::new().await;
@@ -322,16 +316,12 @@ async fn connector_install_requires_owner_and_writes_no_credential() {
             .unwrap()
             .is_none()
     );
-    // Stated over the whole tree rather than one expected path: the refusal
-    // has to hold wherever the writer would have put the file.
     let planted = tree_snapshot(fx.root.path()).to_string();
     assert!(
         !planted.contains("secrets") && !planted.contains("neige-managed"),
         "an unauthorized install left a synthesized tree behind: {planted}"
     );
 
-    // The authenticated control, so the refusal above is a fence and not a
-    // route that never worked.
     let (status, created) = fx
         .post("/api/plugins/install", body, Some(&fx.cookie))
         .await;

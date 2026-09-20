@@ -1,32 +1,13 @@
-//! JSON-RPC framing for the kernel-as-MCP-server transport.
-//!
-//! PR7a (#136) — this is a thin shim over the line-delimited JSON helpers
-//! the plugin host already uses (`crate::plugin_host::mcp::parse_frame`
-//! and friends). The wire format is identical; only the direction
-//! flips: in `plugin_host`, the kernel is the *client* talking to a
-//! plugin server. Here, the kernel is the *server* and the codex daemon
-//! (via `neige-mcp-stdio-shim`) is the client.
-//!
-//! Centralizing the framing helpers here:
-//!
-//!   * makes `mcp_server/transport.rs` and `mcp_server/handshake.rs`
-//!     callers depend on this module rather than reaching across into
-//!     `plugin_host::*` — keeps the layering one-directional;
-//!   * gives PR7b/PR8 a single seat to add server-specific frame
-//!     helpers (e.g. canceled-notification synthesizers) without
-//!     bloating the plugin-host module.
-//!
+//! JSON-RPC framing for the kernel-as-MCP-server transport: a thin shim over the line-delimited
+//! JSON helpers the plugin host uses, with the direction flipped (the kernel is the server).
 use serde_json::Value;
 
 pub(crate) use crate::plugin_host::mcp::{
     RequestId, RpcError, build_error_response_frame, build_ok_response_frame,
 };
 
-/// Decoded JSON-RPC frame for the kernel-as-MCP-server direction.
-///
-/// This mirrors the plugin-host framing shape, with one server-specific
-/// addition: request-level `_meta` is preserved separately from `params`
-/// so per-request MCP metadata can flow down the dispatch path.
+/// Decoded JSON-RPC frame for the kernel-as-MCP-server direction; request-level `_meta` is
+/// preserved separately from `params`.
 #[derive(Debug)]
 pub(crate) enum Frame {
     Response {

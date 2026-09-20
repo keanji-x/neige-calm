@@ -37,17 +37,7 @@ use tower::ServiceExt;
 
 use crate::support::git_helpers::attached_repo_fixture;
 
-/// #1147 S3 — `POST /api/tracks` now validates an attached `cwd`: absolute,
-/// existing, inside a Git work tree. These fork fixtures only ever needed *a*
-/// target directory (they assert on report/CRDT rows, never on the path), so
-/// each named variant becomes a real, shared, idempotent Git work tree.
 /// The one spelling of an internal block reference these tests build.
-///
-/// Extracted so the fixture that plants the reference and the assertion that
-/// checks it after the fork cannot drift apart, and so the pair costs one
-/// occurrence of the retiring URI scheme instead of two. #1316 has not renamed
-/// the scheme yet, so each literal here is one more site that rename will have
-/// to find.
 fn internal_block_ref(track_id: &str, block_id: &str) -> String {
     format!("neige://wave/{track_id}#{block_id}")
 }
@@ -523,11 +513,7 @@ fn block_index(report: &Value) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// Counts every table the fork persistence path writes, so a "zero residue"
-/// assertion covers the whole surface: the track row, the attached area folder,
-/// both cards (planner + reportcard), the overlays, and the `tasks` rows that
-/// `track_report::write::structural_init_report_tx` projects out of the copied
-/// report.
+/// Counts every table the fork persistence path writes, so a zero-residue assertion covers the whole surface.
 async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
     calm_server::db::write_in_tx_typed(repo, |tx| {
         Box::pin(async move {
@@ -709,7 +695,6 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
             "kind": "task",
             "rev": source_truth[7].1,
             "payload": {
-                // #1111 — the copy is planner-owned on BOTH privilege fields.
                 "key": "rejected", "tombstone": {"reason": "not now"},
                 "declared_by": "spec", "tombstoned_by": "spec"
             }
@@ -772,8 +757,6 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
     assert_eq!(crdt_report["blocks"], Value::Array(expected_blocks));
     assert_eq!(crdt_report["summary"], "fork source summary");
 
-    // Keep fixture fields load-bearing: the source card stayed untouched and
-    // the app state remained alive through the post-create operation wait.
     let (status, source_after) = request_json(
         &boot.app,
         "GET",
@@ -793,9 +776,7 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
 #[tokio::test]
 async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_source_write() {
     let boot = boot().await;
-    // Frozen schema-v1 wire payload. `docRev` and `blocks` did not exist in
-    // that schema; constructing this through today's TrackReportPayload would
-    // manufacture an unreachable v3+NULL combination.
+    // Frozen schema-v1 wire payload: `docRev` and `blocks` did not exist in that schema.
     const LEGACY_V1_PAYLOAD_JSON: &str =
         r##"{"schemaVersion":1,"summary":"legacy summary","body":"# Legacy\n\nlegacy block\n"}"##;
     let report_id = boot.source_report_id.clone();
@@ -1018,8 +999,6 @@ async fn empty_block_snapshot_written_by_rest_forks_payload_and_crdt_exactly() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    // #1185: the birth report is a five-block skeleton, so emptying it means
-    // deleting every block, re-reading between deletes for the fresh `rev`.
     let mut report = fresh_report;
     loop {
         let blocks = report["blocks"].as_array().expect("blocks array").clone();
@@ -1162,25 +1141,7 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
     assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }
 
-/// Issue #1111 — the companion half of the tombstone normalization: fork
-/// rewrites `tombstoned_by` **only** on tombstone blocks. A residual
-/// `tombstoned_by` on a *non*-tombstone task is deliberately left alone so the
-/// fork's own `validate_payload` breaks the whole track creation fail-closed,
-/// rather than silently repairing a corrupt source into a shape it never
-/// validly had.
-///
-/// **This shape is unreachable in production — this is not a realistic
-/// regression.** Every write surface that can produce a stored report runs
-/// `validate_payload` first: the whole-document path via
-/// `track_report.rs:392,409 → track_report_guard.rs:38`, and the block-level
-/// upsert path via `calm-types/src/report_blocks/mod.rs:214-216`. Nor can
-/// `normalize_report_op` emit it. The fixture below therefore forges the shape
-/// with raw SQL (`UPDATE cards ...`), bypassing every production writer.
-///
-/// What it pins is the **fail-closed safety net against legacy rows or a
-/// database corrupted from outside the server**: should such a payload ever
-/// reach fork, the whole creation must abort with zero residue rather than be
-/// quietly normalized. Do not read this test as a production regression.
+/// The forged shape is unreachable in production; this pins the fail-closed net for legacy or corrupted rows.
 #[tokio::test]
 async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
     let boot = boot().await;
@@ -1340,13 +1301,6 @@ async fn unsafe_markdown_destinations_fail_fork_with_block_and_source() {
     }
 }
 
-/// Issue #1111 — a forked task tombstone must not carry the template's
-/// `tombstoned_by: "user"` privilege into every track forked from it.
-///
-/// The fixture report holds a tombstone declared AND tombstoned by the user.
-/// After a fork, the planner author owns the copy: the guard's `user_owned`
-/// disjunction (`declared_by == "user" || tombstoned_by == "user"`) plus the
-/// immutability of `tombstoned_by` would otherwise freeze that block forever.
 #[tokio::test]
 async fn forked_user_tombstone_is_normalized_to_planner_and_stays_planner_editable() {
     let boot = boot().await;
@@ -1390,8 +1344,6 @@ async fn forked_user_tombstone_is_normalized_to_planner_and_stays_planner_editab
         "fixture block must be a tombstone: {tombstone}"
     );
 
-    // Drive the real planner write path (MCP `calm.report.blocks.*` →
-    // `CardDecisionSink::commit_report_op` → `guard_task_declarations`).
     let (ctx, registry, identity) = planner_tool_channel(&boot, &target_track_id).await;
     let rewritten = json!({
         "key": "rejected",
@@ -1480,8 +1432,7 @@ fn planner_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSessio
     }
 }
 
-/// An MCP tool channel bound to the forked track's own planner card — the
-/// production identity a planner agent writes its track report through.
+/// An MCP tool channel bound to the forked track's own planner card.
 async fn planner_tool_channel(
     boot: &Boot,
     track_id: &str,
@@ -1562,9 +1513,7 @@ async fn call_planner_tool(
         .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
-/// The task payload the source track's user declares. `declared_by: "user"` is
-/// the only shape the REST user path may create (Rule 1); fork rewrites it to
-/// `"planner"`, which is exactly the shape `declare_and_wait` is meant to hold.
+/// The task payload the source track's user declares.
 fn released_fixture_payload(key: &str) -> Value {
     json!({
         "key": key,
@@ -1572,20 +1521,14 @@ fn released_fixture_payload(key: &str) -> Value {
         "goal": "Template task the source track's user allowed",
         "acceptance": "A track forked from this template must ask its own user again",
         "refs": [],
-        // Kept gate-clean on purpose: `declare_and_wait` must be the ONLY
-        // diagnostic this fixture can produce, so `schedulable` below is a
-        // signal about the release and not about a missing gate.
+        // Gate-clean so `declare_and_wait` is the only diagnostic this fixture can produce.
         "no_gate_reason": "fixture task carries no gate",
         "ready": true,
         "declared_by": "user"
     })
 }
 
-/// Seed a live task that the SOURCE track's user declared and then released,
-/// through the production REST user path: `POST .../report/blocks` followed by
-/// the same `PATCH` the "Allow this task" button issues
-/// (`TrackReportPage.tsx:95-99` spreads the payload and sets
-/// `released_by_user: true`). Returns the seeded block id.
+/// Seed a live task the SOURCE track's user declared and released through the REST user path; returns the block id.
 async fn seed_user_released_task(boot: &Boot, key: &str) -> String {
     let (status, report) = request_json(
         &boot.app,
@@ -1649,21 +1592,6 @@ fn verdict_by_key<'a>(report: &'a Value, key: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("verdict for `{key}`: {report}"))
 }
 
-/// Issue #1115 — a template's `released_by_user: true` must not carry the
-/// SOURCE user's consent into a track forked from it.
-///
-/// Fork rewrites `declared_by` to `"spec"` (§7.2), which is precisely the shape
-/// `declare_and_wait` exists to hold back
-/// (`task_projection.rs:709-719`: `effective_wait && declared_by == "spec" &&
-/// !released_by_user && !tombstone`). Copying the release flag verbatim exempts
-/// the copy from a decision the new track's user never made — and
-/// `report-blocks/task.tsx:185` then hides the "Allow this task" button, so she
-/// cannot even see the exemption.
-///
-/// Whole flow through production REST: seed + release in the source, fork as the
-/// browser does (no `X-Calm-Actor`), tighten the new track to `declare-and-wait`,
-/// then let the new user mark the copy ready — the only remaining gate must be
-/// her own release.
 #[tokio::test]
 async fn forked_task_does_not_inherit_the_source_users_release() {
     let boot = boot().await;
@@ -1718,9 +1646,7 @@ async fn forked_task_does_not_inherit_the_source_users_release() {
         "fork must not carry the source user's release into the new track: {forked}"
     );
 
-    // The new track's user marks the copy ready — the ONLY thing that may still
-    // hold it back is her own release, so `schedulable` is a live signal here
-    // rather than a by-product of the forced `ready: false`.
+    // Marking the copy ready makes `schedulable` a live signal about the release.
     let mut ready = forked["payload"].clone();
     ready["ready"] = json!(true);
     let (status, body) = request_json(
@@ -1765,25 +1691,7 @@ async fn forked_task_does_not_inherit_the_source_users_release() {
     );
 }
 
-/// Issue #1115 — the tombstone half of the release normalization.
-///
-/// Fork strips `released_by_user` **only** from live task blocks. It must not
-/// insert or clear anything on a tombstone, because the tombstone schema
-/// (`calm-types/src/report_blocks/kinds.rs`) is the closed shape
-/// `{key, tombstone, declared_by, tombstoned_by}` and rejects every other
-/// accepted task field with `must be absent from a tombstone task`. A residual
-/// `released_by_user` on a tombstone therefore breaks the whole fork
-/// fail-closed, exactly as a residual `tombstoned_by` on a live task does
-/// (#1111) — the same deliberate choice: a corrupt source aborts track creation
-/// instead of being silently repaired into a shape it never validly had.
-///
-/// **This shape is unreachable in production — not a realistic regression.**
-/// Every stored-report writer runs `validate_payload` first (whole-document via
-/// `track_report_guard.rs`, block-level via `report_blocks/mod.rs`), and the
-/// tombstone-rewrite in `normalize_report_op` emits the closed shape only. The
-/// fixture forges it with a raw `UPDATE cards`. What it pins is the
-/// fail-closed net for legacy rows or a DB corrupted from outside the server,
-/// plus the fact that the normalization stays in the live-task arm.
+/// The forged shape is unreachable in production; this pins the fail-closed net for legacy or corrupted rows.
 #[tokio::test]
 async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
     let boot = boot().await;
@@ -1844,10 +1752,7 @@ async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
     assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }
 
-/// INV-1110-002: a forked track's `neige state` / `calm.track.state` bit is
-/// true, and the actual planner instructions require a report read before
-/// direct edits while explicitly exempting bounded Dispatch. This is not a live
-/// Codex turn; the fixture's planner harness uses a nonexistent binary.
+/// Not a live Codex turn; the fixture's planner harness uses a nonexistent binary.
 #[tokio::test]
 async fn inv_1110_002_forked_track_requires_report_startup_read() {
     let boot = boot().await;
@@ -1906,10 +1811,6 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         source_prompt.replace(boot.source_track_id.as_str(), target_track_id.as_str()),
         "fork and source renderers must preserve the same complete instructions apart from Track identity"
     );
-    // #1185 §1.5 A — direct edits require a read regardless of this bit. It still
-    // matters, and matters more: its meaning narrowed from "must you read" to
-    // "does this document already hold content beyond the default skeleton",
-    // which is exactly what a forked report is.
     assert!(
         prompt.contains(concat!(
             "Before you directly edit the report in a session, call `calm.report.read` once: ",
@@ -1970,34 +1871,7 @@ async fn initial_track_does_not_require_report_startup_read() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// #1252 S2 — what the structural door may not do
-//
-// The door (`track_report::write::structural_init_report_tx`) is the create
-// paths' entry into the report write boundary. `fork_guard_exemption_invariant`
-// pins its *signature* — that it has no `EventBus`, no `EditAuthor`, no CAS
-// input. The first two tests below pin the behaviour that signature exists to
-// produce, end to end through `POST /api/tracks`, for **all three** creation
-// sources that build an `init_snapshot`: a fork, a built-in template
-// instantiation, and a user recipe (`TrackInit::Recipe`, #1292 S2 — see
-// `routes::tracks`'s own "three initialization sources"). All three reach the
-// same door, so a change that gave it an event bus would break all three, and
-// testing a subset would leave part of the door uncovered — which is exactly
-// what happened between #1252 S2 and #1292 S2 landing: this comment said "both"
-// and the recipe arm was created afterwards, with no case here.
-//
-// The third is narrower than its neighbours and says so in its own doc comment:
-// the order of the door's two statements is **not** observable from this
-// surface, and the test that pins it lives in the `--lib` target.
-// ---------------------------------------------------------------------------
-
-/// Every persisted event of `kind` scoped to `track_id`, oldest first, as
-/// `(actor, payload)` raw JSON.
-///
-/// Read out of the `events` table rather than off a broadcast channel: the
-/// persisted row is what the audit log, the goldens and replay all consume, and
-/// an event that is emitted but not persisted is not the thing being denied
-/// here.
+/// Every persisted event of `kind` scoped to `track_id`, oldest first, as `(actor, payload)` raw JSON.
 async fn events_for_track(repo: &dyn Repo, kind: &str, track_id: &str) -> Vec<(Value, Value)> {
     let kind = kind.to_string();
     let track_id = track_id.to_string();
@@ -2050,11 +1924,6 @@ async fn create_track_via_rest(boot: &Boot, title: &str, suffix: &str, extra: Va
 }
 
 /// Create a track recipe through the production REST route and return its id.
-///
-/// The body is `track_recipe_instantiate`'s own `two_task_body` — the same
-/// shape #1292 S2 pins the recipe path with, reused rather than re-invented so
-/// that "the recipe path reaches the door" is asserted about the recipe shape
-/// that path is actually specified against.
 async fn create_recipe_via_rest(boot: &Boot, title: &str) -> String {
     let (status, created) = request_json(
         &boot.app,
@@ -2075,27 +1944,7 @@ async fn create_recipe_via_rest(boot: &Boot, title: &str) -> String {
     created["id"].as_str().unwrap().to_string()
 }
 
-/// Issue #1252 S2 / Q12 — **no creation source emits a report edit.**
-///
-/// A fork, a built-in template instantiation and a user recipe all write the
-/// new track's report card
-/// inside the create transaction. Doing that through a shared writer is exactly
-/// the change that "naturally" unifies them onto `write::persist`, which emits
-/// `card.updated` + `track.report_edited` on every successful call — so the
-/// thing most likely to be lost in this slice is the *absence* of that pair.
-/// Q12 ruled the absence is the contract.
-///
-/// It is carried by the door's signature (no `&EventBus`, no event in the
-/// return type — `fork_guard_exemption_invariant::
-/// the_structural_door_cannot_name_an_author_an_actor_or_a_revision`), and by
-/// this test end to end. **Must-red**: give the door an `EventBus` and emit a
-/// `TrackReportEdited` from it, and this goes red on whichever creation source
-/// you wired it into — which is why all three are here.
-///
-/// Scoped by `scope_track`, so the source track's own seeded edits (the
-/// fixture writes those through the real REST/`persist_report` path, which
-/// *does* emit) cannot mask a missing assertion: an unscoped count would be
-/// non-zero either way.
+/// Scoped by `scope_track`: the source track's seeded edits do emit, so an unscoped count would be non-zero either way.
 #[tokio::test]
 async fn every_creation_source_emits_no_report_edited() {
     let boot = boot().await;
@@ -2123,9 +1972,6 @@ async fn every_creation_source_emits_no_report_edited() {
     )
     .await;
 
-    // The fixture: both new tracks really do carry initialized report content,
-    // so "no edit event" is a statement about a write that happened rather than
-    // about a create that did nothing.
     for track_id in [&forked, &templated, &from_recipe] {
         let (status, report) = request_json(
             &boot.app,
@@ -2160,17 +2006,6 @@ async fn every_creation_source_emits_no_report_edited() {
     }
 }
 
-/// Issue #1252 S2 / Q12, second half — the report card's **only** event is one
-/// `card.added`, attributed to the request's own actor.
-///
-/// `every_creation_source_emits_no_report_edited` cannot see this: unifying
-/// the create paths onto `write::persist` would emit `card.updated` *and*
-/// `track.report_edited`, but so would a narrower mistake that emits only the
-/// generic one. This is that leg. It also pins the attribution, which is where
-/// the fork's "who" survives at all — the door emits nothing, so the create
-/// closure's `CardAdded` is the single record that a user did this.
-///
-/// **Must-red**: make the door emit `Event::CardUpdated` for the row it writes.
 #[tokio::test]
 async fn structural_init_leaves_one_card_added_and_no_card_updated() {
     let boot = boot().await;
@@ -2215,9 +2050,7 @@ async fn structural_init_leaves_one_card_added_and_no_card_updated() {
             1,
             "{label}: the report card must be announced exactly once: {added:#?}"
         );
-        // `ActorId::User` is what `Actor::to_actor_id()` produces for this
-        // request; the fixture sends no `X-Calm-Actor`, which is the browser
-        // shape. Compared as the serialized `ActorId` the events table stores.
+        // The fixture sends no `X-Calm-Actor` (the browser shape), so the actor is `ActorId::User`.
         assert_eq!(
             added[0].0,
             serde_json::to_value(calm_server::ids::ActorId::User).unwrap(),
@@ -2238,37 +2071,6 @@ async fn structural_init_leaves_one_card_added_and_no_card_updated() {
     }
 }
 
-/// Issue #1252 S2 — a forked task's `refs` are rewritten onto the copy and
-/// resolve against it.
-///
-/// # What this does NOT pin, and how that was established
-///
-/// It does not pin the statement order inside
-/// `track_report::write::write_report_row_and_project_tx`, and an earlier draft
-/// of this test claimed it did. **Measured, not argued**: swapping the row write
-/// and the task projection inside that function leaves this test GREEN. The
-/// reason is that `GET /api/tracks/{id}/report` recomputes `taskDiagnostics` at
-/// read time from the committed payload, so by the time this test looks, the
-/// cache holds the fork either way — the create-time projection's verdicts are
-/// simply not on this surface.
-///
-/// Nor is the difference visible in the `tasks` table: `prepare_fork_report`
-/// forces every copied task to `ready: false`, so a forked declaration is
-/// non-schedulable and projects no row whichever order ran. That is why the
-/// fork route had no order test before this slice, and it is not something a
-/// better assertion here would fix.
-///
-/// The test that *does* pin the order is
-/// `routes::tracks::tests::structural_door_writes_cache_crdt_and_projection_together`
-/// — the crate's `--lib` target, which reads the `TaskProjectionOutcome` the
-/// door returns rather than a re-derived read-path value. Under the same swap it
-/// goes red on a `reference_missing` diagnostic. Naming it here is the point: a
-/// gate run scoped to the integration binaries never builds that target.
-///
-/// What this test is still worth: the fork's link rewriting and the copy's
-/// self-consistency end to end. The fixture's `build` task references the source
-/// track's second prose block; after the fork the reference must name the
-/// *copy* of that block, on the new track, and that block must be present.
 #[tokio::test]
 async fn forked_task_refs_are_rewritten_onto_the_copy_and_resolve() {
     let boot = boot().await;
@@ -2301,8 +2103,6 @@ async fn forked_task_refs_are_rewritten_onto_the_copy_and_resolve() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The fixture, asserted rather than assumed: the copied task really does
-    // reference a block of this same write, rewritten onto the new track.
     let forked = task_block_by_key(&report, "build");
     assert_eq!(
         forked["payload"]["refs"],
@@ -2336,37 +2136,12 @@ async fn forked_task_refs_are_rewritten_onto_the_copy_and_resolve() {
     );
 }
 
-/// #1252 S3′ — the negative nail.
-///
-/// #1252 and #1362 both asked for a test of "the S2 × S3′ intersection": once
-/// S2 routed fork / template / recipe creation through a unified apply, fork's
-/// events were supposed to start flowing through the
-/// `append_decision_event*_in_tx` seam.
-///
-/// **That intersection does not exist.** Fork goes `routes::tracks` →
-/// `write_with_actor_events_typed` → `write_with_actor_events` →
-/// `enforce_role_resolving_session`, one of the four `RepoEventWrite` wrappers
-/// gated since #136 PR3; S2's structured creation door lands on the same
-/// wrapper. Neither touches `append_decision_event_in_tx`. Writing the
-/// requested test would have meant asserting a fiction, so this pins the true
-/// statement — and it is a real regression guard: if a refactor ever reroutes a
-/// report/fork write through the seam, this goes red.
-///
-/// `calm_truth::db::sqlite::append_probe` is a process-global recorder, which
-/// is sound only because the gate command runs tests under `cargo nextest`
-/// (one process per test).
+/// `append_probe` is a process-global recorder, sound only because tests run under `cargo nextest` (one process per test).
 #[tokio::test]
 async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
     use calm_truth::db::sqlite::append_probe;
 
-    /// Kinds that would mean a report/track body write had started arriving at
-    /// the seam. `workspace.*` deliberately is not here: track creation leases
-    /// a workspace, and the workspace-lease adapter is one of the fifteen
-    /// legitimate seam call sites.
-    /// `track.report_edited` is the one this nail is really about: it is the
-    /// kind #1252 / #1363 name throughout, and `role_gate` has no rule for it.
-    /// It is named explicitly rather than relied on being caught by the
-    /// `card.updated` it is emitted alongside today.
+    /// `workspace.*` is deliberately absent: track creation leases a workspace through a legitimate seam call site.
     const REPORT_SHAPED_KINDS: &[&str] = &[
         "card.updated",
         "card.added",
@@ -2376,7 +2151,6 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
 
     let boot = boot().await;
 
-    // Only the fork request is under observation.
     append_probe::reset();
     let (status, target_track) = request_json(
         &boot.app,
@@ -2397,11 +2171,7 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
     assert_eq!(status, StatusCode::CREATED, "body = {target_track}");
     let observed = append_probe::kinds();
 
-    // Today `observed` is empty. It is deliberately *not* asserted empty:
-    // track creation also leases a workspace, and the workspace-lease adapter
-    // is a legitimate seam call site whose events may land in this window. The
-    // nail is about report/card-shaped traffic, so it is written as a denylist
-    // over kinds rather than as "the seam stayed silent".
+    // Not asserted empty: the workspace-lease adapter may legitimately hit the seam in this window.
     for kind in &observed {
         assert!(
             !REPORT_SHAPED_KINDS.contains(kind),
@@ -2413,10 +2183,7 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
         );
     }
 
-    // The loop above is vacuous unless the probe actually records. Prove it
-    // does, in this same process, by driving the seam directly: a `Kernel`
-    // actor appending a system-scoped event is exactly the shape seven of the
-    // fifteen production call sites use, and it must show up in the trace.
+    // Proves the probe records in this process, so the loop above is not vacuous.
     let side_repo = calm_server::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open probe-liveness repo");
@@ -2446,18 +2213,6 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// #1635 S2c — the structural door runs the contract-header funnel too
-// ---------------------------------------------------------------------------
-
-/// A fork copies the source's blocks and lands them through
-/// `structural_init_report_tx`, the same funnel every edit goes through. A
-/// birth-body source leads with the canonical header; the fork keeps it on
-/// line 1, byte for byte, and the whole projected document is one the funnel
-/// accepts (`canonical_fresh_null_crdt_source_forks_through_the_rest_path`
-/// pins the body equality; this pins the header itself, so a fork that
-/// re-spelled or dropped the line would be caught here and not by a diff of
-/// two long strings).
 #[tokio::test]
 async fn a_fork_of_a_headered_source_keeps_the_header_canonical_on_line_1() {
     use calm_types::report_contract::{canonical_line, check_document};

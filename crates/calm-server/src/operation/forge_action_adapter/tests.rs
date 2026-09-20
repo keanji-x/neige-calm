@@ -889,34 +889,23 @@ fn run_git<const N: usize>(path: &Path, args: [&str; N]) {
     );
 }
 
-/// #1164 P3 r2 G4 — the two buckets must be a PARTITION of the passthrough
-/// set, so a key added tomorrow lands in exactly one of them deliberately.
-///
-/// This matters beyond tidiness: [`super::FORGE_CREDENTIAL_ENV_KEYS`] is the
-/// `cli_query.env_allow` denylist, and a manifest naming a key in it is a hard
-/// install/reload failure. A key that drifts into the credential bucket by
-/// accident retroactively breaks already-installed connectors at boot; a
-/// credential that drifts out of it silently hands the operator's forge
-/// identity to a manifest-authored connector.
+/// A key that drifts into the credential bucket retroactively breaks installed connectors at boot; a credential that drifts out silently hands the operator's forge identity to a manifest-authored connector.
 #[test]
 fn forge_env_key_buckets_are_a_partition() {
     use super::{
         FORGE_CREDENTIAL_ENV_KEYS, FORGE_NONCREDENTIAL_ENV_KEYS, forge_passthrough_env_keys,
     };
 
-    // Neither bucket may be empty — an empty credential bucket would make the
-    // cli-query denylist vacuous while every assertion about it still passed.
+    // An empty credential bucket would make the cli-query denylist vacuous while every assertion about it still passed.
     assert!(!FORGE_CREDENTIAL_ENV_KEYS.is_empty());
     assert!(!FORGE_NONCREDENTIAL_ENV_KEYS.is_empty());
 
-    // Disjoint …
     for key in FORGE_CREDENTIAL_ENV_KEYS {
         assert!(
             !FORGE_NONCREDENTIAL_ENV_KEYS.contains(key),
             "{key} is in BOTH buckets; it must be classified once"
         );
     }
-    // … and no bucket repeats a key.
     let mut all: Vec<&str> = forge_passthrough_env_keys().collect();
     let total = all.len();
     all.sort_unstable();
@@ -932,20 +921,7 @@ fn forge_env_key_buckets_are_a_partition() {
         "the composed list must be exactly the two buckets"
     );
 
-    // ---- The golden set. -------------------------------------------------
-    //
-    // Both buckets are pinned to exact literals (r3 H5). A shape check like
-    // `key.contains("TOKEN") || key.contains("SSH")` is not a lock: DELETING
-    // `GIT_SSH_COMMAND` — silently taking a variable away from every forge
-    // subprocess — left all 59 forge and cli_query tests green, because
-    // nothing asserted membership or length. Composing the two buckets and
-    // then asserting against the composition is self-certifying for the same
-    // reason.
-    //
-    // These literals are the second copy ON PURPOSE, and the only one: the
-    // production constants are the single source of truth for BEHAVIOUR, and
-    // this is a golden that forces any change to them to be a deliberate,
-    // reviewed edit in two places rather than a one-character slip.
+    // Golden literals on purpose: a shape check is not a lock (deleting a key left every test green), and these force any change to be a deliberate edit in two places.
     assert_eq!(
         FORGE_CREDENTIAL_ENV_KEYS,
         &[
@@ -967,7 +943,7 @@ fn forge_env_key_buckets_are_a_partition() {
         "moving a key in or out of the non-credential bucket changes who may \
          name it in cli_query.env_allow — do it deliberately"
     );
-    // …and the composed order, which is what a forge subprocess actually sees.
+    // The composed order is what a forge subprocess actually sees.
     assert_eq!(
         forge_passthrough_env_keys().collect::<Vec<_>>(),
         vec![

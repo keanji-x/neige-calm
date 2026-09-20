@@ -1,18 +1,4 @@
-/*
- * Facts about Today that only a real engine can settle, all of them invisible
- * to jsdom, which loads no CSS:
- *
- *   1. the document action sits inside `.document`, but remains at the
- *      interface type rank rather than inheriting the prose rank;
- *   2. the agenda's empty line is a shared primitive (`PanelEmpty`) placed by
- *      this feature, so its inset depends on where this feature puts it;
- *   3. the document region's own geometry — the gutter this page publishes for
- *      `features/report`'s three-column grid, and whether the empty day is
- *      centred in the space the report would fill.
- *
- * Computed values and box geometry, not class names: a rule that exists but is
- * overridden reads the same as a rule that works when you only inspect source.
- */
+/* Facts about Today that only a real engine can settle: computed values and box geometry, not class names. */
 import type { ReactNode } from 'react';
 import { render } from '@testing-library/react';
 import { page } from 'vitest/browser';
@@ -32,14 +18,7 @@ const renderTrackRow: TodayPageProps['renderTrackRow'] = (track) => (
   <span data-nc-role="row">{track.title}</span>
 );
 
-/**
- * What one type token resolves to right now, as a computed `font-size`.
- *
- * A probe element rather than reading the custom property off `:root`: the
- * property's value is a token, and the thing the assertions compare against is
- * the *resolved* `font-size` string the engine reports, so the probe has to go
- * through the same resolution the page does.
- */
+/** What one type token resolves to right now, as a computed `font-size`, via a probe that goes through the same resolution the page does. */
 function fontSizeOf(token: '--text-lg' | '--text-base'): string {
   const probe = document.createElement('span');
   probe.style.fontSize = `var(${token})`;
@@ -65,16 +44,7 @@ function track(overrides: Partial<Track> = {}): Track {
   };
 }
 
-/**
- * The two things `app/shell`'s `.main` provides that this page reads.
- *
- * `--document-start` is a leftover computed against `100cqi` and
- * `--panel-span`, both of which come from that box; rendering `TodayPage` on
- * its own leaves the custom property invalid and the gutter simply absent —
- * which is the very defect these cases exist to catch, so it cannot also be the
- * conditions they run under. If the shell renames or re-derives either, this
- * host is where the mirror goes stale.
- */
+/** The two things `app/shell`'s `.main` provides that this page reads; without them `--document-start` is invalid and the gutter absent. */
 function Main({ children, inlineSize = '1080px' }: { children: ReactNode; inlineSize?: string }) {
   return (
     <div style={{
@@ -114,44 +84,14 @@ describe('the document’s action answers a control, not the document', () => {
     const region = container.querySelector('p')?.parentElement;
     expect(action).not.toBeNull();
     expect(region).not.toBeNull();
-    /*
-     * Compared against the tokens as the engine resolves them, not against
-     * `18px` / `13px`.
-     *
-     * What this locks is the size each element ends up at: the control
-     * computes to whatever `--text-base` resolves to right now and the
-     * document region to `--text-lg`, with the two ranks asserted distinct
-     * first so they cannot pass by collapsing into each other. It does not
-     * lock which token the CSS *names* — a rule written as a literal would
-     * pass too, as long as the number still matches the token's current value.
-     * Comparing against probes rather than `18px` / `13px` is what keeps a
-     * legitimate global retune of either token from failing this test while
-     * the implementation stays correct.
-     */
     const prose = fontSizeOf('--text-lg');
     const interfaceRank = fontSizeOf('--text-base');
     expect(prose).not.toBe(interfaceRank);
-    // The region really is at the prose rank — otherwise this test would pass
-    // for the trivial reason that nothing here is enlarged at all.
     expect(getComputedStyle(region as Element).fontSize).toBe(prose);
-    // …and the control is not: `[data-nc-action]` declares its own size
-    // (base.css §4.1) and a declaration beats an inherited value, so it reads
-    // at interface rank beside a document rather than as part of the prose.
     expect(getComputedStyle(action as Element).fontSize).toBe(interfaceRank);
   });
 });
 
-/*
- * ── The document region's own geometry ────────────────────────────────────
- *
- * `features/report`'s `.doc` is a three-column grid whose first track is
- * `var(--document-start)` with no fallback, so a route that publishes nothing
- * loses the whole `grid-template-columns` — outline gutter, measure and
- * sidenote column at once. Today published neither variable and capped the
- * region at `--measure-prose` from the outside instead, which is what owner saw
- * on the 4140 preview: a narrow column pinned to the left margin, with the
- * empty day centred inside it rather than in the space the report would fill.
- */
 describe('the document region owns the column the report will stand in', () => {
   function renderVacant() {
     return render(
@@ -180,17 +120,7 @@ describe('the document region owns the column the report will stand in', () => {
     const actionBox = action.getBoundingClientRect();
     const columnBox = column.getBoundingClientRect();
 
-    /*
-     * Geometry, because a custom property cannot be read back: `getComputedStyle`
-     * returns the substituted *token* for `--document-start`, not the length it
-     * resolves to, so `parseFloat` on it is `NaN` whether the page publishes a
-     * good expression or nothing at all.
-     *
-     * What the boxes say instead is stronger. The action takes
-     * `margin-inline-start: var(--document-start, 0px)`, so it lands on the
-     * document's own column rather than flush against the main column. Delete
-     * the publication and `var()` falls back to 0px.
-     */
+    /* Geometry, because a custom property cannot be read back: `getComputedStyle` returns the substituted token for `--document-start`, not the length it resolves to. */
     const leading = actionBox.left - columnBox.left;
     expect(leading).toBeGreaterThan(0);
   });
@@ -203,19 +133,8 @@ describe('the document region owns the column the report will stand in', () => {
     const column = region.parentElement as HTMLElement;
     const guideBox = guide.getBoundingClientRect();
     const columnBox = column.getBoundingClientRect();
-    /*
-     * The guide's centre against the MAIN COLUMN's, not against its own
-     * region's. With the old cap the region was 504 wide and start-aligned, and
-     * the sentence was perfectly centred inside it — so a region-relative
-     * assertion passes on the exact layout owner reported. The column is what
-     * the reader sees, and the document's own measure column is centred in it
-     * too (`--document-start` is the leftover halved), so this is one axis for
-     * the empty day and the report that replaces it.
-     */
     expect(Math.abs((guideBox.left + guideBox.right) / 2 - (columnBox.left + columnBox.right) / 2))
       .toBeLessThanOrEqual(1);
-    // And the region really did stop being 504 wide, so the centring above is
-    // not being satisfied by a box that happens to sit mid-column.
     expect(region.getBoundingClientRect().width).toBeGreaterThan(504);
   });
 

@@ -1,6 +1,5 @@
-// Invoked by the explicit Rust scan_bundled_frontend_real_cookie_contract test.
-// Native asset loading/bootstrap and event replay are fixtures; auth HTTP and
-// browser cookie handling use the compiled frontend and the actual Rust routers.
+// Invoked by the Rust scan_bundled_frontend_real_cookie_contract test: auth HTTP and browser
+// cookie handling use the compiled frontend and the actual Rust routers; the rest is fixtures.
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';

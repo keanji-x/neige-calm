@@ -1,4 +1,4 @@
-//! #985 PR3b acceptance coverage for the document-backed task projection.
+//! Acceptance coverage for the document-backed task projection.
 
 #![cfg(unix)]
 
@@ -171,9 +171,6 @@ async fn rebuild(boot: &Boot) -> calm_server::db::sqlite::TaskProjectionOutcome 
     outcome
 }
 
-/// #1070 regression for the pre-#1080 deferred rebuild helper. The rebuild
-/// transaction owns the writer slot before it reads projection inputs, so a
-/// distinct writer waits without forming a shared-cache lock cycle.
 #[tokio::test]
 async fn immediate_rebuild_serializes_with_waiting_writer_without_deadlock() {
     let boot = new_boot().await;
@@ -288,17 +285,6 @@ fn task_verdict<'a>(read: &'a Value, key: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("task verdict for {key}"))
 }
 
-/// #1260 — one read must distinguish the three states that used to collapse
-/// into a bare `pending`/blank row. The fixture is one real projection:
-///
-/// * `dependency-blocked` has a row but waits for running `occupier`;
-/// * `budget-queued` has a row and ready dependencies, but the explicit 1-slot
-///   task budget is occupied;
-/// * `not-admitted` is the fourth ready declaration under a planner ceiling of
-///   three, so it deliberately has no `tasks` row.
-///
-/// Both public reads are asserted because the FE consumes REST while planners
-/// consume MCP; they must not tell two stories about the same track.
 #[tokio::test]
 async fn pending_reasons_distinguish_dependency_budget_and_admission() {
     let boot = new_boot().await;
@@ -1957,7 +1943,7 @@ async fn document_order_is_ceiling_priority_and_move_reprojects_pending_rows() {
     upsert(&boot, None, task("first")).await;
     let (second, _) = upsert(&boot, None, task("second")).await;
     assert_eq!(keys(&boot).await, ["first"]);
-    // block 0 is the contract header block; the funnel rejects displacing it (#1635 S2c)
+    // block 0 is the contract header block; the funnel rejects displacing it
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
@@ -1992,9 +1978,6 @@ async fn terminal_planner_key_does_not_consume_ceiling_capacity() {
     assert_eq!(status, "pending");
 }
 
-/// #1070 regression: handler-only route fixtures do not attach a live
-/// dispatcher, so the delete-to-policy-PATCH window keeps `collateral`
-/// pending and the wait-policy projection must delete it.
 #[tokio::test]
 async fn handler_fixture_keeps_pending_row_unclaimed_until_policy_patch() {
     let boot = new_boot().await;

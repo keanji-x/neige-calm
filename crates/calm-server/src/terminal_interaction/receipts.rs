@@ -1,26 +1,20 @@
-//! The receipts an input can end with, built before the reservation so the
-//! cached unknown receipt already carries every fact of the request; and the
-//! two structured refusals (stale observation, control unavailable). Pure
-//! JSON constructors; the fences and the write live in `operations.rs`.
+//! The receipts an input can end with, built before the reservation so the cached unknown
+//! receipt already carries every fact of the request. Pure JSON constructors.
 use super::input_control::ClaimStep;
 use super::replace_plan::ReplacePlan;
 use super::screen_diff::ScreenDiff;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-/// The three receipts a write can end with, built before the reservation so
-/// the cached unknown receipt already carries every fact of the request.
+/// The three receipts a write can end with, built before the reservation.
 pub(super) struct WriteReceipts {
     pub(super) unknown: Value,
     pub(super) written: Value,
     pub(super) refused: Value,
 }
 impl WriteReceipts {
-    /// `release` stamps `release: {status: "requested"}` on every receipt,
-    /// so the cached unknown receipt already carries the release fact; the
-    /// release step later updates it to released/not_held/unconfirmed. A
-    /// `replace` plan (#1677) is stamped the same way, so a replay returns
-    /// the plan the write was derived from and never recomputes it.
+    /// `release` and a `replace` plan are stamped on every receipt up front, so a replay returns
+    /// the facts the write was derived from and never recomputes them.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         terminal: &str,
@@ -56,9 +50,8 @@ impl WriteReceipts {
         apply(&mut self.refused);
     }
 }
-/// `claim` (and, once granted, `control_id`) on every result of a
-/// `claim:true` request, so the caller knows what it holds even when the
-/// write did not happen.
+/// `claim` on every result of a `claim:true` request, so the caller knows what it holds even
+/// when the write did not happen.
 pub(super) fn attach_claim(receipt: &mut Value, claim: Option<&ClaimStep>) {
     let Some(claim) = claim else {
         return;
@@ -75,9 +68,7 @@ pub(super) fn merge(target: &mut Value, fields: Value) {
         }
     }
 }
-/// The stale-observation result: the request was not written, and the caller
-/// is told what to compare and how to resend. `screen_diff` (#1666 S4) says
-/// whether `allow_output_below_cursor` would admit the resend.
+/// The stale-observation result: the request was not written.
 pub(super) fn stale_receipt(
     terminal: &str,
     request_key: &str,
@@ -92,8 +83,7 @@ pub(super) fn stale_receipt(
         "screen_diff":diff.to_json(observed_revision, current_revision),
         "next":"inspect observation.state and screen_diff (that fresh observation is now the latest on this connection); if only rows below the cursor changed (cursor unmoved, rows_changed_at_or_above_cursor 0) and the action edits the draft, resend the same request_id with observation_id omitted and allow_output_below_cursor=true; if only status text changed elsewhere, resend the same request_id with observation_id omitted and allow_output_since_observation=true; else act on the new state. Neither flag bypasses the control, surface, viewport or pending fences"})
 }
-/// The control-unavailable result (#1666 S3): `claim:true` could not put
-/// control in this connection's hands, nothing was written or cached.
+/// The control-unavailable result: nothing was written or cached.
 pub(super) fn control_unavailable_receipt(
     terminal: &str,
     request_key: &str,
@@ -106,10 +96,8 @@ pub(super) fn control_unavailable_receipt(
         "reason":reason,"claim":{"status":status,"reason":reason},
         "next":"nothing was written; read observation.state role/control_id; when free, observe and resend with claim=true"})
 }
-/// Every input receipt, whatever its outcome, carries
-/// `application_result:"unverified"`: an acknowledgement says bytes reached the
-/// PTY, an unknown outcome says not even that is known, and neither says what
-/// the application did with them.
+/// Every input receipt carries `application_result:"unverified"`: an acknowledgement says
+/// bytes reached the PTY, not what the application did with them.
 fn unknown_receipt(
     terminal: &str,
     request_key: &str,
@@ -153,9 +141,6 @@ mod tests {
         ScreenDiff::compare(at, &[1, 2, 3], at, &[1, 2, 9])
     }
 
-    /// The field contract is uniform: written, refused and unknown receipts
-    /// all say `application_result:"unverified"`; only acknowledged ones add
-    /// `next`, and drift evidence is copied whenever it exists.
     #[test]
     fn every_terminal_input_receipt_outcome_reports_application_result_unverified() {
         let observation = Uuid::new_v4();
@@ -227,10 +212,6 @@ mod tests {
         );
     }
 
-    /// #1666: `steps` on every write receipt of a sequence, `claim` and
-    /// `control_id` on every result of a claim, whatever the outcome, and
-    /// (r1) `release: requested` on every write receipt of a release request
-    /// before the release runs.
     #[test]
     fn write_receipts_carry_steps_claim_and_release_uniformly() {
         let observation = Uuid::new_v4();
@@ -261,8 +242,7 @@ mod tests {
         let mut none = WriteReceipts::new("t1", "r1", observation, None, None, None, false);
         none.attach(None);
         assert!(none.written.get("claim").is_none());
-        // #1677: the derived plan on every write receipt, unknown included,
-        // so the cached receipt carries it before the write is sent.
+        // The derived plan is on the unknown receipt too, so the cached receipt carries it before the write is sent.
         let plan = ReplacePlan {
             row: 3,
             cursor_index: 12,
@@ -294,7 +274,7 @@ mod tests {
             json!({"observed_revision":3,"input_revision":5,"tolerance":"below_cursor",
                 "rows_changed_below_cursor":[2],"rows_changed_total":1,"truncated":false})
         );
-        // #1684: the wide opt-in merges its own shape onto the same revisions.
+        // The wide opt-in merges its own shape onto the same revisions.
         let mut wide = json!({"observed_revision":3,"input_revision":5});
         merge(
             &mut wide,

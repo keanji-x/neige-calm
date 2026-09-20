@@ -6,12 +6,8 @@ import type { ModelSelection, Conversation, OptimisticConversationTurn, Transcri
 import { useReducer, useState } from '../../ui/state/public.ts';
 
 /**
- * A conversation being written: one value, not five pieces of state.
- *
- * The key belongs to this draft for its whole lifetime. In particular, a
- * failed create keeps both `key` and `sentText` while its route is unmounted:
- * the server may have committed an ambiguous request, and retrying it with a
- * new key would mint a second conversation.
+ * A conversation being written. The key belongs to the draft for its whole lifetime: a failed create
+ * keeps `key` and `sentText`, since retrying an ambiguous request under a new key would mint a second conversation.
  */
 export type ConversationDraft = Readonly<{
   /** The Track this draft belongs to. */
@@ -32,11 +28,7 @@ export type ConversationDraft = Readonly<{
 
 export type ConversationDraftId = Readonly<Pick<ConversationDraft, 'scopeId' | 'key'>>;
 
-/**
- * The provider owns one independent slot per Track. A slot is either unfinished
- * draft work or the row that work became; making it a union keeps those two
- * outcomes mutually exclusive in the same reducer transition.
- */
+/** One slot per Track: unfinished draft work, or the row that work became — mutually exclusive by construction. */
 type DraftSlot = Readonly<
   | { kind: 'held'; draft: ConversationDraft }
   | { kind: 'adopted'; conversationId: string }
@@ -115,45 +107,15 @@ export type ConversationRegistry = Readonly<{
   turnsOf: (conversationId: string) => readonly TranscriptEntry[];
   remember: (conversation: Conversation, turns: readonly TranscriptEntry[]) => void;
   /**
-   * Amend an entry **that already exists**, reading it at the moment of the
-   * write rather than at the moment the caller decided to write.
-   *
-   * `conversations` and `turnsOf` are values off a render. An async writer —
-   * `useConversationStore`'s send, whose promise settles two refreshes after
-   * its POST returned 200 — closes over the render it started on, and by the
-   * time it lands one of those refreshes may already have put a newer
-   * transcript, turn count or live state into this entry. Reading through the
-   * captured value and writing the merge back is a read-modify-write across an
-   * await: it silently reverts whatever arrived in between.
-   *
-   * So the merge is handed *in*, and runs inside the state updater against
-   * whatever the entry holds then. `amend` must therefore be a pure function of
-   * its argument — React may call it more than once for one write.
-   *
-   * "Existing only" is the second half, and it is the reason this is not
-   * `remember`: it is what keeps a write-through on the right side of the
-   * `rememberOn` defence (`app/router/public.tsx`) — a conversation this tab
-   * decided not to remember has no entry, so an amendment finds nothing and
-   * creates nothing. That check has to happen *here*, at the write, for the
-   * same reason the merge does: the caller's snapshot of "does an entry exist"
-   * can be as stale as its snapshot of the entry.
+   * Amend an entry that already exists, reading it inside the state updater rather than through the
+   * caller's snapshot (an async writer's captured render can be stale by the time it lands). `amend`
+   * must be pure: React may call it more than once. Existing only, so it creates nothing `rememberOn` declined.
    */
   updateExisting: (
     conversationId: string, amend: (entry: RememberedConversation) => RememberedConversation,
   ) => void;
-  /* There is no `forget`. The only caller it ever had was the conversation
-     reset, which is gone from the product (#1139) — a registry entry now
-     leaves exactly one way, by the tab ending. Re-adding a removal door needs
-     a caller that has a reason to slam it, not a symmetry argument. */
   requestedOpenId: string | null;
-  /**
-   * True while the pending open should also put the caret in the composer.
-   *
-   * Carried beside the id rather than folded into it because the two questions
-   * have different answers: every open request names a conversation, and only
-   * the one a just-created track makes wants the caret — a reader who opened a
-   * row from Today asked to *read* it.
-   */
+  /** Carried beside the id: only the open a just-created track makes wants the caret. */
   requestedOpenFocusesComposer: boolean;
   requestOpen: (conversationId: string, options?: { focusComposer?: boolean }) => void;
   clearOpenRequest: () => void;
@@ -176,14 +138,8 @@ export type ConversationRegistry = Readonly<{
   tryBeginSend: (conversationId: string) => boolean;
   finishSend: (conversationId: string, failure: FailedConversationSend | null) => void;
   clearFailedSend: (conversationId: string, echoId: string) => void;
-  /* There is deliberately no "open the planner conversation of track W" slot here
-     (#1211 S2). It was one, and a global slot cannot own that intent: the track
-     the reader is leaving is still mounted when a create states it, and every
-     track route body can read and clear a slot addressed to a different one.
-     The intent now travels in the history entry the create navigates to —
-     `app/router/navigation.ts`, `usePlannerOpenIntent` — and reaches this
-     registry only as the ordinary `requestOpen` the target route issues once
-     it knows its own planner card. */
+  /* Deliberately no "open the planner conversation of track W" slot: the track being left is still
+       mounted when a create states it, so that intent travels in the history entry instead. */
 }>;
 
 const ConversationContext = createContext<ConversationRegistry | null>(null);
@@ -203,9 +159,7 @@ function equalEntry(left: RememberedConversation | undefined, conversation: Conv
 
 export function ConversationProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Readonly<Record<string, RememberedConversation>>>({});
-  /* Drafts are keyed by Track because leaving one Track may legitimately start
-     another draft before the first failure is retried. This provider is above
-     the route outlet, so both slots survive those route component lifetimes. */
+  /* Keyed by Track because leaving one Track may legitimately start another draft before the first failure is retried. */
   const [draftSlots, moveDraftTo] = useReducer(moveDraft, {} as DraftSlots);
   const [openRequest, setOpenRequest] = useState<
     { id: string; focusComposer: boolean } | null

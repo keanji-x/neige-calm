@@ -29,8 +29,7 @@ const witnessCatalog = JSON.parse(readFileSync(
 
 /** @param {string[]} args */
 function git(args) {
-  // `ls-files --cached` and `show <base>:manifest.json` are already >100 KB; past the 1 MiB default
-  // maxBuffer git output truncates and status becomes null, which would silently look like "no baseline".
+  // Past the 1 MiB default maxBuffer git output truncates and status becomes null, which would silently look like "no baseline".
   return spawnSync('git', args, { cwd: feRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
@@ -85,8 +84,7 @@ const selected = mergeBase === null
 if (values.plan) {
   const { total, shards, clamped } = shardPlan(selected.length, testScope);
   const matrix = mutationShardMatrix(selected, { total, shards }, testScope, witnessCatalog);
-  // `process.exit` may truncate buffered stdout once the matrix grows beyond the old four scalars.
-  // The plan is a subprocess protocol, so write its single line synchronously before exiting.
+  // `process.exit` may truncate buffered stdout; the plan is a subprocess protocol, so write it synchronously.
   writeSync(process.stdout.fd,
     `${JSON.stringify({ selected: selected.length, total, shards, clamped, matrix, test_scope: testScope })}\n`);
   process.exit(0);
@@ -144,13 +142,8 @@ try {
       test_run_exit_code: test.status,
       test_infrastructure_errors: infrastructureErrors,
     });
-    // Names alone made an `over-red` verdict undiagnosable: you could not tell a timeout from an
-    // unstable assertion from cross-test pollution without re-running CI and guessing (#1152).
-    // Only the UNEXPECTED reds get details — the expected ones are the mutation working as designed.
-    // EVERY id list in the record is bounded, not just failure_details: `actual_red` and
-    // `verdict.errors[].test_ids` re-emit the same ids and dominate the size when a mutation reds the
-    // whole suite. `boundedVerdict` touches neither `ok` nor the codes, so the exit code below is
-    // computed on exactly the same verdict as before.
+    // Only the UNEXPECTED reds get details. Every id list is bounded, not just failure_details: `actual_red` and
+    // `verdict.errors[].test_ids` dominate the size when a mutation reds the whole suite.
     report.push({ mutation_id: entry.mutation_id, test_files: testScope === 'witness' ? testFiles : null,
       expected_red: entry.expected_red,
       actual_red: boundedTestIdList(failed), verdict: boundedVerdict(verdict),

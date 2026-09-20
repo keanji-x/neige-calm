@@ -1,58 +1,6 @@
-//! Issue #1147 S1 — hygiene check on writers of `tracks.workspace_*`.
-//!
-//! # What this is, and what it is not
-//!
-//! **This is a hygiene check, not a security boundary.** It exists to make a
-//! new writer of the workspace columns visible in review. It does not, and
-//! cannot, prove that only one writer exists.
-//!
-//! That distinction is the whole history of this file. The first version of
-//! this slice kept `tracks.cwd` as a second copy of `workspace_path` and
-//! declared, in the design and in this file's own doc comment, that a source
-//! scanner *mechanically guaranteed* the two could never disagree. Three
-//! rounds of red-teaming produced five working bypasses:
-//!
-//! | bypass | why the scanner missed it |
-//! |---|---|
-//! | `format!("UPDATE {TRACKS_TABLE} SET cwd = …")` | table name behind a const |
-//! | `"update tracks set cwd = ?1 …"` | lowercase |
-//! | `r#"UPDATE\n  tracks\n SET cwd …"#` | table name reflowed to the next line |
-//! | `"UPDATE main.tracks SET cwd = …"` | schema-qualified name read as a different table |
-//! | `"UPDATE OR REPLACE tracks SET cwd …"` | SQLite keyword variant not in the list |
-//! | `sqlx::query(include_str!("attack.sql"))` | `.sql` files were not scanned |
-//! | `#[path = "…"] mod` outside `src/`+`tests/` | "compiled into the server" and "scanned" were two different facts |
-//!
-//! Every round was a cleverer guess at what Rust source text means, and every
-//! round lost, because a text scanner cannot decide what code does. The fix
-//! was not a sixth scanner: migration 0077 **deletes `tracks.cwd`**. With one
-//! stored copy of the path there is no agreement to maintain and nothing to
-//! police. What remains here is bookkeeping.
-//!
-//! # Known gaps (real, unfixed, and fine)
-//!
-//! A write that names a workspace column will not be seen if it:
-//!
-//! * lives in a `.sql` file reached by `include_str!` — only `.rs` is scanned;
-//! * is assembled at runtime by string concatenation or a query builder;
-//! * lives in a file outside `<crate>/src` and `<crate>/tests` that is pulled
-//!   in by `#[path = "…"]`;
-//! * reaches SQLite through anything other than a Rust string literal.
-//!
-//! These are not oversights to be closed in a later round. They are why the
-//! column was deleted instead. Do not add "unbypassable" or "mechanically
-//! guaranteed" back to this file.
-//!
-//! # What it actually does
-//!
-//! Scans `.rs` files under every workspace member's `src/` and `tests/`,
-//! decodes each string literal, normalizes it (collapse whitespace, lowercase),
-//! and reports any literal that contains a SQL write keyword together with one
-//! of `workspace_kind` / `workspace_path` / `workspace_frozen_at`.
-//!
-//! Those three names belong to `tracks` alone, so — unlike the old `cwd` check —
-//! **no table-name logic is needed at all.** There is no "is this really the
-//! `tracks` table" branch to get wrong, and therefore no fail-open `Other` case,
-//! which is what let `UPDATE main.tracks` through.
+//! Hygiene check on writers of `tracks.workspace_*`: surfaces every `.rs` string literal that writes a
+//! workspace column so a new writer is visible in review. It is not a security boundary and cannot
+//! prove that only one writer exists.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -60,25 +8,15 @@ use std::path::{Path, PathBuf};
 
 use proc_macro2::{TokenStream, TokenTree};
 
-/// Columns owned by `tracks` alone. No other table has them, which is what
-/// removes the need for any table-name reasoning.
+/// Columns owned by `tracks` alone, so no table-name reasoning is needed.
 const WORKSPACE_COLUMNS: [&str; 3] = ["workspace_kind", "workspace_path", "workspace_frozen_at"];
 
-/// SQL write keywords, matched on word boundaries so `updated_at` is not a
-/// write. `update` and `insert` are matched bare so SQLite's conflict-clause
-/// variants (`UPDATE OR REPLACE`, `INSERT OR IGNORE`) are covered without
-/// enumerating them — enumerating them is how the previous version missed
-/// `UPDATE OR REPLACE`.
+/// SQL write keywords, matched on word boundaries so `updated_at` is not a write; `update`/`insert`
+/// are bare so SQLite's conflict-clause variants (`UPDATE OR REPLACE`) are covered.
 const WRITE_KEYWORDS: [&str; 4] = ["insert", "update", "delete", "replace"];
 
-/// The production writers, pinned as exact normalized text. All of them live
-/// in one file, which is the property this list exists to keep visible.
-///
-/// #1147 S3 added the freeze half. The whole-value writer grew
-/// `AND workspace_frozen_at IS NULL` — the latch itself — and three statements
-/// that can only ever *set* a stamp were added beside it. That asymmetry is
-/// deliberate and is why there is no un-freeze writer here: monotonicity is a
-/// property of the available statements, not of a rule somebody has to follow.
+/// The production writers, pinned as exact normalized text; all of them live in one file. There is
+/// deliberately no un-freeze writer: monotonicity is a property of the available statements.
 const WRITER_FILE: &str = "crates/calm-truth/src/db/sqlite/track_workspace.rs";
 const WRITER_STATEMENTS: &[(&str, &str)] = &[
     (
@@ -96,8 +34,7 @@ const WRITER_STATEMENTS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Writes expected outside the production writer, by exact normalized text.
-/// `(file, statement, why)`.
+/// Writes expected outside the production writer, by exact normalized text: `(file, statement, why)`.
 const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
     (
         "crates/calm-server/tests/cases/today_launchpad.rs",
@@ -175,12 +112,8 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// This file, skipped by its own scan: the literals below are the detector's
-/// test vectors and are deliberately shaped like violations.
-/// `the_check_itself_cannot_reach_a_database` keeps that honest.
+/// This file, skipped by its own scan: its literals are the detector's test vectors.
 const SELF: &str = "crates/calm-truth/tests/track_write_point_registry.rs";
-
-// ---------------------------------------------------------------------------
 
 fn normalize(sql: &str) -> String {
     sql.split_whitespace()
@@ -203,8 +136,7 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     })
 }
 
-/// Workspace columns named by a normalized literal that also looks like a
-/// write. `None` for reads — consuming the value is not a violation.
+/// Workspace columns named by a normalized literal that also looks like a write; `None` for reads.
 fn workspace_write_columns(normalized: &str) -> Option<Vec<&'static str>> {
     if !WRITE_KEYWORDS.iter().any(|k| contains_word(normalized, k)) {
         return None;
@@ -216,9 +148,7 @@ fn workspace_write_columns(normalized: &str) -> Option<Vec<&'static str>> {
     (!columns.is_empty()).then_some(columns)
 }
 
-/// Drop whole-line comments before parsing: tokenized, a `///` line becomes a
-/// `#[doc = "…"]` string literal, and this module's own prose names both the
-/// keywords and the columns.
+/// Drop whole-line comments before parsing: tokenized, a `///` line becomes a `#[doc = "…"]` string literal.
 fn strip_comment_lines(source: &str) -> String {
     source
         .lines()
@@ -356,10 +286,6 @@ fn relative(root: &Path, file: &Path) -> String {
         .replace('\\', "/")
 }
 
-// ---------------------------------------------------------------------------
-
-/// Surface every workspace write for review. See the module doc for what this
-/// does and does not establish.
 #[test]
 fn workspace_writes_are_the_ones_we_expect() {
     let root = workspace_root();
@@ -402,9 +328,6 @@ fn workspace_writes_are_the_ones_we_expect() {
     assert!(problems.is_empty(), "\n\n{}", problems.join("\n\n"));
 }
 
-/// The detector must see the shapes that defeated its predecessors. Table-name
-/// tricks are listed even though the check no longer looks at table names —
-/// that is exactly the point: they cannot matter any more.
 #[test]
 fn detector_sees_the_shapes_that_defeated_earlier_versions() {
     let shapes = [
@@ -445,7 +368,6 @@ fn detector_sees_the_shapes_that_defeated_earlier_versions() {
     }
 }
 
-/// …and must stay quiet on non-writes, or it becomes noise that gets muted.
 #[test]
 fn detector_ignores_reads_and_near_misses() {
     let benign = [
@@ -475,7 +397,6 @@ fn detector_ignores_reads_and_near_misses() {
     }
 }
 
-/// Prose about the invariant must not read as evidence of it.
 #[test]
 fn prose_is_not_evidence() {
     let source = "/// UPDATE tracks SET workspace_path = ?1 -- described, not executed\n\
@@ -488,13 +409,10 @@ fn prose_is_not_evidence() {
     );
 }
 
-/// The one self-exclusion has to earn itself: this file is skipped because its
-/// literals are test vectors, which is only safe while it cannot execute them.
 #[test]
 fn the_check_itself_cannot_reach_a_database() {
     let source = fs::read_to_string(workspace_root().join(SELF)).expect("read self");
-    // Identifiers, not substrings — the forbidden names appear below as string
-    // literals, and a substring search would flag itself.
+    // Identifiers, not substrings: a substring search would flag this file's own test vectors.
     let stream = strip_comment_lines(&source)
         .parse::<TokenStream>()
         .expect("gate source parses");

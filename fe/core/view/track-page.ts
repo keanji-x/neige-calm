@@ -1,67 +1,5 @@
-// The track page's panel, derived once for every viewport (#1234).
-//
-// Every rule below was **read off the desktop** panel in
-// `web/src/features/track/page/public.tsx`, the richer of the two surfaces, back
-// when that page spelled the panel inline. Since S1b-3b the direction is
-// reversed: the desktop renders *from* this derivation, so this file is the
-// authority and the page is no longer an oracle for it.
-//
-// **What holds that correspondence, and over what — as it stands after S1b-3b.**
-// The page no longer *re-expresses* these rules: it calls this derivation and
-// paints the result. So nothing compares this file against an independently
-// written page any more, and the work is split three ways:
-//
-//  - **Semantic correctness of the rules below** — that `row.kind` is dropped
-//    for an untitled card, that `kernel-owned` is the `deletable === false`
-//    case, that `statusDetail` is appended and never substituted, that the
-//    worker-card action needs `kind !== null`, `workerCardId !== null` *and*
-//    an openable card while the activity verdict needs only the id —
-//    is held by `core/view/track-page.test.ts` (with `core/view/panel.test.ts`
-//    for the traversal). Those are unit tests over this function's output; they
-//    are what stops this file being self-consistent and wrong, and their §5.1 /
-//    §5.2 mutations have been run. The **action wording** below
-//    (`RowAction.label` / `.hint`) is pinned there too, but only as literal
-//    expected strings — since the page renders from here, rewording a sentence
-//    in both places at once is a change no gate objects to. That is deliberate:
-//    this file is the wording's home now.
-//  - **That the derived fields become the rendered projection** — but only the
-//    fields the checker actually reads, each in its own leaf carrier: a row's
-//    `title` and `kind`, a module's `title` and `empty` text, every badge's
-//    `id`, order and `text`, the status `token` and `phrase`, the exact set and
-//    order of a row's actions together with each one's `label` and `hint`, and
-//    module order — is `web/src/features/track/page/desktop-projection.test.tsx`
-//    over the real page, with `desktop-entry.test.tsx` holding that the page
-//    goes through `paintDesktopPanel` at all. **Two limits on that sentence**,
-//    both restated in `tools/projection/public.ts`'s standing list. First,
-//    `RowBadge.struck` is *not* in the list above: it is a formal field of this
-//    derivation, but `checkBadges` never reads it, and its only desktop carrier
-//    sits outside the projection — the `taskWithdrawn` class assertion in
-//    `web/src/features/track/page/public.test.tsx` ("strikes through a withdrawn
-//    declaration but not an ordinary one"), which is behaviour, not projection.
-//    Second, the projection is **not onto**: nothing requires the DOM to hold
-//    only what this derivation names, so a painter may add unmarked chrome and
-//    extra controls and stay green (`projection-contract.test.tsx` keeps that
-//    as a standing positive case).
-//  - **That the user can actually do the three things** — payload, callback,
-//    and the delete control's presence — is behaviour, asserted as behaviour in
-//    `web/src/features/track/page/public.test.tsx`.
-//
-// **What `view-characterization.test.tsx` is now, since another file's head
-// used to get this wrong:** a *same-source* regression against the rendering
-// path. Both sides of its comparisons come from this derivation, so it can no
-// longer catch a rule this file misreads — it catches a field that never
-// reached the DOM. Its own head says so; do not restore any claim here that it
-// checks this file against an unmodified page.
-//
-// **Signature note.** The design writes `deriveTrackPageView(track, cards, tasks)`
-// because a later slice adds the report outline, which needs the track. Neither
-// module here reads the track itself; what they do read off it since #1722 is
-// its `activity.cards` — passed as `activity`, typed to that one field, so the
-// rows can carry the kernel's per-card verdict and nothing else of the track.
-// The third input, `openableCards`, is the registry's answer to "which cards
-// can the board draw" — a fact about this bundle, not about the track — and it
-// gates exactly one thing here: whether a Task row's kind is an `open-card`
-// control (#1722 S2b r5, below).
+// The track page's panel view model, derived once for every viewport; the desktop and mobile
+// painters render from it and this file is the authority on the rules and the action wording.
 
 import { groupPanelRows } from './panel-groups.js';
 import { cardActivityOf, cardActivityState, type CardActivity } from '../domain/activity.js';
@@ -69,98 +7,26 @@ import { boundedStatusDetail, type ReportTaskRow } from '../domain/report.js';
 import type { CardWire } from '../domain/track.js';
 import type { PanelRow, RowAction, RowBadge, RowModuleView, RowStatus, TrackPageView } from './panel.js';
 
-/**
- * The track's per-card verdicts (`TrackActivity.cards`, #1722 §4.1) — the
- * only input a row's `activity` is derived from. Typed as the field alone
- * rather than the whole `Track` so a caller cannot hand this derivation a
- * lifecycle to read by accident.
- */
+/** The track's per-card verdicts — the only input a row's `activity` is derived from; typed as the field alone so a caller cannot hand in a lifecycle by accident. */
 export type TrackPageActivity = Readonly<{ cards: Readonly<Record<string, CardActivity>> }>;
 
-/**
- * A row's indicator state for one card, or `null` when the kernel said
- * nothing about it (INV-APP-118). The card-level fold has no `unread`
- * (cards carry no read receipt, §9 G4) and reads nothing off a runtime
- * status or a task token — those are the phase words the rows keep printing
- * beside it, and they are the second derivation the design retires.
- */
+/** A row's indicator state for one card, or `null` when the kernel said nothing about it. No `unread`: cards carry no read receipt. */
 function rowActivity(activity: TrackPageActivity, cardId: string | null) {
   if (cardId === null) return null;
   const verdict = cardActivityOf(activity, cardId);
   return verdict === null ? null : cardActivityState(verdict);
 }
 
-/**
- * What the status carrier says: the status, then the kernel's reason when one
- * exists (#1149 / #1147).
- *
- * The status word comes **first and always**, because this string is the
- * run-state phrase exposed by the visible status word's native tooltip and by
- * the reveal control's accessible description. A reader who lands here must
- * get `failed` before any prose about it. The reason is
- * appended, never substituted: `failed — track … is not a git repository` is
- * strictly more than `failed`, whereas a name that printed the reason alone
- * would have traded the one fact the row must carry for a nicer one.
- *
- * The em dash separator is the only formatting decision here; the reason
- * arrives already collapsed to one bounded line from `deriveReportTasks`, which
- * is where that judgement belongs.
- *
- * Moved down from the page component (`public.tsx`'s local `taskStatusPhrase`),
- * which is where the wording used to live and is why the mobile surface had no
- * status at all. **S1b-3b deleted the page's copy** and **S1b-4b closed the
- * other surface**: both painters word a task's status from here, so this is now
- * the only authority on either surface. Both surfaces print only
- * `status.token`, the compact bare word. What the phrase reaches on mobile is
- * that carrier's `title` and, since S1b-4b's
- * accessible-description channel, the text the row's `aria-describedby` names;
- * on the desktop it is the status word's `title` and the reveal button's
- * accessible description. The visible copy is `aria-hidden` so the button does
- * not announce the same status twice.
- * `mobile-projection.test.tsx` carries a source scan holding that the mobile
- * page words no task state of its own.
- */
+/** The status word first and always; the kernel's reason is appended, never substituted. */
 export function taskStatusPhrase(status: string, detail: string | null): string {
   return detail === null ? status : `${status} — ${detail}`;
 }
 
 /**
- * The Cards module. Its renderers are `track/page/desktop-painter.tsx`'s
- * `cardRow`, which is where S1b-3b moved the DOM that `track/page/public.tsx`
- * used to spell inline under its `Cards` `PanelModule`, and — since S1b-4a —
- * `track/page/mobile-painter.tsx`'s row for the mobile drill-down.
- *
- * (Symbol references, not line numbers: every earlier version of this docstring
- * cited `public.tsx:NNN`, and every one of them was stale by the next edit.)
- *
- * Two rules are easy to get subtly wrong and are therefore spelled out:
- *
- *  - **`kind` is only a separate field when a title took the name slot.** An
- *    untitled card already shows its kind as its name, and printing it twice is
- *    noise. The hand-composed mobile list did exactly that, and it was one of
- *    the drifts #1234 exists to remove; since S1b-4a that page is painted from
- *    this field and the drift is gone.
- *  - **`kernel-owned` is the `deletable === false` case**, not the `true` one:
- *    the badge is the kernel saying it owns this row, printed where the delete
- *    control would otherwise be.
- *
- * **Known non-equivalence with the desktop page, on purpose.** The page emits
- * its delete control when `onDeleteCard !== undefined && card.deletable`
- * — half of that condition is *whether the host passed a callback*,
- * which a derivation over `{cards, tasks}` cannot see and should not: "this
- * platform does not offer deletion" is a renderer capability, and it belongs in
- * the painter's action table (S1b's `ActionSupport`), not in the view model.
- * So the derived row carries `delete-card` whenever the card is deletable, and
- * a host with no callback is a painter that reports the action unsupported.
- *
- * **The action wording is the page's, copied per row** (`RowAction`'s
- * docstring): the row body is the open affordance and carries a visible name,
- * so it needs neither an `aria-label` (that would override the visible text,
- * WCAG 2.5.3) nor a `title`, and the painter gives it neither. The × is an
- * icon-only control, so it takes the accessible name `Delete card ${name}` and
- * the bare pointer hint `Delete card`. `name` is `row.title` itself, not a
- * second `title ?? card.kind`: a re-computation is one more copy that can
- * drift from the name actually printed.
+ * The Cards module. `kind` is a separate field only when a title took the name slot; `kernel-owned`
+ * is the `deletable === false` case. `delete-card` is carried whenever the card is deletable — a host
+ * with no callback is a painter that reports the action unsupported. The × takes `Delete card ${name}`
+ * with `name` being `row.title` itself, never a second `title ?? card.kind`.
  */
 function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPageActivity): PanelRow {
   const title = card.title;
@@ -182,7 +48,6 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa
     title: name,
     kind: title !== null ? card.kind : null,
     badges: card.deletable ? [] : [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
-    /* A card row reports no run. */
     status: taskStatus ?? (card.runtime === undefined ? null
       : { token: card.runtime.status, phrase: card.runtime.status }),
     activity: rowActivity(activity, card.id),
@@ -190,76 +55,16 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa
   };
 }
 
-/**
- * The card a task's work was dispatched onto — the current execution's when
- * the recovery read has landed, else the verdict's. `null` when nothing has
- * been dispatched (or the row is not decorated, see `taskRow`). This is the
- * task's *identity* fact; whether that card can be opened is `openableCards`'.
- */
+/** The card a task's work was dispatched onto — the identity fact; whether it can be opened is `openableCards`'. */
 function taskWorkerCardId(task: ReportTaskRow): string | null {
   return task.execution === undefined ? task.workerCardId : task.execution.workerCardId;
 }
 
 /**
- * The Tasks module. Its renderers are `track/page/desktop-painter.tsx`'s
- * `taskRow`, which is where S1b-3b moved the DOM that `track/page/public.tsx`
- * used to spell inline under its `Tasks` `PanelModule`, and — since S1b-4b —
- * `track/page/mobile-painter.tsx`'s row for the mobile drill-down.
- *
- * `declaration` and `status` are read **independently**, and this function
- * imposes no precedence between them. That a dispatched task stops printing its
- * readiness word is `deriveReportTasks`' ruling, taken upstream where the join
- * happens; re-deciding it here would be a second source of truth about the same
- * question, and it is the discipline that lets the mobile surface inherit the
- * rule for free instead of re-wording state by hand — which, since S1b-4b, is
- * what that surface actually does.
- *
- * The row always reveals its block; the *kind* is the worker-card affordance,
- * and the desktop's condition for painting it as a **control** is two nested
- * tests, not one: the outer `task.kind !== null` decides whether
- * the kind is drawn at all, and only inside it does `workerCardId === null`
- * choose between a label `<span>` and a `<button>`. So a clickable worker card
- * exists exactly when `task.kind !== null && workerCardId !== null`, and both
- * halves are reproduced here — plus a third since #1722 S2b r5, which is a
- * fact about the *bundle* rather than the task: `openableCards.has(id)`.
- *
- * **Identity and openability are two facts** (#1722 S2b r5, Codex P2). The
- * worker card id is *who* the kernel dispatched the work onto, and it keys
- * two things on this row: the `open-card` action and the `activity` verdict.
- * Only the action needs the card to be drawable — a control that routed at a
- * card no registry entry claims would land the reader nowhere. The verdict
- * does not: the kernel reports on the card whether or not this bundle can
- * draw it, and INV-CARD-226 keeps that same card listed in the Cards module
- * with its own indicator. `app/router` used to null the id itself for an
- * unopenable worker, which erased the verdict along with the control; it
- * now hands the id through and passes the registry's openable set instead,
- * and this function is the one place that decides what the set gates.
- *
- * **The second half is not defending against an input that happens.** Upstream,
- * `deriveReportTasks` (`core/domain/report.ts`) decides both fields, and it
- * makes them null together: `kind` is read off the live declaration and is null
- * for exactly the unreadable and tombstoned blocks, while `decorated` is false
- * for exactly the `unreadable` / `withdrawn` states — and a row that is not
- * `decorated` gets no verdict, so its `workerCardId` is null too. Hence
- * `{ kind: null, workerCardId: 'x' }` is unreachable in production. (Symbol
- * references, not line numbers, for the reason given above.) The condition is here because this function's contract is to be
- * a **faithful copy of the desktop's judgement**, not to be a filter that
- * happens to agree with it on today's inputs. Dropping the `kind` test would
- * make the derivation right by coincidence of an upstream invariant it does not
- * state, and S1b's painters would inherit a rule the page does not have.
- *
- * `status.phrase` deliberately carries no renderer prefix. It is the complete
- * status-plus-reason sentence shared by the status word's tooltip and the
- * reveal action's accessible description.
- *
- * **Both controls here have visible text and so take no `aria-label`**: the
- * reveal button wraps the task key and the kind button shows the kind. The
- * reveal gets no generic "Show …" tooltip: when the server supplied a pending
- * reason, that compact reason is its one pointer `title`; otherwise it stays
- * silent. The worker control keeps `Open the worker card for ${key}`. Note that
- * this sentence is `open-card`'s wording *on a Task row only*; the
- * Cards row's `open-card` has no wording at all, which is why `RowAction`
- * carries its sentences per row rather than per `kind`.
+ * The Tasks module. `declaration` and `status` are read independently — precedence is
+ * `deriveReportTasks`' ruling upstream. The worker control needs `kind !== null`, a worker card AND
+ * an openable card (the `kind` test is a faithful copy of the desktop's judgement, not a filter);
+ * the activity verdict needs only the identity. Both controls have visible text and so take no `aria-label`.
  */
 function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards: ReadonlySet<string>): PanelRow {
   const workerCardId = taskWorkerCardId(task);
@@ -297,43 +102,27 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards
     kind: task.kind,
     badges,
     status,
-    /* By the worker card, which is how the kernel keys a dispatched task's
-       verdict (§4.2 W); a task with no worker card yet has no indicator, and
-       `execution.status === 'running'` does not put one there. The lookup is
-       by the *identity*, never by the openable subset above: a worker the
-       board cannot draw is still the card the kernel reports on. */
+    /* Keyed by the worker card's identity, never the openable subset: a worker the board cannot draw
+           is still the card the kernel reports on. */
     activity: rowActivity(activity, workerCardId),
     actions,
   };
 }
 
-/**
- * The track page's row modules, in the desktop panel's DOM order.
- *
- * Order is part of the view model, not a renderer's arrangement: Cards before
- * Tasks on both surfaces.
- */
+/** The track page's row modules; order is part of the view model: Cards before Tasks on both surfaces. */
 export function deriveTrackPageView(input: Readonly<{
   cards: readonly CardWire[];
   tasks: readonly ReportTaskRow[];
   /** See `TrackPageActivity`; a `Track` satisfies it, and so does `NEUTRAL_ACTIVITY`. */
   activity: TrackPageActivity;
-  /**
-   * The ids of the cards the board can draw — `app/router` asks the registry
-   * through the very list the grid paints (`gridItems`). Required, with no
-   * default: an absent set would silently mean "nothing opens". It gates the
-   * Task row's `open-card` action and nothing else (see `taskRow`).
-   */
+  /** The ids of the cards the board can draw. Required, no default: an absent set would silently mean "nothing opens". */
   openableCards: ReadonlySet<string>;
 }>): TrackPageView {
   const taskRows = groupPanelRows(input.tasks.map((task) => taskRow(task, input.activity, input.openableCards)), 'tasks')
     .flatMap(group => group.rows);
-  // A worker process can stay alive after its task ends. Its task's current
-  // execution is the work status; the session is only a fallback for standalone cards.
-  // Keyed by the task's worker card *identity*, not by its `open-card` action:
-  // which task runs on a card is true of a card the board cannot draw too, and
-  // INV-CARD-226 lists that card. Grouped order, so the in-progress task wins
-  // a card two tasks name.
+  // A worker process can stay alive after its task ends: the task's current execution is the work
+  // status, the session only a fallback for standalone cards. Keyed by worker card identity, not by
+  // `open-card` action; grouped order, so the in-progress task wins a card two tasks name.
   const workerCardByBlock = new Map(input.tasks.map((task) => [task.blockId, taskWorkerCardId(task)] as const));
   const taskStatusByCard = new Map<string, RowStatus>();
   for (const row of taskRows) {

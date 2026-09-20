@@ -1,38 +1,7 @@
 /**
- * The compact-viewport answer has exactly one owner: `web/src/ui/viewport`
- * (#1191 §3.2). Three hand-rolled copies of it had drifted before this rule
- * existed, and the duplication manifest could not see them — it matches exported
- * symbols of the same name, and two of the copies were inline.
- *
- * Two **independent** branches, because a module can duplicate the decision by
- * either half on its own:
- *
- *   (a) `layoutQuery` — importing the breakpoint constant (`RAIL_COLLAPSE_QUERY`
- *       from `styles/breakpoints.ts`) anywhere but the owner. That is the copy
- *       that reuses the shared number.
- *   (b) `widthMatchMedia` — calling `matchMedia` with a **static width media
- *       query** anywhere but the owner. That is the copy that writes the number
- *       (or the query) out by hand and so never touches the constant.
- *
- * Each branch has its own single-violation fixture; a fixture covering only one
- * of them would stay green while the other was deleted.
- *
- * **`matchMedia` is deliberately not banned outright.** Eight legitimate calls
- * exist and must stay legal: `prefers-color-scheme` in `app/theme`,
- * `prefers-reduced-motion` in `ui/drawer`, and `pointer` in the chat thread's
- * coarse browser test. Only *width* queries are the layout decision this module
- * owns.
- *
- * **Known escape, by construction.** A dynamic argument — a variable, a template
- * with expressions, a value read from elsewhere — is not analysed and passes
- * silently. Failing closed on every non-literal would reject the legitimate
- * calls above whenever they are refactored to a constant, and the value here is
- * catching the *copy-paste* shape, which is always a literal. Someone determined
- * to route the query through a variable will get past this rule; the import
- * branch and code review are the backstops.
- *
- * Tests are exempt (`*.test.*`): a test may legitimately stub or assert on the
- * media query it is driving the owner with.
+ * The compact-viewport answer has one owner, `web/src/ui/viewport`. Two independent branches: importing
+ * the breakpoint constant elsewhere, or calling `matchMedia` with a static WIDTH query elsewhere
+ * (non-width queries such as `prefers-color-scheme` stay legal). Dynamic arguments pass silently by design.
  */
 
 const DEFAULT_OWNER = 'web/src/ui/viewport/';

@@ -1,4 +1,4 @@
-//! #1110 S4 — `tracks.plugin_scope` create-time copy; PATCH cannot change it.
+//! `tracks.plugin_scope` is a create-time copy; PATCH cannot change it.
 
 use std::path::PathBuf;
 use std::sync::Arc;

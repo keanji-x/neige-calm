@@ -1,23 +1,6 @@
-//! The background resolver (#1628 D2): `enqueue` from a reader, one serial
-//! lane per plugin, `resolve` on the drain side.
-//!
-//! Invariants this file carries (S2.1–S2.4, S2.12):
-//!
-//! * The in-flight key is `(track, block)`, without the request hash. Check
-//!   and insert are one `HashSet::insert` under the lock; only the caller
-//!   whose insert returned `true` builds the `InflightGuard`, and the guard
-//!   travels with the job so the key is released however the job ends —
-//!   normal completion, an early `return`, a panic unwinding the drain task,
-//!   or the job being dropped with a dead lane's receiver.
-//! * Lanes are `unbounded_channel`s; `enqueue` never waits on the plugin.
-//!   Check-rebuild-send happens under the `lanes` lock with no `.await`.
-//! * Both `std::sync::Mutex`es recover from poisoning (`InflightGuard::drop`
-//!   runs during unwinds).
-//! * Negative route / scope outcomes never store a row: they live in the one
-//!   read that observed them (`Enqueue::Miss`), and on the drain side they
-//!   drop the job. Only permanent per-block outcomes (forge-action tool,
-//!   non-read-only tool, `Only(other)` scope, remote connector) store an
-//!   `unavailable` row, and they do so without calling the plugin.
+//! The background resolver: `enqueue` from a reader, one serial lane per plugin, `resolve` on the drain side.
+//! The in-flight key is `(track, block)`; check and insert are one `HashSet::insert` under the lock, and the guard travels with the job so the key is released however the job ends. `enqueue` never waits on the plugin.
+//! Negative route / scope outcomes never store a row; only permanent per-block outcomes store an `unavailable` row, without calling the plugin.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -144,10 +127,7 @@ pub struct SeriesResolver {
 }
 
 impl SeriesResolver {
-    /// Production resolver: lanes are spawned on first use, the clock is
-    /// `calm_truth::model::now_ms`, the timeout is `SERIES_RESOLVE_TIMEOUT`.
-    /// `pool` is `Repo::sqlite_pool()`; `None` makes every job drop with a
-    /// warning and every read answer `pending`.
+    /// Production resolver: lanes are spawned on first use. `None` pool makes every job drop with a warning and every read answer `pending`.
     pub fn new(pool: Option<SqlitePool>) -> Self {
         Self {
             pool,
@@ -162,9 +142,7 @@ impl SeriesResolver {
         }
     }
 
-    /// Test seam: `enqueue` runs the same in-flight insert and pre-check, but
-    /// records the outcome and the job instead of spawning a lane. Tests
-    /// take the jobs with `take_recorded_jobs` and run `resolve` by hand.
+    /// Test seam: same in-flight insert and pre-check, but records the job instead of spawning a lane.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn new_unstarted(pool: Option<SqlitePool>) -> Self {
         Self {
@@ -232,8 +210,7 @@ impl SeriesResolver {
             .unwrap_or_default()
     }
 
-    /// `true` iff the `lanes` lock could be taken right now (and was released
-    /// again). The witness that a rebuild holds the lock (A9f).
+    /// `true` iff the `lanes` lock could be taken right now; the witness that a rebuild holds the lock.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn lanes_try_lock(&self) -> bool {
         self.lanes.try_lock().is_ok()
@@ -260,9 +237,7 @@ impl SeriesResolver {
             .map(|lane| lane.drain.is_finished())
     }
 
-    /// Reader entry point: resolve the track's plugin scope, then
-    /// [`Self::enqueue_scoped`]. A read that hydrates several blocks
-    /// resolves the scope once and calls the scoped variant directly.
+    /// Reader entry point: resolve the track's plugin scope, then `enqueue_scoped`.
     pub async fn enqueue(
         &self,
         ctx: &Arc<AppContext>,
@@ -402,10 +377,7 @@ impl SeriesResolver {
         }
     }
 
-    /// Replace a dead lane. Takes the guard, not the map: it can only be
-    /// called by whoever holds the `lanes` lock. (The proof that the lock is
-    /// held across the rebuild is the `try_lock` assertion in A9f, not this
-    /// signature.)
+    /// Replace a dead lane. Takes the guard, not the map: it can only be called by whoever holds the `lanes` lock.
     fn rebuild_lane<'a>(
         &self,
         lanes: &'a mut MutexGuard<'_, HashMap<String, Lane>>,
@@ -482,7 +454,7 @@ impl SeriesResolver {
         } = job;
         let now = (self.now)();
 
-        // 1. Admission: two autocommit reads on the pool (no transaction).
+        // 1. Admission.
         let Some(pool) = self.pool.as_ref() else {
             tracing::warn!(
                 track_id,
@@ -568,9 +540,7 @@ impl SeriesResolver {
             TrackPluginScope::All | TrackPluginScope::Only(_) => {}
         }
 
-        // 4. Client. Only local variants are series sources: a remote
-        // connector is somebody else's service and must not be driven by
-        // document content.
+        // 4. Client. Only local variants are series sources: a remote connector must not be driven by document content.
         let Some(client) = plugin_host.connector_client(&request.plugin_id).await else {
             return ResolveOutcome::Dropped(format!("plugin {} is not running", request.plugin_id));
         };

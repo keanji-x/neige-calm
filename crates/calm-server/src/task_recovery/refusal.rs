@@ -1,14 +1,10 @@
-//! Typed recovery refusals. The site that refuses decides everything the
-//! read side may say about it: its [`RefusalSite`], its wire code, its
-//! write-path kind, the one continuation the kernel supports and a complete
-//! reason sentence. Nothing downstream re-derives a continuation or a
-//! sentence from the code, the task shape or the message text.
+//! Typed recovery refusals. The refusing site decides the wire code, write-path kind,
+//! continuation and reason sentence; nothing downstream re-derives them.
 
 use crate::error::CalmError;
 
-/// Refusal codes on the wire as `TaskRecoveryCapability.code`. The string
-/// spellings are a published vocabulary; add a variant rather than reusing
-/// one whose meaning does not fit.
+/// Refusal codes on the wire as `TaskRecoveryCapability.code`. The string spellings
+/// are a published vocabulary; add a variant rather than reusing one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecoveryRefusalCode {
     /// The caller may not request recovery at all (service boundary).
@@ -50,18 +46,13 @@ impl RecoveryRefusalCode {
     }
 }
 
-/// Every production site that constructs a refusal, one variant each, in
-/// source order. [`RefusalSite::ALL`] lists them all;
-/// `task_recovery/tests.rs` drives each through the real function and
-/// asserts the `(site, code, kind, continuation)` it names.
+/// Every production site that constructs a refusal, one variant each, in source order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RefusalSite {
-    // ---- admission::authorize_tx ----
     /// The actor is neither a User nor a Planner.
     ActorNotUserOrPlanner,
     /// The Planner session cannot be resolved to a role.
     PlannerSessionUnresolved,
-    // ---- admission::recovery_policy ----
     /// The Track lifecycle does not schedule work.
     TrackNotReady,
     /// Child-task routes are not recoverable.
@@ -71,19 +62,16 @@ pub(crate) enum RefusalSite {
     PlannerOutsideAutoDeclare,
     /// The bounded Planner retry for this key was consumed.
     PlannerRetryLimit,
-    // ---- admission::admit_contract_and_predecessor_tx ----
     /// The frozen constraint fails `validate` for this Track.
     ConstraintShapeInvalid,
     /// The frozen file-delivery input contract cannot be honoured.
     FileDeliveryInputUnhonoured,
-    // ---- admission::claim_constraint_tx ----
     /// The frozen context closure was truncated at claim.
     FrozenContextTruncated,
     /// No frozen context was recorded for the failed execution.
     FrozenContextMissing,
     /// The frozen context is valid JSON but not a reference list.
     FrozenContextMalformed,
-    // ---- admission::declaration_tx ----
     /// No declaration in the report carries the key.
     DeclarationMissing,
     /// The declaration is duplicated, tombstoned or not ready.
@@ -92,7 +80,6 @@ pub(crate) enum RefusalSite {
     DeclarationInvalid,
     /// The declare-and-wait release was withdrawn.
     ReleaseWithdrawn,
-    // ---- admission::check_constraint_tx ----
     /// The constraint fails `validate` at the inner check.
     InnerConstraintShapeInvalid,
     /// The declaration's route or author differs from the frozen ones.
@@ -109,7 +96,6 @@ pub(crate) enum RefusalSite {
     RootIdentityChanged,
     /// A frozen reference's content hash changed.
     RootHashChanged,
-    // ---- admission::require_recoverable_predecessor_tx ----
     /// A prepared isolated execution shares its key with other operations or
     /// verification effects.
     IsolatedAmbiguousOperations,
@@ -121,7 +107,6 @@ pub(crate) enum RefusalSite {
     NotSpawnFailedWithoutStopProof,
     /// A keyed operation has uncertain external effects.
     OperationUncertainExternalEffects,
-    // ---- isolated_codex::recovery::require_stopped_tx ----
     /// The execution is not a failed isolated-route execution.
     IsolatedRouteMismatch,
     /// The named operation is not this execution's isolated operation.
@@ -132,7 +117,6 @@ pub(crate) enum RefusalSite {
     IsolatedStopPending,
     /// The isolated operation ended without a failed outcome.
     IsolatedOperationTerminalWithoutFailure,
-    // ---- isolated_codex::recovery::confirmed_record_tx ----
     /// The operation's journal record cannot be read as a prepared run.
     IsolatedRecordUnreadable,
     /// The journal holds no quiescence proof for the terminal operation.
@@ -140,7 +124,6 @@ pub(crate) enum RefusalSite {
     /// The recorded run's admission is not closed, or its identity chain or
     /// stop proof does not validate for this execution.
     IsolatedStopIdentityMismatch,
-    // ---- admission::check_recovery_attempt_tx ----
     /// The attempt's allocation row is missing.
     AllocationMissing,
     /// The accepted recovery's predecessor row is missing.
@@ -152,10 +135,7 @@ pub(crate) enum RefusalSite {
 }
 
 impl RefusalSite {
-    /// Every variant, exactly once, for the test inventory:
-    /// `task_recovery/tests.rs` proves it exhaustive by a wildcard-free
-    /// match (a new variant does not compile until it is listed here) and
-    /// drives every listed site through the real function.
+    /// Every variant, exactly once; the test inventory proves it exhaustive by a wildcard-free match.
     #[cfg(test)]
     pub(crate) const ALL: &[RefusalSite] = &[
         Self::ActorNotUserOrPlanner,
@@ -201,9 +181,7 @@ impl RefusalSite {
     ];
 }
 
-/// The single continuation the kernel supports for a refused recovery,
-/// decided by the refusing site. Surfaced by `calm.plan.list` as
-/// `recovery.guidance.supported_continuation`.
+/// The single continuation the kernel supports for a refused recovery, decided by the refusing site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SupportedContinuation {
     /// Declare a new task (new key); never retry the same key.

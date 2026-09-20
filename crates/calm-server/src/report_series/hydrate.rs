@@ -1,17 +1,5 @@
-//! The one read-side step both readers share (#1628 D4 / D5): derive the
-//! request from the block's current payload, select the row by its full
-//! primary key, judge its freshness, enqueue when it is missing or stale,
-//! and flatten what was found into the `resolved` object.
-//!
-//! `calm.report.read` calls this once per `chart.series` block and
-//! `GET /api/tracks/{id}/report/series/{block_id}` calls it for the one block
-//! it was asked about. D4 promises the route returns *the same bytes* the
-//! read returns for the same row; that promise is kept by there being one
-//! function, not by two copies agreeing.
-//!
-//! Nothing here calls a plugin and nothing writes the database: a miss is an
-//! in-memory `enqueue`, and the answer is whatever row (or absence of one)
-//! was on disk.
+//! The one read-side step both readers (`calm.report.read` and `GET /api/tracks/{id}/report/series/{block_id}`) share, so the route returns the same bytes the read does.
+//! Nothing here calls a plugin and nothing writes the database: a miss is an in-memory `enqueue`.
 
 use std::sync::Arc;
 
@@ -23,12 +11,7 @@ use calm_types::track_report::ReportBlock;
 
 use super::{Detail, Enqueue, Resolved, SeriesRequest, row_is_fresh, store};
 
-/// `resolved` for one `chart.series` block.
-///
-/// `scope` is the track's plugin scope when the caller already resolved it
-/// (a read hydrating several blocks resolves it once, F4.18); `None` lets
-/// the resolver look it up itself, and only when a job actually has to be
-/// queued — a fresh row costs no scope lookup at all.
+/// `resolved` for one `chart.series` block. `scope` is the track's plugin scope when the caller already resolved it; `None` lets the resolver look it up, and only when a job actually has to be queued.
 pub(crate) async fn hydrate_chart_series(
     ctx: &Arc<AppContext>,
     track_id: &str,

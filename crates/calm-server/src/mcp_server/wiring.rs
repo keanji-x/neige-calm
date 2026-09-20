@@ -18,13 +18,8 @@ pub fn card_mcp_env(socket_path: &Path, raw_token: &str) -> [(&'static str, Stri
     ]
 }
 
-/// Builds the per-card `thread/start` `config` that injects the MCP env into
-/// the daemon's AI exec-shells. codex does NOT inherit the daemon process env
-/// into exec-shells; the per-thread `shell_environment_policy.set` field is the
-/// ONLY channel that reaches the `neige` CLI an agent must run to report its
-/// task. Both the planner harness (`planner_harness_start_adapter`) and the codex
-/// worker spawn (`codex_adapter`) emit this same environment shape. The required
-/// card role additionally selects the narrow Planner Terminal approval policy.
+/// codex does NOT inherit the daemon process env into exec-shells; the per-thread `shell_environment_policy.set` field is the
+/// ONLY channel that reaches the `neige` CLI an agent must run. The card role additionally selects the Planner Terminal approval policy.
 pub(crate) fn card_mcp_thread_start_config(
     socket_path: &Path,
     raw_token: &str,
@@ -39,9 +34,7 @@ pub(crate) fn card_mcp_thread_start_config(
             "set": set,
         },
     });
-    // These truthful open-world writes are delegated only for a Planner thread.
-    // The kernel remains the live role/Track/session/control authority; this is
-    // not a server-wide default, a sandbox change or a read-only annotation.
+    // Delegated only for a Planner thread; the kernel remains the live role/Track/session/control authority.
     if role == CardRole::Planner {
         config["mcp_servers"] = serde_json::json!({"calm":{"tools":{
             "calm.terminal.open":{"approval_mode":"approve"},
@@ -129,12 +122,7 @@ mod tests {
         );
     }
 
-    /// #838 (lean Move 1): the single channel-3 producer used by ALL spawn
-    /// paths (planner, worker, cold-respawn) emits the exact
-    /// `shell_environment_policy.set.{NEIGE_MCP_SOCKET,NEIGE_MCP_TOKEN}` shape.
-    /// Pinning the byte shape here locks the contract every producer now goes
-    /// through after the planner path's parallel `PlannerThread*` structs were
-    /// deleted — i.e. the unification holds at the function level.
+    /// The single channel-3 producer used by ALL spawn paths emits the exact `shell_environment_policy.set.{NEIGE_MCP_SOCKET,NEIGE_MCP_TOKEN}` shape.
     #[test]
     fn card_mcp_thread_start_config_emits_channel_3_shape() {
         let cfg = card_mcp_thread_start_config(

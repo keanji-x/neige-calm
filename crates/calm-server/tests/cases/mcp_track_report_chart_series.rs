@@ -1,16 +1,5 @@
-//! #1628 S1 — `chart.series` through the real MCP write ends.
-//!
-//! The validator itself is unit-tested in
-//! `calm_types::report_blocks::chart_series`; this file proves the two
-//! entrances an agent actually uses (`calm.report.blocks.upsert` and a
-//! `calm.report.commit` upsert op) reach it, refuse with `-32602`, write
-//! nothing and emit nothing on refusal, and land a canonical fence on
-//! acceptance. The refusals are the ones the design pins at the write end
-//! (§6 A2): a bare symbol without a venue, a cutoff that is not a calendar
-//! day, and the one `(range, period)` pair that structurally cannot hold
-//! two points. A cutoff in the future is accepted on purpose: `calm-types`
-//! has no clock, and a frozen block whose source has not published past
-//! its cutoff yet is a legal document, not an error.
+//! `chart.series` through the real MCP write ends (`calm.report.blocks.upsert` and a `calm.report.commit` upsert op).
+//! A cutoff in the future is accepted on purpose: `calm-types` has no clock.
 
 #![cfg(unix)]
 
@@ -50,8 +39,7 @@ async fn current_payload(boot: &Boot) -> TrackReportPayload {
     serde_json::from_value(card.payload).expect("payload deserializes")
 }
 
-/// Drain everything the bus delivers within a short quiet window, so a test
-/// can assert an exact event count (not just "at least n").
+/// Drain everything the bus delivers within a short quiet window so a test can assert an exact event count.
 async fn drain_events(
     rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
 ) -> Vec<calm_server::event::BroadcastEnvelope> {
@@ -62,8 +50,7 @@ async fn drain_events(
     out
 }
 
-/// Every `chart.series` fence in the flat body the planner reads back,
-/// parsed — the same parse the kernel's own read path uses.
+/// Every `chart.series` fence in the flat body the planner reads back, parsed with the kernel's own read path.
 fn chart_series_fences(read_out: &Value) -> Vec<Value> {
     let text = read_out["text"].as_str().expect("read returns text");
     split_body(text)
@@ -92,8 +79,7 @@ async fn commit_one_series(boot: &Boot, payload: Value) -> Result<Value, RpcErro
     .await
 }
 
-/// A2's refusal contract, shared by the three rejection cases: `-32602`
-/// naming the field, the doc untouched (docRev + body), zero events.
+/// The refusal contract shared by the three rejection cases: `-32602` naming the field, the doc untouched, zero events.
 async fn assert_commit_refused(boot: &Boot, payload: Value, needle: &str) {
     let before = current_payload(boot).await;
     let mut rx = boot.ctx.events.subscribe();
@@ -112,10 +98,6 @@ async fn assert_commit_refused(boot: &Boot, payload: Value, needle: &str) {
     );
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 }
-
-// ---------------------------------------------------------------------------
-// A1 — a legal block lands as its canonical fence
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn upsert_chart_series_lands_as_canonical_fence() {
@@ -144,8 +126,6 @@ async fn upsert_chart_series_lands_as_canonical_fence() {
         text.contains("```neige-block chart.series\n"),
         "flat body carries the fence opener: {text}"
     );
-    // The fence parses back to the same payload — canonical rendering is a
-    // function of the payload, so what was written is what is read.
     assert_eq!(chart_series_fences(&read_out), vec![payload.clone()]);
     let index = read_out["blocks"].as_array().expect("blocks index");
     let entry = index
@@ -154,7 +134,6 @@ async fn upsert_chart_series_lands_as_canonical_fence() {
         .expect("the new block is in the index");
     assert_eq!(entry["kind"], json!(KIND_CHART_SERIES));
 
-    // The typed blocks cache mirrors the payload the frontend zod reads.
     let stored = current_payload(&boot).await;
     let block = stored
         .blocks
@@ -165,10 +144,6 @@ async fn upsert_chart_series_lands_as_canonical_fence() {
     assert_eq!(block.id, id);
     assert_eq!(block.payload, payload);
 }
-
-// ---------------------------------------------------------------------------
-// A2 — write-end refusals through `calm.report.commit`
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn commit_rejects_chart_series_without_venue() {
@@ -191,7 +166,6 @@ async fn commit_rejects_non_calendar_as_of() {
         "as_of: must be a calendar date in YYYY-MM-DD form, got `2026-02-30`",
     )
     .await;
-    // Wrong shape altogether.
     assert_commit_refused(
         &boot,
         json!({ "source": SOURCE, "series": ["US:NVDA"], "as_of": "2026/09/10" }),
@@ -210,10 +184,6 @@ async fn commit_rejects_month_period_in_one_month_range() {
     )
     .await;
 }
-
-// ---------------------------------------------------------------------------
-// A2 — a future cutoff is a legal frozen block
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn commit_accepts_future_as_of() {

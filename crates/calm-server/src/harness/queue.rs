@@ -1,28 +1,5 @@
-//! #1505 PR1 — identity for entries sitting in the harness pending queue.
-//!
-//! Before this module the queue was several parallel arrays kept in step by
-//! hand (`pending_queue` / `pending_envelope_ids` / `pending_message_ids`,
-//! plus the alignment pass that papered over any head-side drift). Every
-//! mutation site had to touch each array in the same way, and the failure mode
-//! was silent: a head-side drain on one array only was re-lengthened by the
-//! alignment pass, so ids shifted by one and a later delete-by-id would hit
-//! somebody else's message.
-//!
-//! [`QueueEntry`] fuses them into one value, so there is a single write point
-//! and a single ordering.
-//!
-//! # A constraint on PR2's mutation path
-//!
-//! Address-by-id is only unambiguous while one id names one entry. Minting
-//! cannot break that (uuid v4), and
-//! `HarnessSnapshot::deserialize_pending_entry_meta` demotes a duplicate that
-//! serde smuggles in, so today the queue holds no two entries with the same
-//! id. That is a property of the READ boundary, not a property this type
-//! enforces. When PR2 adds `apply_mutation`, its lookup must therefore choose
-//! deliberately — first match, or refuse on more than one — and say which in
-//! code. What it must not do is scan for "the" match and rely on there being
-//! exactly one, because that reintroduces "delete hits somebody else's
-//! message" by coincidence rather than by construction.
+//! Identity for entries sitting in the harness pending queue. Address-by-id is only
+//! unambiguous while one id names one entry; `apply_mutation` refuses on more than one match.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -34,27 +11,17 @@ use crate::model::{HarnessInputSegment, new_id, now_ms};
 use crate::planner_attachments::bind::{BoundAttachment, MAX_ATTACHMENTS_PER_MESSAGE};
 
 /// Stable identity for one addressable user entry in the pending queue.
-///
-/// Not required to sort: no reader in the design orders by id (the read
-/// endpoint emits queue order, addressing is equality matching).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct QueueEntryId(String);
 
 impl QueueEntryId {
-    /// Mint a fresh id. Deliberately crate-visible: production code reaches
-    /// this only through [`QueueEntry::user_message`], which is the one
-    /// place an id is created.
+    /// Mint a fresh id; production reaches this only through [`QueueEntry::user_message`].
     pub(crate) fn mint() -> Self {
         Self(new_id())
     }
 
-    /// Adopt an id that arrived from a client, verbatim.
-    ///
-    /// No validation, and none is possible: the set of valid ids is exactly
-    /// "the ids currently in this queue", which only the queue can answer. It
-    /// answers by not matching, which is a 404 — so an id from a URL is a
-    /// lookup key here and never a claim about anything.
+    /// Adopt an id that arrived from a client, verbatim; an id from a URL is a lookup key, never a claim.
     pub fn from_wire(id: String) -> Self {
         Self(id)
     }
@@ -70,105 +37,31 @@ impl std::fmt::Display for QueueEntryId {
     }
 }
 
-/// One entry in the harness pending queue.
-///
-/// Three variants, and the third is the interesting one:
-///
-/// - [`QueueEntry::User`] — a user message minted at or after #1505 PR1. It
-///   carries an id, so it can be shown, addressed and (from PR2) edited or
-///   deleted.
-/// - [`QueueEntry::System`] — everything the dispatcher enqueues. Never
-///   addressable, never carries an id. [`QueueEntry::system`] refuses a
-///   `UserMessage`, which is a guard on that constructor and nothing wider:
-///   the variants are `pub`, so `QueueEntry::System { observation:
-///   Observation::UserMessage { .. }, .. }` can be written literally, and it
-///   would be a user message that `is_user_authored` and `user_view` both deny
-///   exists. No such literal exists in this repo, and the state is bounded —
-///   the first `set_pending_entries` writes its meta slot as `None`, so the
-///   next read returns it as a `LegacyUser` and it rejoins the count.
-/// - [`QueueEntry::LegacyUser`] — a `UserMessage` read back from a snapshot
-///   whose parallel `pending_entry_meta` slot is `None`. It has **no
-///   `QueueEntryId` field at all**, and that structural fact — not a runtime
-///   `Option` check — is what makes GAP-B's universal sentence ("they never
-///   change id, because they never had one") true. It does carry
-///   `message_ids`, which is a different identity for a different reader: see
-///   [`QueueEntry::message_ids`] and `HarnessSnapshot::pending_message_ids`.
-///   Whether a legacy entry stays legacy across a transfer is
-///   PATH-DEPENDENT, and the difference is worth naming rather than
-///   generalising away:
-///
-///   * [`QueueEntry::ensure_message_id`] and the **reset / inherit** boundary
-///     (`planner_harness_start_adapter`'s `prepare_tx`) carry the entry WHOLE.
-///     It gains a message id and no `QueueEntryId`; `user_view` still denies
-///     it; it stays off the addressable page. GAP-B holds verbatim.
-///   * The **harvest** boundary does not. `stranded_user_messages` admits a
-///     `LegacyUser` via `is_user_authored` — it must, or every pre-#1505
-///     sentence would be stranded on a superseded row, which is the loss #1449
-///     exists to stop — and the successor rebuilds the entry through
-///     [`QueueEntry::user_message_moved`], as a `User` with a freshly minted
-///     `QueueEntryId`. That sentence IS listed in `GET /planner/run`'s
-///     `pending` afterwards.
-///
-///   The second is deliberate, not a leak. GAP-B's reason is that an id
-///   invented at READ time would differ on every read and could not be
-///   addressed; an id minted once, inside the transaction that moves the
-///   entry, and persisted with it has neither problem. So the harvest makes a
-///   pre-#1505 sentence editable where it previously was not, which is
-///   strictly better for the person who typed it. What GAP-B still forbids —
-///   and what nothing here does — is repairing a legacy entry IN PLACE, on a
-///   row it is not leaving.
-///
-///   **A `User` entry keeps its id across the same boundary** (#1505 PR4
-///   review). The journal carries `entry_id`, so only an entry that arrives
-///   without one is minted a new one. The earlier unconditional re-mint was a
-///   bug rather than a policy: a client holding the pre-harvest id saw the
-///   sentence drawn twice and got a 404 — reported in the UI as "already left
-///   the queue" — for a message that was still queued.
-///
-///   Two things this variant is NOT:
-///
-///   1. It is not "only produced by snapshots written before PR1". A
-///      `LegacyUser` that is re-persisted after PR1 is written back the same
-///      way — text in `pending_queue`, `None` in the meta slot — so it reads
-///      back as `LegacyUser` again, indefinitely, until it drains.
-///   2. Its carrier is not "the only construction entry point". `calm_server`
-///      exports `pub mod harness`, and an enum variant is as visible as its
-///      enum, so `QueueEntry::LegacyUser { .. }` can be written literally by
-///      any module. [`QueueEntry::legacy_user`] is merely the least effortful
-///      path; the invariant rests on the type, which has nowhere to put an id.
+/// One entry in the harness pending queue. `LegacyUser` is a `UserMessage` read back from a
+/// snapshot whose `pending_entry_meta` slot is `None`; it has no `QueueEntryId` field at all and
+/// is never repaired in place — it gains an id only when the harvest rebuilds it as `User`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum QueueEntry {
     User {
         id: QueueEntryId,
         text: String,
-        /// CAS token. Incremented every time the text is rewritten, folding
-        /// included, so a stale editor is told to re-read — and once more
-        /// when the entry comes back to the queue after a client was told
-        /// it had left ([`QueueEntry::bump_rev_for_restore`], #1625 P3
-        /// review round 2), so the page that lists it again is
-        /// distinguishable from the page that listed it before.
+        /// CAS token. Incremented every time the text is rewritten (folding included) and once more
+        /// when the entry is restored after a client was told it had left.
         rev: u32,
         /// Wall-clock ms at which this entry entered the queue.
         queued_at_ms: i64,
         envelope_id: Option<i64>,
-        /// #1449 transfer identity. See [`QueueEntry::message_ids`].
+        /// Transfer identity. See [`QueueEntry::message_ids`].
         message_ids: Vec<String>,
-        /// #1505 S6 — images this message carries, already bound.
-        ///
-        /// Bound before the entry existed, which is what lets the run loop
-        /// stay off the disk entirely: the path in each of these was decided
-        /// and verified on the REST side, so drain, issue and re-buffer are
-        /// pure in-memory work and a re-queued message cannot find its
-        /// attachment reclaimed. Empty for every text-only message, which is
-        /// almost all of them.
+        /// Images this message carries, already bound on the REST side, so drain, issue and
+        /// re-buffer are pure in-memory work.
         attachments: Vec<BoundAttachment>,
     },
     LegacyUser {
         text: String,
         envelope_id: Option<i64>,
-        /// #1449 transfer identity. Empty until this entry crosses a transfer
-        /// boundary, which mints one — a legacy entry gains a message id even
-        /// though it never gains a [`QueueEntryId`].
+        /// Transfer identity. Empty until this entry crosses a transfer boundary, which mints one
+        /// even though a legacy entry never gains a [`QueueEntryId`].
         message_ids: Vec<String>,
     },
     System {
@@ -180,11 +73,6 @@ pub enum QueueEntry {
 }
 
 /// Borrowed view of the addressable half of a [`QueueEntry::User`].
-///
-/// The read endpoint filters with this rather than by asking whether a meta
-/// slot happens to be `None`: the former is a structural match on the variant,
-/// the latter would silently start admitting legacy entries the moment anybody
-/// wrote a meta slot for one.
 pub struct UserEntryView<'a> {
     pub id: &'a QueueEntryId,
     pub text: &'a str,
@@ -194,35 +82,17 @@ pub struct UserEntryView<'a> {
 }
 
 impl QueueEntry {
-    /// #1625 P3 review round 2 — the entry is re-entering the queue after a
-    /// client was told it had left: a steer answered 200, and the turn then
-    /// ended before codex recorded the input. That client hides the entry
-    /// until the server's page says otherwise, and the page it fetches
-    /// after the restore lists it AGAIN — under the same id, so nothing in
-    /// that page says "this is the entry that came back" unless the rev
-    /// moved. Bumping it here is what lets a client tell "the page from
-    /// before my steer" from "the page after the kernel put it back"
-    /// without relying on having observed the absence in between
-    /// (`tombstoneHides`, `fe/web/src/app/router/public.tsx`).
-    ///
-    /// Only the completion sweep calls this. A steer codex refused restores
-    /// the entry WITHOUT a bump: the client that asked was told no in the
-    /// same round trip and holds no such hide, and a bump there would turn
-    /// its immediate retry at the rev it holds into a false `stale`.
-    ///
-    /// `LegacyUser` and `System` entries carry no rev and are left alone.
+    /// The entry is re-entering the queue after a client was told it had left; the bump lets the
+    /// client tell the page after the restore from the page before. Only the completion sweep calls
+    /// this — a steer codex refused restores WITHOUT a bump, or the client's retry would go `stale`.
     pub fn bump_rev_for_restore(&mut self) {
         if let Self::User { rev, .. } = self {
             *rev = rev.saturating_add(1);
         }
     }
 
-    /// The one place a [`QueueEntryId`] is minted.
-    ///
-    /// `attachments` is a required parameter rather than a builder step. Every
-    /// caller has to answer it, including the fixtures — a defaulted list here
-    /// would let a test seed a shape production cannot produce and would hide
-    /// the one thing #1505 S6 adds to this type.
+    /// The one place a [`QueueEntryId`] is minted. `attachments` is required so a test cannot
+    /// seed a shape production cannot produce.
     pub fn user_message(
         text: String,
         envelope_id: Option<i64>,
@@ -235,36 +105,14 @@ impl QueueEntry {
             queued_at_ms: now_ms(),
             envelope_id,
             attachments,
-            // #1449 — a `UserMessage` entering the queue gets its transfer
-            // identity here, in the same constructor that mints its
-            // `QueueEntryId`. The two are minted together and are still two
-            // ids: see `HarnessSnapshot::pending_message_ids` for why.
+            // The transfer identity is minted together with the `QueueEntryId`, and they are still two ids.
             message_ids: vec![new_id()],
         }
     }
 
-    /// #1449 — a user message arriving in a successor's queue by MOVE.
-    ///
-    /// It keeps the transfer identity it was moved with: minting a fresh one
-    /// would leave the give-back unable to recognise the instance it recorded,
-    /// which is the whole point of the ids. (An empty set would mean the mover
-    /// failed to mint at the boundary, so the fresh identity minted by
-    /// [`Self::user_message`] is kept in that case rather than leaving the
-    /// entry unidentifiable.)
-    ///
-    /// The [`QueueEntryId`] comes from `entry_id` when the mover has one to
-    /// give (#1505 PR4 review): the harvest journal carries it, so a sentence
-    /// that was addressable before the move is addressable under the SAME id
-    /// after it, and a client still holding that id hits its own entry. `None`
-    /// means the mover had none — a pre-#1505 sentence — and the fresh id
-    /// minted by [`Self::user_message`] stands, which is where such a sentence
-    /// becomes addressable for the first time.
-    ///
-    /// Attachments are deliberately NOT carried across, and that is the one
-    /// thing a move does not preserve. An attachment's bytes live under the
-    /// card it was uploaded to; carrying the ids into a different card's queue
-    /// would produce references the successor's read-back and bind both
-    /// refuse. The moved message arrives as its text. #1505 GAP-A15.
+    /// A user message arriving in a successor's queue by MOVE. It keeps the transfer identity it
+    /// was moved with and the `QueueEntryId` the mover had (a sentence stays addressable under the
+    /// SAME id). Attachments are NOT carried: their bytes live under the source card.
     pub fn user_message_moved(
         text: String,
         message_ids: Vec<String>,
@@ -274,9 +122,6 @@ impl QueueEntry {
         if !message_ids.is_empty() {
             *entry.message_ids_mut() = message_ids;
         }
-        // #1505 PR4 review — adopt the id the sentence already had, and mint
-        // only for one that never had any. See the `entry_id` field on
-        // `HarvestedMessage` for why a move must not rename.
         if let Some(id) = entry_id
             && let Self::User { id: slot, .. } = &mut entry
         {
@@ -285,14 +130,8 @@ impl QueueEntry {
         entry
     }
 
-    /// Wrap a dispatcher observation.
-    ///
-    /// A `UserMessage` is refused. This is a **runtime** fail-closed guard that
-    /// is live in release builds — not a compile-time signal. `Result` says
-    /// only "this can fail"; every caller already handles a `Result`, so adding
-    /// this arm reddens no build. The first sign that a dispatcher learned to
-    /// mint `UserMessage` would be an `Err` on the boot-replay path, which is
-    /// why `pending_entry_system_refuses_user_message` pins it explicitly.
+    /// Wrap a dispatcher observation. A `UserMessage` is refused — a runtime fail-closed guard
+    /// live in release builds.
     pub fn system(observation: Observation, envelope_id: Option<i64>) -> Result<Self> {
         if matches!(observation, Observation::UserMessage { .. }) {
             return Err(CalmError::Internal(
@@ -308,15 +147,8 @@ impl QueueEntry {
         })
     }
 
-    /// Fixtures-only bulk wrapper for seeding a snapshot from bare
-    /// observations.
-    ///
-    /// It dispatches on the variant exactly as the ingress does — a
-    /// `UserMessage` mints an id, everything else becomes a system entry — so a
-    /// test seeds the same shapes production would. It is feature-gated rather
-    /// than public because production has no path that starts from an
-    /// undifferentiated observation: user input arrives at
-    /// `observe_user_message_durable`, dispatcher output at `observe`.
+    /// Fixtures-only bulk wrapper for seeding a snapshot from bare observations, dispatching on
+    /// the variant exactly as the ingress does.
     #[cfg(feature = "fixtures")]
     pub fn entries_from_observations_for_test(observations: Vec<Observation>) -> Vec<Self> {
         observations
@@ -359,13 +191,8 @@ impl QueueEntry {
         }
     }
 
-    /// #1449 — the message instances this entry is still holding.
-    ///
-    /// A **set**, not one id, because a fold merges two entries into one and
-    /// the survivor must stay able to name BOTH instances: a give-back that
-    /// could name only one would strand the other. Empty for a system entry,
-    /// and for a user entry read back from a row written before #1449 — until
-    /// [`QueueEntry::ensure_message_id`] mints one at a transfer boundary.
+    /// The message instances this entry is still holding. A set, because a fold merges two entries
+    /// and the survivor must stay able to name BOTH; empty for a system entry.
     pub fn message_ids(&self) -> &[String] {
         match self {
             Self::User { message_ids, .. }
@@ -382,15 +209,8 @@ impl QueueEntry {
         }
     }
 
-    /// #1449 — give a user-authored entry a transfer identity if it has none,
-    /// in the transaction that moves it.
-    ///
-    /// Only user-authored entries: a system entry is never given back, so an
-    /// id for it would be a claim with no reader. Minting HERE rather than at
-    /// load is what keeps an id stable across reads — a read that minted would
-    /// hand out a different id every time.
-    ///
-    /// Returns the entry's ids after the mint, which is what the mover records.
+    /// Give a user-authored entry a transfer identity if it has none, in the transaction that moves
+    /// it. Minting here rather than at load keeps an id stable across reads.
     pub fn ensure_message_id(&mut self) -> &[String] {
         if self.is_user_authored() && self.message_ids().is_empty() {
             self.message_ids_mut().push(new_id());
@@ -398,21 +218,9 @@ impl QueueEntry {
         self.message_ids()
     }
 
-    /// #1449 — drop the message instances a give-back has already moved back,
-    /// keeping the ENTRY.
-    ///
-    /// Subtracting rather than dropping the entry, because a fold unions two
-    /// instances into one entry: an entry can hold a returned id next to a
-    /// newly enqueued one that was never harvested and sits on no source row,
-    /// and dropping it on an intersection would delete that sentence outright.
-    ///
-    /// Returns whether the entry became id-less AS A RESULT of this call — it
-    /// held ids and now holds none. That is not the same question as "does it
-    /// hold no ids", and the difference is load-bearing: an entry that never
-    /// had an identity was enqueued before #1449, was NOT returned (the
-    /// give-back only returns ids the failing runtime still holds), and its
-    /// source row has already been emptied, so dropping it would delete it
-    /// from both sides.
+    /// Drop the message instances a give-back has already moved back, keeping the ENTRY (a fold
+    /// can hold a returned id next to a never-harvested one). Returns whether the entry became
+    /// id-less AS A RESULT of this call — an entry that never had ids must not be dropped.
     pub fn remove_message_ids(&mut self, returned: &HashSet<String>) -> bool {
         let had_ids = !self.message_ids().is_empty();
         self.message_ids_mut().retain(|id| !returned.contains(id));
@@ -455,9 +263,7 @@ impl QueueEntry {
         }
     }
 
-    /// The bound attachments this entry carries. Empty for every variant that
-    /// has nowhere to hold one, which is every variant but
-    /// [`QueueEntry::User`].
+    /// The bound attachments this entry carries; only [`QueueEntry::User`] can hold any.
     pub fn attachments(&self) -> &[BoundAttachment] {
         match self {
             Self::User { attachments, .. } => attachments,
@@ -465,20 +271,13 @@ impl QueueEntry {
         }
     }
 
-    /// True for any entry authored by the user, addressable or not. Used by
-    /// the read endpoint to count what it could not show.
+    /// True for any entry authored by the user, addressable or not.
     pub fn is_user_authored(&self) -> bool {
         matches!(self, Self::User { .. } | Self::LegacyUser { .. })
     }
 
-    /// Delegates to [`Observation::is_hard_fire`] for every variant, user
-    /// entries included.
-    ///
-    /// The user arms could hardcode `true` and be right today, but that would
-    /// be a restatement of somebody else's answer: moving `UserMessage` into
-    /// the soft list would change the queue's behaviour and leave this
-    /// function silently disagreeing. Asking costs an empty `String`, which
-    /// does not allocate — the text is not needed to classify the variant.
+    /// Delegates to [`Observation::is_hard_fire`] for every variant, so the user arms cannot
+    /// silently disagree with the observation table.
     pub fn is_hard_fire(&self) -> bool {
         match self {
             Self::User { .. } | Self::LegacyUser { .. } => Observation::UserMessage {
@@ -489,8 +288,6 @@ impl QueueEntry {
         }
     }
 
-    /// Same delegation as [`Self::is_hard_fire`]: a user entry's answer comes
-    /// from `Observation`, not from a second opinion written here.
     pub fn report_sha256(&self) -> Option<&str> {
         match self {
             Self::User { .. } | Self::LegacyUser { .. } => None,
@@ -513,13 +310,8 @@ impl QueueEntry {
     }
 }
 
-/// #1505 PR2 — one addressable change a human asked for.
-///
-/// Every arm carries `if_entry_rev`, and it is required rather than optional
-/// on the delete and the steer too. "I am deleting the entry I read", "I am
-/// editing the entry I read" and "I am sending the entry I read into the
-/// running turn" are the same precondition, and an optional token is an
-/// unconditional write for any client that omits it.
+/// One addressable change a human asked for. `if_entry_rev` is required on every arm: an
+/// optional token is an unconditional write for any client that omits it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueueMutation {
     Edit {
@@ -531,11 +323,8 @@ pub enum QueueMutation {
         entry_id: QueueEntryId,
         if_entry_rev: u32,
     },
-    /// #1625 P3 — take the entry out so the run loop can hand it to the turn
-    /// that is running right now (`turn/steer`). The queue's part is exactly
-    /// a delete that gives the entry back to the caller; whether codex takes
-    /// it is decided after this function returns, and a refusal puts the
-    /// entry back through `rebuffer_head`.
+    /// Take the entry out so the run loop can hand it to the running turn (`turn/steer`); a codex
+    /// refusal puts the entry back through `rebuffer_head`.
     Steer {
         entry_id: QueueEntryId,
         if_entry_rev: u32,
@@ -560,37 +349,27 @@ impl QueueMutation {
     }
 }
 
-/// A mutation that took effect.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MutationApplied {
     pub entry_id: QueueEntryId,
     pub change: HarnessQueueChange,
-    /// The entry's `rev` after the change. `Deleted` and `Steered` report the
-    /// rev the entry carried when it was removed, so a log line can be joined
-    /// against the read the client acted on.
+    /// The entry's `rev` after the change; `Deleted` and `Steered` report the rev at removal.
     pub rev: u32,
     /// The text after the change, for `Edit` only.
     pub text: Option<String>,
-    /// The entry that left the queue, for `Steer` only: the caller still has
-    /// to deliver it, and to put it back if codex will not take it. A
-    /// `Delete` drops its entry here — nothing downstream may deliver a
-    /// message the person took back.
+    /// The entry that left the queue, for `Steer` only: the caller must deliver it, or put it
+    /// back if codex will not take it. A `Delete` drops its entry here.
     pub removed: Option<QueueEntry>,
-    /// True when this mutation left the queue empty.
     pub queue_now_empty: bool,
     /// Whether any entry still in the queue is hard-fire, recomputed from the
     /// entries that remain. The caller re-arms the debounce with it.
     pub remaining_hard_fire: bool,
 }
 
-/// Why a mutation did nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MutationRefused {
-    /// No entry in the queue carries this id. Already drained, dropped by a
-    /// snapshot truncation, or gone with a restart — the three are not
-    /// distinguishable here and deliberately are not reported as if they were.
-    /// Note that a drain is not final: `rebuffer_head` can put the batch back,
-    /// so the entry may reappear.
+    /// No entry in the queue carries this id. A drain is not final: `rebuffer_head` can put the
+    /// batch back, so the entry may reappear.
     NotFound,
     /// The entry is there, but its text has moved on since the client read it.
     Stale {
@@ -598,40 +377,20 @@ pub enum MutationRefused {
         text: String,
         rev: u32,
     },
-    /// Two entries in the queue carry the same id, so "the" entry the client
-    /// named does not exist.
-    ///
-    /// Unreachable today, and the point is that it is refused rather than
-    /// resolved: ids are minted as uuid v4, and
-    /// `HarnessSnapshot::deserialize_pending_entry_meta` demotes a duplicate a
-    /// hand-edited `handle_state_json` smuggled past it, so the read boundary
-    /// is what makes ids unique — not this type. Picking the first match would
-    /// turn a violation of somebody else's invariant into a write against
-    /// whichever message happened to be earlier, which is precisely the
-    /// "delete hits the wrong message" failure #1505 PR1 set out to make
-    /// impossible.
+    /// Two entries carry the same id. Unreachable today (uuid v4 minting, and the read boundary
+    /// demotes duplicates); refused rather than resolved so a violation cannot write to the wrong message.
     AmbiguousId {
         entry_id: QueueEntryId,
         count: usize,
     },
 }
 
-/// The domain answer to a mutation: it happened, or it was refused and why.
-///
-/// Distinct from the transport `Result` the harness returns around it. The
-/// outer one means "the request never reached the queue" (the runtime is gone,
-/// the channel is saturated); this one means the queue looked at the request
-/// and answered.
+/// The domain answer to a mutation, distinct from the transport `Result` around it ("the
+/// request never reached the queue").
 pub type MutationResult = std::result::Result<MutationApplied, MutationRefused>;
 
-/// The locate-and-compare half of [`apply_mutation`], with no write.
-///
-/// Answers the index of the one entry that carries `entry_id` at `if_entry_rev`,
-/// or the same refusal `apply_mutation` would give. #1625 P3 calls it on its
-/// own before a steer so that "is the entry there, and is it the one you
-/// read" is answered ahead of "is a turn running" — the first two are about
-/// the message the person pointed at, the third about the moment they
-/// pressed, and the more specific answer wins.
+/// The locate-and-compare half of [`apply_mutation`], with no write; a steer calls it on its
+/// own so "is the entry there" is answered ahead of "is a turn running".
 pub fn locate_entry(
     queue: &VecDeque<QueueEntry>,
     entry_id: &QueueEntryId,
@@ -667,14 +426,8 @@ pub fn locate_entry(
     Ok(index)
 }
 
-/// Apply one human mutation to the pending queue, in place.
-///
-/// The queue lock is the caller's to hold; this function does no IO and takes
-/// no locks, so the whole compare-and-swap — locate, check `rev`, write —
-/// happens inside one critical section. That is what makes the delete-versus-
-/// drain race have two outcomes instead of three: whichever of the two reaches
-/// the run loop's single `select!` first sees the queue the other has not
-/// touched yet.
+/// Apply one human mutation in place. The caller holds the queue lock; this does no IO and
+/// takes no locks, so the whole compare-and-swap happens inside one critical section.
 pub fn apply_mutation(
     queue: &mut VecDeque<QueueEntry>,
     mutation: &QueueMutation,
@@ -688,24 +441,9 @@ pub fn apply_mutation(
                 unreachable!("an entry matched by id is a User entry")
             };
             new_text.clone_into(text);
-            // The entry keeps its `message_ids`: an edit changes what the
-            // instance SAYS, not which instance it is, and #1449's give-back
-            // matches on those ids.
-            //
-            // KNOWN GAP (#1449 x #1505 PR2): the harvest journal records the
-            // text as it was at the transfer, so if this entry was harvested
-            // and the mint later fails, the give-back puts the PRE-edit text
-            // back on the source row. Bounded — the entry is identified
-            // correctly and nothing is lost or delivered twice, only the edit
-            // is — and closing it means journalling by reference to a row that
-            // the failing mint is in the middle of emptying. A DELETE has no
-            // such gap: the ids leave with the entry, the give-back's "are
-            // these ids still held" answers no, and the sentence is correctly
-            // not restored.
-            //
-            // Same rule as a fold: the body a client was editing changed, so
-            // any other client's in-flight write against the old rev is now
-            // stale and gets a 409 instead of overwriting this one.
+            // The entry keeps its `message_ids`: an edit changes what the instance SAYS, not which
+            // instance it is. Same rule as a fold: the body changed, so other clients' in-flight writes
+            // against the old rev get a 409.
             *rev = rev.saturating_add(1);
             (
                 HarnessQueueChange::Edited,
@@ -739,10 +477,7 @@ pub fn apply_mutation(
         text,
         removed,
         queue_now_empty: queue.is_empty(),
-        // Recomputed over what is LEFT, not patched. An edit cannot change the
-        // answer (the entry stays, and it was hard-fire before and after), but
-        // computing it the same way in both arms keeps the caller from having
-        // to know which arm can move it.
+        // Recomputed over what is LEFT, not patched.
         remaining_hard_fire: queue.iter().any(QueueEntry::is_hard_fire),
     })
 }
@@ -752,17 +487,13 @@ pub fn apply_mutation(
 pub enum FoldOutcome {
     /// Nothing folded; the caller must find the entry a slot of its own.
     NotFolded,
-    /// The incoming entry was merged into the queue tail. `entry_id` is the
-    /// **surviving** entry's id, which is what the client must be told about:
-    /// the id minted for the incoming message no longer exists. It is `None`
-    /// when the survivor is a [`QueueEntry::LegacyUser`], which never gains
-    /// an id (GAP-B).
+    /// Merged into the queue tail. `entry_id` is the SURVIVING entry's id (the incoming one no
+    /// longer exists); `None` when the survivor is a `LegacyUser`.
     Folded { entry_id: Option<QueueEntryId> },
 }
 
-/// #1667 D1 — a `ReportEdited` system entry: the one shape that folds into
-/// an adjacent same-track predecessor on EVERY enqueue, not only under
-/// backpressure.
+/// A `ReportEdited` system entry: the one shape that folds into an adjacent same-track
+/// predecessor on EVERY enqueue, not only under backpressure.
 pub(crate) fn is_report_edit(entry: &QueueEntry) -> bool {
     matches!(
         entry,
@@ -773,17 +504,9 @@ pub(crate) fn is_report_edit(entry: &QueueEntry) -> bool {
     )
 }
 
-/// #1667 D1 — the early fold: when `incoming` and the queue tail are both
-/// report edits, [`try_fold_tail`] is tried now rather than only at the
-/// cap (the arm itself still requires the same track and, round-4 M2, a
-/// contiguous `body_before`). Round-4 N3 — shared by the live enqueue
-/// (`run_loop::enqueue_pending_observation`) and boot replay
-/// (`harness::replay_harness_events_since`), so a recovered queue of one
-/// edit session is one entry and one bounded diff, the same as a live one,
-/// instead of one full-body pair per save.
-///
-/// The user-text cap is passed as `0`: it bounds the `User` arms only, and
-/// neither entry here is one.
+/// The early fold: when `incoming` and the tail are both report edits, fold now rather than
+/// only at the cap. Shared by the live enqueue and boot replay. The user-text cap is `0`
+/// because it bounds the `User` arms only.
 pub(crate) fn try_fold_report_edit_tail(
     queue: &mut VecDeque<QueueEntry>,
     incoming: &QueueEntry,
@@ -795,17 +518,8 @@ pub(crate) fn try_fold_report_edit_tail(
     }
 }
 
-/// #615 F3 — merge an incoming entry into the queue tail under backpressure.
-///
-/// Text-bearing folds bump the survivor's `rev` so a client that had already
-/// read the old text gets a 409 out of a later CAS write: the body it was
-/// editing genuinely changed.
-///
-/// `queued_at_ms` is deliberately NOT advanced. The survivor keeps the moment
-/// it reached the queue, so a folded entry carries text newer than its own
-/// timestamp — a queue UI ordering or labelling by it will show the older
-/// time. That is the right of the two available lies: the entry has been
-/// waiting since that moment, and re-stamping it would let a stream of folds
+/// Merge an incoming entry into the queue tail under backpressure. Text-bearing folds bump the
+/// survivor's `rev`; `queued_at_ms` is deliberately NOT advanced, or a stream of folds would
 /// keep an entry looking permanently fresh.
 pub fn try_fold_tail(
     queue: &mut VecDeque<QueueEntry>,
@@ -817,13 +531,8 @@ pub fn try_fold_tail(
         return FoldOutcome::NotFolded;
     };
     let folded = match (last, incoming) {
-        // #615 F3: preserve both adjacent user intents under backpressure
-        // rather than evicting the older send. Capped so the per-tail size
-        // cannot grow unboundedly; once the cap is reached the eviction
-        // fallback in `enqueue_pending_observation` drops a non-hard-fire
-        // entry and lets the new message take a fresh slot. Replacing would
-        // lose earlier intent; separate entries surface as separate
-        // `User says:` blocks at turn issuance.
+        // Preserve both adjacent user intents rather than evicting the older send; capped so the
+        // tail cannot grow unboundedly.
         (
             QueueEntry::User {
                 text,
@@ -837,29 +546,9 @@ pub fn try_fold_tail(
                 ..
             },
         ) => {
-            // #1505 S6 — the attachment budget is checked BEFORE the text is
-            // touched, because `fold_user_text` mutates in place: deciding
-            // afterwards would leave a survivor holding both texts and only
-            // one message's images. Over the cap, the fold is declined and the
-            // incoming message takes a slot of its own, which preserves both
-            // intents whole. That is the same fallback an over-long text
-            // already takes.
-            // #1505 S6 review — the union must be DEDUPLICATED, and the cap
-            // applies to the deduplicated result.
-            //
-            // Naming an already-bound attachment on a second message is legal
-            // and is a no-op on disk, so two adjacent queued messages can
-            // legitimately name the same image. Folding them by concatenation
-            // put that id in the survivor twice: two identical `localImage`
-            // items in one `turn/start` payload, and two identical thumbnails
-            // in the pending page. `validate_attachment_list` refuses a
-            // repeat within one message for exactly that reason, and a fold
-            // producing a message the entry point would have refused is the
-            // same defect arriving by a different door.
-            //
-            // The survivor keeps its own order and gains only what it did not
-            // already have — the earlier position is the one the reader saw
-            // first.
+            // The attachment budget is checked BEFORE the text is touched because `fold_user_text`
+            // mutates in place. The union is DEDUPLICATED: two adjacent messages can legitimately name
+            // the same image, and `validate_attachment_list` refuses a repeat within one message.
             let merged = new_attachments
                 .iter()
                 .filter(|incoming| !attachments.iter().any(|held| held.id == incoming.id))
@@ -883,15 +572,8 @@ pub fn try_fold_tail(
                 ..
             },
         ) => {
-            // Text is appended, but no id is minted and none is assigned: a
-            // legacy entry never becomes addressable. The ack degrades to
-            // `None`, which the client already handles (that is also what a
-            // dormant harness returns).
-            //
-            // #1505 S6 — a `LegacyUser` has nowhere to put an attachment, so
-            // folding a message that carries one into it would drop the images
-            // and say nothing. Declined instead: the incoming message keeps
-            // its own slot, and its attachments with it.
+            // Text is appended but no id is assigned: a legacy entry never becomes addressable. A
+            // `LegacyUser` has nowhere to put an attachment, so a message carrying one keeps its own slot.
             if new_attachments.is_empty() {
                 fold_user_text(text, new_text, max_folded_user_chars)
             } else {
@@ -911,15 +593,9 @@ pub fn try_fold_tail(
             *text = new_text.clone();
             true
         }
-        // #1667 D1 — adjacent report edits of one track fold; round-4 M2 —
-        // but only when the incoming edit CONTINUES the held one: its
-        // `body_before` is the body the survivor holds. Consecutive saves
-        // of one edit session always satisfy this. A write that landed
-        // between them without waking the planner (its own `calm.report.*`
-        // write, a kernel rewrite) breaks the chain, and folding across it
-        // would render that write's lines as the user's `+` lines and hand
-        // the conflict rule a diff nobody made. Such entries keep their own
-        // slots and each renders its own bounded diff.
+        // Adjacent report edits of one track fold, but only when the incoming edit CONTINUES the
+        // held one (its `body_before` is the survivor's body); folding across an intervening write
+        // would render that write's lines as the user's.
         (
             QueueEntry::System {
                 observation:
@@ -928,7 +604,6 @@ pub fn try_fold_tail(
                         body_sha256,
                         body,
                         author,
-                        // Kept as it is — see the `body_before` note below.
                         body_before: _,
                         doc_rev_after,
                         blocks_after,
@@ -951,26 +626,11 @@ pub fn try_fold_tail(
         ) if track_id == new_track_id && new_body_before.as_deref() == Some(body.as_str()) => {
             *body_sha256 = new_body_sha256.clone();
             *body = new_body.clone();
-            // The fold keeps the NEWEST edit's state, attribution included:
-            // the planner is told to treat the surviving body as ground truth,
-            // so it must be told who actually wrote that body (#1252 F2).
             *author = *new_author;
-            // #1667 round-2 F1 — the `docRev` and block refs describe `body`,
-            // so they follow it: the newest entry's values, `None` included
-            // (an older entry's refs would name blocks of a body that is no
-            // longer the one the diff shows).
             *doc_rev_after = *new_doc_rev_after;
             *blocks_after = new_blocks_after.clone();
-            // #1667 D1 — but the OLDEST `body_before`: the diff the planner
-            // reads must run from the version it last knew to the newest
-            // body, not from the penultimate save. The first entry's value
-            // is kept as it is, `None` included (round-4 M3): a pre-#1667
-            // first entry has no before-body, and adopting the incoming one
-            // would start the diff at that entry's AFTER-body — the edit it
-            // recorded would then be in neither the diff nor the unified
-            // patch. `None` keeps the whole survivor on the re-read path
-            // (`Observation::to_turn_text`), which is the only place that
-            // edit can still be seen.
+            // But the OLDEST `body_before`: the diff must run from the version the planner last knew.
+            // `None` is kept too — adopting the incoming one would start the diff at that entry's AFTER-body.
             true
         }
         _ => false,
@@ -982,12 +642,8 @@ pub fn try_fold_tail(
         .back_mut()
         .expect("fold matched a tail entry, so the queue is non-empty");
     *survivor.envelope_id_mut() = incoming_envelope_id;
-    // #1449 — a fold turns two entries into one, so the survivor carries BOTH
-    // sets of message ids. The envelope id ADVANCES to the newest send while
-    // these UNION, because they answer different questions: one is "which push
-    // am I acknowledging", the other is "which instances am I still holding",
-    // and a fold is still holding both. Overwriting would discard an instance
-    // the give-back may later have to move back.
+    // The survivor carries BOTH sets of message ids (which instances am I still holding) while
+    // the envelope id ADVANCES (which push am I acknowledging).
     let incoming_message_ids = incoming.message_ids().to_vec();
     survivor.message_ids_mut().extend(incoming_message_ids);
     FoldOutcome::Folded {
@@ -995,18 +651,8 @@ pub fn try_fold_tail(
     }
 }
 
-/// The transcript view of one issued batch, attachments included.
-///
-/// This exists because [`Observation::input_segments_for`] cannot produce it:
-/// an [`Observation`] has no attachment field and is not gaining one — the
-/// attachments hang off the queue entry, which is where the bind put them. So
-/// the batch path builds segments from entries.
-///
-/// It does not restate what a segment's `presentation` or `text` should be. It
-/// calls `Observation::input_segments_for` for exactly that, one entry at a
-/// time, and fills in the one thing that function structurally cannot know.
-/// Restating the presentation table here would be a second copy of it, and the
-/// two copies would drift the first time a new observation kind was added.
+/// The transcript view of one issued batch, attachments included; `Observation` has no
+/// attachment field, so the batch path builds segments from entries.
 pub fn input_segments_for_entries(
     card_id: &CardId,
     entries: &[QueueEntry],
@@ -1060,9 +706,7 @@ mod tests {
         QueueEntry::user_message(text.to_string(), None, attachments)
     }
 
-    /// A fold merges two messages, so the survivor has to hold both messages'
-    /// images. Dropping the incoming set would lose the picture while keeping
-    /// the sentence that referred to it.
+    /// The survivor has to hold both messages' images.
     #[test]
     fn a_fold_unions_both_messages_attachments() {
         let mut queue = VecDeque::from(vec![user_with("first", vec![attachment('0')])]);
@@ -1082,13 +726,6 @@ mod tests {
         assert!(ids[0].ends_with("5e60.png") && ids[1].ends_with("5e61.png"));
     }
 
-    /// #1505 S6 review — the union deduplicates, because naming an
-    /// already-bound attachment on a second message is legal and two adjacent
-    /// queued messages can therefore legitimately hold the same id.
-    /// Concatenating put it in the survivor twice: two identical `localImage`
-    /// items in one payload and two identical thumbnails in the queue page —
-    /// a message `validate_attachment_list` would have refused at the entry
-    /// point, arriving through the fold instead.
     #[test]
     fn a_fold_does_not_hold_the_same_attachment_twice() {
         let shared = attachment('0');
@@ -1113,8 +750,6 @@ mod tests {
         assert!(ids[1].ends_with("5e61.png"), "{ids:?}");
     }
 
-    /// The cap counts the DEDUPLICATED result, so a fold that only repeats
-    /// what the survivor already holds is not refused for being too long.
     #[test]
     fn the_fold_cap_counts_what_the_survivor_would_actually_hold() {
         let held = ['0', '1', '2', '3', '4', '5', '6', '7']
@@ -1132,14 +767,10 @@ mod tests {
         assert_eq!(queue[0].attachments().len(), 8);
     }
 
-    /// Over the cap the fold is DECLINED, and declining is the point: the
-    /// incoming message keeps its own slot, so neither text nor image is lost.
     /// Folding and then truncating the list would silently drop images.
     #[test]
     fn a_fold_that_would_exceed_the_cap_is_declined_rather_than_truncated() {
-        // DISJOINT sets, deliberately: the cap counts the deduplicated union,
-        // so overlapping ones would fit and this test would be asserting the
-        // wrong thing. 5 + 4 distinct = 9 > 8.
+        // DISJOINT sets: the cap counts the deduplicated union. 5 + 4 distinct = 9 > 8.
         let mut queue = VecDeque::from(vec![user_with(
             "first",
             ['0', '1', '2', '3', '4']
@@ -1165,9 +796,6 @@ mod tests {
         );
     }
 
-    /// A legacy tail has nowhere to put an attachment. Folding into it would
-    /// drop the images with no signal, so it is declined — and only when there
-    /// are images to lose.
     #[test]
     fn folding_an_attachment_bearing_message_onto_a_legacy_tail_is_declined() {
         let mut queue = VecDeque::from(vec![QueueEntry::legacy_user(
@@ -1192,9 +820,6 @@ mod tests {
         ));
     }
 
-    /// The transcript view: one segment per entry, each carrying its own
-    /// images, and the presentation/text still coming from the observation
-    /// table rather than from a second copy of it.
     #[test]
     fn segments_carry_each_entrys_own_attachments() {
         let entries = vec![
@@ -1213,9 +838,6 @@ mod tests {
         assert_eq!(segments[0].presentation, expected[0].presentation);
     }
 
-    /// A wire attachment is the server-side one minus the host path. If the
-    /// path ever leaked into `PlannerAttachment` this would be the test that
-    /// noticed.
     #[test]
     fn the_wire_shape_of_an_attachment_carries_no_host_path() {
         let json =
@@ -1227,10 +849,6 @@ mod tests {
 
     #[test]
     fn pending_entry_system_refuses_user_message() {
-        // MJ-3 / §11.3 #13. `Result` gives no compile-time signal — every
-        // caller already handles one — so without this test "construction
-        // failure is visible" would be a claim with no carrier. The mutation
-        // that reddens it is turning this arm into `Ok(System { .. })`.
         let refused = QueueEntry::system(
             Observation::UserMessage {
                 text: "hello".into(),
@@ -1314,8 +932,6 @@ mod tests {
 
     #[test]
     fn folding_onto_a_legacy_tail_appends_text_but_acks_none() {
-        // §11.1 #3b. The alternative — handing the legacy entry the incoming
-        // id — is exactly what GAP-B's universal sentence forbids.
         let mut queue = VecDeque::from(vec![QueueEntry::legacy_user(
             "older".into(),
             None,
@@ -1340,8 +956,6 @@ mod tests {
         );
     }
 
-    /// #1449 — a fold must keep BOTH instances identifiable; dropping one is
-    /// the loss of identity the message ids exist to prevent.
     #[test]
     fn folding_unions_the_message_ids_of_both_instances() {
         let mut queue = VecDeque::from(vec![user("first")]);
@@ -1371,8 +985,6 @@ mod tests {
         );
     }
 
-    /// A legacy entry gains a MESSAGE id when it moves, and still no
-    /// `QueueEntryId`.
     #[test]
     fn a_transfer_boundary_mints_a_message_id_for_a_legacy_entry() {
         let mut legacy = QueueEntry::legacy_user("pre-#1449".into(), None, Vec::new());
@@ -1390,8 +1002,6 @@ mod tests {
         assert_eq!(again, minted);
     }
 
-    /// A system entry is never moved back, so it must not acquire an identity
-    /// that would suggest it could be.
     #[test]
     fn a_transfer_boundary_mints_nothing_for_a_system_entry() {
         let mut system = QueueEntry::system(
@@ -1437,9 +1047,7 @@ mod tests {
         );
     }
 
-    // #1625 P3 — `Steer` is a delete that hands the entry back. The
-    // compare-and-swap is the same one the other two arms run, so each refusal
-    // below is pinned on the steer arm rather than assumed from the delete's.
+    // `Steer` is a delete that hands the entry back; each refusal is pinned on the steer arm.
 
     #[test]
     fn a_steer_takes_the_entry_out_and_hands_it_back() {
@@ -1477,9 +1085,6 @@ mod tests {
         );
     }
 
-    /// #1625 P3 review round 2 — the restore's CAS bump, on the one variant
-    /// that carries a rev. The entry the sweep hands back is the instance
-    /// the steer took (same id, same text, same message ids), one rev up.
     #[test]
     fn a_restore_bumps_the_rev_of_a_user_entry_and_nothing_else() {
         let mut entry = user("came back");

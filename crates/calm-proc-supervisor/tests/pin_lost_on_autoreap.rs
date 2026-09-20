@@ -1,46 +1,5 @@
-//! #1013 T6 — when the kernel auto-reaps our pty child, the supervisor detects
-//! the lost pin, still publishes `Exited`, and refuses to use that pgid.
-//!
-//! # THIS FILE MUST CONTAIN EXACTLY ONE `#[test]`. Do not add a second one.
-//!
-//! The case sets `SIGCHLD` to be ignored, and a signal disposition is
-//! **process-global**. `cargo test` runs the cases of one integration file as
-//! threads of one process, so any pty child spawned concurrently by a sibling
-//! case in *this binary* would be auto-reaped too — a nondeterministic red
-//! somewhere else entirely, which is the exact failure mode this line of work
-//! has been burned by repeatedly. cargo compiles and runs each integration
-//! **file** as its own process, so one case per file is the isolation.
-//! Parallelism across binaries is fine: the disposition is per process.
-//!
-//! **This is a written-down convention, not a gate.** There is no assertion
-//! that can count the `#[test]`s in its own file. Stated plainly rather than
-//! dressed up as enforcement.
-//!
-//! # What this locks, and what it structurally cannot
-//!
-//! It locks the **steady state**: once `waitid` has answered `ECHILD`, (1) the
-//! terminal still terminates — the most important part, because a waiter that
-//! spun on `ECHILD` would hang the terminal forever, which is worse than the
-//! bug #1013 fixes — (2) the entry records `pin_lost`, and (3) a subsequent
-//! `Signal` is refused with the `PinLost` message rather than being sent to a
-//! pgid the kernel has already recycled.
-//!
-//! It **cannot** cover the release→flag gap (§6.4): the kernel frees the number
-//! when the child *exits*, and our flag is set when `waitid` returns. A
-//! concurrent `Signal` in between aims at a recyclable pgid — #1013, verbatim.
-//! This case waits for `pin_lost` before signalling, by construction. No
-//! userspace mechanism can close that window, so `pin_lost` is graded as
-//! best-effort detection that stops *subsequent* signals, and never as
-//! fail-closed. The production answer is the standalone daemon's process
-//! invariant (`main.rs`: never ignored, never no-child-wait; a handler is
-//! fine); the in-process mode is a documented degraded configuration.
-//!
-//! Assertion 3 asserts the **message prefix**, not just the error kind, and
-//! that is load-bearing. The child has been auto-reaped, so its group is empty
-//! and `kill(-pgid, SIGKILL)` returns ESRCH — which `handle_signal` also maps
-//! to `Internal`. Asserting only the kind would keep this case green after
-//! deleting the `pin_lost` check in `group_target`, which is precisely the
-//! wiring this case exists to prove.
+//! When the kernel auto-reaps our pty child, the supervisor detects the lost pin, still publishes `Exited`, and refuses to use that pgid.
+//! THIS FILE MUST CONTAIN EXACTLY ONE `#[test]`: the case ignores `SIGCHLD`, which is process-global, and cargo runs one integration file per process.
 
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_session::control::{
@@ -107,12 +66,7 @@ async fn pin_lost_when_the_child_is_autoreaped() {
         other => panic!("unexpected attach reply: {other:?}"),
     }
 
-    // --- Assertion 1: the terminal still terminates. ----------------------
-    //
-    // The most important one. If the `ECHILD` arm fell into the `EINTR` retry
-    // arm, `waitid` would answer `ECHILD` forever, the waiter would spin, and
-    // no `Exited` frame would ever be published — a hang, not a degradation.
-    // The timeout below is what turns that into a red.
+    // Assertion 1: the terminal still terminates. If the `ECHILD` arm fell into the `EINTR` retry arm the waiter would spin forever; the timeout turns that into a red.
     let (status, signalled) = loop {
         let frame = tokio::time::timeout(LIVENESS_BUDGET, read_frame(&mut attach))
             .await
@@ -130,18 +84,14 @@ async fn pin_lost_when_the_child_is_autoreaped() {
             other => panic!("unexpected frame before Exited: {other:?}"),
         }
     };
-    // The degraded shape: we never learned how it died, because the kernel
-    // reaped it before we could look. Same shape the pre-#1013 code published
-    // when `child.wait()` failed, so no reader sees anything new.
+    // The degraded shape: we never learned how it died.
     assert_eq!(
         (status, signalled),
         (None, false),
         "a lost pin must publish the degraded exit shape"
     );
 
-    // Degeneracy self-check: the child really was auto-reaped, i.e. this case
-    // exercised the path it claims to. Without it, a run where the disposition
-    // did not take effect would still reach the assertions below.
+    // Degeneracy self-check: the child really was auto-reaped, so this case exercised the path it claims to.
     assert!(
         poll_until(Duration::from_secs(5), || !std::path::Path::new(&format!(
             "/proc/{leader}"
@@ -151,7 +101,7 @@ async fn pin_lost_when_the_child_is_autoreaped() {
          this case is not exercising the ECHILD path at all"
     );
 
-    // --- Assertion 2: the entry recorded the loss. ------------------------
+    // Assertion 2: the entry recorded the loss.
     let stats = supervisor
         .registry()
         .debug_entry_stats(proc_id)
@@ -166,7 +116,7 @@ async fn pin_lost_when_the_child_is_autoreaped() {
         "the registry-scoped pin_lost counter must have seen it"
     );
 
-    // --- Assertion 3: and refuses to signal that pgid, distinguishably. ---
+    // Assertion 3: and refuses to signal that pgid, distinguishably by message prefix (ESRCH also maps to `Internal`).
     let mut control = UnixStream::connect(supervisor.sock())
         .await
         .expect("connect signal");
@@ -208,20 +158,8 @@ fn poll_until(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// Sets the process' `SIGCHLD` disposition so the kernel auto-reaps children,
-/// and restores the previous one on drop.
-///
-/// The decision to auto-reap is taken when the child *exits*, reading the
-/// disposition at that moment — not when it is forked. That is why flipping it
-/// here, after the supervisor is running, still takes effect on children
-/// spawned afterwards, and it is also why a check at spawn time could never be
-/// a gate.
-///
-/// The dangerous handler constant is not spelled here: this crate's
-/// `no_wildcard_wait_in_the_supervisor_host` scan forbids those two literals
-/// under `src/`, and repeating them in a test file next door invites someone to
-/// copy them into production. `SIG_IGN` is `1` on Linux, which is what the
-/// kernel's `sig_handler_ignored` compares against.
+/// Sets the process' `SIGCHLD` disposition so the kernel auto-reaps children, and restores the previous one on drop.
+/// The kernel reads the disposition when the child *exits*, so flipping it after the supervisor is running still takes effect. `SIG_IGN` is `1` on Linux; the literal is not spelled here because the wildcard-wait scan forbids it under `src/`.
 struct IgnoreSigchld {
     previous: libc::sigaction,
 }

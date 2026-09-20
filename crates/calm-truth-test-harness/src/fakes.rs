@@ -1,4 +1,4 @@
-//! Fake calm-exec implementations for #679 PR5 full-loop tests.
+//! Fake calm-exec implementations for full-loop tests.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,12 +36,10 @@ pub struct FakeProvider {
     probe_script: Mutex<VecDeque<Liveness>>,
     probe_calls: AtomicUsize,
     session_mode: SessionMode,
-    // The verdict `confirm_durable_death` returns, scripting the reaper's
-    // Resumable arbiter gate (#741-3). `None` ⇒ trait default (`Unknown`).
+    // The verdict `confirm_durable_death` returns; `None` ⇒ trait default (`Unknown`).
     death_verdict: Option<DeathVerdict>,
     death_verdict_calls: AtomicUsize,
-    // The value `daemon_connected_at_ms` returns (#741 §1.3). `None` ⇒ trait
-    // default (`None` → reaper treats it as 0).
+    // The value `daemon_connected_at_ms` returns; `None` ⇒ trait default (the reaper treats it as 0).
     daemon_connected_at_ms: Option<TimestampMs>,
 }
 
@@ -50,9 +48,6 @@ impl Default for FakeProvider {
         Self {
             probe_script: Mutex::default(),
             probe_calls: AtomicUsize::default(),
-            // Terminal/claude one-shot processes are ephemeral; this is the
-            // common fake. Use `with_session_mode(SessionMode::Resumable)`
-            // to exercise the reaper's codex arbiter gate (#741-3).
             session_mode: SessionMode::Ephemeral,
             death_verdict: None,
             death_verdict_calls: AtomicUsize::default(),
@@ -75,24 +70,20 @@ impl FakeProvider {
         self
     }
 
-    /// Override the reported [`SessionMode`] (default [`SessionMode::Ephemeral`]).
-    /// A `Resumable` fake stands in for codex, whose torn-down PTY does not
+    /// Override the reported [`SessionMode`]. A `Resumable` fake stands in for codex, whose torn-down PTY does not
     /// mean the codex thread died — the reaper must NOT converge it.
     pub fn with_session_mode(mut self, mode: SessionMode) -> Self {
         self.session_mode = mode;
         self
     }
 
-    /// Script the [`DeathVerdict`] returned by `confirm_durable_death`, driving
-    /// the reaper's Resumable arbiter gate (#741-3). Default (`None`) defers to
-    /// the trait default (`Unknown`).
+    /// Script the [`DeathVerdict`] returned by `confirm_durable_death`; default defers to the trait default (`Unknown`).
     pub fn with_death_verdict(mut self, verdict: DeathVerdict) -> Self {
         self.death_verdict = Some(verdict);
         self
     }
 
-    /// Override the value `daemon_connected_at_ms` reports (#741 §1.3). Default
-    /// (`None`) defers to the trait default (`None`).
+    /// Override the value `daemon_connected_at_ms` reports.
     pub fn with_daemon_connected_at_ms(mut self, ms: TimestampMs) -> Self {
         self.daemon_connected_at_ms = Some(ms);
         self
@@ -102,8 +93,7 @@ impl FakeProvider {
         self.probe_calls.load(Ordering::SeqCst)
     }
 
-    /// How many times `confirm_durable_death` was consulted — lets a test
-    /// assert the reaper's pre-gate short-circuited (count == 0).
+    /// How many times `confirm_durable_death` was consulted — lets a test assert the reaper's pre-gate short-circuited.
     pub fn death_verdict_call_count(&self) -> usize {
         self.death_verdict_calls.load(Ordering::SeqCst)
     }
@@ -141,9 +131,7 @@ impl WorkerProvider for FakeProvider {
         if evidence.exit_code == Some(0) && !evidence.signal_killed {
             return Ok(ExitInterpretation::Completed);
         }
-        // Mirror the real ephemeral providers: a `Probe`-sourced exit carries
-        // the `-1` sentinel from the supervisor, so the reason must HIDE the
-        // sentinel and say "outcome unknown" rather than leak `code -1`.
+        // Mirror the real ephemeral providers: a `Probe`-sourced exit carries the supervisor's `-1` sentinel, which the reason must HIDE.
         if evidence.source == ExitSource::Probe {
             return Ok(ExitInterpretation::Failed {
                 reason: "fake worker exited (outcome unknown; observed via supervisor probe)"
@@ -449,7 +437,7 @@ impl DecisionGate for RootOnlyGate {
                 "root-only gate requires track scope".into(),
             ));
         };
-        // PR5 fake-only: actor_for_principal stores the session id in AiPlanner's CardId slot.
+        // Fake-only: actor_for_principal stores the session id in AiPlanner's CardId slot.
         let caller_session_id = match actor {
             ActorId::AiPlanner(card_id) => WorkerSessionId::from(card_id.as_str()),
             _ => {

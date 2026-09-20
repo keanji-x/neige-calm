@@ -66,13 +66,9 @@ pub struct FixtureSpec {
     pub plan_source: PlanSource,
     pub issue_body: Option<FixtureIssue>,
     pub require_task_gates: bool,
-    /// #840 capstone (P2): what the local bare origin is seeded with.
     pub repo_seed: RepoSeed,
 }
 
-/// Fixture-served source issue for the gh shim (#840 capstone S0): the body
-/// agents read via `gh.issue.view` becomes fixture-controlled instead of the
-/// shim's hardcoded fallback.
 pub struct FixtureIssue {
     pub number: u64,
     pub body: String,
@@ -80,10 +76,8 @@ pub struct FixtureIssue {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RepoSeed {
-    /// Historical default: a README-only repo (`init_bare_origin`).
     ReadmeOnly,
-    /// #840 capstone: a real Rust micro-crate with a hermetic rustc gate
-    /// script and NO Cargo.toml (`seed_rust_micro_crate`).
+    /// A real Rust micro-crate with a hermetic rustc gate script and NO Cargo.toml.
     RustMicroCrate,
 }
 
@@ -117,12 +111,9 @@ pub struct Fixture {
     pub used_injected_plan: AtomicBool,
     pub track_cwd: PathBuf,
     pub origin_repo: PathBuf,
-    /// Kernel MCP UDS socket — exposed so tests can drive scripted setup
-    /// `tools/call`s over the same wire real agent sessions use (#840 d2).
+    /// Kernel MCP UDS socket, exposed so tests can drive scripted `tools/call`s over the same wire real agent sessions use.
     pub socket_path: PathBuf,
-    /// Plaintext shared-daemon MCP token (only the hash reaches the server);
-    /// authenticates scripted socket calls as `DaemonTrust`, with identity
-    /// resolved from `_meta.threadId` exactly like real codex sessions.
+    /// Plaintext shared-daemon MCP token (only the hash reaches the server).
     pub daemon_token: String,
     pub origin_main_initial: String,
     pub codex_stderr_log: PathBuf,
@@ -202,10 +193,7 @@ pub async fn boot_forge_e2e_fixture(
         .map(|path| EnvGuard::set("PATH", path))
         .ok_or_else(|| format!("codex binary has no parent: {}", codex_bin.display()))?;
     let proxy_env = apply_proxy_env();
-    // Belt-and-braces for the events retention pruner (#854 slice 2):
-    // fixtures seed events freely, so the shared boot harness pins the
-    // pruner off even though no test path calls `AppState::new` (the only
-    // spawn site). See `calm_truth::events_prune` and design §5.
+    // Fixtures seed events freely, so the retention pruner is pinned off.
     let events_prune_env = EnvGuard::set("NEIGE_EVENTS_PRUNE_INTERVAL_SECS", "0");
 
     let tmp =
@@ -224,11 +212,7 @@ pub async fn boot_forge_e2e_fixture(
     }
     clone_for_track(&origin_repo, &track_cwd);
     if let Some(issue) = &fixture.issue_body {
-        // The gh shim keys state by the `--repo` selector string. The capstone
-        // goal pins the CLONE gitdir selector (forge_pr_goal precedent — the
-        // shim rev-parses worker branches there without any push), but seed
-        // both plausible selectors so scripted/agent calls agree wherever the
-        // steered goal points them.
+        // The gh shim keys state by the `--repo` selector string; seed both plausible selectors.
         seed_shim_issue_body(&origin_repo, issue.number, &issue.body);
         seed_shim_issue_body(&track_cwd.join(".git"), issue.number, &issue.body);
     }
@@ -294,12 +278,8 @@ pub async fn boot_forge_e2e_fixture(
         .seed_card_role_cache(&cache)
         .await
         .expect("seed card-role cache");
-    // The injected (#835) path leaves the planner card a kind:"planner"/null-payload
-    // placeholder (it never boots a real harness). The RealPlannerTurn path drives
-    // the real `planner-harness-start` op, whose AppServerInteract phase requires
-    // the production-faithful planner card shape: a kind:"codex" card whose payload
-    // is the `planner_harness_card_payload` JSON object (routes/tracks.rs:657) — the
-    // adapter mutates that object in place (codex_thread_id, appserver_sock, …).
+    // RealPlannerTurn drives the real `planner-harness-start` op, which requires the
+    // production planner card shape: kind:"codex" with the `planner_harness_card_payload` object.
     let (planner_kind, planner_payload) = match fixture.plan_source {
         PlanSource::Injected => ("planner".to_string(), Value::Null),
         PlanSource::RealPlannerTurn => {
@@ -332,30 +312,16 @@ pub async fn boot_forge_e2e_fixture(
         .await
         .expect("create planner card");
     cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
-    // `card_create` persists `cards.role = 'worker'` unconditionally
-    // (`card_create_tx` → `card_create_with_id_tx(.., CardRole::Worker, ..)`),
-    // independent of kind. Production mints the planner card with
-    // `card_create_with_id_tx(.., CardRole::Planner, ..)`; the test must mirror
-    // that or the report task-block writer fails the role gate with
-    // `got=Worker`.
-    //
-    // #1189 §3.6 dropped the `RealPlannerTurn`-only condition this used to
-    // carry: the recorder gate now resolves session → card → {role, track}
-    // through a live `cards` read on EVERY report write, injected paths
-    // included, so a persisted role that contradicts the fixture's own
-    // story denies writes the test never meant to deny.
+    // `card_create` persists `cards.role = 'worker'` unconditionally; the report task-block
+    // writer's role gate requires the planner card to carry `CardRole::Planner` as production mints it.
     super::mcp::set_persisted_card_role(
         repo_dyn.as_ref(),
         planner_card.id.as_str(),
         CardRole::Planner,
     )
     .await;
-    // Production `routes::tracks::create_track` atomically mints the track-report
-    // card alongside the planner card for EVERY track (tracks.rs) — no production
-    // track ever lacks one. This fixture bypasses that route (direct
-    // `repo.track_create` above), so it mints the report card here to match;
-    // otherwise the planner agent's `calm.report.write` trips the
-    // `track has no track-report card (invariant violation)` guard.
+    // Production `create_track` mints the track-report card for every track; this fixture
+    // bypasses that route, so it mints the card here.
     let report_card = repo_dyn
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -419,8 +385,7 @@ pub async fn boot_forge_e2e_fixture(
         "--shared-codex-appserver-restart-max-delay-ms",
         "50",
         // Test codex daemons must NEVER post hooks to the default listen address —
-        // that is the production calm-server port on shared boxes (production-kill
-        // incident, 2026-07-04); tests do not consume hook ingest.
+        // that is the production calm-server port on shared boxes.
         "--codex-ingest-url",
         "http://127.0.0.1:1/hooks-disabled-in-e2e",
     ]);
@@ -578,13 +543,8 @@ pub fn spawn_dispatcher(fx: &Fixture) -> Dispatcher {
     )
 }
 
-/// #840 capstone: like [`spawn_dispatcher`], but wired to the FIXTURE's
-/// `HarnessRegistry`. `spawn_dispatcher` builds a fresh internal registry,
-/// which is fine for worker-only tests but silently severs the dispatcher's
-/// planner wake-ups (`harness_observation_from_event` delivery): the planner harness
-/// booted through `fx.runtime`'s `PlannerHarnessStartAdapter` registers in
-/// `fx.harness`, and the dispatcher must look it up in the SAME registry for
-/// live pushes to reach the real planner session.
+/// Like [`spawn_dispatcher`], but wired to the fixture's `HarnessRegistry` so planner
+/// wake-ups reach the real planner session (a fresh registry silently severs them).
 pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
     Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
         fx.repo_dyn.clone(),
@@ -885,9 +845,6 @@ pub fn planner_planning_budget() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(240))
 }
 
-/// #840 capstone overall deadline (P7 + checker pin c): a realistic single
-/// run is ~20–40min of real planner turns + substantial worker runs; 3600s
-/// leaves one stochastic fix-loop of headroom.
 pub fn capstone_budget() -> Duration {
     std::env::var("NEIGE_CAPSTONE_BUDGET")
         .ok()
@@ -896,10 +853,6 @@ pub fn capstone_budget() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(3600))
 }
 
-/// #840 capstone per-stage floor (checker pin c): substantial workers
-/// (implement, open-pr, review-pr ×2) run for minutes each (d1 data), so
-/// every post-planning stage wait gets ≥480s — `e2e_budget`'s 180s default
-/// contradicts the observed worker runtimes.
 pub fn capstone_stage_budget() -> Duration {
     std::env::var("NEIGE_CAPSTONE_STAGE_BUDGET")
         .ok()
@@ -1166,7 +1119,6 @@ pub fn manifest_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/git-forge/manifest.json")
 }
 
-/// Load the shipped git-forge manifest (#1110 S5: `templates[]` is id-only).
 pub fn read_manifest() -> Manifest {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
     Manifest::parse(&raw).expect("git-forge manifest parses")
@@ -1253,7 +1205,6 @@ pub fn target_tmpdir(prefix: &str) -> std::io::Result<TempDir> {
     tempfile::Builder::new().prefix(prefix).tempdir_in(base)
 }
 
-/// #1439: socket 目录不能问 `$TMPDIR` 要 —— 见 `calm_test_sockets`。
 pub fn socket_tempdir() -> std::io::Result<TempDir> {
     calm_test_sockets::try_socket_dir("s")
 }

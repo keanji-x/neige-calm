@@ -1,22 +1,6 @@
 // @vitest-environment jsdom
-//
-// #1211 S2 — a track that starts with no name and no words in it, driven
-// through the real router, the real composer route and the real transport port.
-//
-// Two things had to be built for that to be a usable product rather than a
-// blank page, and both are wiring that no single component can be asked about:
-//
-//   1. **Creating lands in the planner conversation, with the caret in it.** The
-//      create site cannot name the card to open — `POST /api/tracks` answers
-//      with a `Track` — so it marks the *navigation* it makes, and
-//      `TrackRouteBody` redeems that mark against its own cards. That hand-off
-//      spans three modules, which is exactly why it is asserted here and not in
-//      any of them. Since #1211 S3 the create site is `/area/{id}/new` rather
-//      than a dialog; the hand-off is the same one and this file drives it
-//      through the page.
-//   2. **Clearing the title is a request, not a cancel.** The track header
-//      passes `emptyCommit="clear"` so the planner agent's `calm.track.rename` can
-//      name the track again; what proves it is the PATCH on the wire.
+// A track that starts with no name and no words in it: creating lands in the planner
+// conversation with the caret in it, and clearing the title is a request, not a cancel.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
@@ -33,20 +17,15 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-/* The track the create answers with. `title: ''` is what the kernel stores when
-   the POST omits the key, which is the whole point of the slice. */
+/* `title: ''` is what the kernel stores when the POST omits the key. */
 const TRACK = {
   id: 'w1', area_id: 'c1', title: '', sort: 1, lifecycle: 'draft', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
-/* A named track, for the rename half: clearing a name that is already empty is
-   the arithmetic no-op, so the PATCH case needs something to clear. */
+/* A named track, so the PATCH case has something to clear. */
 const NAMED_TRACK = { ...TRACK, title: 'Test track' };
-/* The track a *second* create answers with. It exists so the intent can be
-   stated while the reader is standing on some other track — the rail's per-area
-   `+` is rendered by `AppShell`, above the route outlet, so "read one track and
-   start another" is an ordinary move and the track being left is still
-   mounted. */
+/* The track a *second* create answers with, so the intent can be stated while the
+   reader is standing on some other track, which is still mounted. */
 const OTHER_TRACK = { ...TRACK, id: 'w2', sort: 2, created_at: 3, updated_at: 3 };
 const PLANNER_CARD = {
   id: 'card-planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1,
@@ -65,9 +44,8 @@ type Options = {
    *  which is the single-track shape most of these cases want. */
   created?: typeof TRACK;
   createdCards?: readonly unknown[];
-  /** Start with the created track's detail failing, so the reader lands on the
-   *  error box and the route body never mounts. Flipped back through the
-   *  returned `gate`. */
+  /** Start with the created track's detail failing, so the route body never mounts;
+   *  flipped back through the returned `gate`. */
   createdDetailFails?: boolean;
 };
 
@@ -142,21 +120,14 @@ function setup(options: Options = {}) {
   };
 }
 
-/* The composer's field. `combobox` and not `textbox`: the track route passes
-   `onNewConversation`, which arms the `/` trigger menu and turns Astryx's
-   editable into a combobox. */
+/* `combobox` and not `textbox`: the track route passes `onNewConversation`, which
+   arms the `/` trigger menu and turns Astryx's editable into a combobox. */
 function messageField(): HTMLElement {
   return screen.getByRole('combobox', { name: 'Message' });
 }
 
-/* The composer page, with the one thing it does ask for typed into it.
-   Since #1211 S3 the `+` navigates to `/area/{id}/new` instead of opening a
-   dialog, so a create waits for the page's own field rather than
-   `role="dialog"`, and Create stays disabled until that field says something.
-   What is typed is the track's **intent**, not its name: no title is collected
-   (#1211 S2) and the sentence goes out on the create as `first_message` (#1299)
-   — which is why the landing below has to open the planner conversation, where
-   it has just been delivered. */
+/* The composer page, with the one thing it asks for typed in; Create stays
+   disabled until the field says something. */
 async function composerOnScreen() {
   await userEvent.type(await screen.findByLabelText('What this track should do'), 'Read it');
 }
@@ -167,8 +138,7 @@ async function createATrack() {
   await userEvent.click(await screen.findByRole('button', { name: 'Create track' }));
 }
 
-/** The same create, started from the rail — which is reachable from *every*
- *  route, including a track page. */
+/** The same create, started from the rail, which is reachable from every route. */
 async function createATrackFromTheRail() {
   await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
   await composerOnScreen();
@@ -181,9 +151,8 @@ async function goToTrack(router: ReturnType<typeof setup>['router'], trackId: st
 
 beforeEach(() => {
   window.history.pushState({}, '', `${APP_BASEPATH}/`);
-  /* The drawer, the composer and `EditableTitle` all move focus inside a frame.
-     Running frames synchronously is what makes "who ended up with the focus"
-     a question this tier can answer at all. */
+  /* The drawer, the composer and `EditableTitle` all move focus inside a frame;
+       running frames synchronously is what makes focus answerable here. */
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
 });
@@ -194,16 +163,6 @@ afterEach(() => {
 });
 
 describe('creating a track lands in its planner conversation', () => {
-  /*
-   * The landing, end to end. The sentence typed on the create page went with
-   * the create (#1299), and what the reader gets is the planner conversation
-   * open with the caret in the composer — the thread their intent was just
-   * delivered into, ready for whatever they say next.
-   *
-   * Red when: the create route stops stating the intent, `TrackRouteBody` stops
-   * redeeming it, the panel drops the `focusComposer` flag on the way to the
-   * composer, or `ChatComposer` stops honouring `focusOnMount`.
-   */
   it('opens the planner conversation with the caret in the composer', async () => {
     setup();
     await createATrack();
@@ -211,26 +170,8 @@ describe('creating a track lands in its planner conversation', () => {
     await waitFor(() => { expect(document.activeElement).toBe(messageField()); });
   });
 
-  /*
-   * ── The same landing, started from a track page ───────────────────────────
-   *
-   * The rail's per-area `+` is rendered by `AppShell`, above the route outlet,
-   * so it is on screen on every route — "read one track, start another" is an
-   * ordinary move, and no layer covered it before this slice.
-   *
-   * **What this case is and is not.** It was written to reproduce a specific
-   * defect in the replaced shape — a global intent slot that the *departing*
-   * track's route body could clear before the new route mounted — and it did
-   * not reproduce it: both review channels and this run agree the old code was
-   * green here, because the provider update and the navigation sat in one
-   * Promise continuation and React 19 batches them, so no commit ever rendered
-   * the old track with the request already stated. It is therefore a
-   * characterization test — it pins the outcome of a path that had none, on
-   * the shape that is shipping — and not evidence that a bug was fixed.
-   *
-   * Red when the create started from the rail stops landing the reader in the
-   * new track's planner conversation, whatever the reason.
-   */
+  /* The rail's per-area `+` is rendered above the route outlet, so the track being
+   * left is still mounted when the intent is stated. */
   it('opens the planner conversation of the new track when the create started on another track', async () => {
     const { router } = setup({ created: OTHER_TRACK, createdCards: [OTHER_PLANNER_CARD] });
     await goToTrack(router, 'w1');
@@ -239,27 +180,14 @@ describe('creating a track lands in its planner conversation', () => {
     await createATrackFromTheRail();
 
     await waitFor(() => { expect(router.state.location.pathname.endsWith('/track/w2')).toBe(true); });
-    /* The drawer lives in `TrackRouteBody`, which is keyed by track and unmounts
-       with the route — so a drawer open on this page is this track's own. */
+    /* The drawer lives in `TrackRouteBody`, keyed by track, so a drawer open on this
+           page is this track's own. */
     await screen.findByRole('complementary', { name: 'Planner chat' });
     await waitFor(() => { expect(document.activeElement).toBe(messageField()); });
   });
 
-  /*
-   * ── A fresh visit to the track carries no intent ──────────────────────────
-   *
-   * The detail read fails, so `TrackRoute` returns the error box and the body
-   * that would redeem the intent never mounts. The reader gives up, returns to
-   * Today, and later opens the track again — a *new* navigation, so a new
-   * history entry, and the mark is not on it. An ordinary visit does not spring
-   * the drawer open and take the caret.
-   *
-   * This is the half of the per-entry semantics that says the mark does not
-   * float free; the case below it is the other half, where the reader returns
-   * to the very entry that failed and the mark is still there on purpose.
-   *
-   * Red when the intent is held anywhere that outlives its own history entry.
-   */
+  /* The detail read fails, so the body that would redeem the intent never mounts;
+   * a later visit is a new history entry and the mark is not on it. */
   it('does not open on a later visit when the landing never reached the track', async () => {
     const { router, gate } = setup({
       created: OTHER_TRACK, createdCards: [OTHER_PLANNER_CARD], createdDetailFails: true,
@@ -276,27 +204,9 @@ describe('creating a track lands in its planner conversation', () => {
     expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
   });
 
-  /*
-   * ── Returning to the entry that failed arms it again, and that is the deal ─
-   *
-   * Same setup as above, except the reader comes back with Back rather than by
-   * navigating afresh — so this is the *same* history entry, the one the create
-   * made and marked, and its mark was never redeemed because the body that
-   * redeems it never mounted. It is still there, and this time the detail lands
-   * and the conversation opens.
-   *
-   * That is the chosen semantics, not a leak: the mark belongs to the entry,
-   * and the reachable readings of "display that entry again" are a reload and
-   * the Retry button — both of them "the landing finally worked", both of them
-   * wanting exactly this. Back is the same act on the same entry and cannot be
-   * told apart from them without giving the intent a second, time-based owner,
-   * which is the shape that had no owner at all. Pinned here so a later change
-   * that makes the mark expire has to argue with a test rather than with a
-   * comment.
-   *
-   * Red when the mark stops belonging to the entry — cleared on the way out,
-   * or expired by anything other than being redeemed.
-   */
+  /* Back returns to the SAME history entry the create marked, and its mark was
+   * never redeemed, so this time the conversation opens. Chosen semantics: the
+   * mark belongs to the entry and expires only by being redeemed. */
   it('opens the conversation when Back returns to the entry whose landing had failed', async () => {
     const { router, gate } = setup({
       created: OTHER_TRACK, createdCards: [OTHER_PLANNER_CARD], createdDetailFails: true,
@@ -318,21 +228,14 @@ describe('creating a track lands in its planner conversation', () => {
     await screen.findByRole('complementary', { name: 'Planner chat' });
   });
 
-  /*
-   * And it is a one-shot. The intent is cleared as it is redeemed, so walking
-   * back into the same track later is an ordinary visit — a reader who closed
-   * the conversation must not have it forced open again every time.
-   *
-   * Red when the mark is not consumed — left on the entry, or read from
-   * somewhere that outlives the navigation that wrote it.
-   */
+  /* One-shot: the intent is cleared as it is redeemed, so walking back into the
+   * same track later is an ordinary visit. */
   it('does not re-open an explicitly closed conversation on a later visit to the same track', async () => {
     const { router } = setup();
     await createATrack();
     await screen.findByRole('complementary', { name: 'Planner chat' });
 
-    // Navigation now remembers open drawers; an explicit close must still win
-    // over the already-consumed create intent on a later visit.
+    // Navigation remembers open drawers; an explicit close must still win on a later visit.
     await userEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     await act(async () => { await router.navigate({ to: '/' }); });
     expect(router.state.location.pathname).toBe('/');
@@ -343,17 +246,9 @@ describe('creating a track lands in its planner conversation', () => {
     expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
   });
 
-  /*
-   * A landing that found nothing to open must not leave the mark standing.
-   *
-   * "Nothing opened" on its own is not that claim — it is true of a page with
-   * no planner card whatever the mark does, which is why this case goes on: the
-   * planner card arrives on a *later* read of the same track, on the same history
-   * entry, and the drawer must still be shut. A reader three actions past the
-   * create is not asking for a conversation.
-   *
-   * Red when the redemption stops disarming on the no-card arm.
-   */
+  /* "Nothing opened" alone is true of a page with no planner card whatever the
+   * mark does: the card arrives on a later read of the same entry, and the drawer
+   * must still be shut. */
   it('opens nothing, and arms nothing, when the track has no planner card', async () => {
     const { client, setCardsOf } = setup({ cards: [] });
     await createATrack();
@@ -362,26 +257,16 @@ describe('creating a track lands in its planner conversation', () => {
 
     setCardsOf('w1', [PLANNER_CARD]);
     await act(async () => { await client.invalidateQueries(); });
-    /* The row for the planner card, which is proof the second read landed — and
-       the only place `Planner chat` may appear, because the drawer is shut. */
+    /* The row for the planner card is proof the second read landed, and the only
+           place `Planner chat` may appear. */
     await screen.findByText('Planner chat');
     expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
   });
 });
 
 describe('clearing the track title', () => {
-  /*
-   * `emptyCommit="clear"` on the track header, proved on the wire.
-   *
-   * The empty title is the one state `calm.track.rename` will fill in (#1211
-   * S3), so "clear the name" is how a reader hands naming back to the agent.
-   * Swallowing the keystroke — which is what the primitive does by default,
-   * and still does for an area — would leave "I cleared it, pressed Enter, and
-   * nothing happened".
-   *
-   * Red when the track page drops `emptyCommit`, or the primitive stops
-   * honouring it.
-   */
+  /* `emptyCommit="clear"` on the track header: the empty title is the one state
+   * `calm.track.rename` will fill in, and the primitive swallows the keystroke by default. */
   it('PATCHes an empty title when the box is emptied and committed', async () => {
     const { requests, router } = setup({ track: NAMED_TRACK });
     await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId: 'w1' } }); });

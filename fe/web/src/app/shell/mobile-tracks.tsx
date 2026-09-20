@@ -71,16 +71,8 @@ function NavigationPage({
           {shown.length === 0 && !readLoading && readError === null && <MobileListEmpty>No areas yet.</MobileListEmpty>}
         </List> : <MobileList>
           {tracks.map((track) => {
-            /* The same state the rail row shows (INV-APP-118): the kernel's
-               activity overlay plus this reader's receipt, never the lifecycle.
-               The name's activity bit comes from that SAME value as the dot,
-               and the lifecycle phrase stays in `trackMeta` as the phase it is.
-               The indicator is decorative here: the button's name carries what
-               is in motion or needs a person, and `unread` — never part of a
-               name — is the button's description, as on the rail row
-               (`features/track/row/public.tsx`), in the one vocabulary
-               (`activityLabelOf`); so the primitive is not given anything to
-               speak. The id is per row: one `MobileTracks` per document. */
+            /* The same state the rail row shows: the kernel's activity overlay plus this reader's receipt, never the lifecycle.
+               The indicator is decorative here; `unread` is the button's description, never part of its name. The id is per row: one `MobileTracks` per document. */
             const activity = trackActivityState(track, isUnread(track));
             const activityBit = activityNameBit(activity);
             const descriptionId = `mobile-track-${track.id}-unread`;

@@ -46,11 +46,8 @@ pub const MCP_TOOL_ALLOWLIST: [&str; 4] = [
     "calm.plan.list",
 ];
 
-/// The executor environment as a Planner-facing statement. Every value comes
-/// from the constants `apply` writes into the provider policy document and the
-/// executable mounts `bootstrap` injects, so the statement cannot drift from
-/// the enforced envelope. The same envelope applies to every attempt of a
-/// task, including recoveries: recovery only provides a new workspace.
+/// The executor environment as a Planner-facing statement, built from the same constants `apply` writes and the mounts `bootstrap` injects, so it cannot drift from the enforced envelope.
+/// Recovery only provides a new workspace; the envelope is identical for every attempt.
 pub fn executor_environment() -> Value {
     executor_environment_with_plugins(&[])
 }

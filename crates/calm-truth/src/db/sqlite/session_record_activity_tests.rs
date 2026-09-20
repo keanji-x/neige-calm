@@ -1,8 +1,5 @@
-//! #741 §1.3 — storage-layer coverage for the durable codex
-//! worker-liveness feeder `session_record_activity`. Asserts the two
-//! push-fed columns land on an active session WITHOUT bumping
-//! `updated_at_ms` (worker_sessions-only, like `liveness`), and that a
-//! terminal/missing session is a benign `Ok` no-op.
+//! Storage-layer coverage for `session_record_activity`: the push-fed columns
+//! land on an active session WITHOUT bumping `updated_at_ms`.
 use super::{SqlxRepo, area_create_tx, session_insert_tx, track_create_tx};
 use crate::model::{NewArea, NewTrack, RequestTheme};
 use crate::session_repo::SessionRepo;
@@ -11,8 +8,6 @@ use calm_types::worker::{
     WorkerSessionState,
 };
 
-/// Seed a real area → track and insert one worker session in `state` with a
-/// fixed `updated_at_ms`. Returns the session id.
 async fn seed_session(
     repo: &SqlxRepo,
     session_id: &str,
@@ -22,8 +17,6 @@ async fn seed_session(
     seed_session_with_thread(repo, session_id, None, state, updated_at_ms).await
 }
 
-/// Like [`seed_session`] but lets the test pin a codex `thread_id` so the
-/// thread-keyed feeder path can be exercised.
 async fn seed_session_with_thread(
     repo: &SqlxRepo,
     session_id: &str,
@@ -112,7 +105,6 @@ async fn records_activity_on_active_session_without_bumping_updated_at_ms() {
     )
     .await;
 
-    // Pre-condition: both new columns start NULL.
     let before = repo.session_get(&id).await.unwrap().unwrap();
     assert!(before.last_activity_ms.is_none());
     assert!(before.last_thread_status.is_none());
@@ -124,7 +116,6 @@ async fn records_activity_on_active_session_without_bumping_updated_at_ms() {
     let after = repo.session_get(&id).await.unwrap().unwrap();
     assert_eq!(after.last_activity_ms, Some(5_000));
     assert_eq!(after.last_thread_status.as_deref(), Some("active"));
-    // The crux: ws-only columns must NOT touch updated_at_ms (parity).
     assert_eq!(
         after.updated_at_ms, updated_at_ms,
         "session_record_activity must not bump updated_at_ms"
@@ -143,7 +134,6 @@ async fn record_activity_on_terminal_session_is_benign_noop() {
     )
     .await;
 
-    // Terminal session: Ok, but no columns change.
     repo.session_record_activity(&id, 9_000, "idle")
         .await
         .unwrap();
@@ -161,7 +151,6 @@ async fn record_activity_on_terminal_session_is_benign_noop() {
 async fn record_activity_on_missing_session_is_ok() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let missing = WorkerSessionId::from("ws-nope");
-    // Missing row: 0 rows affected is benign and returns Ok.
     repo.session_record_activity(&missing, 7_000, "idle")
         .await
         .unwrap();
@@ -191,7 +180,6 @@ async fn records_activity_by_thread_on_active_session_without_bumping_updated_at
         after.last_thread_status.as_deref(),
         Some("waitingOnUserInput")
     );
-    // The crux: ws-only columns must NOT touch updated_at_ms (parity).
     assert_eq!(
         after.updated_at_ms, updated_at_ms,
         "session_record_activity_by_thread must not bump updated_at_ms"
@@ -211,7 +199,6 @@ async fn record_activity_by_thread_on_terminal_session_is_benign_noop() {
     )
     .await;
 
-    // Terminal session: Ok, but no columns change.
     repo.session_record_activity_by_thread("th-exited", 9_000, "idle", None)
         .await
         .unwrap();
@@ -228,8 +215,6 @@ async fn record_activity_by_thread_on_terminal_session_is_benign_noop() {
 #[tokio::test]
 async fn record_activity_by_thread_on_unknown_thread_is_ok() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    // Seed an active session under a *different* thread id; the unknown
-    // thread must not touch it and must return Ok.
     let id = seed_session_with_thread(
         &repo,
         "ws-other-thread",

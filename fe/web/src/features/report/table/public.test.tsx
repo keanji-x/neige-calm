@@ -36,8 +36,6 @@ describe('ReportTableBlock', () => {
     expect(highlighted[0]?.textContent).toContain('600519.SH');
   });
 
-  // A missing number is a blank cell, not the string "null" and not a zero:
-  // the row still exists, and inventing a value would be worse than a gap.
   it('renders a null cell as empty', () => {
     const { container } = render(<ReportTableBlock payload={PAYLOAD} />);
     const cells = container.querySelectorAll('tbody tr:nth-child(2) td');
@@ -76,9 +74,6 @@ describe('ReportTableBlock — live tables', () => {
     expect(screen.getByText('Portfolio')).toBeTruthy();
   });
 
-  // The three states an inline table never has. Each says something rather
-  // than rendering nothing: a live block that silently disappears reads as a
-  // report that never had one.
   it('says so when nothing has been pushed to the source yet', () => {
     render(<ReportTableBlock payload={LIVE} resolveLive={() => undefined} />);
     expect(screen.getByText(/Waiting for neige:\/\/plugin\/dev-neige-binance\/portfolio\.holdings/)).toBeTruthy();
@@ -98,12 +93,6 @@ describe('ReportTableBlock — live tables', () => {
   });
 });
 
-/*
- * #1687 — a cell that is exactly one `[label](neige://source/…)` link is the
- * same citation the prose paints: a button with the typed callback when a
- * panel can open, the badge-plus-label form when none can. Everything else a
- * cell might hold stays the text it was; this is not a Markdown renderer.
- */
 describe('ReportTableBlock — a cell that is one source citation', () => {
   function table(...sources: (string | null)[]) {
     return {
@@ -193,8 +182,6 @@ describe('ReportTableBlock — a cell that is one source citation', () => {
     ]);
   });
 
-  // Same rule as the prose: the panel is where "来源缺失" is said, so a
-  // citation that will not parse must still be reachable.
   it('keeps a malformed source id clickable so the panel can say it is missing', () => {
     const onOpenSourceLink = vi.fn<(target: ReportSourceLinkTarget) => void>();
     render(
@@ -206,8 +193,6 @@ describe('ReportTableBlock — a cell that is one source citation', () => {
     });
   });
 
-  /* The parser, not a pattern, says what one link is — so the cell agrees
-     with the prose beside it on the two shapes a pattern gets wrong. */
   it('keeps a stray opening bracket before the link as text, as Markdown does', () => {
     const onOpenSourceLink = vi.fn();
     const text = '[[AP](neige://source/src_ddef99cc#q1)';
@@ -229,7 +214,6 @@ describe('ReportTableBlock — a cell that is one source citation', () => {
     });
   });
 
-  // A trailing space is the parser's to strip, as it strips it in the prose.
   it('is still one citation with a trailing space', () => {
     const onOpenSourceLink = vi.fn();
     render(

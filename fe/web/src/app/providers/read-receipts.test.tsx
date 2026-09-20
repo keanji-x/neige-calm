@@ -46,22 +46,14 @@ it('records the initially visible track under the first discovered instance', as
     await waitFor(() => expect(values.get(DATABASE_ID_KEY)).toBe('real-db'));
     await waitFor(() => expect(preferences.readScope()).toBe('real-db'));
     await waitFor(() => expect(preferences.isUnread('track', 'current', 100)).toBe(false));
-    // The receipt is keyed by the database identity, so the next load (which
-    // seeds its scope from `DATABASE_ID_KEY`) reads it back; the activity at
-    // 100 is newer than the 50 baseline, so it is the receipt, not the
-    // baseline, that answers here.
+    // The next load seeds its scope from `DATABASE_ID_KEY`, so it is the receipt, not the baseline, that answers here.
     expect(createUiPreferences(storage).isUnread('track', 'current', 100)).toBe(false);
     expect(createUiPreferences(storage).isUnread('track', 'other', 100)).toBe(true);
   } finally { client.clear(); }
 });
 
 it('database_id_change_overwrites_the_key', async () => {
-  /*
-   * #1722 §5.2 — the stable id is overwritten when it changes, not only written
-   * when missing: a database reset mints a new identity, and a device pinned to
-   * the old one would seed the wrong scope on every later load. The per-boot
-   * instance id is unchanged here, so none of the cache busting runs.
-   */
+  // The per-boot instance id is unchanged here, so none of the cache busting runs.
   const values = new Map<string, string>([[DB_INSTANCE_ID_KEY, 'boot-1'], [DATABASE_ID_KEY, 'db-old']]);
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,

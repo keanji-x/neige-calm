@@ -1,9 +1,5 @@
-//! `forge-action` operation adapter.
-//!
-//! Forge actions are crash-safety critical: the irreversible action is
-//! held behind a stdin handshake until the operation row is durably parked.
-//! The post-park observer owns the child + stdin handle and releases the
-//! token as its first awaited step.
+//! `forge-action` operation adapter. The irreversible action is held behind a stdin handshake until the operation row is
+//! durably parked; the post-park observer owns the child + stdin handle and releases the token as its first awaited step.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -36,10 +32,7 @@ use super::{
 
 pub const FORGE_ACTION_KIND: &str = "forge-action";
 
-/// The forge event kinds the adapter can construct via Event::from_kind_and_payload
-/// and persist. validate_payload rejects any other event_kind BEFORE the irreversible
-/// action can run, so a typo'd/unsupported kind can never execute the side effect and
-/// then fail to record its authoritative event. Slice ③ appends its forge.* kinds here.
+/// validate_payload rejects any other event_kind BEFORE the irreversible action can run, so a typo'd kind can never execute the side effect and then fail to record its event.
 pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "forge.pr.merged",
     "forge.scan.completed",
@@ -58,22 +51,8 @@ const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT_FORGE_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
 const FORGE_BASE_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM"];
-/// The forge passthrough keys that ARE the operator's git/forge **identity**:
-/// hold one and you can act as the operator against the forge.
-///
-/// `pub` because it is also the denylist for `cli_query.env_allow` (#1164 P3):
-/// a query connector is authored in a manifest and callable by any agent that
-/// can see its tools, so it must never be able to name its way into this set.
-/// One constant, two readers — a copy in `plugin_host` would drift the moment
-/// this list grows.
-///
-/// #1164 P3 r2 G4 — the split from [`FORGE_NONCREDENTIAL_ENV_KEYS`] is
-/// load-bearing, not cosmetic. Denylisting the whole passthrough set made
-/// `"env_allow": ["no_proxy"]` — an ordinary need for a query CLI behind a
-/// proxy — a hard install failure whose reason claimed it was a credential;
-/// and because `registry::load_from_dir` re-parses on boot, a key added to the
-/// combined list would retroactively invalidate already-installed manifests.
-/// Only genuine credentials belong in a set with those consequences.
+/// The passthrough keys that ARE the operator's forge identity. Also the denylist for `cli_query.env_allow`; only genuine credentials
+/// belong here, because a key added to this list retroactively invalidates already-installed manifests on boot re-parse.
 pub const FORGE_CREDENTIAL_ENV_KEYS: &[&str] = &[
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -83,17 +62,10 @@ pub const FORGE_CREDENTIAL_ENV_KEYS: &[&str] = &[
     "GIT_SSH_COMMAND",
 ];
 
-/// Forge passthrough keys that are **not** credentials: which host to talk to
-/// and which hosts to bypass the proxy for. A forge action needs them to reach
-/// the right endpoint; holding one grants nothing.
+/// Passthrough keys that are **not** credentials; holding one grants nothing.
 pub const FORGE_NONCREDENTIAL_ENV_KEYS: &[&str] = &["GH_HOST", "NO_PROXY", "no_proxy"];
 
-/// Everything a forge action forwards from the service environment: the
-/// credential set plus the non-credential set, in that order.
-///
-/// Composed rather than re-typed, so there is exactly one place each key
-/// lives — see [`forge_env_key_buckets_are_a_partition`] for the test that
-/// keeps the two buckets disjoint.
+/// Composed rather than re-typed, so there is exactly one place each key lives.
 pub fn forge_passthrough_env_keys() -> impl Iterator<Item = &'static str> {
     FORGE_CREDENTIAL_ENV_KEYS
         .iter()
@@ -371,11 +343,7 @@ where
         .collect()
 }
 
-/// Build the forge subprocess environment: env_clear + a tight allowlist
-/// (base PATH/HOME/..., settings-based proxy, runtime auth/proxy passthrough).
-/// Applied identically to the action and to recovery probes — both run
-/// plugin-supplied argv and both need gh auth + proxy, neither may inherit
-/// daemon secrets.
+/// env_clear + a tight allowlist, applied identically to the action and to recovery probes: both run plugin-supplied argv and neither may inherit daemon secrets.
 async fn apply_forge_subprocess_env(cmd: &mut tokio::process::Command, repo: &dyn RouteRepo) {
     cmd.env_clear();
     for key in FORGE_BASE_ENV_KEYS {
@@ -443,8 +411,7 @@ impl ForgeFieldType {
     }
 }
 
-/// Required non-kernel payload fields for the new slice ③ event kinds and
-/// their JSON type. `forge.pr.merged` stays on `required_output_fields`.
+/// Required non-kernel payload fields per event kind; `forge.pr.merged` stays on `required_output_fields`.
 fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeFieldType)] {
     use ForgeFieldType::*;
     match event_kind {
@@ -465,9 +432,7 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
     }
 }
 
-/// Kernel-authoritative payload fields the kernel injects last and that
-/// plugin `context`/`event_spec.fields` may not set: `track_id` for every
-/// kind; `subject` for `forge.pr.merged`; `card_id` for `worktree.*`.
+/// Kernel-authoritative payload fields injected last, which plugin `context`/`event_spec.fields` may not set.
 fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
     match event_kind {
         "forge.pr.merged" => &["track_id", "subject"],
@@ -929,8 +894,7 @@ async fn complete_forge_op_from_live_result(
     let (event, result) = match build_forge_event(frozen, exit_code, stdout) {
         Ok(ok) => ok,
         Err(ForgeEventBuildError::ActionFailed { reason }) => {
-            // Once the go-token is released, a nonzero exit is ambiguous,
-            // not a verdict; the probe is authoritative for landed status.
+            // Once the go-token is released, a nonzero exit is ambiguous, not a verdict; the probe is authoritative for landed status.
             return resolve_post_release_via_probe(
                 refs.pool,
                 refs.completion,
@@ -1001,16 +965,8 @@ async fn complete_forge_op_succeeded(
             } else {
                 None
             };
-            // #840 e2 crash seam. The whole block (including the `format!`
-            // argument) is `#[cfg]`-gated on the test-only `fixtures` feature,
-            // which production builds never enable — a release binary compiles
-            // literally zero code here. In a fixtures build it fires only when
-            // `CALM_TEST_CRASH_AT` matches the event-kind-qualified point
-            // exactly (see `test_seams` for the full prod-safety contract); it
-            // cannot alter control flow otherwise. Placed immediately before
-            // the fence commit so a crash here proves the uncommitted fence
-            // UPDATE and the appended decision event both vanish together
-            // (exactly-once merge across a reboot).
+            // Crash seam, compiled only under the `fixtures` feature; placed immediately before the fence commit so a crash here proves
+            // the uncommitted fence UPDATE and the appended decision event vanish together.
             #[cfg(feature = "fixtures")]
             crate::test_seams::crash_point(&format!(
                 "forge-pre-fence-commit:{}",
@@ -1126,12 +1082,8 @@ async fn complete_from_probe(
     }
 }
 
-/// Resolve an ambiguous post-release outcome. Once the go-token has been
-/// released, the probe is authoritative for whether the irreversible action
-/// landed; gate-infra is only terminal when no probe exists or the probe cannot
-/// produce a landed/not-landed verdict. If `complete_from_probe` returns `Err`,
-/// the probe has already reported `Landed`; only the typed-event completion tx
-/// failed, so the parked row must remain available for a later retry.
+/// Once the go-token is released the probe is authoritative; gate-infra is only terminal when no probe can produce a verdict.
+/// An `Err` from `complete_from_probe` means the probe reported `Landed` but the completion tx failed, so the parked row must remain for a retry.
 async fn resolve_post_release_via_probe(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
@@ -1186,10 +1138,7 @@ async fn resolve_post_release_via_probe(
     }
 }
 
-/// Resolve a dead forge process post-release: prefer the durable result files
-/// (authoritative — written by the wrapper via tmp+rename only after the
-/// action completed); fall back to the plugin probe; fail only if neither can
-/// answer. Self-completes the op via the parked first-committer-wins fence.
+/// Prefer the durable result files (written via tmp+rename only after the action completed), fall back to the plugin probe, fail only if neither can answer.
 async fn resolve_dead_outcome(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
@@ -1382,20 +1331,8 @@ impl ProviderAdapter for ForgeActionAdapter {
         let observer_artifacts = artifacts.clone();
         let observer_repo = ctx.repo.clone();
         let observer = Box::pin(async move {
-            // #840 e3 crash seam. The whole statement (including the `format!`
-            // argument) is `#[cfg]`-gated on the test-only `fixtures` feature,
-            // which production builds never enable — a release binary compiles
-            // literally zero code here. In a fixtures build it fires only when
-            // `CALM_TEST_CRASH_AT` matches the event-kind-qualified point
-            // exactly (see `test_seams` for the full prod-safety contract); it
-            // cannot alter control flow otherwise. Placed as the FIRST
-            // statement of the observer future — the driver spawns this task
-            // only after `set_parked` commits, and the go-token `write_all`
-            // below is the only thing that ever releases the held wrapper —
-            // so an abort here freezes the exact danger-point-3 window: op
-            // durably parked + wrapper spawned (spawn artifacts recorded) +
-            // go token NOT yet written. The wrapper's `read -r _go` then hits
-            // EOF at kernel death and exits 75 without ever running gh.
+            // Crash seam, compiled only under the `fixtures` feature; as the FIRST statement of the observer it freezes the window
+            // "op durably parked + wrapper spawned + go token NOT yet written", where the wrapper's `read -r _go` hits EOF and exits 75 without running gh.
             #[cfg(feature = "fixtures")]
             crate::test_seams::crash_point(&format!(
                 "forge-pre-go-token:{}",
@@ -1443,8 +1380,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                 }
             }
 
-            // The parked-deadline sweep owns timeouts; the parked-phase
-            // first-committer-wins guard makes any late observer completion roll back.
+            // The parked-deadline sweep owns timeouts; the first-committer-wins guard makes any late observer completion roll back.
             match child.wait().await {
                 Ok(status) if status.code().is_some() => {
                     match read_result_file(&observer_frozen.result_path).await {
@@ -1601,14 +1537,9 @@ impl ProviderAdapter for ForgeActionAdapter {
             };
         }
 
-        // P2-1: the durable result files are authoritative — the wrapper writes
-        // <result_path>.code (tmp+rename) only after the action ran to completion.
-        // A landed-but-dead action whose observer never committed is recovered from
-        // them, even with probe:None. read failure (missing/torn .code) falls through
-        // to the existing probe / no-probe path.
+        // The durable result files are authoritative (written via tmp+rename only after the action ran to completion); a read failure falls through to the probe path.
         if let Ok(result) = read_result_file(&frozen.result_path).await {
-            // Propagate completion tx errors here so the op stays parked for a later sweep;
-            // async dead reattach logs that error and falls back to the probe.
+            // Propagate completion tx errors so the op stays parked for a later sweep.
             let pool = ctx.operation_repo.sqlite_pool();
             complete_forge_op_from_live_result(
                 ForgeCompletionRefs {
@@ -1626,10 +1557,7 @@ impl ProviderAdapter for ForgeActionAdapter {
             return Ok(ParkedRecovery::LeaveParked);
         }
 
-        // Dead process: the action's process is gone; the plugin probe is the ONLY
-        // truth for whether the irreversible action landed, so run it regardless of
-        // the deadline -- a dead-but-landed action past deadline MUST still emit its
-        // typed event (exactly-once recovery). Fail only when no probe is available.
+        // Dead process: the probe is the ONLY truth for whether the irreversible action landed, so run it regardless of the deadline (exactly-once recovery).
         if frozen.probe.is_none() {
             return Ok(ParkedRecovery::Fail {
                 reason: match mode {

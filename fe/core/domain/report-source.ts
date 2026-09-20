@@ -1,17 +1,7 @@
 /*
- * A captured source behind a `neige://source/<id>[#q<n>]` citation (#1669).
- *
- * The kernel stores what a plugin call returned as an immutable body on the
- * track (`report_sources`), mints `src_` + 8 hex for it, and lets the planner
- * pin `q<n>` anchors — byte-exact substrings of that body. The report cites
- * it with this one scheme; this module is the browser's reading of the link
- * and of the row it names: the parser, the request, and the arithmetic the
- * panel does before it paints (which slice of the body is the quote).
- *
- * It is a **sibling** of `parseReportLink`, not an extension of it. The
- * track-citation scanner feeds task dependencies, frozen contexts and
- * backlinks, none of which may learn about sources (I5); the two schemes stay
- * two functions so that they cannot.
+ * A captured source behind a `neige://source/<id>[#q<n>]` citation: the parser, the request,
+ * and the slice of the body that is the quote. A sibling of `parseReportLink`, not an extension:
+ * the track-citation scanner must never learn about sources.
  */
 
 import { z } from 'zod';
@@ -31,15 +21,8 @@ const QUOTE_ID_PATTERN = /^q[1-9][0-9]*$/;
 export const SOURCE_PROVENANCES = Object.freeze(['full_text', 'summary', 'web_page', 'manual'] as const);
 
 /**
- * What a source citation resolves to.
- *
- * A destination under the prefix is always a citation — clickable, so that a
- * dangling or misspelt one is still *visible* as a citation that failed
- * rather than silently degrading to prose — but only a well-formed one names
- * a source. A malformed id or a malformed anchor leaves `sourceId` null: the
- * kernel treats those links as unresolved as a whole (its receipt warnings
- * name them), and the page says the same thing, "来源缺失", with the
- * destination beside it so the author can see what was written.
+ * A destination under the prefix is always a citation (so a dangling one stays visible), but only a
+ * well-formed one names a source.
  */
 export type ReportSourceLinkTarget = Readonly<{
   /** The link as written — the panel prints it when nothing resolves. */
@@ -50,14 +33,7 @@ export type ReportSourceLinkTarget = Readonly<{
   quoteId: string | null;
 }>;
 
-/**
- * Parse a Markdown destination as a source citation.
- *
- * `null` when the destination is not under `neige://source/` at all — every
- * other scheme is somebody else's (`parseReportLink`, `parseReportFileLink`)
- * or nobody's. Under the prefix, always a target; see the type for what a
- * malformed one carries.
- */
+/** `null` when the destination is not under `neige://source/` at all; under the prefix, always a target. */
 export function parseReportSourceLink(destination: string): ReportSourceLinkTarget | null {
   if (!destination.startsWith(SOURCE_LINK_PREFIX)) return null;
   const path = destination.slice(SOURCE_LINK_PREFIX.length);
@@ -71,8 +47,6 @@ export function parseReportSourceLink(destination: string): ReportSourceLinkTarg
   return { destination, sourceId, quoteId: fragment };
 }
 
-/* ── A table cell that is one citation ───────────────────────────────── */
-
 export type SourceCitationCell = Readonly<{
   /** The link's label, as plain text (see `parseSourceCitationCell`). */
   label: string;
@@ -80,25 +54,9 @@ export type SourceCitationCell = Readonly<{
 }>;
 
 /**
- * Read a `table` block's cell as one source citation and nothing else
- * (#1687): the cell text, given to the same parser the document's prose goes
- * through, is exactly one paragraph holding exactly one link, and that link's
- * destination is a `neige://source/…` citation. `null` for every other cell
- * — a link with prose around it, two links, a link under another scheme, a
- * parse failure — and the caller shows the text as written.
- *
- * The parser, not a pattern, decides what "one link" is, so the cell agrees
- * with the prose beside it: `[[AP](…)` is a `[` and a link there and is text
- * here; `[AP [Reuters]](…)` is one link there and one citation here. The
- * parser's own whitespace rules apply unchanged — a trailing space is
- * stripped, so `[AP](…) ` is a citation; four leading spaces make an indented
- * code block, so that cell stays text, exactly as the prose would show it
- * raw. Raw HTML is dropped before counting, as the prose drops it.
- *
- * The label is the plain-text projection of the link's children (`**AP**`
- * reads `AP`; an image reads its alt). The table cannot reach the document's
- * inline renderer without a cycle, and a citation label in a cell is a name,
- * not prose.
+ * Read a `table` cell as one source citation and nothing else: exactly one paragraph holding
+ * exactly one link under `neige://source/…`, decided by the parser so the cell agrees with the
+ * prose beside it. `null` for every other cell.
  */
 export function parseSourceCitationCell(text: string): SourceCitationCell | null {
   const parsed = parse(text);
@@ -128,8 +86,6 @@ function inlineLabel(nodes: readonly SafeInline[]): string {
   }).join('');
 }
 
-/* ── The row ─────────────────────────────────────────────────────────── */
-
 export const sourceQuoteSchema = z.object({
   id: z.string(),
   text: z.string(),
@@ -153,11 +109,7 @@ const sourceOriginSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
-/**
- * `GET /api/tracks/{id}/sources/{source_id}` — the row with its body. The
- * decoder is strict about the fields the panel paints and lenient about the
- * rest, the way every other domain decoder is.
- */
+/** `GET /api/tracks/{id}/sources/{source_id}`: strict about the fields the panel paints, lenient about the rest. */
 export const trackSourceDetailSchema: z.ZodType<TrackSourceDetail> = z.object({
   source_id: z.string(),
   provenance: z.enum(SOURCE_PROVENANCES),
@@ -183,30 +135,16 @@ export function trackSourceOperation(trackId: string, sourceId: string): ApiOper
   };
 }
 
-/**
- * The read as the panel sees it. `missing` is data, not an error: a dangling
- * citation is a state the design admits (the kernel does not refuse the
- * write), so the panel shows it as one rather than retrying a 404.
- */
+/** `missing` is data, not an error: a dangling citation is a state the design admits. */
 export type SourceResolution =
   | Readonly<{ status: 'loading' }>
   | Readonly<{ status: 'missing' }>
   | Readonly<{ status: 'error'; message: string }>
   | Readonly<{ status: 'ok'; source: TrackSourceDetail }>;
 
-/* ── The highlight ───────────────────────────────────────────────────── */
-
 /**
- * The body split around the quote: the text before it, the quote, the text
- * after — or `null` when the anchor cannot be placed.
- *
- * The slice is found with `indexOf`, **first occurrence**, on the quote's
- * `text`; the row's `start`/`end` are UTF-8 byte offsets meant for the kernel
- * and are not used here (I2 promises `text` is a byte-exact substring, so
- * the first occurrence is what the kernel anchored). `null` covers both a
- * `quoteId` the row does not carry and a text that is not in the body — the
- * second should be impossible under I2, and the panel says "anchor missed"
- * rather than trusting it.
+ * The body split around the quote, or `null` when the anchor cannot be placed. Found with
+ * `indexOf`, first occurrence; the row's byte offsets are for the kernel and not used here.
  */
 export type SourceHighlight = Readonly<{ before: string; quote: string; after: string }>;
 

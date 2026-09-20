@@ -69,9 +69,7 @@ impl HttpHeaders {
             if value.contains("${") || value.contains("{{") {
                 return Err("HTTP header variables must be resolved before use".into());
             }
-            // All custom header values are private. Reuse the transport's
-            // existing credential constraints: registering arbitrary short
-            // values would rewrite protocol keys and ordinary tool data.
+            // All custom header values are private; registering arbitrary short values would rewrite protocol keys and ordinary tool data.
             let private = if name.eq_ignore_ascii_case("authorization") {
                 value
                     .split_once(' ')
@@ -81,8 +79,7 @@ impl HttpHeaders {
             };
             super::HttpCredential::parse(private)
                 .map_err(|why| format!("HTTP header value {why}"))?;
-            // An Authorization scheme is the sole supported space-separated
-            // prefix. Its bytes also need to be a valid HTTP token.
+            // An Authorization scheme is the sole supported space-separated prefix; its bytes must also be a valid HTTP token.
             if name.eq_ignore_ascii_case("authorization")
                 && let Some((scheme, _)) = value.split_once(' ')
                 && (scheme.is_empty()
@@ -100,8 +97,7 @@ impl HttpHeaders {
         &self.0
     }
 
-    /// Register both whole values and the credential in Authorization schemes.
-    /// Every accepted custom value obeys the same redaction constraints as API keys.
+    /// Register both whole values and the credential in Authorization schemes; every accepted custom value obeys the same redaction constraints as API keys.
     pub fn private_values(&self) -> Vec<String> {
         let mut values = Vec::new();
         for (name, value) in &self.0 {

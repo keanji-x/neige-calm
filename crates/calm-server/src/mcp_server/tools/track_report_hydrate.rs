@@ -1,17 +1,5 @@
-//! #1628 S2 (D4) — the `resolved` projection `calm.report.read` attaches to
-//! its block index.
-//!
-//! Two block kinds are hydrated: `chart.series` (from the `report_series`
-//! row for the block's current request hash — the shared
-//! `report_series::hydrate` step, which the HTTP series route calls too) and
-//! a live `table` (from the plugin-written overlay the block's `source`
-//! names). Everything here is a database read plus, for a `chart.series`
-//! block without a fresh row, one in-memory `enqueue`. Nothing calls a
-//! plugin, nothing writes.
-//!
-//! The optional `resolve` argument is `{ [block_id]: "full" | "none" }`:
-//! `full` adds the points (or the table's rows), `none` skips the block.
-//! Summary is the default and not a value. Unknown block ids are ignored.
+//! The `resolved` projection `calm.report.read` attaches to its block index (`chart.series` rows, live `table` overlays).
+//! Everything here is a database read plus, for a `chart.series` block without a fresh row, one in-memory `enqueue`; nothing calls a plugin, nothing writes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,8 +22,7 @@ pub(crate) enum ResolveMode {
     None,
 }
 
-/// Parse the `resolve` argument. Absent / null → every block gets the
-/// default summary.
+/// Absent / null → every block gets the default summary.
 pub(crate) fn parse_resolve_arg(
     args: &Value,
     tool: &str,
@@ -76,8 +63,7 @@ pub(crate) async fn hydrated_block_index(
     let needs_scope = blocks.iter().any(|block| {
         block.kind == KIND_CHART_SERIES && modes.get(&block.id).copied() != Some(ResolveMode::None)
     });
-    // One scope resolution per read (F4.18), and only when a series block
-    // may need enqueueing.
+    // One scope resolution per read, and only when a series block may need enqueueing.
     let scope = if needs_scope {
         Some(plugin_scope_for_track(ctx, Some(track_id)).await)
     } else {
@@ -123,8 +109,7 @@ fn is_live_table(block: &ReportBlock) -> bool {
     block.kind == KIND_TABLE && block.payload.get("source").is_some_and(Value::is_string)
 }
 
-/// A live table resolves from the overlay `(plugin_id, kind)` its `source`
-/// names — the same rule the frontend applies (`liveTableOverlayPayload`).
+/// Same rule the frontend applies (`liveTableOverlayPayload`).
 fn hydrate_live_table(
     track_id: &str,
     block: &ReportBlock,

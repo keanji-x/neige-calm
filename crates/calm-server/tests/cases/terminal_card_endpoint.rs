@@ -1,26 +1,5 @@
-//! Integration tests for `POST /api/tracks/:track_id/terminal-cards` —
-//! the atomic terminal-card endpoint introduced in #13 PR2.
-//!
-//! Boots a real Axum router (in-memory `SqlxRepo`) + the actual
-//! terminal renderer for the happy paths, and points
-//! `DaemonClient::proc_supervisor_sock` at a non-existent socket for
-//! the "spawn failure but row persisted" case.
-//!
-//! Test taxonomy:
-//!   * `post_terminal_card_atomic_returns_card_with_linked_payload` — 201,
-//!     response is a card with `kind == "terminal"` and
-//!     `payload.terminal_id` matching the linked terminal row.
-//!   * `post_terminal_card_atomic_emits_single_card_added_event` — exactly
-//!     one `card.added` on the bus carrying the final payload; zero
-//!     `card.updated`.
-//!   * `post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_and_rolls_back`
-//!     — 500 to the client, and the operation compensation removes the rows.
-//!   * `post_terminal_card_atomic_404_on_unknown_track` — 404 + no leaked
-//!     rows.
-//!   * `post_terminal_card_same_idempotency_key_returns_same_card` — same
-//!     key and payload returns 201 with the same card body.
-//!   * `post_terminal_card_atomic_defaults_program_to_shell` — empty body
-//!     stamps `$SHELL` (or `/bin/sh`) onto the terminal row.
+//! Integration tests for `POST /api/tracks/:track_id/terminal-cards`: real Axum router, in-memory
+//! `SqlxRepo` and the actual terminal renderer.
 
 #![cfg(unix)]
 
@@ -53,11 +32,7 @@ use sqlx::Row;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-/// #1147 S6 — every track has a materialized workspace, and a terminal card with
-/// no `cwd` now lands in it. A fixture track with an empty `workspace_path` is
-/// not a state any creation route can produce, and the kernel refuses to open a
-/// terminal in one rather than inheriting the server's cwd — so these fixtures
-/// carry a path, exactly as production tracks do.
+/// The kernel refuses to open a terminal in a track with an empty `workspace_path`, so fixtures carry one.
 const FIXTURE_WORKSPACE: &str = "/neige-fixture-workspace";
 
 struct Boot {
@@ -646,8 +621,7 @@ async fn post_terminal_card_atomic_returns_card_with_linked_payload() {
         "payload.schemaVersion present: {card:?}"
     );
 
-    // The linked terminal row is also visible via the GET helper that
-    // `useTodayTerminal` uses. Same id round-trip.
+    // The linked terminal row is also visible via the GET helper. Same id round-trip.
     let card_id = card["id"].as_str().unwrap();
     let (gstatus, term) = get(boot.app.clone(), format!("/api/cards/{card_id}/terminal")).await;
     assert_eq!(gstatus, StatusCode::OK, "GET terminal: {term:?}");
@@ -667,11 +641,7 @@ async fn post_terminal_card_atomic_emits_single_card_added_event() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // Drain the bus over a short window. We expect EXACTLY ONE card.added
-    // (carrying the fully-stamped payload) and ZERO card.updated frames.
-    // The old 3-step recipe used to emit one card.added (payload=null)
-    // followed by one card.updated (payload={terminal_id}); the atomic
-    // endpoint collapses both into a single broadcast.
+    // Drain the bus over a short window: exactly one card.added (fully-stamped payload), zero card.updated.
     let mut added: Vec<BroadcastEnvelope> = Vec::new();
     let mut updated_count = 0usize;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
@@ -722,9 +692,6 @@ async fn post_terminal_card_atomic_emits_single_card_added_event() {
 #[tokio::test]
 async fn post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_and_rolls_back() {
     // Point the renderer at a supervisor socket that definitely doesn't exist.
-    // The handler must:
-    //   (a) propagate the 500 to the caller, AND
-    //   (b) roll back the card+terminal rows through operation compensation.
     let bad_sock = std::env::temp_dir().join("definitely-not-a-real-proc-supervisor.sock");
     let _ = std::fs::remove_file(&bad_sock);
     let boot = boot_with_bad_supervisor(bad_sock).await;
@@ -959,9 +926,7 @@ async fn post_terminal_card_atomic_defaults_program_to_shell() {
     let (status, card) = post(
         boot.app.clone(),
         format!("/api/tracks/{}/terminal-cards", boot.track_id),
-        // Only required field (#177): theme. Every other field falls back to
-        // its default (program → $SHELL, cwd → the track's workspace since
-        // #1147 S6, env → {}).
+        // Only required field: theme. Every other field falls back to its default.
         json!({ "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;

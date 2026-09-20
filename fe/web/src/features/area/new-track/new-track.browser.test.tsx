@@ -1,23 +1,7 @@
 /*
- * #1209 — the two things about the Start from picker that only a real engine
- * can answer, and that jsdom answers *wrongly*.
- *
- * Both layers here are `popover` elements. jsdom implements enough of the
- * Popover API to render them and to hide them from the accessibility tree, but
- * not the parts that live in the browser itself: the UA close watcher that
- * turns Escape into a light dismiss, and real hover.
- *
- *   1. **The picker is dismissible from an option that owns a hover card.**
- *      `useHoverCard` attaches a native `keydown` listener to its trigger that
- *      calls `stopPropagation()` on Escape — and because the trigger *is* the
- *      menu item, that listener sits below `DropdownMenu`'s React `onKeyDown`,
- *      which is delegated at the root and therefore never runs. Escape's
- *      effect on the *menu* is left to the engine and is not stable; Tab is,
- *      and Tab is what this pins. Without a real engine there is no top layer
- *      and no light dismiss to measure at all.
- *   2. **Hovering the option — the name, with no separate trigger — opens the
- *      card.** That is the whole of the user-visible change, and it cannot be
- *      driven in jsdom, which has no pointer.
+ * The Start from picker in a real engine: both layers are `popover` elements, and
+ * jsdom has neither the UA close watcher that turns Escape into a light dismiss
+ * nor real hover.
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -31,9 +15,7 @@ beforeEach(async () => { await page.viewport(1280, 720); });
 import type { TrackTemplate } from '../../../../../core/domain/track.ts';
 import { NewTrackForm } from './public.tsx';
 
-/* The template chip, matched on either of the two things it can say: it asks
-   while nothing is chosen and names the choice after. Never on the whole
-   string — the rest of the name is what the assertions vary. */
+/* The template chip, matched on its prefix only; the rest of the name is what the assertions vary. */
 const TEMPLATE_CHIP = /^Template: /;
 
 const TEMPLATES: readonly TrackTemplate[] = [{
@@ -57,42 +39,21 @@ function renderForm() {
       initialTemplateId={null}
       initialCwd={null}
       onManageRecipes={vi.fn()}
-      /* #1147 S3 — the folder picker's port. Never exercised here: this file
-         is about the Start from menu's top layer. It is passed because the
-         prop is required, which is deliberate — an optional one would let a
-         call site render a picker that silently lists nothing. */
+      /* Never exercised here; the prop is required so a call site cannot render a
+               picker that silently lists nothing. */
       listDirectory={vi.fn(() => Promise.resolve({ path: '/', parent: null, entries: [] }))}
       onSubmit={vi.fn()}
     />,
   );
 }
 
-/*
- * The composer's focus ring, in a real browser because that is the only place
- * the cascade and `:has()` actually resolve.
- *
- * It exists at all because the flat styling removed astryx's `:focus-within`
- * shadow, which was the composer's *only* focus affordance — the editable sets
- * `outline: none`. axe-core does not test focus visibility, so nothing else in
- * the suite would notice it going missing again (WCAG 2.4.7).
- *
- * The second case is the one that made it `:has(… :focus)` rather than
- * `:focus-within`: the chips are inside the same element, so `:focus-within`
- * drew the composer's ring around a focused *chip* as well as the chip's own,
- * which is two answers to "where am I".
- */
+/* The composer's focus ring, in a real browser because that is where `:has()`
+ * resolves: the editable sets `outline: none`, and axe-core does not test focus
+ * visibility. `:has(… :focus)` rather than `:focus-within`, so a focused chip does
+ * not also ring the composer. */
 describe('the composer focus ring', () => {
-  /*
-   * `--accent` is supplied here because this project loads CSS Modules but not
-   * `styles/tokens.css`, and an undefined `var()` makes the whole declaration
-   * invalid — the ring would compute to `none` for a reason that has nothing to
-   * do with the selector. Measured, not assumed: without this the ring assertion
-   * failed while `:has()` support and focus were both confirmed good.
-   *
-   * What is under test is therefore the *rule* — does the selector match the
-   * composer body when the field has focus, and not when a chip does — with the
-   * colour standing in for the app's token.
-   */
+  /* `--accent` is supplied because this project loads CSS Modules but not
+   * `styles/tokens.css`, and an undefined `var()` makes the whole declaration invalid. */
   beforeEach(() => { document.documentElement.style.setProperty('--accent', 'rgb(0, 0, 255)'); });
   afterEach(() => { document.documentElement.style.removeProperty('--accent'); });
 
@@ -106,10 +67,7 @@ describe('the composer focus ring', () => {
   it('shows a ring while the field has focus, and none once it leaves', async () => {
     renderForm();
     const field = screen.getByLabelText('What this track should do');
-    /* The page focuses the field on arrival by design (#1161's rule on a
-       route), so "at rest" has to be reached by blurring rather than assumed —
-       the first cut asserted `none` on mount and failed against a ring that was
-       correctly there. */
+    /* The page focuses the field on arrival, so "at rest" has to be reached by blurring. */
     await waitFor(() => { expect(document.activeElement).toBe(field); });
     expect(getComputedStyle(composerBody()).boxShadow).not.toBe('none');
 
@@ -145,16 +103,13 @@ describe('Start from, in a real engine', () => {
     const option = screen.getByRole('menuitem', { name: /^Small change/ });
     const card = document.getElementById(option.getAttribute('aria-describedby') ?? '');
 
-    /* Focus alone opens the card — the keyboard path. Asserted on its *shown*
-       state and not on the `aria-describedby` wiring, which is present from
-       first paint and would pass without the card ever opening. */
+    /* Asserted on the card's shown state, not on `aria-describedby`, which is
+           present from first paint. */
     option.focus();
     await waitFor(() => { expect(card?.matches(':popover-open')).toBe(true); });
 
-    /* The shared Template pill owns Escape in capture, before the HoverCard's
-       native listener can strand DropdownMenu's delegated handler. One key
-       closes both layers and restores the trigger — the same behavior the
-       Area editor needs so Escape does not bubble on into its host Dialog. */
+    /* The Template pill owns Escape in capture, before the HoverCard's native
+           listener can strand DropdownMenu's delegated handler. */
     await userEvent.keyboard('{Escape}');
     await waitFor(() => {
       expect(card?.matches(':popover-open')).toBe(false);
@@ -163,14 +118,10 @@ describe('Start from, in a real engine', () => {
       expect(document.activeElement).toBe(trigger());
     });
 
-    /* And the picker still works afterwards. Closing leaves two states behind
-       — the DOM's and React's — and if only the DOM had closed, this click
-       would be read as "close" and swallowed, leaving a picker that takes two
-       clicks to open for the rest of the dialog's life. */
-    /* The 100 ms is astryx's, not padding: `DropdownMenu` keeps a
-       `lastHideTimeRef` and swallows any trigger click within 50 ms of a hide,
-       so iOS Safari's pointerdown-then-click cannot re-open what light dismiss
-       just closed. Clicking inside that window would test the guard. */
+    /* Closing leaves two states behind, the DOM's and React's; if only the DOM had
+           closed this click would be read as "close" and swallowed. */
+    /* The 100 ms is astryx's: `DropdownMenu` swallows any trigger click within 50 ms
+           of a hide, for iOS Safari's pointerdown-then-click. */
     await new Promise((resolve) => { setTimeout(resolve, 100); });
     await userEvent.click(trigger());
     await waitFor(() => { expect(menu.matches(':popover-open')).toBe(true); });

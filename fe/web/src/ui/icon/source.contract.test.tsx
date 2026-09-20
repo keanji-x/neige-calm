@@ -7,9 +7,7 @@ import { describe, expect, it } from 'vitest';
 // first letter, which no icon set can supply.
 const TEXT_IN_ICON_BOX_EXEMPTIONS = new Map<string, (node: ts.JsxElement, source: ts.SourceFile) => boolean>([
   ['fe/web/src/app/shell/sidebar.tsx', (node, source) => {
-    // Deliberately brittle: renaming the avatar class or its accessible name
-    // must update this predicate. violations + unusedExemptions together mean
-    // the exemption no longer matches its intended node.
+    // Deliberately brittle: renaming the avatar class or its accessible name must update this predicate.
     const attributes = node.openingElement.attributes.properties;
     const hasAvatarClass = attributes.some((attribute) => ts.isJsxAttribute(attribute)
       && attribute.name.getText(source) === 'className'
@@ -90,8 +88,6 @@ describe('icon-role source contract', () => {
     const usedExemptions = new Set<string>();
 
     const scannedFiles = tsxFilesUnder(resolve(feRoot, 'web/src'));
-    // Canary for recursive discovery regressing (for example, readdirSync
-    // unexpectedly returning empty or visiting only part of the source tree).
     expect(scannedFiles.length).toBeGreaterThan(20);
 
     for (const absolutePath of scannedFiles) {

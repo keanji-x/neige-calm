@@ -1,30 +1,5 @@
-//! Independent acceptance-level regression test for bug #836.
-//!
-//! A shared-daemon codex **worker** thread must carry
-//! `/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET` +
-//! `.../NEIGE_MCP_TOKEN`, matching the PLANNER path. Without that config, the
-//! worker's AI exec-shell never receives the per-card MCP credentials and
-//! `neige` reads fail.
-//!
-//! This test drives the **production WORKER spawn path** end-to-end through
-//! the real dispatcher/operation runtime against a live fake codex
-//! app-server, captures the inbound `thread/start` request, and asserts the
-//! worker `thread/start` carries the same MCP exec-shell env the planner path
-//! does. It runs with a LIVE `McpServer` (`mcp_server = Some`) — the
-//! production wiring (`state.rs` `new`: `McpServer::spawn` then `Dispatcher`
-//! with `Some(mcp_server)`), so the worker spawn hits the
-//! config-injecting arm of the #836 fix. On unfixed `main` the worker emits
-//! `config: None`, so the captured `thread/start` has no `/params/config` at
-//! all and this test is RED. Once the worker path emits the same
-//! `shell_environment_policy.set`, it turns GREEN.
-//!
-//! The harness here mirrors `tests/codex_worker_shared_daemon.rs`
-//! (`worker_thread_start_carries_mcp_shell_environment_policy` /
-//! `spawn_dispatcher_with_mcp`, which wire a live `McpServer`): same
-//! `boot`/`Dispatcher`/`plan_codex_task` wiring, same live shared daemon +
-//! `FAKE_CODEX_CAPTURE_REQUESTS` capture file. We must NOT edit that file
-//! (owned by the parallel fix agent), and helpers cannot be imported across
-//! test binaries, so the shared helpers are replicated here.
+//! A shared-daemon codex **worker** thread must carry `NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN` in
+//! `/params/config/shell_environment_policy/set`, matching the planner path.
 
 #![cfg(unix)]
 
@@ -57,10 +32,7 @@ use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
-/// (or any other process env read by the fake codex shim). Peer test
-/// binaries keep their own `ENV_LOCK` because each test binary is a separate
-/// process.
+/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS` (or any other process env read by the fake codex shim).
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn fake_codex_bin() -> String {
@@ -279,20 +251,8 @@ async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: 
     tx.commit().await.unwrap();
 }
 
-/// Spawns a dispatcher whose codex-worker adapter has a real `McpServer`
-/// wired in — i.e. `mcp_server = Some`, the PRODUCTION wiring. In production
-/// `state.rs` `new` (`McpServer::spawn` at `:867`, then `Dispatcher::spawn_*`
-/// with `Some(mcp_server)` at `:978`) ALWAYS hands a live `McpServer` to the
-/// dispatcher (boot fails if the spawn fails), so a real worker spawn always
-/// hits the `(Some(token), Some(server))` arm of the
-/// `spawn_codex_worker_via_shared_daemon` config guard. The `from_parts` test
-/// hatch (`state.rs:597/:635/:665`) is the only path that wires `None`; using
-/// it here would exercise a `config: None` branch production can never reach,
-/// making the #836 assertion a harness-fidelity artifact rather than a real
-/// regression check. So mirror the GREEN sibling test
-/// (`codex_worker_shared_daemon.rs::spawn_dispatcher_with_mcp`) and wire a live
-/// server. The returned `TempDir` owns the bound UDS path and must outlive the
-/// dispatcher.
+/// Spawns a dispatcher with a live `McpServer` wired in (`mcp_server = Some`), the production wiring;
+/// the `from_parts` hatch wires `None`, a branch production can never reach. The returned `TempDir` owns the bound UDS path.
 async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, TempDir) {
     let tmp = calm_test_sockets::socket_dir("wes");
     let socket_path = calm_test_sockets::socket_path(tmp.path(), "mcp.sock");
@@ -322,7 +282,7 @@ async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, 
         boot.renderer.clone(),
         Some(server.clone()),
         boot.shared.clone(),
-        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        // Attached fixtures: materialization on lease is a no-op.
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         4,
     );
@@ -341,10 +301,7 @@ fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-/// Drives the PLANNER card to plan a `codex` task, which the dispatcher turns
-/// into a real `codex-worker` operation → `CodexWorkerAdapter` →
-/// `spawn_codex_worker_via_shared_daemon` (the production worker path under
-/// test). This is identical to how the real planner agent schedules workers.
+/// Drives the PLANNER card to plan a `codex` task, which the dispatcher turns into a real `codex-worker` operation.
 async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
     let report = boot
         .repo
@@ -379,10 +336,8 @@ async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
     .expect("write codex task block");
 }
 
-/// Polls the fake-codex capture file for the WORKER `thread/start` request.
-/// The planner card's own `thread/start` is faked (seeded `planner-session` already
-/// has a thread id, so the planner never re-mints), so the only `thread/start`
-/// the live daemon actually receives here is the worker's.
+/// Polls the fake-codex capture file for the WORKER `thread/start` request; the seeded planner session
+/// already has a thread id, so the only `thread/start` the live daemon receives here is the worker's.
 async fn wait_for_worker_thread_start(path: &Path) -> Value {
     for _ in 0..250 {
         if let Ok(raw) = std::fs::read_to_string(path)
@@ -398,14 +353,6 @@ async fn wait_for_worker_thread_start(path: &Path) -> Value {
     panic!("timed out waiting for worker thread/start request in capture file");
 }
 
-/// #836: the production shared-daemon worker spawn must carry the MCP
-/// exec-shell env (`NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN`) on its
-/// `thread/start` request — exactly like the PLANNER path does — so the
-/// worker's AI exec-shell can run `neige task-completed`.
-///
-/// RED on unfixed `main`: the worker emits `config: None`, so the captured
-/// `thread/start` has no `/params/config` and the pointers resolve to
-/// `None`.
 #[tokio::test]
 async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
     let _guard = ENV_LOCK.lock().await;
@@ -416,9 +363,7 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
     }
 
     let boot = boot().await;
-    // Live `McpServer` (mcp_server = Some) — production wiring, so the worker
-    // spawn hits the config-injecting arm of the #836 fix. `server`/`_mcp_tmp`
-    // own the bound MCP socket + must outlive the worker spawn.
+    // `server`/`_mcp_tmp` own the bound MCP socket and must outlive the worker spawn.
     let (_dispatcher, server, _mcp_tmp) = spawn_dispatcher_with_mcp(&boot).await;
     write_codex_task_block(&boot, "worker-mcp-env-1", "prove worker exec-shell env").await;
 
@@ -428,10 +373,7 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
 
-    // Sanity: confirm we captured the WORKER thread/start, not a planner one.
-    // The worker path renders the Worker-role developer instructions, which
-    // include the `neige task-completed` reporting contract. (On main this
-    // is already true — the env carrier is the broken part.)
+    // Confirm this is the WORKER thread/start: the worker path renders the Worker-role developer instructions.
     let developer_instructions = thread_start
         .pointer("/params/developerInstructions")
         .and_then(Value::as_str)
@@ -441,9 +383,6 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
         "captured thread/start must be the WORKER spawn (Worker-role prompt): {developer_instructions}"
     );
 
-    // The actual #836 assertions: the worker thread/start must carry the
-    // MCP exec-shell env in `shell_environment_policy.set`, mirroring the
-    // planner path (`planner_harness_adapters.rs:288/509`).
     let mcp_socket = thread_start
         .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
         .and_then(Value::as_str);

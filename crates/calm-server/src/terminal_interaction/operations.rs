@@ -8,9 +8,7 @@ use super::screen_diff::{CursorSnapshot, ScreenDiff, Tolerance, row_hashes};
 use super::*;
 use crate::terminal_renderer::WriteShape;
 
-/// Per-request switches of an input: the #1618 drift opt-in, and the #1666
-/// below-cursor tolerance and control steps. All four enter the request
-/// fingerprint.
+/// Per-request switches of an input. All four enter the request fingerprint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InputOptions {
     /// Replace the exact-revision fence with a same-surface fence.
@@ -25,8 +23,7 @@ pub struct InputOptions {
     pub release: bool,
 }
 
-/// The facts of the observation an input names, copied out of the registry
-/// so no lock is held across the claim.
+/// The observation's facts, copied out of the registry so no lock is held across the claim.
 struct Saved {
     revision: u64,
     control: Option<Uuid>,
@@ -35,9 +32,8 @@ struct Saved {
     row_hashes: Vec<u64>,
     created: Instant,
 }
-/// An observation may be acted on for this long after its capture; checked
-/// when the input names it and again at the pre-write fences, since the
-/// claim in between can take up to 14 s.
+/// Checked when the input names the observation and again at the pre-write fences, since
+/// the claim in between can take up to 14 s.
 const OBSERVATION_TTL: Duration = Duration::from_secs(120);
 fn fresh(created: Instant) -> bool {
     created.elapsed() < OBSERVATION_TTL
@@ -45,11 +41,8 @@ fn fresh(created: Instant) -> bool {
 const OBSERVATION_EXPIRED: &str = "observation belongs to another connection or expired";
 
 impl TerminalInteraction {
-    /// `observation` is the caller's argument; `None` selects this
-    /// connection's latest observation. The order under the serial guard is
-    /// fixed: observation/availability/pending fences → the checks that need
-    /// no live screen → claim → pre-write capture and the remaining fences →
-    /// write → release → readback.
+    /// `observation` is the caller's argument; `None` selects this connection's latest. The order
+    /// under the serial guard is fixed: fences → claim → pre-write capture → write → release → readback.
     #[allow(clippy::too_many_arguments)]
     pub async fn input(
         &self,
@@ -75,24 +68,17 @@ impl TerminalInteraction {
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let terminal = resolved.binding.terminal_id.as_str();
         let client = self.client(identity, &resolved.binding).await?;
-        // One action at a time per connection, readback wait included (up to
-        // WAIT_MS_MAX): a second input from the same Planner on this terminal
-        // queues here rather than writing into the screen the first one is
-        // still waiting to read back. Other connections are not serialized.
+        // One action at a time per connection, readback wait included; other connections are not serialized.
         let _serial = {
             let _queued = client.queued_for_serial();
             client.serial.lock().await
         };
-        // Write authority is decided under the serial lock: an input queued
-        // behind a long readback must see the task/session state as it is
-        // when its turn comes, not as it was when the call arrived. Checked
-        // before the serial, a task that finished during the queue would be
-        // answered with stale_observation although write authority is gone.
+        // Write authority is decided under the serial lock: a task that finished during the queue
+        // must not be answered with stale_observation although write authority is gone.
         Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let key = request_key.to_owned();
-        // The fingerprint hashes the arguments as given (null when omitted) so
-        // a replayed request_id returns the same receipt and never claims,
-        // releases or writes again.
+        // The fingerprint hashes the arguments as given (null when omitted) so a replayed
+        // request_id returns the same receipt and never claims, releases or writes again.
         let fingerprint = crate::routes::terminal_cards::stable_payload_hash(&json!({
             "observation_id":observation,"action":action,
             "allow_output_since_observation":options.allow_output_since_observation,
@@ -116,10 +102,8 @@ impl TerminalInteraction {
             }
         };
         if let Some(receipt) = cached {
-            // A replayed receipt's readback compares against the CURRENT
-            // state (revision and signal seq at this call), not against the
-            // state before the original write: the action already happened
-            // and the caller is asking what changed from here on.
+            // A replayed receipt's readback compares against the CURRENT state, not the state before
+            // the original write.
             let current = Self::current_baseline(&client);
             return Ok(self
                 .with_observation(identity, &client, receipt, observation_wait, current)
@@ -136,39 +120,30 @@ impl TerminalInteraction {
                     anyhow::anyhow!("no observation on this connection; observe first")
                 })?,
         };
-        // 1. The observation and the connection: binding, age, availability,
-        //    no pending write.
         let saved = self.saved_observation(identity, &resolved, &client, observation)?;
         Self::ensure_writable(&client)?;
-        // The checks that need no live screen come first, so a claim is never
-        // granted on a request that errors anyway: the live-viewport fence and
-        // the action's validity, encoded against the saved surface (the
-        // surface fence below proves it equal to the live one, so this is the
-        // same verdict the live encode reaches).
+        // The checks that need no live screen come first, so a claim is never granted on a
+        // request that errors anyway.
         ensure!(
             saved.surface.scroll_offset == 0,
             "return to live viewport before input"
         );
         encode(&action, &saved.surface)?;
-        // 2. Claim (#1666 S3): decided before the pre-write capture, since a
-        //    granted claim changes what the control fence compares.
+        // 2. Claim: decided before the pre-write capture, since a granted claim changes what the control fence compares.
         let claim = match options.claim {
             true => Some(self.claim_for_input(&client, saved.control).await?),
             false => None,
         };
         if let Some(ClaimStep::Unavailable { status, reason }) = &claim {
-            // No write and nothing cached: a resend after the human is done
-            // must not conflict. The capture registers as the latest.
+            // No write and nothing cached: a resend after the human is done must not conflict.
             let receipt =
                 control_unavailable_receipt(terminal, request_key, observation, status, reason);
             return Ok(self
                 .with_observation(identity, &client, receipt, Some(WaitPlan::default()), None)
                 .await);
         }
-        // 3. Pre-write capture and the remaining fences: control, live
-        //    viewport, surface, action validity, revision (or a tolerance).
-        // An RPC error carries no receipt: every error from here on says
-        // that the caller now holds the control it claimed.
+        // 3. Pre-write capture and the remaining fences. An RPC error carries no receipt: every
+        // error from here on says that the caller now holds the control it claimed.
         let fence = self
             .pre_write_fences(&client, &saved, &action, options, claim.as_ref())
             .map_err(|error| note_claim(error, claim.as_ref()))?;
@@ -182,8 +157,7 @@ impl TerminalInteraction {
         } = match fence {
             Fence::Ready(ready) => ready,
             Fence::ControlLost => {
-                // Granted, then taken over before the fence read the lease:
-                // fail closed exactly like a takeover folded with the grant.
+                // Granted, then taken over before the fence read the lease: fail closed.
                 let receipt = control_unavailable_receipt(
                     terminal,
                     request_key,
@@ -196,9 +170,7 @@ impl TerminalInteraction {
                     .await);
             }
             Fence::Stale { current, diff } => {
-                // No physical write and nothing cached under the request_id:
-                // a later resend with another flag or observation must not
-                // conflict. The capture registers as this connection's latest.
+                // No physical write and nothing cached under the request_id: a later resend must not conflict.
                 let mut receipt = stale_receipt(
                     terminal,
                     request_key,
@@ -231,8 +203,6 @@ impl TerminalInteraction {
             options.release,
         );
         receipts.attach(claim.as_ref());
-        // 4. Write: reserve, cache the unknown receipt (already carrying
-        //    `release: requested` when a release follows), send, await the ack.
         let mut result = write_action(
             &client,
             key.clone(),
@@ -242,15 +212,12 @@ impl TerminalInteraction {
             receipts,
         )
         .await?;
-        // 5. Release (#1666 S3): after the write's outcome is known and
-        //    cached; never clears `pending`, never rewrites the outcome. A
-        //    call cancelled here leaves `requested` in the cached receipt and
-        //    a replay never releases.
+        // 5. Release: after the write's outcome is known and cached; never clears `pending`. A call
+        // cancelled here leaves `requested` in the cached receipt and a replay never releases.
         if options.release {
             result["release"] = self.release(&client).await.to_json();
             cache(&client, &key, &fingerprint, &result).await;
         }
-        // 6. Readback against the pre-write baseline.
         Ok(self
             .with_observation(
                 identity,
@@ -320,10 +287,8 @@ impl TerminalInteraction {
         );
         Ok(())
     }
-    /// The fences that read the live screen: availability and age again
-    /// (the claim may have taken seconds), control ([`control_fence`]), the
-    /// surface, the action against the live surface, the revision; then a
-    /// `replace` plan (#1677) against the frame the revision fence admitted.
+    /// The fences that read the live screen: availability and age again (the claim may have
+    /// taken seconds), control, surface, action, revision; then a `replace` plan.
     fn pre_write_fences(
         &self,
         client: &Client,
@@ -346,8 +311,7 @@ impl TerminalInteraction {
                 anyhow::bail!("terminal control changed; observe before input")
             }
         }
-        // Read immediately before the physical write: this is the readback
-        // baseline (revision and signal seq) and the drift evidence.
+        // Read immediately before the physical write: the readback baseline and the drift evidence.
         let signal_seq = client.entry.signals.last_seq();
         let (frame, current) = client
             .entry
@@ -361,19 +325,14 @@ impl TerminalInteraction {
             same_input_surface(&saved.surface, &now),
             "terminal surface changed since observation (size, input modes or alternate screen); observe again"
         );
-        // Encode against the live surface (proved equal to the saved one)
-        // before deciding stale vs ready: an invalid action is an RPC
-        // error whatever the revision did, so only the exact-revision
-        // fence is relaxed by the stale result.
+        // Encode before deciding stale vs ready: an invalid action is an RPC error whatever the
+        // revision did, so only the exact-revision fence is relaxed by the stale result.
         let encoded = encode(action, &now)?;
         let tolerated = if saved.revision == current {
             None
         } else {
-            // Every other fence passed and only the exact revision differs.
-            // The row comparison (#1666 S4) is reported whatever admits the
-            // write: the wide opt-in admits regardless of it (#1684 lists
-            // what changed), the narrow one only when rows strictly below
-            // an unmoved cursor changed; a stale result carries it too.
+            // Every other fence passed and only the exact revision differs. The row comparison is
+            // reported whatever admits the write; a stale result carries it too.
             let diff = ScreenDiff::compare(
                 saved.cursor,
                 &saved.row_hashes,
@@ -388,13 +347,10 @@ impl TerminalInteraction {
                 return Ok(Fence::Stale { current, diff });
             }
         };
-        // #1677 — a replace looks the draft up on the live frame only once
-        // the revision (or a tolerance) admitted the write, so a stale
-        // observation is reported before any lookup; its refusals are RPC
-        // errors like an invalid action's.
+        // A replace looks the draft up on the live frame only once the revision (or a tolerance)
+        // admitted the write; its refusals are RPC errors like an invalid action's.
         let (bytes, shape, replace) = match encoded {
             Encoded::Bytes(bytes) => (bytes, WriteShape::Verbatim, None),
-            // #1725 — the writer hands the PTY the text, then the CR.
             Encoded::Submit(bytes) => (bytes, WriteShape::SplitTrailingCr, None),
             Encoded::Replace { from, to } => {
                 let plan = ReplacePlan::derive(&frame, &from, &to)?;
@@ -411,9 +367,8 @@ impl TerminalInteraction {
         }))
     }
 }
-/// Outcome of the pre-write fences: bytes to write with the live revision, or
-/// a stale observation (only the exact-revision fence failed) that becomes a
-/// structured refusal rather than an error.
+/// Outcome of the pre-write fences: a stale observation (only the exact-revision fence failed)
+/// becomes a structured refusal rather than an error.
 enum Fence {
     Ready(Ready),
     Stale {
@@ -423,11 +378,8 @@ enum Fence {
     /// The lease a claim granted is no longer this connection's.
     ControlLost,
 }
-/// The control fence. A granted claim authorizes the observer → owner
-/// transition explicitly, but only for the lease it granted: a takeover
-/// applied between the post-grant re-read and this fence is `Lost` and fails
-/// closed. Without a claim the observation's control must be the one held
-/// now, else `Changed` (the existing error).
+/// The control fence. A granted claim authorizes the observer → owner transition only for the
+/// lease it granted: a takeover applied since is `Lost` and fails closed.
 #[derive(Debug, PartialEq, Eq)]
 enum ControlVerdict {
     Ok,
@@ -457,21 +409,16 @@ fn note_claim(error: anyhow::Error, claim: Option<&ClaimStep>) -> anyhow::Error 
 }
 struct Ready {
     bytes: Vec<u8>,
-    /// #1725 — how the writer hands `bytes` to the PTY (`submit` splits).
+    /// How the writer hands `bytes` to the PTY (`submit` splits).
     shape: WriteShape,
     input_revision: u64,
-    /// Signal seq read before the write.
     signal_seq: u64,
     /// A moved revision: the opt-in that admitted it and the row comparison.
     tolerated: Option<(Tolerance, ScreenDiff)>,
-    /// The plan a `replace` (#1677) derived from the live cursor row.
     replace: Option<ReplacePlan>,
 }
-/// Reserve the next input sequence, cache the unknown receipt under the
-/// request key, send one ordered write request and await its acknowledgement
-/// or refusal; the returned receipt is cached before it is returned.
-/// Cancellation preserves Unknown and blocks all subsequent writes until the
-/// matching ack/refusal is observed.
+/// Reserve the next input sequence, cache the unknown receipt, send one ordered write and await
+/// its ack. Cancellation preserves Unknown and blocks all subsequent writes until the matching ack/refusal is observed.
 async fn write_action(
     client: &Client,
     key: String,
@@ -526,9 +473,6 @@ async fn cache(client: &Client, key: &str, fingerprint: &str, receipt: &Value) {
 mod fence_tests {
     use super::*;
 
-    /// #1666 r1 (C): a granted claim authorizes exactly the lease it
-    /// granted; a lease that moved since is `Lost` (fail closed), and
-    /// without a claim the observation's control must be the one held now.
     #[test]
     fn control_fence_authorizes_only_the_granted_lease() {
         let (mine, other, observed) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
@@ -566,8 +510,6 @@ mod fence_tests {
                 ControlVerdict::Changed
             );
         }
-        // (B) every error after a granted claim names the lease; (G) the
-        // observation age is a shared predicate re-checked after the claim.
         let noted = note_claim(anyhow::anyhow!("boom"), Some(&claimed));
         assert_eq!(
             noted.to_string(),

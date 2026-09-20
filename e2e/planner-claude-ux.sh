@@ -34,8 +34,7 @@ SERVER_CID=
 PORT="$(pick_port)"
 umask 077
 mkdir -p "$ARTIFACT_DIR"
-# Only this freshly created compose project is torn down. Deliberately avoid
-# dump_artifacts: raw server logs are not the sanitized UX transcript.
+# No dump_artifacts: raw server logs are not the sanitized UX transcript.
 trap 'status=$?; trap - EXIT; teardown_stack; exit "$status"' EXIT
 start_stack
 wait_for_health
@@ -50,8 +49,7 @@ claude_bin="$(docker exec "$SERVER_CID" sh -lc 'command -v claude')" \
 claude_version="$(docker exec "$SERVER_CID" "$claude_bin" --version)"
 codex_version="$(docker exec "$SERVER_CID" codex --version)"
 
-# Credentials stay in private stdin, never arguments or artifacts. The driver
-# only sends ordinary Planner goals; it has no terminal-tool dispatch path.
+# Credentials stay in private stdin, never arguments or artifacts.
 printf '%s' "$COOKIE_HEADER" | python3 "$SCRIPT_DIR/planner_claude_ux.py" \
   --url "http://127.0.0.1:$PORT" --workspace "$WORKSPACE" \
   --artifacts "$ARTIFACT_DIR" --claude-bin "$claude_bin" \

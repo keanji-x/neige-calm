@@ -9,12 +9,8 @@ export interface MutationEntry {
 }
 
 /**
- * `full` preserves the original evidence semantics: every mutation is judged against every Vitest
- * project, so an unexpected red anywhere is visible. `witness` runs the test files from an entry's
- * `selection_paths` plus the explicit extra-witness catalog; CI uses it for pre-merge feedback,
- * while the scheduled full sweep keeps the
- * wider over-red oracle. The narrower mode is therefore an explicit latency/coverage trade, never a
- * silent default change.
+ * `full` judges every mutation against every Vitest project; `witness` runs only the entry's
+ * `selection_paths` tests plus the extra-witness catalog (an explicit latency/coverage trade).
  */
 export type MutationTestScope = 'full' | 'witness';
 export type MutationWitnessCatalog = Readonly<Record<string, readonly string[]>>;
@@ -119,12 +115,7 @@ export function parsePatchTarget(patch: string): string {
 export interface VitestReportSummary {
   failedTestIds: string[];
   infrastructureErrors: string[];
-  /**
-   * `assertionResults[].failureMessages` keyed by the same `fullName` used as the test id.
-   * Ids are not guaranteed unique across files (judgeMutation has a `duplicate-actual-red` code for
-   * exactly that), so colliding ids accumulate rather than overwrite — dropping one would hide the
-   * only copy of an error we went to the trouble of collecting.
-   */
+  /** Keyed by `fullName`, which is not unique across files, so colliding ids accumulate rather than overwrite. */
   failureMessagesByTestId: Record<string, string[]>;
 }
 
@@ -170,23 +161,8 @@ export function parseFailedTestIds(json: string): string[] {
 }
 
 /**
- * Caps for the `failure_details` block run.mjs writes into the mutation report. That report is
- * echoed to the CI log AND uploaded as an artifact, so an unbounded dump of every red test's stack
- * is a real cost. EVERY cap is announced in the emitted value rather than applied silently: a
- * quietly truncated error reads as the whole error, which is exactly the misdiagnosis this
- * evidence exists to prevent (#1152).
- *
- * Five independent axes can each blow the block up on their own, so each gets its own bound:
- *
- *  - `MessageChars` — one stack/diff can be megabytes on a deep-equality assertion.
- *  - `TestLimit` — a mutation that reds the whole suite has hundreds of unexpected ids.
- *  - `MessagesPerTest` — `parseVitestReport` deliberately ACCUMULATES messages across colliding
- *    `fullName`s (see VitestReportSummary), and a single test may also emit many on its own. Without
- *    this cap the per-message char bound bounds nothing: N messages x the char cap is unbounded in N.
- *    Measured before this cap existed: one test with 200 messages emitted 409 KB with `note: null`.
- *  - `OmittedIdLimit` / `TestIdChars` — `omitted_test_ids` is the OVERFLOW list, so it grows exactly
- *    when the block is already at its worst, and a vitest `fullName` is an unbounded concatenation
- *    of describe titles.
+ * Caps for the `failure_details` block in the mutation report; every cap is announced in the emitted
+ * value rather than applied silently. Each axis can blow the block up on its own, so each gets a bound.
  */
 export const failureDetailMessageChars = 2000;
 export const failureDetailTestLimit = 5;
@@ -211,32 +187,9 @@ export const failureDetailLimits: Readonly<FailureDetailLimits> = Object.freeze(
 });
 
 /**
- * The share of `messageChars` spent on the HEAD of a truncated message; the rest goes to the TAIL.
- *
- * Head-only truncation kept the wrong 2000 characters the first time this instrumentation caught the
- * real flake (#1152, `public.test.tsx:85`). A vitest/TestingLibrary failure message is shaped
- * "one line of verdict, then a giant dump, then the stack": the head is the verdict plus the first
- * few boilerplate lines of the dump, and the discriminating detail — the END of the accessible-roles
- * list, the stack frame that fired, the tail of a deep-equality diff — is at the far end. The
- * captured 14,344-character message was cut to its first 2000 characters, all of which were sidebar
- * roles, and the diagnosis could not be closed.
- *
- * 1/4 head : 3/4 tail. The head only has to carry the verdict line and enough of the opening to say
- * WHICH assertion this is — ~110 characters for the TestingLibrary verdict, so 500 is already 4x
- * what that costs and covers a multi-line `expected/received` preamble too. Everything else is more
- * useful at the tail, where a dump's discriminating end and the stack live. A 50/50 split would
- * spend 500 characters of budget on sidebar boilerplate to buy nothing.
- *
- * Total emitted size is unchanged: head + tail === limit, exactly the character count head-only
- * truncation emitted, plus the (slightly longer) one-line notice. Same announce-the-cut discipline
- * as everywhere else in this file — the notice sits BETWEEN the two halves so it is impossible to
- * read the seam as contiguous text, and it names both halves and the original length.
- *
- * Known and accepted: the cut is in UTF-16 units, so a message of astral characters is up to 4x
- * this many UTF-8 bytes and an odd cut leaves a lone surrogate (now possibly two, one per seam).
- * `JSON.stringify` escapes that to `\udXXX` and it round-trips, so this is a size-honesty limit, not
- * a correctness one — and vitest failure messages are assertion text and stack frames, which are
- * ASCII in practice.
+ * Share of `messageChars` spent on the HEAD of a truncated message; the rest goes to the TAIL, where a
+ * dump's discriminating end and the stack live. head + tail === limit. The cut is in UTF-16 units, so
+ * an odd cut can leave a lone surrogate; `JSON.stringify` escapes it and it round-trips.
  */
 export const failureDetailMessageHeadFraction = 0.25;
 
@@ -246,11 +199,7 @@ export function truncateFailureMessage(message: string, limit: number = failureD
   const head = Math.floor(budget * failureDetailMessageHeadFraction);
   const tail = budget - head;
   // `message.length - tail` rather than `slice(-tail)`: at tail === 0 the negative form is `-0`,
-  // which slices from index 0 and would emit the WHOLE message on a zero budget. Pinned by
-  // runner.test.ts, 'emits no message content on a zero budget'.
-  // Not guarded, and unreachable today: a NaN `limit` would fall through the `<=` check, keep no head
-  // (`slice(0, NaN)` is '') and the WHOLE message as tail (`slice(NaN)` is `slice(0)`). The only
-  // caller merges over frozen defaults and run.mjs passes three arguments, so no NaN can arrive here.
+  // which slices from index 0 and would emit the WHOLE message on a zero budget.
   return `${message.slice(0, head)}`
     + `\n[truncated: kept ${head} head + ${tail} tail of ${message.length} characters]\n`
     + `${message.slice(message.length - tail)}`;
@@ -269,14 +218,8 @@ export interface FailureDetails {
 }
 
 /**
- * Failure messages for the tests that went red WITHOUT being declared in `expected_red` — the
- * over-red set. Expected reds are the mutation working as designed; their messages are noise that
- * would bury the one unexplained failure. Ids are sorted so the block is stable across runs.
- *
- * The emitted block is bounded on every axis: at most `tests` entries, each with at most
- * `messagesPerTest` messages of at most `messageChars` characters, plus at most `omittedIds` ids of
- * at most `testIdChars` characters. Every cut that actually fired says so — inline for the message
- * list, in `note` for the rest.
+ * Failure messages for the over-red set only (expected reds are the mutation working as designed),
+ * bounded on every axis; every cut that fired says so — inline for the message list, in `note` for the rest.
  */
 export function unexpectedFailureDetails(
   failedTestIds: readonly string[],
@@ -322,21 +265,8 @@ export function unexpectedFailureDetails(
 }
 
 /**
- * `failure_details` is NOT the only place a report record re-emits test ids, so capping it alone
- * left the record as a whole unbounded — the exact goal the caps exist for (#1152):
- *
- *  - `actual_red` (run.mjs) is the raw `failedTestIds` list at full `fullName` length. A mutation
- *    that reds the whole suite emits every one of them, and run.mjs both writes that JSON to the
- *    artifact AND `console.log`s it into the CI log. At ~1000 reds x ~300-char names it is ~300 KB,
- *    an order of magnitude more than the `failure_details` block.
- *  - `verdict.errors[].test_ids` (judgeMutation) carries the `over-red` / `under-red` /
- *    `duplicate-*` / `test-infrastructure-failed` sets, i.e. the same ids a second time.
- *
- * Nothing parses these lists: CI only uploads `mutation-report-<shard>.json` as an artifact and
- * gates on job results (`.github/workflows/ci.yml` fe-mutation), and `mutationRunExitCode` reads
- * only `verdict.ok`. They are read by humans, so the same rule as everywhere else applies: the cut
- * is announced INSIDE the emitted list, because a silently truncated red set reads as the whole
- * red set and misdiagnoses the run.
+ * `actual_red` and `verdict.errors[].test_ids` re-emit the same ids as `failure_details`, so they are
+ * bounded too. Nothing parses these lists; the cut is announced INSIDE the emitted list.
  */
 export const reportTestIdLimit = 50;
 
@@ -351,45 +281,21 @@ export function boundedTestIdList(
 }
 
 /**
- * `test-infrastructure-failed` is the ONE code whose `test_ids` field does not hold test ids.
- * `judgeMutation` puts `result.test_infrastructure_errors` there, i.e. diagnostic strings —
- * `global-unhandled-error`, a failing test FILE's name, or `report-parse-failed: <the JSON parse
- * error>` from run.mjs. Running those through `boundedTestIdList` cut them at 200 characters (an
- * id budget, far too small for a parse error) and labelled the cut `kept N of M test ids`, which is
- * simply false — on the exact diagnostic this evidence exists to preserve.
- *
- * So they get their own budget, spent across the WHOLE list rather than per entry: the list is one
- * `global-*` marker plus one entry per broken test file, so the interesting case is "one long
- * message", not "many long messages". A real `report-parse-failed` is a couple of hundred
- * characters and therefore survives byte-for-byte, which is the point; the budget only exists so
- * this axis cannot be the one that blows the record up, and it announces itself honestly when it
- * bites.
- *
- * The budget is spent in BYTES OF EMITTED JSON, not in raw characters. Charging `diagnostic.length`
- * was not a bound at all: each diagnostic is its own element of a pretty-printed array, so quotes,
- * the comma, six spaces of indentation and every escape expansion were free. ~800 legitimate short
- * filenames cost only ~8000 raw characters but 12,851 bytes on the wire, and a diagnostic made of
- * control characters expands up to 6x under `JSON.stringify`. Charging the encoded size plus the
- * fixed per-element overhead closes all three at once, and it also gives an EMPTY diagnostic a
- * non-zero price (10 bytes), so a list of empty strings is bounded too rather than free forever.
+ * `test-infrastructure-failed` is the ONE code whose `test_ids` hold diagnostic strings, not ids, so
+ * they get their own budget spent across the WHOLE list, in BYTES OF EMITTED JSON: charging raw length
+ * made quotes, commas, indentation and escape expansion free, and gave an empty diagnostic no price.
  */
 export const infrastructureDiagnosticBytes = 8000;
 
-/**
- * `verdict.errors[].test_ids[i]` sits six levels deep in `JSON.stringify(record, null, 2)`: six
- * spaces of indentation, then the quoted string, then a comma and a newline. `JSON.stringify` of the
- * string itself covers the quotes and the escaping, so this is everything else.
- */
+/** Per-element cost in `JSON.stringify(record, null, 2)` beyond the quoted string: six spaces of indentation, a comma and a newline. */
 const diagnosticEntryOverhead = 8;
 
 const diagnosticEntryBytes = (diagnostic: string): number =>
   Buffer.byteLength(JSON.stringify(diagnostic)) + diagnosticEntryOverhead;
 
 /**
- * The longest head of `diagnostic` whose announced-and-encoded entry still fits in `room` bytes, or
- * `null` when not even the announcement fits. The cost is monotone in the kept character count (a
- * longer head never encodes smaller, and the count in the notice only gains digits), so a binary
- * search finds the exact boundary instead of guessing at the escape expansion.
+ * The longest head whose announced-and-encoded entry still fits in `room` bytes, or `null` when not
+ * even the announcement fits. The cost is monotone in the kept count, so a binary search finds the boundary.
  */
 function truncatedDiagnosticWithinBudget(diagnostic: string, room: number): string | null {
   const render = (chars: number): string =>
@@ -425,8 +331,7 @@ export function boundedInfrastructureDiagnostics(
       reached += 1;
       continue;
     }
-    // A single diagnostic bigger than the whole budget still gets its head emitted, announced with
-    // a CHARACTER count — the honest unit for a message — instead of an id count.
+    // A single diagnostic bigger than the whole budget still gets its head, announced with a CHARACTER count.
     const head = truncatedDiagnosticWithinBudget(diagnostic, room);
     if (head !== null) {
       kept.push(head);
@@ -435,8 +340,7 @@ export function boundedInfrastructureDiagnostics(
     break;
   }
   if (reached < diagnostics.length) {
-    // Deliberately unbudgeted, exactly like `boundedTestIdList`'s trailing element: announcing the
-    // cut is worth its ~80 constant bytes, and a cut that hides itself is the bug this file forbids.
+    // Deliberately unbudgeted, like `boundedTestIdList`'s trailing element: a cut that hides itself is the bug this file forbids.
     kept.push(`[capped: kept ${reached} of ${diagnostics.length} infrastructure diagnostics; `
       + `the ${Math.max(0, budget)}-byte budget ran out]`);
   }
@@ -444,14 +348,8 @@ export function boundedInfrastructureDiagnostics(
 }
 
 /**
- * `ok` and the error CODES are untouched: they are what `verdictExitCode` / `mutationRunExitCode`
- * judge on, so capping can never change whether a run passes — only how much of the evidence prints.
- *
- * `limit` and `idChars` are DELIBERATELY not forwarded to the `test-infrastructure-failed` branch.
- * They are an id-count and an id-length in a list that holds no ids, which is the exact category
- * error this split was made to end; that branch is budgeted in bytes by
- * `infrastructureDiagnosticBytes` instead. The two parameters exist only so tests can shrink the id
- * caps, and no caller passes them in production, so there is nothing to thread through.
+ * `ok` and the error CODES are untouched, so capping can never change whether a run passes. `limit` /
+ * `idChars` are not forwarded to the `test-infrastructure-failed` branch: that list holds no ids and is budgeted in bytes.
  */
 export function boundedVerdict(
   verdict: MutationVerdict,
@@ -470,11 +368,8 @@ export function boundedVerdict(
 }
 
 /**
- * `mutation_id` is interpolated straight into temp *filenames* by run.mjs
- * (`resolve(temporary, `${mutation_id}.diff`)`), so it is a path component, not free text.
- * A lowercase dash-slug has no `.`, no `/` and no `\`, which makes `../escaped` (writes outside the
- * temp dir), `sub/id` (ENOENT that kills the whole shard) and `.`/`..` structurally impossible.
- * All 65 manifest ids already match; new ids must keep the shape.
+ * `mutation_id` is interpolated straight into temp filenames by run.mjs, so it is a path component:
+ * a lowercase dash-slug makes `../escaped`, `sub/id` and `.`/`..` structurally impossible.
  */
 export const mutationIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -486,9 +381,8 @@ export function validateManifest(
   if (entries.length === 0) throw new Error('manifest must contain at least one mutation');
   const ids = new Set<string>();
   for (const entry of entries) {
-    // The manifest is JSON.parse'd, so the declared types buy nothing at runtime. mutation_id in
-    // particular MUST be a string: a JSON number past Number.MAX_SAFE_INTEGER collapses onto its
-    // neighbours, which would make the canonical base/head comparison silently skip entries.
+    // The manifest is JSON.parse'd, so the declared types buy nothing at runtime. A numeric id past
+    // Number.MAX_SAFE_INTEGER collapses onto its neighbours and the base/head comparison would silently skip it.
     if (typeof entry.mutation_id !== 'string' || entry.mutation_id.trim() === '') {
       throw new Error(`manifest entry has a non-string mutation_id: ${JSON.stringify(entry.mutation_id)}`);
     }
@@ -528,12 +422,7 @@ export function validateManifest(
   }
 }
 
-/**
- * Extra witness paths live outside `fe/` so the temporary duplication of retiring domain words in
- * test filenames does not raise #1316's source-vocabulary ratchet. This validator keeps that small
- * exception catalog honest: only known entries, only tracked Vitest tests, and no path that was
- * already available through `selection_paths`.
- */
+/** Keeps the extra-witness catalog honest: only known entries, only tracked Vitest tests, and no path already in `selection_paths`. */
 export function validateWitnessCatalog(
   entries: MutationEntry[], catalog: Readonly<Record<string, unknown>>, trackedPaths: ReadonlySet<string>,
 ): void {
@@ -564,58 +453,28 @@ export function validateWitnessCatalog(
 /** fe-relative path of the mutation manifest; it is DATA, not runner infrastructure. */
 export const manifestRelativePath = 'tools/mutation/manifest.json';
 
-/**
- * fe-relative directories whose contents govern how the evidence is produced. Trailing slash is
- * load-bearing: it matches the DIRECTORY, so a `tools/vitestfoo.ts` or `tools/vitest-helpers/x.ts`
- * sibling does not accidentally trigger a full sweep.
- */
+/** Trailing slash is load-bearing: it matches the DIRECTORY, so `tools/vitestfoo.ts` does not trigger a full sweep. */
 const evidenceInvalidatingDirectories = Object.freeze(['tools/mutation/', 'tools/vitest/'] as const);
 
 /**
- * fe-relative files whose contents govern how the evidence is produced.
- *
- * `tools/architecture/plugin.mjs` is here rather than in any entry's `selection_paths` because it is
- * a dependency of the RUNNER itself, not just of a test file: `run.mjs:7` imports
- * `architecturePlugin` from it to build the `arch-rule` namespace that `validateManifest` checks
- * every entry's `defends` against, so a rule rename there fails validation for the whole manifest.
- *
- * Its neighbour `tools/architecture/allowlists.mjs` is deliberately NOT here (#1125). Correcting the
- * record: it IS loaded on every mutation run — `tools/architecture/architecture.test.ts` matches the
- * `platform-independent` project's `tools` test glob, it constructs `new ESLint({ cwd: <fe root> })`,
- * and that resolves `eslint.config.js:9`, which imports the two allowlists. Do not re-derive an
- * "unreachable, so safe to narrow" model from this entry and apply it elsewhere.
- *
- * It is out of the set because its reachable blast radius is bounded and LOUD, not because it is
- * unreachable. The only thing the config does with it is feed the `ignores` of
- * `architecture/no-module-runtime-state` and `architecture/no-create-context-outside-allowlist`
- * (`eslint.config.js:58` / `:76`), plus the allowlist self-check tests in
- * `architecture-rules.test.ts`. Those tests run in EVERY mutation run, so a bad allowlist edit shows
- * up as extra reds (or a harness error) on whichever entries are selected — over-red, which the
- * exact-red-set judging already fails closed on. It cannot silently flip a recorded `expected_red`:
- * no entry outside the three `no-class-dom-query-*` ones records any allowlist-affected test, so
- * there is no fourth entry this narrowing drops. Meanwhile it is an allowlist appended to routinely,
- * and as a member of this set every such append cost a full-manifest sweep.
+ * fe-relative files whose contents govern how the evidence is produced. `tools/architecture/plugin.mjs`
+ * is a dependency of the RUNNER itself (the `arch-rule` namespace). Its sibling `allowlists.mjs` is
+ * deliberately NOT here: it IS loaded every run, but only feeds two rules' `ignores`, so a bad edit
+ * surfaces as over-red on the three entries whose selection_paths reach it, never as a silent flip.
  */
 const evidenceInvalidatingFiles = Object.freeze([
   'vitest.config.ts', 'package.json', 'package-lock.json', 'tools/architecture/plugin.mjs',
 ] as const);
 
 /**
- * Repo-root-relative (NOT fe-relative) paths that decide how the evidence is produced from OUTSIDE
- * `fe/`. `.github/workflows/ci.yml` pins `node-version: "22"`, runs `npm ci` and installs the
- * Playwright browser — the interpreter, the dependency tree and the browser every recorded
- * `expected_red` was measured under. It must be matched BEFORE `selectedEntries` strips the `fe/`
- * prefix, because that filter drops every non-`fe/` path on the floor: without this check a PR
- * touching only the workflow selected zero entries.
- *
- * Sibling workflows (`.github/workflows/other.yml`) and `.github/dependabot.yml` are deliberately
- * NOT in the set — they do not run vitest, so they cannot invalidate a recorded verdict.
+ * Repo-root-relative paths that decide how the evidence is produced from OUTSIDE `fe/`. Matched
+ * BEFORE `selectedEntries` strips the `fe/` prefix, which drops every non-`fe/` path on the floor.
  */
 export const evidenceInvalidatingRepoPaths = Object.freeze([
   '.github/workflows/ci.yml', 'scripts/ci/mutation-witness-extra-paths.json',
 ] as const);
 
-/** @see evidenceInvalidatingRepoPaths — matched against repo-root-relative paths, before any `fe/` stripping. */
+/** Matched against repo-root-relative paths, before any `fe/` stripping. */
 export function evidenceInvalidatingRepoPathChanged(changedPaths: readonly string[]): boolean {
   return changedPaths.some((path) => (evidenceInvalidatingRepoPaths as readonly string[]).includes(path));
 }
@@ -624,29 +483,10 @@ export function evidenceInvalidatingRepoPathChanged(changedPaths: readonly strin
 const feRootTsconfigPattern = /^tsconfig[^/]*\.json$/;
 
 /**
- * Evidence-invalidating infrastructure changed: every recorded `expected_red` becomes a claim we can
- * no longer trust, so selection must fail closed to the WHOLE manifest. Each member of the set governs
- * which tests exist and/or how vitest runs them, which is exactly what an `expected_red` set encodes:
- *
- *  - `tools/mutation/**` except `manifest.json` — the runner code that applies patches and judges
- *    verdicts. The manifest is DATA, diffed entry by entry instead (see entryIdsDriftedFromBase).
- *  - `vitest.config.ts` — projects, include globs, environment, pool. Changing it changes which test
- *    ids even exist, so every recorded id may now be stale.
- *  - `tools/vitest/**` — the global `setupFiles` (build-constants.ts). It runs before every test file
- *    in every project; a change there can flip any assertion in the suite.
- *  - `package.json` / `package-lock.json` — a vitest / jsdom / React / testing-library bump changes
- *    behaviour and test-id formatting wholesale. This is the case that used to select ZERO entries.
- *  - fe-root `tsconfig*.json` — strictness / lib / paths, i.e. what compiles and therefore what runs.
- *  - `tools/architecture/plugin.mjs` — run.mjs imports it to build the `arch-rule` namespace that
- *    validateManifest checks EVERY entry's `defends` against. Its allowlist sibling is not in the
- *    set: it reaches only the three `arch-rule:` entries, through their selection_paths (#1125).
- *
- * `.github/workflows/ci.yml` belongs to the same set but is repo-root-relative, so it is matched
- * separately in selectedEntries — see evidenceInvalidatingRepoPaths.
- *
- * DELIBERATE COST, do not "optimize" away: a dependency bump now runs all 65 entries (17 shards,
- * ~5.5 min). That is the correct price for a change that invalidates every recorded verdict, and it
- * is rare. Narrowing this set trades a visible 5 minutes for an invisible always-green gate.
+ * Evidence-invalidating infrastructure changed: every recorded `expected_red` is suspect, so selection
+ * fails closed to the WHOLE manifest. The manifest itself is DATA, diffed entry by entry instead.
+ * DELIBERATE COST: a dependency bump runs every entry; narrowing this trades visible minutes for an
+ * invisible always-green gate.
  */
 export function evidenceInvalidatingInfraChanged(fePaths: readonly string[]): boolean {
   return fePaths.some((path) => {
@@ -668,11 +508,8 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * Head entry ids whose evidence the base manifest cannot vouch for: absent from base, or canonically different.
- * mutation_id must be a string (validateManifest enforces it): canonical comparison is keyed by id, and a
- * numeric id past Number.MAX_SAFE_INTEGER would compare equal to its neighbour and silently skip the entry.
- * Entries removed from base are irrelevant — there is nothing left to run for them.
- * Duplicate mutation_ids in base make per-id comparison meaningless, so every head id is reported (fail closed).
+ * Head entry ids the base manifest cannot vouch for: absent from base, or canonically different.
+ * Duplicate ids in base make per-id comparison meaningless, so every head id is reported (fail closed).
  */
 export function entryIdsDriftedFromBase(
   baseManifest: readonly MutationEntry[], entries: readonly MutationEntry[],
@@ -688,8 +525,7 @@ export function selectedEntries(
   entries: MutationEntry[], changedPaths: readonly string[], baseManifest: readonly MutationEntry[] | null,
   witnessCatalog: MutationWitnessCatalog = {},
 ): MutationEntry[] {
-  // Repo-root paths FIRST: the `fe/` filter below discards them, so a workflow-only PR would
-  // otherwise select nothing at all.
+  // Repo-root paths FIRST: the `fe/` filter below discards them.
   if (evidenceInvalidatingRepoPathChanged(changedPaths)) return [...entries];
   const fePaths = changedPaths.filter((path) => path.startsWith('fe/')).map((path) => path.slice(3));
   const changed = new Set(fePaths);
@@ -697,8 +533,7 @@ export function selectedEntries(
   if (evidenceInvalidatingInfraChanged(fePaths)) return [...entries];
   let drifted = new Set<string>();
   if (changed.has(manifestRelativePath)) {
-    // The single fail-closed mechanism for a missing baseline: without it `baseManifest` stays
-    // nullable and entryIdsDriftedFromBase below does not type-check, so it cannot be dropped silently.
+    // The single fail-closed mechanism for a missing baseline.
     if (baseManifest === null) return [...entries];
     drifted = entryIdsDriftedFromBase(baseManifest, entries);
   }
@@ -708,11 +543,7 @@ export function selectedEntries(
       .some((path) => changed.has(path)));
 }
 
-/**
- * Eight full-suite entries keep the current 71-entry manifest in one nine-runner batch. An
- * eight-shard trial put its slowest nine-entry job at 24:05 against a 25-minute timeout; the ninth
- * shard removes one entry from every busy shard while still halving repeated browser/system setup.
- */
+/** Eight full-suite entries keep the manifest in one nine-runner batch; an eight-shard trial ran its slowest job to 24:05 against a 25-minute timeout. */
 export const entriesPerShard = 8;
 /** Witness runs execute named files only; larger shards cut matrix fan-out without becoming critical-path jobs. */
 export const witnessEntriesPerShard = 12;
@@ -721,11 +552,7 @@ export const fullMaxShards = 9;
 /** Witness jobs skip unrelated test projects, so preserve their larger growth ceiling. */
 export const witnessMaxShards = 32;
 
-/**
- * `clamped` is true when the cap forces more than `entriesPerShard` entries onto a shard — past that
- * point the per-shard wall clock stops being flat and drifts towards the shard job timeout, so the
- * plan step surfaces it as a warning instead of letting it show up as a mystery timeout.
- */
+/** `clamped`: the cap forced more than `entriesPerShard` entries onto a shard, so per-shard wall clock drifts towards the job timeout. */
 export function shardPlan(
   selectedCount: number, scope: MutationTestScope = 'full',
 ): { total: number; shards: number[]; clamped: boolean } {
@@ -741,10 +568,7 @@ export interface MutationShardMatrixEntry {
   browser: boolean;
 }
 
-/**
- * Browser installation is a per-runner cost. Full scope needs it in every shard because every shard
- * runs every Vitest project; witness scope needs it only where a declared witness is browser-owned.
- */
+/** Browser installation is a per-runner cost: full scope needs it in every shard, witness scope only where a witness is browser-owned. */
 export function mutationShardMatrix(
   entries: MutationEntry[], plan: { total: number; shards: number[] }, scope: MutationTestScope,
   witnessCatalog: MutationWitnessCatalog = {},

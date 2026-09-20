@@ -138,7 +138,6 @@ fn lower(tool: &str, args: &Value) -> Result<Value, String> {
 fn lower_git_worktree_add(args: &Value) -> Result<Value, String> {
     let target = required_string(args, "target")?;
     let branch = optional_string(args, "branch")?;
-    // ③-c finalizes worktree anchoring/collision/ordering
     let mut argv = vec![
         "git".to_string(),
         "worktree".to_string(),

@@ -1,17 +1,5 @@
-//! #1667 A3 — the per-edit-session debounce.
-//!
-//! A queue that holds nothing but `ReportEdited` observations waits for
-//! `report_edit_min_idle` (20 s by default) instead of the ordinary
-//! `debounce_min_idle` (250 ms): one wake per edit, not per save. Any other
-//! entry — a soft one restores the ordinary pair, a hard-fire one issues at
-//! once — takes the queued edits with it.
-//!
-//! The run loop reads `std::time::Instant`, which `tokio::time::pause`
-//! cannot move, so the clock is driven with
-//! `PlannerHarness::rewind_debounce_for_test`: the pending window is aged
-//! by rewinding its timestamps, and the assertions read the fake daemon's
-//! `turn_start` count after a few real 50 ms ticks. Nothing here sleeps
-//! for the debounce itself.
+//! The per-edit-session debounce. The run loop reads `std::time::Instant`, which `tokio::time::pause` cannot move,
+//! so the clock is driven with `PlannerHarness::rewind_debounce_for_test`; nothing here sleeps for the debounce itself.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,8 +21,7 @@ use calm_server::shared_codex_appserver::{
 };
 use serde_json::json;
 
-/// Long enough for several 50 ms ticks to run; short enough to keep the
-/// suite honest. Every "did NOT issue" assertion waits this long.
+/// Long enough for several 50 ms ticks to run; every "did NOT issue" assertion waits this long.
 const TICKS: Duration = Duration::from_millis(400);
 
 async fn idle_harness(
@@ -151,9 +138,7 @@ async fn wait_for_turn_start(daemon: &SharedCodexAppServer, why: &str) {
     }
 }
 
-/// Wait until the queue holds exactly `entries` entries and the debounce
-/// window is armed, so a rewind moves timestamps that every observation
-/// has already stamped.
+/// Wait until the queue holds exactly `entries` entries and the debounce window is armed, so a rewind moves timestamps every observation has already stamped.
 async fn wait_queued(harness: &PlannerHarness, entries: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -170,16 +155,13 @@ async fn wait_queued(harness: &PlannerHarness, entries: usize) {
     }
 }
 
-/// A3 — only report edits queued: 1 s of idle (four times the ordinary
-/// `debounce_min_idle`) issues nothing; 20 s of idle issues one turn.
 #[tokio::test]
 async fn report_edits_alone_wait_for_the_edit_session_to_go_quiet() {
-    // The production pairs, on purpose: the test drives the clock, not the
-    // thresholds, so it is the shipped 250 ms / 20 s that decide.
+    // The production pairs, on purpose: the test drives the clock, not the thresholds.
     let (harness, daemon, track_id) = idle_harness(HarnessConfig::default()).await;
     harness.observe(report_edit(&track_id, 1)).unwrap();
     harness.observe(report_edit(&track_id, 2)).unwrap();
-    // Two saves, one folded entry (#1667 A2).
+    // Two saves, one folded entry.
     wait_queued(&harness, 1).await;
 
     harness
@@ -200,9 +182,7 @@ async fn report_edits_alone_wait_for_the_edit_session_to_go_quiet() {
     harness.shutdown().await.unwrap();
 }
 
-/// Wait until the newest observation has stamped the debounce window: after
-/// a rewind `last_pending_at` reads as seconds old, and the next `observe`
-/// (delivered through the run loop's channel) resets it to now.
+/// Wait until the newest observation has stamped the debounce window: after a rewind `last_pending_at` reads as seconds old, and the next `observe` resets it to now.
 async fn wait_last_pending_refreshed(harness: &PlannerHarness) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while harness.debounce_last_pending_elapsed_ms_for_test().await >= 5_000 {
@@ -214,11 +194,7 @@ async fn wait_last_pending_refreshed(harness: &PlannerHarness) {
     }
 }
 
-/// Round-4 N6 — `report_edit_max_wait` (120 s) bounds an edit session that
-/// never goes quiet. A save every 10 s folds into the held entry and
-/// refreshes `last_pending_at` (a fold never moves `first_pending_at`), so
-/// the 20 s idle rule is never met; at 121 s since the first save the turn
-/// issues anyway.
+/// A fold refreshes `last_pending_at` but never moves `first_pending_at`, so the idle rule is never met and `report_edit_max_wait` decides.
 #[tokio::test]
 async fn an_edit_session_that_never_goes_quiet_issues_at_max_wait() {
     let (harness, daemon, track_id) = idle_harness(HarnessConfig::default()).await;
@@ -258,8 +234,6 @@ async fn an_edit_session_that_never_goes_quiet_issues_at_max_wait() {
     harness.shutdown().await.unwrap();
 }
 
-/// A3 — a soft entry that is NOT a report edit (a workspace lease) in the
-/// same queue restores the ordinary pair: 1 s of idle issues.
 #[tokio::test]
 async fn a_soft_non_report_entry_restores_the_ordinary_pair() {
     let (harness, daemon, track_id) = idle_harness(HarnessConfig::default()).await;
@@ -285,14 +259,7 @@ async fn a_soft_non_report_entry_restores_the_ordinary_pair() {
     harness.shutdown().await.unwrap();
 }
 
-/// A3 — a user message arriving inside the 20 s window issues at once and
-/// takes the queued edit with it.
-///
-/// "At once" is stated by configuration, not by a stopwatch: BOTH soft
-/// pairs are set to a minute, so the only way a turn can issue inside this
-/// test's budget is the hard-fire short-circuit the user message arms. A
-/// harness that merely fell back to the ordinary pair would sit for 60 s
-/// and fail here.
+/// "At once" is stated by configuration: BOTH soft pairs are set to a minute, so the only way a turn can issue inside this test's budget is the hard-fire short-circuit.
 #[tokio::test]
 async fn a_user_message_during_the_wait_issues_at_once() {
     let (harness, daemon, track_id) = idle_harness(HarnessConfig {

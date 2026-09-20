@@ -1,44 +1,5 @@
-//! #1722 §4 — the `kernel/track/activity` projector.
-//!
-//! One overlay row per track, `Overlay { plugin_id: "kernel", entity_kind:
-//! "track", kind: "activity" }`, answering three questions the rail, the
-//! Today page and the track page paint from ONE place: is anything moving
-//! right now (`working`), does it need a person (`attention`: `input` or
-//! `failed`), and when did the last completion-class result land
-//! (`activity_at_ms`, a monotone high-water mark the read receipt is
-//! compared against). `items[]` lists every attention source, `cards[]` the
-//! per-card conclusion the card rows paint.
-//!
-//! Everything is recomputed from DURABLE rows on every wake-up (design
-//! §4.2/§4.3): the current task attempts (the ONLY `working` source for
-//! dispatched work — a shared-daemon thread rests at
-//! `last_thread_status='active'` after its turn, F2.29, and the isolated
-//! executor's `running` never clears, F2.33), the eligible sessions of the
-//! track's cards (harness / current-attempt worker / never-task-bound
-//! interactive card), the `kernel/card/status` FSM rows behind a LIVE
-//! eligible session, and the track's lifecycle. Bus events are only
-//! wake-ups: no time is taken from an event, and a 30 s tick over every
-//! unarchived track repairs whatever a lost event, a lag or a crash left
-//! behind (session exits and feeder stamps emit no events at all,
-//! F2.25/F2.31/F2.32).
-//!
-//! #1743 §4.1 adds two rules to the fold, both computed from the same
-//! durable rows: a `done` / archived track projects no attention at all
-//! (rule 1 — `working` is still reported), and a `task` / `session` failure
-//! counts only while it is newer than the planner's last completed turn, P
-//! (rule 2 — `sql::PLANNER_LAST_TURN_SQL`). The payload shape is unchanged.
-//!
-//! Transaction shape (design §4.4, `deferred_write_tx_invariant`): every
-//! read is an autocommit single statement (`track_activity::sql`); the
-//! computed payload is compared with the stored one and only a CHANGE is
-//! written, through `write_with_events_typed` (one IMMEDIATE transaction,
-//! `Event::OverlaySet`). The reads share no snapshot with the write, so the
-//! track row is re-checked INSIDE the write transaction: a track deleted
-//! between the reads and the write (its delete transaction already dropped
-//! every overlay of the track, `routes/tracks.rs`) must not get an orphan
-//! `activity` row back — the table has no FK and the reconcile enumerates
-//! live tracks only, so such a row would be permanent. The write aborts
-//! with no event instead (`WriteOutcome::TrackGone`).
+//! The `kernel/track/activity` projector: one overlay row per track (`working`, `attention`,
+//! `activity_at_ms`), recomputed from durable rows on every wake-up; bus events are only wake-ups.
 
 pub mod sql;
 
@@ -66,16 +27,10 @@ use sql::{CardStatusRow, SessionRow, TaskRow, TrackRow};
 /// The overlay `kind` this projector owns.
 pub const ACTIVITY_OVERLAY_KIND: &str = "activity";
 
-/// Reconcile period (design §4.3): the convergence bound for every change
-/// that emits no event is this plus one sweep.
+/// Reconcile period: the convergence bound for every change that emits no event is this plus one sweep.
 pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
-// ---------------------------------------------------------------------------
-// Payload (design §4.1) — serialized field order is the wire order.
-// ---------------------------------------------------------------------------
-
-/// `attention` — the fold of `items[]` (`failed > input > none`), kept
-/// redundantly so the rail need not scan the items.
+/// `attention` — the fold of `items[]` (`failed > input > none`), kept redundantly so the rail need not scan the items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Attention {
@@ -100,11 +55,8 @@ pub enum ItemSource {
     Lifecycle,
 }
 
-/// One attention source. `id` is the card id / task key / session id /
-/// track id by `source`; `card_id` is always present for `card` and
-/// `session` items, the worker card (nullable) for `task` items, `null` for
-/// `lifecycle`. `at_ms` is taken from the column the evidence lives in
-/// (§4.1) so the sidebar's newest-first order is honest.
+/// One attention source. `id` is the card id / task key / session id / track id by `source`;
+/// `at_ms` is taken from the column the evidence lives in so newest-first order is honest.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActivityItem {
     pub kind: ItemKind,
@@ -114,8 +66,7 @@ pub struct ActivityItem {
     pub at_ms: i64,
 }
 
-/// Per-card conclusion; the fold order is the derived `Ord`
-/// (`working < input < failed`, §4.1).
+/// Per-card conclusion; the fold order is the derived `Ord` (`working < input < failed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CardState {
@@ -130,7 +81,7 @@ pub struct CardActivity {
     pub state: CardState,
 }
 
-/// The `kernel/track/activity` payload (design §4.1).
+/// The `kernel/track/activity` payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivityPayload {
     #[serde(rename = "schemaVersion")]
@@ -143,8 +94,7 @@ pub struct ActivityPayload {
 }
 
 impl ActivityPayload {
-    /// Field-wise equality of everything but the high-water mark, which the
-    /// caller compares after taking the max (§4.4).
+    /// Field-wise equality of everything but the high-water mark, which the caller compares after taking the max.
     fn same_conclusions(&self, other: &Self) -> bool {
         self.working == other.working
             && self.attention == other.attention
@@ -153,23 +103,16 @@ impl ActivityPayload {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The pure fold (design §4.2) over the rows `sql` read.
-// ---------------------------------------------------------------------------
-
-/// Everything one recomputation read, in one place so the fold is a pure
-/// function of it (and so a test can hand it rows directly).
+/// Everything one recomputation read, so the fold is a pure function of it.
 #[derive(Debug, Clone)]
 pub struct TrackRows {
     pub track: TrackRow,
     pub tasks: Vec<TaskRow>,
     pub sessions: Vec<SessionRow>,
     pub card_status: HashMap<String, CardStatusRow>,
-    /// Worker session ids the in-process harness registry holds LIVE for
-    /// this track — backend (i)'s `working` witness (§4.2 table).
+    /// Worker session ids the in-process harness registry holds LIVE for this track.
     pub live_harness_sessions: Vec<String>,
-    /// P — the planner's last completed turn (#1743 §4.1 rule 2); `None`
-    /// when no planner turn of the track has ever completed.
+    /// P — the planner's last completed turn; `None` when no planner turn of the track has ever completed.
     pub planner_last_turn: Option<i64>,
 }
 
@@ -179,8 +122,7 @@ pub struct Fold {
     pub working: bool,
     pub items: Vec<ActivityItem>,
     pub cards: Vec<CardActivity>,
-    /// E3 — `MAX(finished_at_ms)` over the current attempts in `done` /
-    /// `failed` (the user can only cancel, so `canceled` is not evidence).
+    /// `MAX(finished_at_ms)` over the current attempts in `done` / `failed` (`canceled` is not evidence).
     pub e3_task_settled: Option<i64>,
 }
 
@@ -203,15 +145,9 @@ fn is_live(state: &str) -> bool {
     LIVE_STATES.contains(&state)
 }
 
-/// The † exception of design §4.2: a task-bound worker card whose current
-/// attempts are AT LEAST ONE row and ALL `done`, and whose session was
-/// minted no later than the last of those completions
-/// (`ws.created_at_ms <= MAX(finished_at_ms)`), does not turn its
-/// `state='failed'` into a `failed` item — the exit verdict belongs to
-/// finished work (a signal-killed PTY, F2.31; a reaper exit after a
-/// race-lost CAS). A session minted AFTER the completion is new work
-/// (restart, F2.40) and stays red; a card with NO current row is NOT
-/// suppressed (the empty set is not "all done" — v7 A-MIN3).
+/// A task-bound worker card whose current attempts are AT LEAST ONE row and ALL `done`, and whose
+/// session was minted no later than the last completion, does not turn `state='failed'` into a
+/// `failed` item: the exit verdict belongs to finished work. A card with NO current row is NOT suppressed.
 fn failed_session_is_finished_work(session: &SessionRow, tasks: &[TaskRow]) -> bool {
     let rows: Vec<&TaskRow> = tasks
         .iter()
@@ -230,9 +166,8 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
     let mut working = false;
     let mut items: Vec<ActivityItem> = Vec::new();
     let mut cards: BTreeMap<String, CardState> = BTreeMap::new();
-    // The cards with `working` evidence, kept apart from the max-collapsed
-    // `cards` slots: a `failed` / `input` verdict out-ranks `working` in the
-    // slot, and rule 1 needs the working evidence back once those go.
+    // The cards with `working` evidence, kept apart from the max-collapsed `cards` slots: a `failed` / `input`
+    // verdict out-ranks `working` in the slot, and the terminal-phase filter needs the working evidence back once those go.
     let mut working_cards: BTreeSet<String> = BTreeSet::new();
     let mut e3: Option<i64> = None;
 
@@ -251,15 +186,11 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
         raise(cards, card_id, CardState::Working);
     }
 
-    // #1743 §4.1 rule 2 — failure aging: a `task` / `session` failure
-    // counts only when it landed AFTER the planner's last completed turn
-    // (`at_ms > P`); P `None` means nothing was ever handled, so it counts.
-    // An aged failure takes its `cards[card] = failed` verdict with it.
-    // Not aged: `lifecycle` items (the track's own phase) and `input` items
-    // (a live state); a `card` item is not a task/session failure.
+    // Failure aging: a `task` / `session` failure counts only when it landed AFTER the planner's last
+    // completed turn (P `None` = never handled, so it counts). `lifecycle` and `input` items are not aged.
     let failure_counts = |at_ms: i64| rows.planner_last_turn.is_none_or(|p| at_ms > p);
 
-    // W — the task clause (§4.2 W, F2.22/F2.38/F2.39).
+    // W — the task clause.
     for t in &rows.tasks {
         let is_child_track = t.child_track_id.is_some();
         match t.status.as_str() {
@@ -269,10 +200,9 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                     raise_working(&mut cards, &mut working_cards, wc);
                 }
             }
-            // A sub-track row in flight: the worker is another track, whose
-            // own overlay tells the truth (G20). Not working here.
+            // A sub-track row in flight: the worker is another track, whose own overlay tells the truth.
             "dispatched" | "running" => {}
-            // `verifying` is the PARENT's own gate run, child or not (F2.39).
+            // `verifying` is the PARENT's own gate run, child or not.
             "verifying" => {
                 working = true;
                 if let Some(wc) = &t.worker_card_id {
@@ -294,7 +224,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                     }
                 }
                 // E3 counts the failure whether or not it is still red
-                // (rule 3: unread is unchanged by aging).
+                // (unread is unchanged by aging).
                 e3 = e3.max(t.finished_at_ms);
             }
             "done" => {
@@ -304,7 +234,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
         }
     }
 
-    // S — the per-backend session rules over the S0 result set (§4.2 table).
+    // S — the per-backend session rules.
     for ws in &rows.sessions {
         let live = is_live(&ws.state);
         let thread_status = ws.last_thread_status.as_deref();
@@ -318,13 +248,11 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             card_id: Some(ws.card_id.clone()),
             at_ms,
         };
-        // A `last_thread_status` item carries the feeder's stamp time; a
-        // `state='failed'` item carries the exit writer's `updated_at_ms`
-        // (§4.1, v8 A-MIN2).
+        // A `last_thread_status` item carries the feeder's stamp time; a `state='failed'`
+        // item carries the exit writer's `updated_at_ms`.
         let stamp_at = ws.last_activity_ms.unwrap_or(ws.updated_at_ms);
-        // Every `session` failure goes through the aging rule (#1743 §4.1
-        // rule 2); `items` / `cards` are parameters so the `input` pushes
-        // below can keep borrowing them directly.
+        // Every `session` failure goes through the aging rule; `items` / `cards` are parameters so the
+        // `input` pushes below can keep borrowing them directly.
         let failed_session =
             |items: &mut Vec<ActivityItem>, cards: &mut BTreeMap<String, CardState>, at_ms| {
                 if failure_counts(at_ms) {
@@ -411,13 +339,12 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                     failed_session(&mut items, &mut cards, ws.updated_at_ms);
                 }
             }
-            // (v) terminal — never from session signals (no turn concept,
-            // hooks do not enter the FSM, F2.13). Unknown providers: nothing.
+            // (v) terminal — never from session signals (no turn concept, hooks do not enter the FSM). Unknown providers: nothing.
             _ => {}
         }
     }
 
-    // Lifecycle (§4.2, last line).
+    // Lifecycle.
     let lifecycle_item = |kind: ItemKind| ActivityItem {
         kind,
         source: ItemSource::Lifecycle,
@@ -431,15 +358,8 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
         _ => {}
     }
 
-    // #1743 §4.1 rule 1 — terminal-phase filter: on a `done` or archived
-    // track nothing waits on a person. `items` go (so `attention` folds to
-    // `none`) and with them the per-card `input` / `failed` verdicts, which
-    // are the items' per-card form. `working` is NOT filtered, nor are the
-    // `working` verdicts: a task still running on a done track is not
-    // hidden — S2 (the terminal sweeper) is what ends it. `cards` is
-    // rebuilt from the working evidence, not filtered by slot: a card whose
-    // `failed` / `input` verdict had out-ranked its `working` one keeps the
-    // working verdict (review r1, A MINOR-1 / codex P2).
+    // Terminal-phase filter: on a `done` or archived track nothing waits on a person — `items` and the per-card
+    // `input` / `failed` verdicts go; `working` stays (the sweeper ends it) and `cards` is rebuilt from the working evidence.
     if rows.track.lifecycle == "done" || rows.track.archived_at.is_some() {
         items.clear();
         cards = working_cards
@@ -465,10 +385,6 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The projector: reads, folds, compares, writes on change.
-// ---------------------------------------------------------------------------
-
 pub struct TrackActivityProjector {
     repo: Arc<dyn Repo>,
     pool: sqlx::SqlitePool,
@@ -480,9 +396,7 @@ pub struct TrackActivityProjector {
 /// What one recomputation did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recompute {
-    /// The track row is gone (deleted) — either before the reads or between
-    /// the reads and the write (`WriteOutcome::TrackGone`); nothing to
-    /// project, nothing written, nothing emitted.
+    /// The track row is gone — before the reads or between the reads and the write; nothing written, nothing emitted.
     NoTrack,
     /// The stored payload already said this; no write, no event.
     Unchanged(ActivityPayload),
@@ -499,9 +413,7 @@ impl Recompute {
     }
 }
 
-/// What the write transaction found (the caller can tell "row written and
-/// `overlay.set` emitted" from "the track was deleted since the reads;
-/// nothing written, nothing emitted" — two outcomes, two variants).
+/// What the write transaction found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOutcome {
     Written,
@@ -509,9 +421,7 @@ pub enum WriteOutcome {
 }
 
 impl TrackActivityProjector {
-    /// Fails only when the repo is not sqlite-backed — the projector reads
-    /// the tables directly (design §4.4: autocommit statements, no
-    /// transaction).
+    /// Fails only when the repo is not sqlite-backed — the projector reads the tables directly.
     pub fn new(
         repo: Arc<dyn Repo>,
         bus: EventBus,
@@ -528,8 +438,7 @@ impl TrackActivityProjector {
         })
     }
 
-    /// Read every durable input of one track. `None` when the track row is
-    /// gone.
+    /// Read every durable input of one track. `None` when the track row is gone.
     pub async fn read_rows(&self, track_id: &str) -> crate::error::Result<Option<TrackRows>> {
         let Some(track) = sql::track_row(&self.pool, track_id).await? else {
             return Ok(None);
@@ -554,9 +463,7 @@ impl TrackActivityProjector {
         }))
     }
 
-    /// Recompute one track from its durable rows and write the overlay if
-    /// (and only if) it changed. Errors are returned, not swallowed; the
-    /// loop logs them and moves on.
+    /// Recompute one track from its durable rows and write the overlay only if it changed.
     pub async fn recompute_track(&self, track_id: &str) -> crate::error::Result<Recompute> {
         let Some(rows) = self.read_rows(track_id).await? else {
             return Ok(Recompute::NoTrack);
@@ -564,11 +471,8 @@ impl TrackActivityProjector {
         let folded = fold(track_id, &rows);
         let evidence = sql::evidence(&self.pool, track_id).await?;
         let stored = sql::existing_activity_payload(&self.pool, track_id).await?;
-        // The high-water mark is read from the raw JSON, independently of
-        // the struct parse below: a stored payload another version of this
-        // binary wrote (an enum value this one does not know, a reshaped
-        // item) must not re-seed the mark and light a spurious unread. The
-        // conclusions are recomputed from rows either way.
+        // The high-water mark is read from the raw JSON, independently of the struct parse: a payload
+        // another binary version wrote must not re-seed the mark and light a spurious unread.
         let stored_mark = stored
             .as_ref()
             .and_then(|v| v.get("activity_at_ms"))
@@ -589,9 +493,8 @@ impl TrackActivityProjector {
             },
         };
 
-        // `activity_at_ms` is a monotone high-water mark (M10): max of the
-        // stored value and every persisted completion-class witness; seeded
-        // on the first row, never lowered by a reconcile.
+        // `activity_at_ms` is a monotone high-water mark: max of the stored value and every
+        // persisted completion-class witness; never lowered by a reconcile.
         let activity_at_ms = [stored_mark, evidence.max(), folded.e3_task_settled]
             .into_iter()
             .flatten()
@@ -618,17 +521,9 @@ impl TrackActivityProjector {
         }
     }
 
-    /// The write half of a recomputation: ONE IMMEDIATE transaction that
-    /// re-reads the track row, upserts the overlay and appends the
-    /// `overlay.set` event (track scope from that same row). `pub` so a test
-    /// can run it with a payload computed BEFORE the track was deleted —
-    /// the race the in-transaction check exists for.
-    ///
-    /// A track deleted since the reads aborts the transaction with no row
-    /// and no event: the closure returns `Err` (the only way out of
-    /// `write_with_events` without an event batch, F2.19) after setting
-    /// `track_gone`, and only THAT error is turned into
-    /// `WriteOutcome::TrackGone` — every other error stays an error.
+    /// ONE IMMEDIATE transaction that re-reads the track row, upserts the overlay and appends the
+    /// `overlay.set` event. A track deleted since the reads aborts with no row and no event: the table
+    /// has no FK and the reconcile enumerates live tracks only, so an orphan row would be permanent.
     pub async fn write_overlay(
         &self,
         track_id: &str,
@@ -700,9 +595,8 @@ impl TrackActivityProjector {
         }
     }
 
-    /// Which track a bus event wakes (design §4.3 wake-up table); `None`
-    /// for everything else. Only `overlay.set` needs a lookup, and only when
-    /// the FSM's commit degraded its scope to `System`.
+    /// Which track a bus event wakes; `None` for everything else. Only `overlay.set` needs a
+    /// lookup, and only when the FSM's commit degraded its scope to `System`.
     pub async fn track_for_event(&self, env: &BroadcastEnvelope) -> Option<String> {
         match &env.event {
             Event::OverlaySet(o)
@@ -716,9 +610,7 @@ impl TrackActivityProjector {
                 self.card_track(&o.entity_id).await
             }
             Event::HarnessPhaseChanged { track_id, .. } => Some(track_id.as_str().to_string()),
-            // E2's wake-up: the COMPLETED tool-call row (E2 reads only
-            // `item/completed`; the `item/started` twin of the same call
-            // would be a second recompute that finds nothing new).
+            // The COMPLETED tool-call row only; the `item/started` twin would be a second recompute that finds nothing new.
             Event::HarnessItemAdded {
                 track_id,
                 item_type,
@@ -749,8 +641,7 @@ impl TrackActivityProjector {
         }
     }
 
-    /// The projector loop: a boot sweep, then bus wake-ups and the tick in
-    /// one `select!` (serial — a wake-up and a sweep never interleave).
+    /// The projector loop: a boot sweep, then bus wake-ups and the tick in one `select!` (serial).
     pub async fn run(self) {
         let mut rx = self.bus.subscribe();
         let mut tick = tokio::time::interval(RECONCILE_INTERVAL);
@@ -783,11 +674,8 @@ impl TrackActivityProjector {
     }
 }
 
-/// Spawn the projector task. Called from `AppState::new` right after
-/// `HarnessRegistry::new()` — the registry is an `Arc` clone, so the task
-/// does not wait for `AppState`; at the boot sweep it is still empty (run
-/// loops are installed by `boot_harnesses` later), so harness rows read
-/// `working=false` on the first pass (design §4.2, §9 G15).
+/// Spawn the projector task. At the boot sweep the harness registry is still empty (run loops are
+/// installed by `boot_harnesses` later), so harness rows read `working=false` on the first pass.
 pub fn spawn(repo: Arc<dyn Repo>, bus: EventBus, write: WriteContext, harness: HarnessRegistry) {
     let Some(projector) = TrackActivityProjector::new(repo, bus, write, harness) else {
         tracing::warn!("track_activity: repo is not sqlite-backed; projector not started");

@@ -23,17 +23,12 @@ function payload(overrides: Partial<ChartCandlesPayload> = {}): ChartCandlesPayl
 }
 
 describe('ReportCandlesBlock', () => {
-  // The chart is drawn in SVG rather than on a canvas so that the palette is
-  // the app's tokens. A hex colour here would be the start of the second
-  // palette the legacy chart has to keep in sync by hand.
   it('draws in SVG and paints from tokens, never from literal colours', () => {
     const { container } = render(<ReportCandlesBlock payload={payload()} />);
     expect(container.querySelector('svg')).toBeTruthy();
     expect(container.innerHTML).not.toMatch(/#[0-9a-f]{6}/i);
   });
 
-  // Fill is a second encoding channel on top of hue: red/green alone is not
-  // readable under the most common colour-vision deficiency.
   it('marks up and down candles by class, so hollow/solid can be a rule and not a colour', () => {
     const { container } = render(<ReportCandlesBlock payload={payload()} />);
     const groups = [...container.querySelectorAll('svg > g > g')];
@@ -56,8 +51,6 @@ describe('ReportCandlesBlock', () => {
     expect(container.querySelectorAll('svg > g > g').length).toBe(31);
   });
 
-  // Two candles is the payload's own floor. A range that filters below it would
-  // draw an empty box, which says "no data" about a series that has plenty.
   it('keeps the full series when a range would leave fewer than two candles', async () => {
     const sparse: ChartCandlesPayload['candles'] = [
       [0, 100, 101, 99, 100, 10],

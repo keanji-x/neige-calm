@@ -18,9 +18,7 @@ concurrency:
   # The policy mutation run must restore production source before ending.
   cancel-in-progress: false
 
-# Emulator-backed checks live in mobile-native.yml and only run for mobile/**
-# pull requests; this job is the one that still runs for every fe/** change
-# because the APK bundles the fe build.
+# This job still runs for every fe/** change because the APK bundles the fe build.
 jobs:
   android:
     name: mobile (test + Android APK)

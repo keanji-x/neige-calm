@@ -1,19 +1,5 @@
-//! Integration tests for M3-mcp-apps **Slice M5** routes:
-//!
-//!   * `GET /api/plugins/:id/resources/:view_id` — iframe HTML over HTTP.
-//!     Resolves to a `ui://<id>/<view_id>` URI and routes through
-//!     `plugin_host::read_ui_resource`. Asserts body + `Content-Type` +
-//!     derived `Content-Security-Policy` header.
-//!   * `POST /api/plugins/:id/tool-call` — AppBridge fan-out for
-//!     `app.callServerTool({ name, arguments })`. Asserts:
-//!       - `neige.*` names dispatch into the kernel callback router (the
-//!         plugin process never sees the call) and 200 the result.
-//!       - non-`neige.*` names return 403 `forbidden_tool` per §7.6 row 5.
-//!
-//! The fixtures reuse the existing echo stub binary — none of these tests
-//! require the plugin to do anything beyond a clean `initialize` handshake,
-//! since the iframe HTTP route reads from the manifest + on-disk HTML and
-//! the tool-call route routes `neige.*` straight into `callbacks::dispatch`.
+//! Integration tests for `GET /api/plugins/:id/resources/:view_id` (iframe HTML
+//! over HTTP) and `POST /api/plugins/:id/tool-call` (AppBridge fan-out).
 
 #![cfg(unix)]
 
@@ -36,10 +22,6 @@ use tower::ServiceExt;
 
 const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
 
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
-
 struct Fixture {
     state: AppState,
     plugin_id: String,
@@ -48,23 +30,15 @@ struct Fixture {
 
 struct FxConfig<'a> {
     plugin_id: &'a str,
-    /// Permissions block to embed in the manifest. Use `json!({})` for the
-    /// "no perms" forbidden test; full perms for the overlay happy-path.
+    /// Permissions block to embed in the manifest.
     permissions: Value,
-    /// HTML body to write at `<install>/views/status.html`. None = skip the
-    /// file (used by the 404-on-missing-file negative).
+    /// HTML body to write at `<install>/views/status.html`; `None` skips the file.
     view_html: Option<&'a str>,
-    /// Optional CSP block on the view (mirrored under `_meta.ui.csp` in the
-    /// `resources/read` response, and emitted as the
-    /// `Content-Security-Policy` HTTP header).
+    /// Optional CSP block on the view, emitted as the `Content-Security-Policy` HTTP header.
     csp: Option<Value>,
-    /// Optional per-view `permissions.tools` allow-list (mirrored under
-    /// `_meta.ui.permissions.tools`). `None` means the view declares no
-    /// iframe-tool grants, which under the #198 deny-by-default rule blocks
-    /// every `tool-call` from the iframe.
+    /// Optional per-view `permissions.tools` allow-list; `None` blocks every `tool-call` from the iframe (deny by default).
     view_tools: Option<Vec<&'a str>>,
-    /// If true, spawn + wait for Running. Tests that only need the
-    /// registry (iframe HTML) can skip the spawn cost.
+    /// If true, spawn + wait for Running.
     run: bool,
 }
 
@@ -108,13 +82,12 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
 
     let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
-    // Shared repo so the dispatcher's writes are observable from the test.
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite repo"),
     );
-    // Seed plugin row so plugin_token_set's FK is satisfied on spawn.
+    // Seed the plugin row so plugin_token_set's FK is satisfied on spawn.
     repo.plugin_install(calm_server::model::NewPlugin {
         id: cfg.plugin_id.into(),
         version: "0.1.0".into(),
@@ -127,8 +100,6 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
     .expect("seed plugin row");
     let plugin_host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
-        // method-call clone is a coercion site for the `Arc<dyn Repo>` →
-        // `Arc<dyn RouteRepo>` upcast (PR #41 — kernel-narrow).
         repo.clone(),
         plugins_dir,
         plugins_data_dir,
@@ -151,8 +122,8 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
         Arc::new(DaemonClient::new_stub()),
         plugin_host,
         Arc::new(calm_server::state::CodexClient::new_stub()),
-        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: track_area_cache — same rationale
+        None,
+        None,
     );
 
     Fixture {
@@ -197,14 +168,8 @@ async fn body_to_json(resp: axum::http::Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-// ---------------------------------------------------------------------------
-// GET /api/plugins/:id/resources/:view_id
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn view_html_returns_body_and_mcp_app_mime() {
-    // Happy path: manifest declares a view, HTML file exists; GET returns
-    // 200 + body + the MCP-app MIME profile.
     let fx = boot(FxConfig {
         plugin_id: "m5.iframe.ok",
         permissions: json!({}),
@@ -234,7 +199,6 @@ async fn view_html_returns_body_and_mcp_app_mime() {
         .unwrap_or("")
         .to_string();
     assert_eq!(ctype, "text/html;profile=mcp-app");
-    // No CSP declared → no header on the response.
     assert!(
         resp.headers()
             .get(header::CONTENT_SECURITY_POLICY)
@@ -277,8 +241,7 @@ async fn view_html_emits_csp_header_when_manifest_declares_csp() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    // Order isn't guaranteed (HashMap iteration in the meta block), so just
-    // assert the three directives are present with their expected sources.
+    // Order isn't guaranteed (HashMap iteration in the meta block), so assert each directive separately.
     assert!(
         csp.contains("default-src 'self'"),
         "expected default-src directive, got: {csp}"
@@ -295,8 +258,6 @@ async fn view_html_emits_csp_header_when_manifest_declares_csp() {
 
 #[tokio::test]
 async fn view_html_404_when_plugin_not_installed() {
-    // Boot a fixture with a different plugin id — the requested id won't
-    // be in the registry, so we get a clean 404.
     let fx = boot(FxConfig {
         plugin_id: "m5.iframe.installed",
         permissions: json!({}),
@@ -350,10 +311,6 @@ async fn view_html_404_when_view_id_unknown() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-// ---------------------------------------------------------------------------
-// POST /api/plugins/:id/tool-call
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn tool_call_dispatches_neige_overlay_set_to_kernel() {
     let fx = boot(FxConfig {
@@ -363,8 +320,6 @@ async fn tool_call_dispatches_neige_overlay_set_to_kernel() {
         }),
         view_html: Some("<html></html>"),
         csp: None,
-        // #198 concern 5: per-view tool allow-list is now enforced. The
-        // iframe can only call neige.* tools declared here.
         view_tools: Some(vec!["neige.overlay.set"]),
         run: true,
     })
@@ -394,12 +349,9 @@ async fn tool_call_dispatches_neige_overlay_set_to_kernel() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "expected 200 from tool-call");
     let body = body_to_json(resp).await;
-    // dispatch returns a JSON Value — the overlay set handler responds with
-    // an `{"ok": true}` shape (or similar). We assert the route round-tripped
-    // _something_ rather than pinning the dispatcher's return shape.
+    // Assert the route round-tripped something rather than pinning the dispatcher's return shape.
     assert!(!body.is_null(), "expected non-null response body");
 
-    // And the side-effect should be visible in the repo.
     let overlays = fx
         .state
         .repo
@@ -415,8 +367,6 @@ async fn tool_call_dispatches_neige_overlay_set_to_kernel() {
 
 #[tokio::test]
 async fn tool_call_rejects_non_neige_namespace() {
-    // Even when the plugin is running with full permissions, the iframe
-    // can't reach the plugin's own server tools — §7.6 row 5.
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.gated",
         permissions: json!({
@@ -455,8 +405,6 @@ async fn tool_call_rejects_non_neige_namespace() {
 
 #[tokio::test]
 async fn tool_call_404_when_plugin_not_running() {
-    // Plugin row exists in the registry (we always seed one to boot the
-    // fixture), but we ask for a different id that isn't running anywhere.
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.installed-only",
         permissions: json!({}),
@@ -485,16 +433,8 @@ async fn tool_call_404_when_plugin_not_running() {
     assert_eq!(body["code"], "not_found");
 }
 
-// ---------------------------------------------------------------------------
-// #198 concern 5 — permissions.tools enforcement on tool-call
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn tool_call_403_when_tool_not_in_view_allowlist() {
-    // Plugin running with the *capability* to write overlays, but its
-    // view's `permissions.tools` only grants `neige.overlay.set` — the
-    // iframe must not be able to reach `neige.overlay.delete` (which the
-    // plugin process itself could call directly, but the iframe can't).
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.toolperm.scoped",
         permissions: json!({
@@ -531,8 +471,6 @@ async fn tool_call_403_when_tool_not_in_view_allowlist() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["code"], "forbidden_tool");
-    // The error string must name the offending tool so plugin authors can
-    // diagnose without grepping logs.
     let err = body["error"].as_str().unwrap_or("");
     assert!(
         err.contains("neige.overlay.delete"),
@@ -544,9 +482,6 @@ async fn tool_call_403_when_tool_not_in_view_allowlist() {
 
 #[tokio::test]
 async fn tool_call_403_when_view_declares_no_tools() {
-    // Manifest's view has no `permissions.tools` block at all. Deny-by-
-    // default kicks in — every neige.* call is rejected even if the plugin
-    // is running with broad capability grants.
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.toolperm.empty",
         permissions: json!({
@@ -590,11 +525,6 @@ async fn tool_call_403_when_view_declares_no_tools() {
 
 #[tokio::test]
 async fn tool_call_allows_prefix_glob_grant() {
-    // `neige.overlay.*` grants both `neige.overlay.set` and
-    // `neige.overlay.delete`. We verify by hitting `.set` (the dispatcher
-    // can actually service it given the overlay-write capability) — the
-    // glob form is the AppBridge-style way to grant a family of related
-    // tools without listing each explicitly.
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.toolperm.glob",
         permissions: json!({
@@ -635,8 +565,6 @@ async fn tool_call_allows_prefix_glob_grant() {
         "prefix glob should allow neige.overlay.set"
     );
 
-    // And a sibling family is still denied — `neige.card.update` doesn't
-    // match `neige.overlay.*`.
     let resp = app(fx.state.clone())
         .oneshot(
             Request::builder()

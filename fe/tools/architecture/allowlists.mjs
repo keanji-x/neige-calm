@@ -1,11 +1,4 @@
-/**
- * Architecture-rule exceptions. Entries must be repository-relative files,
- * never globs. Keep each reason beside its path and delete stale entries.
- *
- * The new tree currently needs no module-state or React-context exceptions.
- * App providers and UI primitives may be added here only when the owning file
- * exists and the exception has an architecture reason.
- */
+/** Architecture-rule exceptions. Entries must be repository-relative files, never globs; keep each reason beside its path. */
 export const moduleRuntimeStateExceptions = Object.freeze([
   Object.freeze({ path: 'web/src/main.tsx', reason: 'App bootstrap must retain the browser mount node while composing React.' }),
   Object.freeze({ path: 'web/src/app/router/idempotency-key.ts', reason: 'The fallback mint counter must outlive every panel mount: the conversation panel is a per-page hook, so a remount-scoped counter could reuse a Track conversation key.' }),

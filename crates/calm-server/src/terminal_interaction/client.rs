@@ -16,17 +16,14 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-/// The most recent observation captured on a connection (any format,
-/// including action readbacks). `scroll_offset` is the history offset it was
-/// captured at: a history view shares the live revision but not its text.
+/// The most recent observation captured on a connection. `scroll_offset` is the history
+/// offset it was captured at: a history view shares the live revision but not its text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LatestObservation {
     pub id: Uuid,
     pub revision: u64,
     pub scroll_offset: usize,
-    /// #1620 — the signal ring's `last_seq` when it was captured: the
-    /// per-connection baseline for `signals.since_previous_observation` and
-    /// for an observe `wait_for=signal`.
+    /// The signal ring's `last_seq` when it was captured: the per-connection signal baseline.
     pub last_seq: u64,
 }
 
@@ -35,30 +32,21 @@ pub struct ScreenState {
     pub control: Option<Uuid>,
     pub available: bool,
     pub exited: bool,
-    /// The program's exit status from `TerminalExited` (#1697): `None`
-    /// before the exit and when the runtime does not know the code.
+    /// `None` before the exit and when the runtime does not know the code.
     pub exit_code: Option<i32>,
     pub ack: u64,
     pub refused: u64,
     pub pending: Option<u64>,
-    /// Protocol errors received on this connection and the last one's
-    /// message: how a refused claim-if-unowned (#1620) is told apart from a
-    /// claim that is still in flight.
+    /// How a refused claim-if-unowned is told apart from a claim that is still in flight.
     pub protocol_errors: u64,
     pub last_protocol_error: Option<String>,
-    /// `OwnerChanged` deliveries that named this connection (control was
-    /// granted). A granted claim-if-unowned waits on this counter, not on
-    /// `owner == me`: a grant and a takeover applied back to back leave
-    /// `owner` naming the other client, and the claim must still read the
-    /// takeover instead of idling to its budget (#1620 R6).
+    /// `OwnerChanged` deliveries that named this connection. A granted claim waits on this counter,
+    /// not on `owner == me`: a grant and a takeover applied back to back leave `owner` naming the other client.
     pub grants: u64,
 }
-/// Whether a protocol error is the refusal of a pending input, so the input's
-/// fate is known and `pending` may become `refused`. Both input refusals and
-/// ownership-claim refusals use `NotOwner` and the wire carries no input seq,
-/// so the two input messages are matched exactly; every other error (a
-/// refused claim-if-unowned, a revoked claim scope, a lease exhaustion) leaves
-/// a pending input UNKNOWN and later writes stay fenced (#1620 R5).
+/// Whether a protocol error is the refusal of a pending input. Both input refusals and
+/// ownership-claim refusals use `NotOwner` and the wire carries no input seq, so the two input
+/// messages are matched exactly; every other error leaves a pending input UNKNOWN.
 pub fn refers_to_pending_input(code: ProtocolErrorCode, message: &str) -> bool {
     code == ProtocolErrorCode::NotOwner
         && (message == INPUT_REQUIRES_OWNER_ROLE || message == INPUT_REVOKED_BEFORE_WRITE)
@@ -106,15 +94,12 @@ pub struct Client {
     pub entry: Arc<RendererEntry>,
     pub screen: Arc<StdMutex<ScreenState>>,
     pub serial: Mutex<()>,
-    /// Inputs currently waiting for `serial` (queued behind an action still
-    /// in progress on this connection). Test observability only.
+    /// Inputs currently waiting for `serial`. Test observability only.
     serial_waiters: AtomicUsize,
     pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
     pub last_used: Arc<StdMutex<std::time::Instant>>,
     pub latest_observation: StdMutex<Option<LatestObservation>>,
-    /// Test seam (#1620): the reader takes this lock before applying each
-    /// daemon message, so a test can hold protocol delivery (an
-    /// `OwnerChanged`, a refusal) on this connection while the registry moves.
+    /// Test seam: the reader takes this lock before applying each daemon message.
     #[cfg(feature = "fixtures")]
     pub delivery_gate: Arc<Mutex<()>>,
     incoming: mpsc::Sender<ClientMsg>,
@@ -321,10 +306,7 @@ impl Client {
     pub async fn send(&self, message: ClientMsg) -> Result<()> {
         self.incoming.send(message).await.map_err(Into::into)
     }
-    /// #1725 — one input request with its write shape, through the pump's
-    /// command channel: the same `ClientMsg::Input` pass as [`Self::send`]
-    /// (authorization, one sequence, one ack), with the `PtyWrite` stamped
-    /// `shape` so a `submit` reaches the PTY as text, then the CR.
+    /// One input request with its write shape, so a `submit` reaches the PTY as text, then the CR.
     pub async fn send_input(&self, data: Vec<u8>, input_seq: u64, shape: WriteShape) -> Result<()> {
         self.commands
             .send(PumpCommand::Input {
@@ -335,10 +317,8 @@ impl Client {
             .await
             .map_err(Into::into)
     }
-    /// #1620 — ask the pump to claim control only if no other client holds
-    /// it (decided under the owner-registry lock). The pump's own verdict
-    /// arrives on the returned channel (R6); a grant is additionally
-    /// delivered as an `OwnerChanged` naming this client (`grants`).
+    /// Ask the pump to claim control only if no other client holds it (decided under the
+    /// owner-registry lock); a grant is additionally delivered as an `OwnerChanged` (`grants`).
     pub async fn claim_if_unowned(&self) -> Result<oneshot::Receiver<ClaimOutcome>> {
         let (reply, outcome) = oneshot::channel();
         self.commands
@@ -376,12 +356,8 @@ mod tests {
         }
     }
 
-    /// #1620 R5 — an ownership error never resolves an UNKNOWN input: the
-    /// reservation stays, so the next input is still fenced by
-    /// `state.pending.is_none()` ("prior input outcome unknown"). The
-    /// integration harness cannot leave `pending` set (its supervisor
-    /// acknowledges or refuses every write), so the classification is
-    /// pinned here on the state machine itself.
+    /// An ownership error never resolves an UNKNOWN input: the reservation stays and the next
+    /// input is still fenced.
     #[test]
     fn claim_refusal_leaves_a_pending_input_unknown() {
         let me = Uuid::new_v4();
@@ -435,8 +411,7 @@ mod tests {
         assert_eq!(state.pending, Some(3));
     }
 
-    /// #1620 R6 — a grant is counted even when folded with a later takeover,
-    /// which leaves `owner` naming the other client.
+    /// A grant is counted even when folded with a later takeover that leaves `owner` naming the other client.
     #[test]
     fn grants_count_a_folded_grant() {
         let me = Uuid::new_v4();

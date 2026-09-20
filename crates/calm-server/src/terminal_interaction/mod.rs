@@ -48,8 +48,8 @@ pub use wait_plan::{
     WaitFor, WaitPlan,
 };
 
-/// Baseline an action readback compares against: the projection revision and
-/// the signal seq read immediately before the physical action (#1618/#1620).
+/// Baseline an action readback compares against: the projection revision and the signal seq
+/// read immediately before the physical action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ReadbackBaseline {
     pub revision: u64,
@@ -60,11 +60,10 @@ pub(crate) struct ReadbackBaseline {
 /// previous observation on the connection; the rest are counted as dropped).
 pub const SIGNALS_PER_OBSERVATION: usize = 20;
 
-/// Reason of an `open claim:true` whose granted claim was taken over by
-/// another client before this connection observed the grant (#1620 R6).
+/// Reason of an `open claim:true` whose granted claim was taken over before this connection observed the grant.
 pub const CONTROL_TAKEN_BY_ANOTHER_CLIENT: &str = "terminal control was taken by another client";
 
-/// Test seam run inside the open+claim window (#1620), given the terminal id.
+/// Test seam run inside the open+claim window, given the terminal id.
 #[cfg(feature = "fixtures")]
 pub type ClaimWindowSeam =
     Box<dyn FnOnce(String) -> futures::future::BoxFuture<'static, ()> + Send>;
@@ -84,8 +83,7 @@ struct Observation {
     revision: u64,
     control: Option<Uuid>,
     surface: InputSurface,
-    /// #1666 S4 — what `allow_output_below_cursor` compares: the cursor and
-    /// one hash per rendered row (glyphs and presentation).
+    /// What `allow_output_below_cursor` compares: the cursor and one hash per rendered row.
     cursor: CursorSnapshot,
     row_hashes: Vec<u64>,
     created: Instant,
@@ -183,9 +181,7 @@ impl TerminalInteraction {
             control: scope_check(true),
         }
     }
-    /// The highest input sequence acknowledged on this identity's connection
-    /// to `terminal_id` (#1666: one sequence action advances it by exactly
-    /// one). Test observability only; no tool reports it.
+    /// The highest input sequence acknowledged on this identity's connection. Test observability only.
     #[doc(hidden)]
     pub async fn input_ack_sequence(&self, terminal_id: &str) -> Option<u64> {
         self.clients
@@ -195,9 +191,8 @@ impl TerminalInteraction {
             .find(|client| client.binding.terminal_id == terminal_id)
             .and_then(|client| client.screen.lock().ok().map(|state| state.ack))
     }
-    /// Whether a Planner input on `terminal_id` is reserved but not yet
-    /// acknowledged or refused (the write is parked at the physical barrier
-    /// or in flight). Test observability only; no tool reports it.
+    /// Whether a Planner input on `terminal_id` is reserved but not yet acknowledged or refused.
+    /// Test observability only.
     #[doc(hidden)]
     pub async fn input_pending(&self, terminal_id: &str) -> bool {
         self.clients.lock().await.values().any(|client| {
@@ -208,9 +203,7 @@ impl TerminalInteraction {
                     .is_ok_and(|state| state.pending.is_some())
         })
     }
-    /// Inputs on `terminal_id` waiting for their connection's serial lock
-    /// (queued behind an action still in progress). Test observability only;
-    /// no tool reports it.
+    /// Inputs on `terminal_id` waiting for their connection's serial lock. Test observability only.
     #[doc(hidden)]
     pub async fn serial_waiters(&self, terminal_id: &str) -> usize {
         self.clients
@@ -221,9 +214,8 @@ impl TerminalInteraction {
             .map(|client| client.serial_waiters())
             .sum()
     }
-    /// `scroll_to` (#1710) captures the screen scrolled to the matching
-    /// history row instead of `offset`, which must then be 0; the wait runs
-    /// first and the search reads the post-wait screen.
+    /// `scroll_to` captures the screen scrolled to the matching history row instead of `offset`,
+    /// which must then be 0; the wait runs first and the search reads the post-wait screen.
     pub async fn observe(
         &self,
         identity: &ToolCallIdentity,
@@ -234,16 +226,12 @@ impl TerminalInteraction {
         scroll_to: Option<ScrollTo>,
     ) -> Result<(Value, Option<Vec<u8>>)> {
         wait.validate()?;
-        // #1666 — a text wait is tested on the live viewport and returns that
-        // same viewport (the MCP layer refuses this as invalid params first);
-        // #1677 r16: so is a signal wait with text conditions.
+        // A text wait is tested on the live viewport and returns that same viewport.
         ensure!(
             !wait.tests_text() || offset == 0,
             "wait_for=text or text conditions observe the live viewport; scroll_offset must be 0"
         );
-        // #1710 — a history search derives its own offset and a text wait
-        // returns the live viewport: the two are exclusive (the MCP layer
-        // refuses both as invalid params first).
+        // A history search derives its own offset and a text wait returns the live viewport: exclusive.
         ensure!(
             scroll_to.is_none() || offset == 0,
             "scroll_to_text needs scroll_offset 0"
@@ -295,10 +283,8 @@ impl TerminalInteraction {
             ),
         };
         let waited = wait::wait(client, &wait, baseline, signal_baseline).await;
-        // The wait may span a task completion or an authority change, so the
-        // task status and controllability in the result are re-read after
-        // waiting; the binding they belong to must still be the one the wait
-        // started on, otherwise the observation is refused.
+        // The wait may span a task completion or an authority change, so task status and
+        // controllability are re-read after waiting against the binding the wait started on.
         let resolved =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let (control, exited, exit_code) = {
@@ -309,12 +295,8 @@ impl TerminalInteraction {
             ensure!(state.available, "terminal observation disconnected");
             (state.control, state.exited, state.exit_code)
         };
-        // #1709 — the exit instant is the renderer's once-only record
-        // (`RendererEntry::exit`, written before the exit is broadcast), the
-        // same for every connection, including one attached after the exit
-        // that only saw the replayed `TerminalExited`; read only once this
-        // connection's mirror says exited, so `exited`, `exit_code` and
-        // `exited_at_ms` are one consistent triple.
+        // The exit instant is the renderer's once-only record, read only once this connection's
+        // mirror says exited, so `exited`, `exit_code` and `exited_at_ms` are one consistent triple.
         let exited_at = match exited {
             true => client
                 .entry
@@ -332,15 +314,10 @@ impl TerminalInteraction {
                 .model_view
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?;
-            // #1709 — the capture instant, taken under the projection lock
-            // (before the frame is read and before rendering), so no output
-            // can advance the frame between the timestamp and the capture:
-            // the wall-clock time `observation_revision` refers to.
-            // Presentation only; no fence reads it.
+            // The capture instant is taken under the projection lock so no output can advance the
+            // frame between the timestamp and the capture. Presentation only; no fence reads it.
             let observed_at = std::time::SystemTime::now();
-            // #1710 — the search and the frame come from one lock
-            // acquisition, so the found row and the returned screen are
-            // one revision.
+            // The search and the frame come from one lock acquisition, so they are one revision.
             let (offset, found) = match &scroll_to {
                 Some(request) => {
                     let row = view.find_text(request.pattern(), request.occurrence())?;
@@ -352,15 +329,12 @@ impl TerminalInteraction {
             (frame, revision, found, observed_at)
         };
         let png = format.render_image(&self.raster, &frame).await?;
-        // Rendering takes time too: the emitted status is the last read.
         let resolved =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
         let changed_since_previous = previous.is_some_and(|prior| prior.revision != revision);
-        // #1620 — the listed signals and the recorded `last_seq` come from one
-        // ring read, so advancing this connection's baseline to `last_seq`
-        // cannot skip a signal that was never listed. Untrusted telemetry:
-        // presentation only, no fence reads it.
+        // The listed signals and the recorded `last_seq` come from one ring read, so advancing the
+        // baseline cannot skip a signal that was never listed. Untrusted telemetry; no fence reads it.
         let signals = client.entry.signals.since(
             previous
                 .map(|prior| prior.last_seq)
@@ -385,7 +359,6 @@ impl TerminalInteraction {
             metadata["scroll_to"] =
                 scroll_to::report(request, found, frame.history_rows, frame.scroll_offset);
         }
-        // Hashed outside the registry lock, from the capture already taken.
         let row_hashes = row_hashes(&frame);
         let mut observations = self
             .observations
@@ -420,21 +393,9 @@ impl TerminalInteraction {
         });
         Ok((metadata, png))
     }
-    /// #1620 `open claim:true`: claim control right after creation and return
-    /// the claim receipt with its readback. Unlike an explicit
-    /// `control claim`, an open never revokes a holder: the claim is applied
-    /// by the client pump only if no other client owns the terminal, decided
-    /// under the owner-registry lock (never from this connection's cached
-    /// owner, which lags the registry by the `OwnerChanged` delivery). A
-    /// human who claimed between the create and this call keeps control and
-    /// the claim fails with [`CONTROL_HELD_BY_ANOTHER_CLIENT`]; the same
-    /// holds for a replayed open (same request_id) after a human takeover.
-    /// Control already held by this connection returns the current
-    /// observation without a second claim — "held by this connection" is
-    /// also decided against the owner registry under its lock, never from
-    /// the cached `control` alone: after a takeover whose `OwnerChanged` this
-    /// connection has not applied yet, the cache still says owner while the
-    /// registry names the human, and the replay must report that takeover.
+    /// `open claim:true`: claim control right after creation. Unlike `control claim`, an open
+    /// never revokes a holder; both "unowned" and "held by this connection" are decided against
+    /// the owner registry under its lock, never from the cached `control`, which lags the registry.
     pub async fn claim_after_open(
         &self,
         identity: &ToolCallIdentity,
@@ -471,15 +432,12 @@ impl TerminalInteraction {
                         .await);
                 }
                 Some(_) => anyhow::bail!("{CONTROL_HELD_BY_ANOTHER_CLIENT}"),
-                // Released since the cache was written (its `OwnerChanged`
-                // still in flight): claim-if-unowned below decides.
+                // Released since the cache was written: claim-if-unowned below decides.
                 None => {}
             }
         }
         #[cfg(feature = "fixtures")]
         self.run_claim_window_seam(terminal).await;
-        // Readback waits compare against the screen and the signal seq as
-        // they were when the claim started (same as `control`).
         let signal_seq = client.entry.signals.last_seq();
         let baseline = client
             .entry
@@ -493,11 +451,8 @@ impl TerminalInteraction {
                 signal_seq,
             })
             .ok();
-        // The verdict is the pump's own, decided in the same registry-lock
-        // pass that applies the claim (#1620 R6): never inferred from the
-        // `OwnerChanged` deliveries this connection happens to see (another
-        // owner's change can arrive while the claim is still queued, and a
-        // grant folded with a later takeover never shows `owner == me`).
+        // The verdict is the pump's own, decided in the same registry-lock pass that applies the
+        // claim: never inferred from the `OwnerChanged` deliveries this connection happens to see.
         let budget = Duration::from_secs(7);
         let started = Instant::now();
         let outcome = tokio::time::timeout(budget, client.claim_if_unowned().await?)
@@ -508,9 +463,8 @@ impl TerminalInteraction {
             ClaimOutcome::Refused { reason } => anyhow::bail!("{reason}"),
             ClaimOutcome::Granted => {}
         }
-        // Granted: the `OwnerChanged` naming this connection mints the control
-        // id when applied. Wait for that application (counted even when a
-        // takeover is applied in the same go), then read what stands.
+        // Granted: the `OwnerChanged` naming this connection mints the control id when applied
+        // (counted even when a takeover is applied in the same go).
         client
             .wait(
                 |state| state.grants != grants_before,
@@ -532,11 +486,8 @@ impl TerminalInteraction {
             .with_observation(identity, &client, receipt, Some(readback), baseline)
             .await)
     }
-    /// Test seam (#1620): runs between the cached-owner read and the atomic
-    /// claim of the next claim-if-unowned — [`Self::claim_after_open`] (the
-    /// terminal id is not known before the open) or an `input claim:true`
-    /// (#1666) — so a test can let a human claim inside exactly that window.
-    /// Consumed once.
+    /// Test seam: runs between the cached-owner read and the atomic claim of the next
+    /// claim-if-unowned, so a test can let a human claim inside exactly that window. Consumed once.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
     pub fn set_claim_window_seam(&self, seam: ClaimWindowSeam) {
@@ -545,9 +496,7 @@ impl TerminalInteraction {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(seam);
     }
-    /// Test seam (#1620): hold protocol delivery on the Planner's connection
-    /// to `terminal_id` (the reader applies nothing until the guard drops).
-    /// `None` when this identity has no client on the terminal.
+    /// Test seam: hold protocol delivery on the Planner's connection to `terminal_id`.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
     pub async fn hold_delivery(
@@ -631,8 +580,6 @@ impl TerminalInteraction {
         .await?;
         let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
-        // Readback change/signal waits compare against the screen and the
-        // signal seq as they were when the control action started.
         let signal_seq = client.entry.signals.last_seq();
         let baseline = client
             .entry
@@ -658,8 +605,7 @@ impl TerminalInteraction {
                     .await?;
                 None
             }
-            // #1697: the shared release step; an unconfirmed release is a
-            // receipt fact (`release.status`), never the call's error.
+            // An unconfirmed release is a receipt fact (`release.status`), never the call's error.
             "release" => Some(self.release(&client).await),
             _ => anyhow::bail!("unknown terminal control action"),
         };

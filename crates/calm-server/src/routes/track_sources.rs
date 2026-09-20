@@ -1,12 +1,6 @@
-//! #1669 §2.4 — the browser's read of a track's captured sources:
-//! `GET /api/tracks/{id}/sources` (the list, no bodies) and
-//! `GET /api/tracks/{id}/sources/{source_id}` (one source with its body
-//! and anchors). Protected router, single-owner session (`Principal`), the
-//! same shape as `track_report_series`: unauthenticated is 401, a source
-//! of another track is 404.
-//!
-//! Every read is one autocommit statement on the pool (#930: no deferred
-//! read transaction in production code).
+//! The browser's read of a track's captured sources: `GET /api/tracks/{id}/sources`
+//! (the list, no bodies) and `GET /api/tracks/{id}/sources/{source_id}`. Every read is
+//! one autocommit statement on the pool.
 
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};

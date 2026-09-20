@@ -29,11 +29,6 @@ describe('ReportBacklinks', () => {
     expect(screen.getByRole('button').textContent).toBe('Reference resolver');
   });
 
-  /*
-   * The kernel answers per link. Two links in one sentence are two backlinks
-   * whose quotes are two overlapping slices of it — which is what made this
-   * module print the same words twice. One mention is one source *block*.
-   */
   it('counts mentions by source block, so two links in one paragraph are one', () => {
     render(<ReportBacklinks
       trackId="w-2"
@@ -48,14 +43,11 @@ describe('ReportBacklinks', () => {
     expect(row.textContent).toBe('Reference resolver2');
   });
 
-  // A column of ones says nothing; the count only appears when it does.
   it('shows no count for a single mention', () => {
     render(<ReportBacklinks trackId="w-2" backlinks={PAGE} onOpen={vi.fn()} />);
     expect(screen.getByRole('button').textContent).toBe('Reference resolver');
   });
 
-  // The sentence is still worth having — just not at three lines in a 280
-  // column. It rides along where it costs nothing until it is asked for.
   it('keeps the sentence as the row’s tooltip', () => {
     render(<ReportBacklinks trackId="w-2" backlinks={PAGE} onOpen={vi.fn()} />);
     expect(screen.getByRole('button').getAttribute('title'))
@@ -66,8 +58,7 @@ describe('ReportBacklinks', () => {
     const onOpen = vi.fn();
     render(<ReportBacklinks trackId="w-2" backlinks={PAGE} onOpen={onOpen} />);
     await userEvent.click(screen.getByRole('button'));
-    // `b-open` is where the sentence *is*, not `b-thesis` which is what it
-    // points at — a backlink takes you to the citation, not back to yourself.
+    // `b-open` is where the sentence is, not `b-thesis` which is what it points at.
     expect(onOpen).toHaveBeenCalledWith('w-1', 'b-open');
   });
 
@@ -76,7 +67,6 @@ describe('ReportBacklinks', () => {
     expect(screen.getByText('This track (self-reference)')).toBeTruthy();
   });
 
-  // A citation list that is quietly short is worse than one that admits it.
   it('says so when the page is truncated or a source could not be read', () => {
     render(<ReportBacklinks
       trackId="w-2"

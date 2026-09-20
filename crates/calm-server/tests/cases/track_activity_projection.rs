@@ -1,38 +1,5 @@
-//! #1722 §6 — the `kernel/track/activity` projector, driven through the
-//! production writers of every row it reads (design §4.2/§4.3) and asserted
-//! on the payload it writes.
-//!
-//! Fixture routes (which production writer each row comes from):
-//! * areas / tracks / cards: `area_create` / `track_create` /
-//!   `card_create_with_id_tx` (the card role is explicit);
-//! * sessions: `session_start_runtime_tx` — the mint route that links
-//!   `cards.session_id` (F2.6/F2.40); exits: `session_commit_exit` (the reaper
-//!   / PTY-exit writer, F2.31); a SILENT `UPDATE worker_sessions SET state`
-//!   only where the design row says so (`awaiting_input_overlay_with_
-//!   exited_session_is_quiet`, `reconcile_clears_stale_working_after_
-//!   session_exit`);
-//! * `last_thread_status` / `last_turn_completed_ms`: the feeder's own
-//!   writer `session_record_activity_by_thread` (F2.25) — for
-//!   `waitingOnApproval` there is no production SOURCE (F2.37), but the
-//!   writer is the feeder's;
-//! * tasks: a report with task fences + `tasks_rebuild_tx` (the projection
-//!   route, `pending`), then `task_claim_pending_tx` (`dispatched`),
-//!   `task_mark_running_tx` (`running` + `worker_card_id`),
-//!   `task_complete_from_worker_tx` / `task_fail_from_worker_tx`,
-//!   `task_mark_sub_track_running_tx`, the scheduler's
-//!   `reconcile_child_track_task`, and `task_recovery_allocate_tx` +
-//!   `tasks_rebuild_tx` for a new attempt; `tasks.child_track_id` is set by
-//!   an UPDATE like `tests/scheduler.rs` does (the bootstrap operation is the
-//!   only production writer);
-//! * `kernel/card/status`: the real `card_fsm` task fed a `claude.hook`
-//!   through `log_pure_event` (the ingest route's emit);
-//! * `operations` (isolated marker): one hand-inserted row, as
-//!   `task_recovery_preparation.rs` does — the driver is the only writer;
-//! * transcript rows (E1/E2): the outcome writer `harness_turn_outcome_put`
-//!   (`turn/completed`) and the item writer the run loop's `insert_item_row`
-//!   calls (the only `item/*` writer); both stamp the clock, so a fixture
-//!   UPDATE pins each row to a known instant afterwards (S1b's
-//!   `track_conversations.rs` does the same).
+//! The `kernel/track/activity` projector, driven through the production writers of every row
+//! it reads and asserted on the payload it writes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,10 +57,6 @@ use calm_types::task_recovery::{
 use calm_types::track_report::TrackReportPayload;
 use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
-
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
 
 struct Fx {
     repo: Arc<SqlxRepo>,
@@ -193,9 +156,8 @@ impl Fx {
             .unwrap();
     }
 
-    /// #1743 S1 — archive through the same `track_update_tx` UPDATE the
-    /// lifecycle rides on (K20: `lifecycle, terminal_at, archived_at,
-    /// updated_at` are one statement).
+    /// Archive through the same `track_update_tx` UPDATE the lifecycle rides on
+    /// (`lifecycle, terminal_at, archived_at, updated_at` are one statement).
     async fn archive(&self, track_id: &str, at_ms: i64) {
         self.repo_dyn
             .track_update(
@@ -209,12 +171,8 @@ impl Fx {
             .unwrap();
     }
 
-    /// #1743 S1 — the planner's last completed turn (P, design §4.1) as a
-    /// direct column write. The feeder's own writer
-    /// (`session_record_activity_by_thread`) refuses a superseded row, and
-    /// `superseded_planner_turn_still_ages` needs the value on exactly such
-    /// a row (written while it was live, then superseded), so the fixture
-    /// writes the column the feeder writes.
+    /// The planner's last completed turn (P) as a direct column write: the feeder's own writer refuses a
+    /// superseded row, and `superseded_planner_turn_still_ages` needs the value on exactly such a row.
     async fn planner_turn_completed(&self, session_id: &str, at_ms: Option<i64>) {
         sqlx::query("UPDATE worker_sessions SET last_turn_completed_ms = ?1 WHERE id = ?2")
             .bind(at_ms)
@@ -248,9 +206,7 @@ impl Fx {
         card.id.as_str().to_string()
     }
 
-    /// Mint a session through the production route (`cards.session_id`
-    /// follows). `handle_state_json = Some(harness snapshot)` makes it a
-    /// harness row (backend (i)).
+    /// Mint a session through the production route; `handle_state_json = Some(harness snapshot)` makes it a harness row.
     #[allow(clippy::too_many_arguments)]
     async fn session(
         &self,
@@ -297,8 +253,7 @@ impl Fx {
         serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap()
     }
 
-    /// The exit writer (reaper / PTY exit / restart compensation, F2.31):
-    /// `state`, `liveness='exited'`, `completed_at_ms = updated_at_ms = at`.
+    /// The exit writer: `state`, `liveness='exited'`, `completed_at_ms = updated_at_ms = at`.
     async fn exit_session(&self, session_id: &str, to: WorkerSessionState, at_ms: i64) {
         self.repo_dyn
             .session_commit_exit(
@@ -321,11 +276,7 @@ impl Fx {
             .unwrap();
     }
 
-    /// Plan tasks the way the planner does: the track's report card is
-    /// minted with the canonical initial payload, then `persist_report` (the
-    /// report edit boundary, author `user` — E7 ignores it) writes one task
-    /// fence per declaration and projects them as `pending`. `decls` are
-    /// `(key, kind, spawn, gate_json)`.
+    /// Plan tasks the way the planner does; `decls` are `(key, kind, spawn, gate_json)`.
     async fn plan_tasks(&self, track_id: &str, decls: &[(&str, &str, &str, Option<Value>)]) {
         let mut body = String::new();
         for (key, kind, spawn, gate) in decls {
@@ -387,8 +338,7 @@ impl Fx {
         format!("{track_id}:{key}")
     }
 
-    /// The frozen report-block closure of a task (the scheduler resolves it
-    /// at claim; recovery re-freezes the same refs).
+    /// The frozen report-block closure of a task.
     async fn closure(&self, track_id: &str, key: &str) -> Vec<calm_types::event::TaskContextRef> {
         TaskContextMonitor::new(
             self.repo_dyn.clone(),
@@ -401,8 +351,7 @@ impl Fx {
         .refs
     }
 
-    /// `pending → dispatched` (the scheduler's claim; `worker_card_id` stays
-    /// NULL, F2.22).
+    /// `pending → dispatched` (the scheduler's claim; `worker_card_id` stays NULL).
     async fn claim(&self, track_id: &str, key: &str, at_ms: i64) {
         self.claim_attempt(track_id, key, &Self::task_id(track_id, key), at_ms)
             .await;
@@ -473,9 +422,7 @@ impl Fx {
         assert_eq!(n, 1, "fail {key}");
     }
 
-    /// A new attempt for a failed key: the recovery allocation (the creation
-    /// route `recover_failed_task` calls after admission) + the projection
-    /// rebuild that inserts the new `pending` row. Returns the new attempt id.
+    /// A new attempt for a failed key: recovery allocation + projection rebuild. Returns the new attempt id.
     async fn recover(&self, track_id: &str, key: &str, previous_attempt_id: &str) -> String {
         let request = TaskRecoveryRequest {
             expected_attempt_id: previous_attempt_id.to_string(),
@@ -512,9 +459,7 @@ impl Fx {
             .unwrap()
     }
 
-    /// Emit a hook exactly as `/internal/claude/hook` does: `log_pure_event`
-    /// with the card-level actor and card scope. The real `card_fsm` task
-    /// (spawned by [`Fx::spawn_fsm`]) projects it onto `kernel/card/status`.
+    /// Emit a hook exactly as `/internal/claude/hook` does; the real `card_fsm` task projects it onto `kernel/card/status`.
     async fn claude_hook(
         &self,
         track_id: &str,
@@ -573,8 +518,7 @@ impl Fx {
         }
     }
 
-    /// Install a LIVE (unstarted) harness handle for `session_id` in the
-    /// registry — backend (i)'s in-process witness.
+    /// Install a LIVE (unstarted) harness handle for `session_id` in the registry.
     async fn install_live_harness(&self, track_id: &str, card_id: &str, session_id: &str) {
         let daemon = SharedCodexAppServer::new_stub(self.repo_dyn.clone());
         let (handle, _obs) = PlannerHarness::run_unstarted_for_test(
@@ -626,8 +570,7 @@ impl Fx {
         (runtime, scheduler)
     }
 
-    /// Seed a `kernel/track/activity` row directly (the projector's own
-    /// writer shape) — for the monotone high-water-mark test.
+    /// Seed a `kernel/track/activity` row directly (the projector's own writer shape).
     async fn seed_activity_overlay(&self, track_id: &str, payload: Value) {
         let overlay = NewOverlay {
             plugin_id: "kernel".into(),
@@ -674,8 +617,7 @@ impl Fx {
             .map(|o| serde_json::from_value(o.payload).unwrap())
     }
 
-    /// Bounded wait for the stored row to satisfy `pred` (the loop test's
-    /// only clock: 3 s, far inside the 30 s tick).
+    /// Bounded wait (3 s, far inside the 30 s tick) for the stored row to satisfy `pred`.
     async fn await_stored(
         &self,
         track_id: &str,
@@ -696,9 +638,7 @@ impl Fx {
         }
     }
 
-    /// One `turn/completed` transcript row through the outcome writer
-    /// (`harness::turn_outcome::record` → `harness_turn_outcome_put`);
-    /// `turn` is the turn object, `status` at its root. Returns the row id.
+    /// One `turn/completed` transcript row through the outcome writer. Returns the row id.
     async fn turn_outcome(
         &self,
         ws: &str,
@@ -713,8 +653,7 @@ impl Fx {
             .unwrap()
     }
 
-    /// One `item/*` transcript row through the item writer (the run loop's
-    /// `insert_item_row`). Returns the row id.
+    /// One `item/*` transcript row through the item writer. Returns the row id.
     #[allow(clippy::too_many_arguments)]
     async fn transcript_item(
         &self,
@@ -743,8 +682,7 @@ impl Fx {
             .unwrap()
     }
 
-    /// Pin a transcript row to a known instant AFTER the production writer
-    /// stamped the clock (the writers take no time argument).
+    /// Pin a transcript row to a known instant AFTER the production writer stamped the clock.
     async fn pin_transcript_row(&self, id: i64, at_ms: i64) {
         sqlx::query("UPDATE harness_items SET created_at_ms = ?1 WHERE id = ?2")
             .bind(at_ms)
@@ -754,8 +692,7 @@ impl Fx {
             .unwrap();
     }
 
-    /// A `harness.item.added` event as the run loop's `emit_item_added`
-    /// shapes it.
+    /// A `harness.item.added` event as the run loop's `emit_item_added` shapes it.
     fn item_added(track: &str, card: &str, method: &str, item_type: Option<&str>) -> Event {
         Event::HarnessItemAdded {
             worker_session_id: "ws-fixture".into(),
@@ -798,13 +735,6 @@ fn quiet(p: &ActivityPayload) -> bool {
     !p.working && p.attention == Attention::None && p.items.is_empty() && p.cards.is_empty()
 }
 
-// ---------------------------------------------------------------------------
-// W — the task clause (§4.2 W)
-// ---------------------------------------------------------------------------
-
-/// `dispatched` (worker card NULL, session `starting`, no thread status)
-/// → track `working`, no `cards[]` entry; the post-spawn `running` stamp
-/// → `cards[worker] = working` (§7 C3 / C3′).
 #[tokio::test]
 async fn dispatched_task_is_working_without_session_signal() {
     let f = fx().await;
@@ -847,8 +777,7 @@ async fn dispatched_task_is_working_without_session_signal() {
     assert_eq!(p.activity_at_ms, None, "nothing has completed yet");
 }
 
-/// F2.29: a shared-daemon worker rests at `running` + `active` after its
-/// task is `done` — the task row decides, the session does not.
+/// A shared-daemon worker rests at `running` + `active` after its task is `done` — the task row decides.
 #[tokio::test]
 async fn completed_worker_with_stale_active_status_is_not_working() {
     let f = fx().await;
@@ -872,7 +801,7 @@ async fn completed_worker_with_stale_active_status_is_not_working() {
     assert!(f.recompute(&t).await.working);
 
     f.complete(&t, "build", &worker, 4_000).await;
-    // The thread keeps reporting `active` after the report (F2.29/F2.36).
+    // The thread keeps reporting `active` after the report.
     f.stamp("th-w", 4_050, "active", None).await;
     let p = f.recompute(&t).await;
     assert!(
@@ -884,8 +813,7 @@ async fn completed_worker_with_stale_active_status_is_not_working() {
     assert_eq!(p.activity_at_ms, Some(4_000), "E3 = finished_at_ms");
 }
 
-/// `child_track_id` rows in `running` are the CHILD's work (G20): the
-/// parent shows nothing while the child's planner idles.
+/// `child_track_id` rows in `running` are the CHILD's work.
 #[tokio::test]
 async fn sub_track_parent_running_with_idle_child_is_not_working() {
     let f = fx().await;
@@ -932,12 +860,10 @@ async fn sub_track_parent_running_with_idle_child_is_not_working() {
     );
     assert!(p.cards.is_empty());
     assert_eq!(p.attention, Attention::None);
-    // The child itself: idle planner ⇒ not working either (§7 A0).
+    // The child itself: idle planner ⇒ not working either.
     assert!(!f.recompute(&child).await.working);
 }
 
-/// Twin: the child fails ⇒ `reconcile_child_track_task` fails the parent
-/// row ⇒ parent `attention = failed`, one `task` item with `card_id: null`.
 #[tokio::test]
 async fn sub_track_child_failed_marks_parent_failed() {
     let f = fx().await;
@@ -980,9 +906,7 @@ async fn sub_track_child_failed_marks_parent_failed() {
     assert_eq!(p.activity_at_ms, finished, "E3 counts the failure");
 }
 
-/// F2.39: the child is `done` and quiescent, the parent row carries a
-/// gate ⇒ `verifying` (still `child_track_id`, `worker_card_id` NULL) — the
-/// PARENT's own gate is running ⇒ `working`, no `cards[]` entry.
+/// The child is `done`; the parent row carries a gate ⇒ `verifying` is the PARENT's own gate run.
 #[tokio::test]
 async fn parent_gate_verifying_is_working() {
     let f = fx().await;
@@ -1032,11 +956,6 @@ async fn parent_gate_verifying_is_working() {
     assert_eq!(p.attention, Attention::None);
 }
 
-// ---------------------------------------------------------------------------
-// (ii) shared-daemon interactive cards
-// ---------------------------------------------------------------------------
-
-/// A never-task-bound `codex-create` card: `running` + `active` ⇒ working.
 #[tokio::test]
 async fn interactive_codex_card_active_is_working() {
     let f = fx().await;
@@ -1080,7 +999,7 @@ async fn null_thread_status_is_quiet() {
     assert!(quiet(&p), "{p:?}");
 }
 
-/// The feeder's fail-closed `"unknown"` (§4.2.1) is outside every predicate.
+/// The feeder's fail-closed `"unknown"` is outside every predicate.
 #[tokio::test]
 async fn unknown_thread_status_is_quiet() {
     let f = fx().await;
@@ -1099,8 +1018,7 @@ async fn unknown_thread_status_is_quiet() {
     f.stamp("th-i", 2_000, "unknown", None).await;
     let p = f.recompute(&t).await;
     assert!(quiet(&p), "{p:?}");
-    // …and `idle` after a completed turn is quiet too (the §7 B′ resting
-    // value), with E6 lighting the completion.
+    // …and `idle` after a completed turn is quiet too, with E6 lighting the completion.
     f.stamp("th-i", 3_000, "idle", Some(3_000)).await;
     let p = f.recompute(&t).await;
     assert!(!p.working);
@@ -1109,10 +1027,6 @@ async fn unknown_thread_status_is_quiet() {
     assert_eq!(p.activity_at_ms, Some(3_000), "E6");
 }
 
-/// §7 B′ (fixture-only source, F2.37): a running worker whose thread waits
-/// on approval ⇒ `attention = input`, `cards[card] = input` (folded over
-/// W's `working`), one `session` item with `card_id`; back to `active` ⇒
-/// working; `task.completed` ⇒ unread (E3).
 #[tokio::test]
 async fn waiting_on_approval_is_input() {
     let f = fx().await;
@@ -1163,8 +1077,6 @@ async fn waiting_on_approval_is_input() {
     assert_eq!(p.activity_at_ms, Some(5_000));
 }
 
-/// `waitingOnUserInput` on an INTERACTIVE card is input; `systemError` on a
-/// live session is failed (backend (ii) attention / failed columns).
 #[tokio::test]
 async fn interactive_codex_thread_status_input_and_system_error() {
     let f = fx().await;
@@ -1193,8 +1105,6 @@ async fn interactive_codex_thread_status_input_and_system_error() {
     assert_eq!(p.items[0].at_ms, 3_000);
 }
 
-/// An interactive card whose session died `failed` (signal-killed / spawn
-/// compensation) is red until the card is restarted or deleted.
 #[tokio::test]
 async fn interactive_card_failed_session_is_failed() {
     let f = fx().await;
@@ -1226,10 +1136,8 @@ async fn interactive_card_failed_session_is_failed() {
     );
 }
 
-/// (iii) the isolated marker is on the CARD (`operations.target_id`), not on
-/// `ws.spawn_op_id`: a re-minted isolated session (`spawn_op_id NULL`) with
-/// `waitingOnApproval` has no attention rule — judged by `spawn_op_id` it
-/// would fall into (ii) and light `input`.
+/// The isolated marker is on the CARD (`operations.target_id`), not on `ws.spawn_op_id`: a
+/// re-minted isolated session (`spawn_op_id NULL`) judged by `spawn_op_id` would fall into (ii).
 #[tokio::test]
 async fn reminted_isolated_session_is_not_shared_daemon() {
     let f = fx().await;
@@ -1259,14 +1167,10 @@ async fn reminted_isolated_session_is_not_shared_daemon() {
     let p = f.recompute(&t).await;
     assert_eq!(p.attention, Attention::None, "{p:?}");
     assert!(p.items.is_empty());
-    // …and `active` is not `working` for it either (W only, F2.33).
+    // …and `active` is not `working` for it either (W only).
     f.stamp("th-iso", 3_000, "active", None).await;
     assert!(!f.recompute(&t).await.working);
 }
-
-// ---------------------------------------------------------------------------
-// (i) harness rows — registry-gated `working`
-// ---------------------------------------------------------------------------
 
 async fn harness_track(f: &Fx, state: WorkerSessionState) -> (String, String, String) {
     let t = f.track("plan").await;
@@ -1288,8 +1192,7 @@ async fn harness_track(f: &Fx, state: WorkerSessionState) -> (String, String, St
     (t, planner, ws)
 }
 
-/// A `turn_pending` row with NO live handle (boot sweep before
-/// `boot_harnesses`, or a crashed loop) is not working.
+/// A `turn_pending` row with NO live handle (boot sweep before `boot_harnesses`, or a crashed loop).
 #[tokio::test]
 async fn turn_pending_row_without_live_harness_is_not_working() {
     let f = fx().await;
@@ -1299,7 +1202,6 @@ async fn turn_pending_row_without_live_harness_is_not_working() {
     assert!(p.cards.is_empty());
 }
 
-/// Twin: the same row with its handle installed IS working (§7 A1).
 #[tokio::test]
 async fn turn_pending_row_with_live_harness_is_working() {
     let f = fx().await;
@@ -1310,8 +1212,6 @@ async fn turn_pending_row_with_live_harness_is_working() {
     assert_eq!(card_state(&p, &planner), Some(CardState::Working));
 }
 
-/// §1's symptom: `planning` with an `idle` planner is NOT working, however
-/// live the run loop is.
 #[tokio::test]
 async fn planning_track_with_idle_planner_is_not_working() {
     let f = fx().await;
@@ -1321,7 +1221,6 @@ async fn planning_track_with_idle_planner_is_not_working() {
     assert!(quiet(&p), "{p:?}");
 }
 
-/// Q4: `starting` is not working even with a live handle.
 #[tokio::test]
 async fn starting_harness_is_not_working() {
     let f = fx().await;
@@ -1332,7 +1231,6 @@ async fn starting_harness_is_not_working() {
     assert!(p.cards.is_empty());
 }
 
-/// A wedged harness (`state='failed'`, F2.3) is a `session` failed item.
 #[tokio::test]
 async fn wedged_harness_is_failed() {
     let f = fx().await;
@@ -1344,10 +1242,6 @@ async fn wedged_harness_is_failed() {
     assert_eq!(p.items[0].source, ItemSource::Session);
     assert_eq!(p.items[0].id, ws);
 }
-
-// ---------------------------------------------------------------------------
-// (iv) claude PTY — FSM rows behind the live-session gate
-// ---------------------------------------------------------------------------
 
 async fn claude_interactive(f: &Fx) -> (String, String, String) {
     let t = f.track("claude").await;
@@ -1393,8 +1287,7 @@ async fn awaiting_input_overlay_with_running_session_is_input() {
     assert!(!p.working);
 }
 
-/// The live-session gate: the FSM row is untouched, the session leaves
-/// silently (no event, F2.31) ⇒ the next reconcile ignores the row.
+/// The session leaves silently (no event) ⇒ the next reconcile ignores the untouched FSM row.
 #[tokio::test]
 async fn awaiting_input_overlay_with_exited_session_is_quiet() {
     let f = fx().await;
@@ -1420,12 +1313,10 @@ async fn awaiting_input_overlay_with_exited_session_is_quiet() {
     assert_eq!(p.attention, Attention::None, "{p:?}");
     assert!(p.cards.is_empty());
     assert!(p.items.is_empty());
-    // The FSM row itself was not rewritten (Q2 = (c)).
+    // The FSM row itself was not rewritten.
     assert!(f.await_card_status(&card, "AwaitingInput").await > 0);
 }
 
-/// An interactive claude card in FSM `Working` with a live session is
-/// working; `Errored` is failed.
 #[tokio::test]
 async fn interactive_claude_fsm_working_and_errored() {
     let f = fx().await;
@@ -1447,12 +1338,7 @@ async fn interactive_claude_fsm_working_and_errored() {
     assert_eq!(card_state(&p, &card), Some(CardState::Failed));
 }
 
-// ---------------------------------------------------------------------------
-// The † exception (G19) and the S0 eligibility fence (B-M5)
-// ---------------------------------------------------------------------------
-
-/// Task `done@t1`, worker session minted at `t0 < t1`, later signal-killed
-/// (`failed`, F2.31) ⇒ quiet: the verdict belongs to finished work.
+/// Session minted at `t0 < t1 = done`, later signal-killed ⇒ quiet: the verdict belongs to finished work.
 #[tokio::test]
 async fn done_task_worker_signal_killed_is_quiet() {
     let f = fx().await;
@@ -1483,8 +1369,7 @@ async fn done_task_worker_signal_killed_is_quiet() {
     assert_eq!(p.activity_at_ms, Some(4_000));
 }
 
-/// Twin: the same done task, session still running, a permission prompt
-/// from work the user added in the same PTY ⇒ still `input`.
+/// Twin: session still running, a permission prompt from work the user added in the same PTY.
 #[tokio::test]
 async fn done_task_worker_permission_prompt_is_input() {
     let f = fx().await;
@@ -1523,10 +1408,8 @@ async fn done_task_worker_permission_prompt_is_input() {
     );
 }
 
-/// B-MAJOR-1 (v6): the task is `done@t1`; a restart AFTER that mints S2
-/// (`created_at_ms = t2 > t1`, `cards.session_id = S2`, F2.40); the
-/// replacement spawn fails and compensation writes S2 `failed` ⇒ red. This
-/// is new work's failure, not the finished task's exit.
+/// The task is `done@t1`; a restart AFTER that mints S2 (`created_at_ms = t2 > t1`) and the
+/// replacement spawn fails ⇒ red: new work's failure, not the finished task's exit.
 #[tokio::test]
 async fn done_task_replacement_session_failure_is_failed() {
     let f = fx().await;
@@ -1548,8 +1431,7 @@ async fn done_task_replacement_session_failure_is_failed() {
     f.claim(&t, "build", 2_000).await;
     f.mark_running(&t, "build", &worker, 3_000).await;
     f.complete(&t, "build", &worker, 4_000).await;
-    // The restart: the still-active S1 is written `exited`, S2 is minted
-    // with the current clock and takes over `cards.session_id`.
+    // The restart: S1 is written `exited`, S2 is minted with the current clock and takes over `cards.session_id`.
     f.exit_session(&s1, WorkerSessionState::Exited, 5_000).await;
     let s2 = f
         .session(
@@ -1580,12 +1462,8 @@ async fn done_task_replacement_session_failure_is_failed() {
     assert_eq!(p.items[0].at_ms, 7_000);
 }
 
-/// (1) attempt A's worker session stays `failed` (the reaper's exit
-/// writer), recovery allocates B, B completes ⇒ `none`, `activity_at` = B's
-/// `finished_at_ms`. (2) the empty set: the fold applied to A's session
-/// with NO current row for A's card must NOT suppress its `failed` — the
-/// exception needs at least one `done` row (v7 A-MIN3), so an S0 fence
-/// removed together with a vacuous `all()` cannot stay green.
+/// (2) the empty set: the fold applied to A's session with NO current row for A's card must NOT
+/// suppress its `failed` — the exception needs at least one `done` row.
 #[tokio::test]
 async fn superseded_failed_attempt_session_is_not_actionable() {
     let f = fx().await;
@@ -1649,7 +1527,7 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
         1
     );
     tx.commit().await.unwrap();
-    // A's row is still `failed` in `tasks`, just not current (F2.22).
+    // A's row is still `failed` in `tasks`, just not current.
     assert_eq!(f.task_status(&Fx::task_id(&t, "build")).await.0, "failed");
 
     let p = f.recompute(&t).await;
@@ -1663,9 +1541,7 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
     assert!(!p.working);
     assert_eq!(p.activity_at_ms, Some(8_000));
 
-    // (2) the empty set. Read the real rows, then hand the fold A's session
-    // as if the S0 fence had admitted it: no current row names card A, so
-    // the exception does not hold and A's `failed` is a failed item.
+    // (2) the empty set: hand the fold A's session as if the S0 fence had admitted it.
     let rows = f.projector.read_rows(&t).await.unwrap().unwrap();
     assert!(
         rows.sessions.iter().all(|s| s.id != ws_a),
@@ -1705,10 +1581,6 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
             .any(|i| i.source == ItemSource::Session && i.id == ws_a)
     );
 }
-
-// ---------------------------------------------------------------------------
-// #1743 S1 — terminal-phase filter and failure aging (design §4.1)
-// ---------------------------------------------------------------------------
 
 /// A worker card with a `failed` current attempt (`calm.task.fail` at
 /// `at_ms`) whose session is still `running`. Returns `(card, session)`.
@@ -1758,9 +1630,7 @@ async fn planner_on(f: &Fx, t: &str, card: &str, ws: &str) -> (String, String) {
     (planner, session)
 }
 
-/// Rule 1: a `done` track has nothing waiting on a person — the failed
-/// attempt (task item + the same failure's `session` item) and the card
-/// verdict all go; the E3 high-water mark stays (rule 3).
+/// The failed attempt's task item, `session` item and card verdict all go; the E3 high-water mark stays.
 #[tokio::test]
 async fn done_track_failed_attempt_is_quiet() {
     let f = fx().await;
@@ -1791,9 +1661,7 @@ async fn done_track_failed_attempt_is_quiet() {
     assert_eq!(stored.attention, Attention::None);
 }
 
-/// Rule 1, the archived half: `archived_at IS NOT NULL` filters the same
-/// way whatever the lifecycle says (the tick no longer enumerates the
-/// track, but an event-driven recompute still reaches it).
+/// `archived_at IS NOT NULL` filters the same way whatever the lifecycle says; an event-driven recompute still reaches an archived track.
 #[tokio::test]
 async fn archived_track_failed_attempt_is_quiet() {
     let f = fx().await;
@@ -1821,9 +1689,7 @@ async fn archived_track_failed_attempt_is_quiet() {
     assert!(!p.working);
 }
 
-/// The twin of rule 1: `done → planning` through `track_update_tx` (the
-/// user reopening) brings the failed attempt back — the filter is a
-/// function of the row, not a one-way write.
+/// `done → planning` through `track_update_tx` brings the failed attempt back — the filter is a function of the row, not a one-way write.
 #[tokio::test]
 async fn reopened_track_failed_attempt_is_red_again() {
     let f = fx().await;
@@ -1856,13 +1722,7 @@ async fn reopened_track_failed_attempt_is_red_again() {
     assert_eq!(card_state(&p, &worker), Some(CardState::Failed));
 }
 
-/// Rule 1 filters `items` / `attention` / the `input`+`failed` card
-/// verdicts ONLY: a task still `running` on a done track keeps `working`
-/// and its `cards[] = working` entry (S2 is what ends it, not the fold).
-/// The same-card variant (review r1, A MINOR-1 / codex P2): a card whose
-/// `failed` verdict out-ranked its `working` one (`build` failed and `test`
-/// running on the SAME worker) keeps the working verdict too — the filter
-/// removes the attention verdict, not the card.
+/// The filter removes the attention verdict, not the card: a card whose `failed` verdict out-ranked its `working` one keeps the working verdict.
 #[tokio::test]
 async fn done_track_running_task_is_still_working() {
     let f = fx().await;
@@ -1946,10 +1806,7 @@ async fn done_track_running_task_is_still_working() {
     );
 }
 
-/// Rule 1, the `input` form of the same-card corner (codex P2's
-/// construction): a done track, a task running on X, and X's codex session
-/// `waitingOnApproval` — the input verdict out-ranked the working one; the
-/// filter drops the input, `cards == [X = working]`, `attention = none`.
+/// The `input` form of the same-card corner: X's codex session `waitingOnApproval` out-ranked the working verdict; the filter drops the input, `cards == [X = working]`.
 #[tokio::test]
 async fn done_track_input_on_a_running_worker_is_still_working() {
     let f = fx().await;
@@ -1995,8 +1852,7 @@ async fn done_track_input_on_a_running_worker_is_still_working() {
     );
 }
 
-/// Rule 2, the counted side: a failure newer than the planner's last
-/// completed turn (`at_ms > P`) is still red.
+/// A failure newer than the planner's last completed turn (`at_ms > P`) is still red.
 #[tokio::test]
 async fn failed_after_planner_turn_is_red() {
     let f = fx().await;
@@ -2014,9 +1870,7 @@ async fn failed_after_planner_turn_is_red() {
     assert!(!p.working);
 }
 
-/// Rule 2, the aged side: a failure at or before the planner's last
-/// completed turn (`at_ms <= P`) has been handled — no item, no card
-/// verdict, `attention = none`; its `finished_at_ms` still feeds E3.
+/// A failure at or before the planner's last completed turn (`at_ms <= P`) is handled: no item, no card verdict; its `finished_at_ms` still feeds E3.
 #[tokio::test]
 async fn failed_before_planner_turn_is_quiet() {
     let f = fx().await;
@@ -2050,8 +1904,7 @@ async fn failed_before_planner_turn_is_quiet() {
     assert!(p.items.is_empty());
 }
 
-/// Rule 2 with P NULL: a planner that has never completed a turn has
-/// handled nothing — the failure stays red (the `map_or(true, …)` arm).
+/// P NULL: a planner that has never completed a turn has handled nothing — the failure stays red.
 #[tokio::test]
 async fn null_planner_turn_keeps_failed_red() {
     let f = fx().await;
@@ -2072,16 +1925,8 @@ async fn null_planner_turn_keeps_failed_red() {
     assert_eq!(card_state(&p, &worker), Some(CardState::Failed));
 }
 
-/// P is the max over EVERY planner-role session of the track, superseded
-/// ones included: a planner restart (new session, column NULL) does not
-/// bring an already-handled failure back.
-///
-/// Also the one place rule 3 ("E3 counts an aged failure") is asserted at
-/// the moment it could be false: P = 5000 is written BEFORE the failure and
-/// before the FIRST recompute, so there is no stored mark to stick, E6
-/// excludes the harness row (the evidence max is not 5000), and
-/// `activity_at_ms == 4000` can only come from E3 counting the aged
-/// failure (review r1, A MINOR-2).
+/// P is the max over EVERY planner-role session, superseded ones included. Also asserts that E3 counts an aged
+/// failure: P is written before the failure and the first recompute, so `activity_at_ms == 4000` can only come from E3.
 #[tokio::test]
 async fn superseded_planner_turn_still_ages() {
     let f = fx().await;
@@ -2148,9 +1993,7 @@ async fn superseded_planner_turn_still_ages() {
     );
 }
 
-/// Rule 2 ages `task` / `session` failures only: the track's own
-/// `lifecycle = failed` item is a phase, and a later planner turn does not
-/// age it.
+/// The track's own `lifecycle = failed` item is a phase; a later planner turn does not age it.
 #[tokio::test]
 async fn lifecycle_failed_item_is_not_aged() {
     let f = fx().await;
@@ -2173,9 +2016,7 @@ async fn lifecycle_failed_item_is_not_aged() {
     assert_eq!(p.items[0].at_ms, updated_at);
 }
 
-/// An aged failure takes its `cards[card] = failed` with it: the same
-/// worker card's running attempt then folds to `working`, not `failed`
-/// (`failed > working` would otherwise win).
+/// The same worker card's running attempt then folds to `working` (`failed > working` would otherwise win).
 #[tokio::test]
 async fn aged_failure_drops_its_card_verdict() {
     let f = fx().await;
@@ -2230,13 +2071,7 @@ async fn aged_failure_drops_its_card_verdict() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Completion-class evidence and the monotone high-water mark (§4.3)
-// ---------------------------------------------------------------------------
-
-/// E5/E6 carry the "never task-bound" predicate: a worker's later turn end
-/// (`last_turn_completed_ms = t2 > t1`) and a `stop` hook on the worker
-/// card do NOT relight a result E3 already lit at `t1`.
+/// E5/E6 carry the "never task-bound" predicate: a worker's later turn end and stop hook do NOT relight a result E3 already lit.
 #[tokio::test]
 async fn worker_turn_end_after_task_done_does_not_relight() {
     let f = fx().await;
@@ -2267,9 +2102,7 @@ async fn worker_turn_end_after_task_done_does_not_relight() {
     assert_eq!(p.activity_at_ms, Some(t1), "one result, one unread: {p:?}");
 }
 
-/// Twin: the same columns on a never-task-bound card DO light: E6 alone
-/// gives `t2`; a stop hook on a second interactive card gives the event's
-/// own `at`.
+/// Twin: the same columns on a never-task-bound card DO light.
 #[tokio::test]
 async fn interactive_card_turn_end_lights_unread() {
     let f = fx().await;
@@ -2315,10 +2148,7 @@ async fn interactive_card_turn_end_lights_unread() {
     assert!(at > t2);
 }
 
-/// E1, row-level: the `turn/completed` transcript row whose `status` is
-/// `completed` is the activity instant (its `created_at_ms`); an
-/// `interrupted` twin written LATER does not move it; a `failed` turn is an
-/// ending (S1b's predicate excludes only `interrupted`).
+/// A `failed` turn is an ending; only `interrupted` is excluded.
 #[tokio::test]
 async fn e1_turn_completed_row_is_the_activity_instant() {
     let f = fx().await;
@@ -2375,10 +2205,6 @@ async fn e1_turn_completed_row_is_the_activity_instant() {
     );
 }
 
-/// E2, row-level: the `item/completed` `mcpToolCall` row of a successful
-/// `calm.user.notify` is the activity instant; twins with `item.error`
-/// set, `item.status = 'failed'`, the `item/started` half of the same call,
-/// or another tool do not move it.
 #[tokio::test]
 async fn e2_user_notify_completed_row_is_the_activity_instant() {
     let f = fx().await;
@@ -2441,11 +2267,7 @@ async fn e2_user_notify_completed_row_is_the_activity_instant() {
     }
 }
 
-/// The production E1/E2 statements (the `pub const`s the projector runs)
-/// enter the transcript table through `idx_transcript_card_method_created_at`
-/// — one index range per card, no scan (design §4.3, F2.35). S1b's plan
-/// test in `calm-truth` pins an E1-SHAPED statement; this one pins the
-/// text the projector actually executes.
+/// The production E1/E2 statements enter the transcript table through `idx_transcript_card_method_created_at` — one index range per card, no scan.
 #[tokio::test]
 async fn e1_e2_query_plans_use_the_transcript_index() {
     let f = fx().await;
@@ -2473,8 +2295,6 @@ async fn e1_e2_query_plans_use_the_transcript_index() {
     }
 }
 
-/// E4's actor filter: the user's own `draft → planning` does not move the
-/// high-water mark.
 #[tokio::test]
 async fn user_lifecycle_edge_does_not_advance_activity() {
     let f = fx().await;
@@ -2521,9 +2341,7 @@ async fn user_lifecycle_edge_does_not_advance_activity() {
     assert!(!p.working, "planning is a phase, not activity");
 }
 
-/// Positive twin: `working → reviewing` by `KernelDispatcher` through
-/// `auto_transition_if_current_in_tx` (the gate-result adapter's shape)
-/// advances it to the event's `at`.
+/// Positive twin: `working → reviewing` by `KernelDispatcher` advances it to the event's `at`.
 #[tokio::test]
 async fn kernel_lifecycle_edge_advances_activity() {
     let f = fx().await;
@@ -2584,9 +2402,6 @@ async fn kernel_lifecycle_edge_advances_activity() {
     assert_eq!(p.items[0].card_id, None);
 }
 
-/// The tick reads every unarchived track: a task that started and ended
-/// between two ticks on a track with no overlay and no delivered event is
-/// still found and lit.
 #[tokio::test]
 async fn quiet_track_short_task_completed_between_ticks_is_unread() {
     let f = fx().await;
@@ -2607,8 +2422,7 @@ async fn quiet_track_short_task_completed_between_ticks_is_unread() {
     assert_eq!(p.activity_at_ms, Some(4_000));
     assert!(!p.working);
 
-    // An archived track leaves the tick set: a later completion there is
-    // not picked up by `reconcile_all`.
+    // An archived track leaves the tick set.
     let archived = f.track("archived").await;
     let worker2 = f
         .card(&archived, "card-w2", "codex", CardRole::Worker)
@@ -2630,8 +2444,6 @@ async fn quiet_track_short_task_completed_between_ticks_is_unread() {
     );
 }
 
-/// Session exits emit no event (F2.4/F2.31): the tick clears a `working`
-/// left by an interactive card whose session left silently.
 #[tokio::test]
 async fn reconcile_clears_stale_working_after_session_exit() {
     let f = fx().await;
@@ -2663,8 +2475,6 @@ async fn reconcile_clears_stale_working_after_session_exit() {
     assert!(p.cards.is_empty());
 }
 
-/// M10: a seeded high-water mark survives a recomputation that finds no
-/// (or only older) evidence.
 #[tokio::test]
 async fn activity_at_is_monotone() {
     let f = fx().await;
@@ -2697,12 +2507,8 @@ async fn activity_at_is_monotone() {
     assert_eq!(f.stored(&t).await.unwrap().activity_at_ms, Some(big));
 }
 
-/// M10 across versions: a stored payload THIS binary cannot parse (an
-/// `attention` value it does not know, plus a key it does not know — what a
-/// newer binary leaves behind) still keeps its high-water mark; the
-/// conclusions are recomputed and the row is rewritten in this shape. The
-/// mark is read from the raw JSON, not from the parsed struct — otherwise a
-/// downgrade would re-seed it and light a spurious unread.
+/// A stored payload THIS binary cannot parse (what a newer binary leaves behind) still keeps its
+/// high-water mark; the mark is read from the raw JSON, otherwise a downgrade would re-seed it.
 #[tokio::test]
 async fn high_water_mark_survives_an_unparseable_stored_payload() {
     let f = fx().await;
@@ -2739,12 +2545,7 @@ async fn high_water_mark_survives_an_unparseable_stored_payload() {
     assert_eq!(stored.attention, Attention::None);
 }
 
-// ---------------------------------------------------------------------------
-// Write discipline and the registry
-// ---------------------------------------------------------------------------
-
-/// An unchanged recomputation writes nothing and emits nothing (F2.19);
-/// a change writes exactly one `overlay.set` with the track scope.
+/// A change writes exactly one `overlay.set` with the track scope.
 #[tokio::test]
 async fn unchanged_recompute_emits_no_event() {
     let f = fx().await;
@@ -2782,13 +2583,8 @@ async fn unchanged_recompute_emits_no_event() {
     ));
 }
 
-/// Review r1 (Codex P2): the reads and the write share no snapshot. A track
-/// deleted between them has already lost every overlay row in its delete
-/// transaction (`routes/tracks.rs` / `Repo::track_delete`); the late write
-/// must not put an orphan `activity` row back (no FK; the reconcile
-/// enumerates live tracks only, so it would be permanent) and must emit
-/// nothing. The write half runs with the payload the read half computed
-/// BEFORE the delete — the exact race.
+/// The reads and the write share no snapshot: a track deleted between them has already lost every
+/// overlay row, and the late write must not put an orphan `activity` row back (no FK) nor emit.
 #[tokio::test]
 async fn deleted_track_is_not_resurrected_by_a_late_write() {
     let f = fx().await;
@@ -2814,8 +2610,7 @@ async fn deleted_track_is_not_resurrected_by_a_late_write() {
         cards: folded.cards,
     };
     assert!(late.working, "the late write would say working: {late:?}");
-    // The delete lands: card overlays, track overlays, sessions, tasks,
-    // the track row — one transaction.
+    // The delete lands: card overlays, track overlays, sessions, tasks, the track row — one transaction.
     f.repo_dyn.track_delete(&t).await.unwrap();
     let mut rx = f.events.subscribe();
     // The write half, with the pre-delete payload.
@@ -2840,9 +2635,7 @@ async fn deleted_track_is_not_resurrected_by_a_late_write() {
     assert!(rx.try_recv().is_err());
 }
 
-/// Every payload the projector writes passes the `activity` entry of the
-/// overlay kind registry (§4.5), so the wire shape and the validator cannot
-/// drift apart.
+/// Every payload the projector writes passes the `activity` entry of the overlay kind registry.
 #[tokio::test]
 async fn activity_payload_passes_the_overlay_registry() {
     let f = fx().await;
@@ -2896,7 +2689,7 @@ async fn activity_payload_passes_the_overlay_registry() {
         .validate("activity", &stored.payload)
         .expect("the projector's payload is the registry's shape");
     assert_eq!(stored.payload["schemaVersion"], json!(1));
-    // Every §4.1 key is present, nothing else.
+    // Every key is present, nothing else.
     let mut keys: Vec<&String> = stored.payload.as_object().unwrap().keys().collect();
     keys.sort();
     assert_eq!(
@@ -2912,15 +2705,14 @@ async fn activity_payload_passes_the_overlay_registry() {
     );
 }
 
-/// The wake-up table (§4.3): which events resolve to which track.
+/// Which events resolve to which track.
 #[tokio::test]
 async fn wakeup_events_resolve_to_their_track() {
     let f = fx().await;
     let t = f.track("w").await;
     let card = f.card(&t, "card-w", "codex", CardRole::Worker).await;
     let mut rx = f.events.subscribe();
-    // A card-status overlay.set with a degraded (System) scope resolves via
-    // the card.
+    // A card-status overlay.set with a degraded (System) scope resolves via the card.
     f.spawn_fsm();
     f.claude_hook(&t, &card, ("PreToolUse", "pre_tool_use"), json!({}))
         .await;
@@ -2972,10 +2764,7 @@ async fn wakeup_events_resolve_to_their_track() {
     assert_eq!(f.projector.track_for_event(&own).await, None);
 }
 
-/// The wake-up table (design §4.3), every row, table-driven: which events
-/// resolve to which track, and the ones that must not wake anything
-/// (`track.deleted`; the projector's own row; the `item/started` half of a
-/// tool call, review r1 A-MIN4; a card no row knows).
+/// The wake-up table, every row, table-driven, including the events that must not wake anything.
 #[tokio::test]
 async fn wakeup_table_resolves_every_row_of_the_design() {
     let f = fx().await;
@@ -3239,10 +3028,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
     }
 }
 
-/// The loop end to end: `run()` (boot sweep + bus wake-ups + tick) is
-/// spawned, a `task.dispatched` envelope arrives on the bus, and the
-/// overlay flips to `working` within a bounded wait — far inside the 30 s
-/// tick, so only the event path can have done it.
+/// The overlay flips to `working` within a bounded wait far inside the 30 s tick, so only the event path can have done it.
 #[tokio::test]
 async fn projector_loop_recomputes_on_task_dispatched() {
     let f = fx().await;
@@ -3257,13 +3043,11 @@ async fn projector_loop_recomputes_on_task_dispatched() {
     )
     .expect("sqlite-backed repo");
     let loop_task = tokio::spawn(looped.run());
-    // The boot sweep (the interval's first tick completes immediately)
-    // seeds a quiet row.
+    // The boot sweep (the interval's first tick completes immediately) seeds a quiet row.
     let seeded = f.await_stored(&t, "the boot sweep's row", |_| true).await;
     assert!(quiet(&seeded), "{seeded:?}");
 
-    // A silent claim (the fixture's claim appends no event), then the
-    // wake-up the scheduler's claim transaction would have carried.
+    // A silent claim (the fixture's claim appends no event), then the wake-up the scheduler's claim would have carried.
     f.claim(&t, "build", 2_000).await;
     assert!(
         !f.stored(&t).await.unwrap().working,

@@ -14,10 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use support::worker_flow as wf;
 
-/// Repro for #820: the codex rollout file appears AFTER the lazy-retry budget
-/// elapses, while the runtime is still alive. A correct source should keep
-/// waiting (like the Claude source) and ingest the conversation once the file
-/// shows up. The hypothesis is that the codex source instead exits permanently.
+/// The codex rollout file appears AFTER the lazy-retry budget elapses while the runtime is still alive; the source must keep waiting.
 #[tokio::test]
 async fn codex_rollout_source_ingests_file_created_after_budget_while_alive() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -58,7 +55,6 @@ async fn codex_rollout_source_ingests_file_created_after_budget_while_alive() {
         ],
     );
 
-    // A correct, liveness-gated source ingests the item once the file appears.
     wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move {

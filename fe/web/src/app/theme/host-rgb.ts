@@ -13,7 +13,7 @@ export const DARK_THEME_RGB: ThemeRgb = Object.freeze({
   bg: Object.freeze([15, 20, 24] as const),
 });
 
-/** Synchronous escape hatch for card creation paths that must not subscribe to ThemeContext (#177). */
+/** Synchronous escape hatch for card creation paths that must not subscribe to ThemeContext. */
 export function readHostThemeRgb(root: Pick<HTMLElement, 'dataset'> = document.documentElement): ThemeRgb {
   return root.dataset.theme === 'light' ? LIGHT_THEME_RGB : DARK_THEME_RGB;
 }

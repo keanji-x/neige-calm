@@ -134,9 +134,6 @@ async fn runtime_get_projectable_for_card_from_pool_returns_deferred_planner_pla
     assert_eq!(actual.id, placeholder_id);
 }
 
-// Phase 1 supersedes the old active worker session before inserting the
-// deferred placeholder, so the card's projectable session is the
-// placeholder until Phase 2 binds a real thread.
 #[tokio::test]
 async fn projectable_deferred_planner_gap_with_active_runtime_returns_placeholder() {
     let repo = fresh_repo().await;
@@ -277,9 +274,6 @@ async fn terminals_orphaned_reaps_terminal_when_card_has_no_active_session() {
     );
 }
 
-/// #1701 (a) — a `terminal`-kind card whose session exited AND whose row
-/// records the exit (`exit_code` or `signal_killed`) follows its card: the
-/// exit is a recorded fact, not crash residue, so the sweeper leaves the row.
 #[tokio::test]
 async fn terminals_orphaned_keeps_exited_terminal_card_with_recorded_exit() {
     let repo = fresh_repo().await;
@@ -315,8 +309,6 @@ async fn terminals_orphaned_keeps_exited_terminal_card_with_recorded_exit() {
     );
 }
 
-/// #1701 (b) — the same terminal-kind card whose session exited WITHOUT a
-/// recorded exit on the row is still residue (crashed writer, partial write).
 #[tokio::test]
 async fn terminals_orphaned_reaps_exited_terminal_card_without_recorded_exit() {
     let repo = fresh_repo().await;
@@ -343,9 +335,6 @@ async fn terminals_orphaned_reaps_exited_terminal_card_without_recorded_exit() {
     );
 }
 
-/// #1701 (c) — the exception is scoped to `cards.kind = 'terminal'`: a codex
-/// card's terminal with a recorded exit and no active session is reaped as
-/// today (memory hygiene for many tasks; a separate decision).
 #[tokio::test]
 async fn terminals_orphaned_reaps_exited_non_terminal_card_with_recorded_exit() {
     let repo = fresh_repo().await;

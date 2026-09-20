@@ -208,11 +208,7 @@ async fn insert_run_entries(
     .await?;
     for run in runs {
         if track_fs_view::is_reserved_run_key(&run.idempotency_key) {
-            // `track_file` errors for reserved run keys because a live read can
-            // fail without side effects. Track VCS is in an event write tx, so
-            // it skips the pathological key instead of rolling back unrelated
-            // events; byte parity with `track_file` is intentionally waived for
-            // that invariant violation.
+            // Skip rather than error: this runs inside an event write tx and must not roll back unrelated events.
             tracing::error!(
                 target: "track_vcs",
                 idempotency_key = %run.idempotency_key,
@@ -276,8 +272,7 @@ pub(super) async fn cards_for_track_tx(
     track_id: &TrackId,
     visibility: &CardVisibility,
 ) -> Result<Vec<CardProjection>> {
-    // Keep this ORDER BY aligned with SqlxRepo::cards_by_track in db/sqlite.rs;
-    // tests pin the sort ASC, id ASC tie-break for duplicate worker run keys.
+    // ORDER BY must stay aligned with SqlxRepo::cards_by_track.
     let rows = sqlx::query(
         r#"SELECT id, track_id, kind, sort, payload, title, role, deletable, created_at, updated_at,
                   EXISTS (
@@ -469,10 +464,6 @@ pub(super) fn card_meta_json(card: &CardProjection) -> Result<BlobContent> {
 }
 
 fn card_meta_value(card: &CardProjection) -> Result<crate::track_fs_dto::TrackFsCardMeta> {
-    // Hard-erroring on an unknown role is intentional and unreachable in practice:
-    // migration 0037_drop_plain_role.sql backfilled 'plain'→'worker' and added
-    // insert/update triggers restricting cards.role to worker|planner|reportcard, so
-    // any parse failure here is DB corruption worth failing loudly on.
     let role = serde_json::from_value::<CardRole>(Value::String(card.role.clone()))?;
     Ok(track_fs_view::card_meta_value(&card.card, role))
 }

@@ -43,68 +43,24 @@ pub type SharedRenderPlane = Arc<StdMutex<RenderPlane>>;
 pub type SharedOwnerRegistry = Arc<StdMutex<OwnerRegistry>>;
 pub type SharedExitState = Arc<StdMutex<Option<TerminalExitInfo>>>;
 
-// Mirrors `scrollback` in xterm.js Terminal config at
-// `web/src/XtermView.tsx` — must be kept in lockstep so the client's
-// local ring isn't smaller than the server cap (which would silently
-// trim daemon-retained history on the way to the user's screen).
+// Mirrors `scrollback` in xterm.js Terminal config at `web/src/XtermView.tsx`; must be kept
+// in lockstep so the client's local ring isn't smaller than the server cap.
 pub(crate) const SCROLLBACK_MAX_LINES: usize = 2000;
 const SPAWN_CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Teardown grace between SIGTERM and SIGKILL for a renderer's pty child.
-///
-/// An upper bound rather than a fixed sleep — but the event it is cut short by
-/// is scoped to the **pty leader**, not to the whole process group (#993 F3,
-/// R3-B): teardown escalates to SIGKILL as soon as the leader's exit has been
-/// *persisted*, so a group member that is still winding down loses whatever is
-/// left of the window. That is deliberate, and it is a real (accepted) change
-/// from the old unconditional `sleep`:
-///
-/// * every member already received the SIGTERM at t=0 — the window only ever
-///   bought them time, it never delivered anything extra later;
-/// * the leader is the pty session leader, so its exit SIGHUPs the foreground
-///   group anyway; a member still alive after that has ignored both TERM and
-///   HUP and would not have used the remaining ~195 ms either;
-/// * keeping the common case at single-digit ms is what makes the serial batch
-///   teardown loops (track delete, sweeper, area delete) cheap.
-///
-/// The unconditional SIGKILL to the *group* after this window is what
-/// guarantees those survivors are still reaped
-/// (`drop_entry_kills_process_group_members_that_outlive_the_leader`).
+/// Teardown grace between SIGTERM and SIGKILL for a renderer's pty child. An upper bound cut
+/// short as soon as the pty leader's exit has been persisted; the unconditional SIGKILL to the
+/// group afterwards is what reaps members that outlive the leader.
 const TERM_TO_KILL_GRACE: Duration = Duration::from_millis(200);
 
-/// Bounded wait, after SIGKILL, for the supervisor attach reader to observe
-/// `Exited` and persist it (`terminal_set_exit`, session-projection
-/// completion, plan-task hook) before `abort_tasks()` cuts it off.
-///
-/// Issue #993 R1: the supervisor holds `Exited` back for up to
-/// `PTY_DRAIN_GRACE` after the child is reaped (see
-/// `calm_proc_supervisor::PTY_DRAIN_GRACE`), so an unconditional
-/// abort-right-after-kill can lose the terminal's exit row whenever a
-/// grandchild keeps the pty slave open. The wait is on the attach reader's
-/// own completion rather than a sleep, so it costs nothing on the common path
-/// (the reader is usually already finished) and it does not silently depend on
-/// the two constants happening to be ordered — but the const asserts below
-/// make a degenerate ordering a compile error anyway.
+/// Bounded wait, after SIGKILL, for the attach reader to observe `Exited` and persist it before
+/// `abort_tasks()` cuts it off: the supervisor holds `Exited` back for up to `PTY_DRAIN_GRACE`
+/// after the child is reaped.
 const EXIT_PERSIST_GRACE: Duration = Duration::from_millis(1000);
 
-/// What the budget actually has to cover, in order:
-///
-///   `PTY_DRAIN_GRACE` (supervisor holds `Exited` back)
-/// + reap → seal → broadcast → UDS write → attach-reader wakeup
-/// + `terminal_set_exit` + session lifecycle observation
-/// + the plan-task completion hook (one more DB transaction).
-///
-/// Only the first term is a compile-time constant; everything after it is
-/// runtime work whose latency depends on the DB and on scheduler pressure, so
-/// **no** const assert can prove the budget is sufficient — the terminal-exit
-/// sweep is the real backstop, and `await_exit_persisted` WARNs on timeout so a
-/// too-small budget is visible in the logs rather than silent.
-///
-/// What the asserts below *do* buy: they fail the build if someone shrinks the
-/// margin to the point where the constant part alone eats most of the budget.
-/// The plain `>` the first version used would have been satisfied by
-/// `PTY_DRAIN_GRACE = 999ms`, which is why the ratio and the absolute headroom
-/// are both pinned here (#993 R2/F4).
+/// Only `PTY_DRAIN_GRACE` is a compile-time constant; the persistence work after it is runtime
+/// latency, so no const assert can prove the budget sufficient — the terminal-exit sweep is the
+/// backstop. The asserts pin both the ratio and the absolute headroom.
 const _: () = assert!(
     EXIT_PERSIST_GRACE.as_millis() >= calm_proc_supervisor::PTY_DRAIN_GRACE.as_millis() * 4,
     "terminal teardown must give the post-drain persistence work several times the \
@@ -116,16 +72,14 @@ const _: () = assert!(
      grace for reap → broadcast → terminal_set_exit → projection → task hook (#993 R1)"
 );
 
-/// One work item on the PTY-writer channel. Carries the bytes to write
-/// plus the metadata needed to ack the originating connection after the
-/// write completes.
+/// One work item on the PTY-writer channel, with what is needed to ack the originating connection.
 #[derive(Clone)]
 pub struct PtyWrite {
     pub authority: WriteAuthority,
     pub data: Vec<u8>,
     pub input_seq: u64,
     pub ack: Option<mpsc::UnboundedSender<DaemonMsg>>,
-    /// #1725 — one physical write, or text then CR (a kernel `submit`).
+    /// One physical write, or text then CR (a kernel `submit`).
     pub shape: WriteShape,
 }
 
@@ -166,9 +120,7 @@ pub struct TerminalExitInfo {
     pub code: Option<i32>,
     pub pty_seq: u32,
     pub render_rev: u32,
-    /// #1709 — when the renderer recorded the exit: the one instant every
-    /// connection reports as `exited_at_ms`, whether it was attached at the
-    /// exit or received the replayed `TerminalExited` later.
+    /// When the renderer recorded the exit: the one instant every connection reports as `exited_at_ms`.
     pub exited_at: std::time::SystemTime,
 }
 
@@ -178,25 +130,18 @@ pub struct RendererEntry {
     pub supervisor_sock: PathBuf,
     pub handle: RendererHandle,
     config: RendererConfig,
-    /// Set exactly once when the supervisor's attach stream delivers
-    /// `Exited`. Late client pumps replay this immediately after
-    /// `ServerHello` because broadcast receivers do not retain history.
+    /// Set exactly once when the attach stream delivers `Exited`. Late client pumps replay this
+    /// after `ServerHello` because broadcast receivers do not retain history.
     pub exit: SharedExitState,
-    /// #1620 hook signals for this terminal (untrusted advisory telemetry;
-    /// see `signals.rs`). Lives with the renderer generation: a respawned
-    /// terminal starts an empty ring.
+    /// Hook signals for this terminal (untrusted advisory telemetry). A respawned terminal starts an empty ring.
     pub signals: SignalRing,
     initial_event_rx: StdMutex<Option<broadcast::Receiver<DaemonMsg>>>,
     exited_rx: StdMutex<Option<oneshot::Receiver<Option<i32>>>>,
-    /// Held apart from `tasks` because teardown must let it *finish its exit
-    /// arm* rather than abort it: this is the task that persists the terminal
-    /// exit (#993 R1). Teardown never awaits this handle — see
-    /// `exit_persisted`.
+    /// Held apart from `tasks` because teardown must let it finish its exit arm rather than abort
+    /// it: this is the task that persists the terminal exit.
     attach_task: StdMutex<Option<JoinHandle<()>>>,
-    /// Flipped by the attach reader once it has run the whole `Exited` arm
-    /// (persist + projection + task hook). A closed channel means the reader
-    /// ended *without* persisting — an attach-stream read error breaks its
-    /// loop exactly like a clean exit does (#993 R3-A).
+    /// Flipped by the attach reader once it has run the whole `Exited` arm. A closed channel means
+    /// the reader ended WITHOUT persisting (an attach-stream read error breaks its loop too).
     exit_persisted: watch::Receiver<bool>,
     tasks: StdMutex<Vec<JoinHandle<()>>>,
 }
@@ -206,16 +151,13 @@ pub struct RendererEntry {
 enum ExitPersistWait {
     /// The reader signalled that the exit reached the database.
     Persisted,
-    /// The reader is gone and never signalled: nothing can persist the exit
-    /// any more, the terminal-exit sweep is the only remaining backstop.
+    /// The reader is gone and never signalled: the terminal-exit sweep is the only remaining backstop.
     ReaderGone,
     /// The reader is still running; the budget expired first.
     Timeout,
 }
 
-/// Evidence returned to destructive callers. `ExitPersisted` means the
-/// supervisor attach stream observed `Exited` and the reader completed its DB
-/// write; `Unverified` must keep the owning workspace in place.
+/// Evidence returned to destructive callers; `Unverified` must keep the owning workspace in place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RendererDropOutcome {
     Missing,
@@ -224,11 +166,8 @@ pub(crate) enum RendererDropOutcome {
 }
 
 impl RendererEntry {
-    /// Sever the supervisor output stream the way a lost attach connection
-    /// does: the attach reader is aborted and its drop guard invalidates the
-    /// projection (`terminal output source disconnected`) through
-    /// `RenderPlane::invalidate_observation`. Test observability only; the
-    /// child process and its teardown are untouched.
+    /// Sever the supervisor output stream the way a lost attach connection does. Test observability
+    /// only; the child process and its teardown are untouched.
     #[doc(hidden)]
     pub fn disconnect_output_source_for_test(&self) {
         if let Ok(mut attach) = self.attach_task.lock()
@@ -271,18 +210,9 @@ impl RendererEntry {
         signal_child_direct(&self.supervisor_sock, &self.proc_id, sig).await;
     }
 
-    /// Waits (bounded) for the supervisor attach reader to *persist* the
-    /// terminal exit.
-    ///
-    /// #993 R3-A: this deliberately does **not** await the reader's join
-    /// handle. That handle completes on any loop exit, including the
-    /// `Err(_) => break` arm taken when the attach stream dies (supervisor
-    /// gone, connection reset) — a path that writes nothing to the database.
-    /// Treating it as success made a degraded teardown indistinguishable from
-    /// a healthy one, silently collapsed the SIGTERM→SIGKILL grace to zero and
-    /// suppressed the WARN that is supposed to make the degradation visible.
-    ///
-    /// Never aborts anything; `abort_tasks` stays the only abort site.
+    /// Waits (bounded) for the attach reader to persist the terminal exit. Deliberately does NOT
+    /// await the reader's join handle: that completes on any loop exit, including the attach-stream
+    /// error arm, which writes nothing. Never aborts anything.
     async fn await_exit_persisted(&self, budget: Duration) -> ExitPersistWait {
         let mut rx = self.exit_persisted.clone();
         if *rx.borrow_and_update() {
@@ -329,17 +259,11 @@ pub struct RendererSpawnError(#[from] anyhow::Error);
 pub struct TerminalRendererRegistry {
     entries: StdMutex<HashMap<String, Arc<RendererEntry>>>,
     repo: Option<Arc<dyn RouteRepo>>,
-    /// Issue #644 M2 — terminal-exit completion bundle, installed by the
-    /// dispatcher construction site (it owns the EventBus + role caches
-    /// the hook needs; the registry is built earlier in boot). `None`
-    /// until installed; entries spawned before installation simply skip
-    /// the task hook (boot spawns nothing before `AppState` completes).
+    /// Terminal-exit completion bundle, installed by the dispatcher construction site. `None` until
+    /// installed; entries spawned before installation skip the task hook.
     task_hook: StdMutex<Option<Arc<crate::scheduler::TerminalTaskHook>>>,
-    /// #1620 — server-owned directory of generated Planner terminal hook
-    /// settings files (`<data_dir>/terminal-hooks/<card_id>.json`). Installed
-    /// at boot next to the adapters that write the files; teardown deletes
-    /// only paths derived from this directory and the card id, never a path
-    /// read from a terminal row's env.
+    /// Server-owned directory of generated Planner terminal hook settings files. Teardown deletes
+    /// only paths derived from this directory and the card id, never a path read from a terminal row's env.
     hook_settings_dir: StdMutex<Option<PathBuf>>,
 }
 
@@ -362,9 +286,7 @@ impl TerminalRendererRegistry {
         })
     }
 
-    /// Install the issue #644 M2 terminal-exit completion bundle. Called
-    /// by the dispatcher construction funnel; idempotent (last write
-    /// wins — every production caller passes an equivalent bundle).
+    /// Install the terminal-exit completion bundle; idempotent, last write wins.
     pub fn set_task_hook(&self, hook: Arc<crate::scheduler::TerminalTaskHook>) {
         if let Ok(mut guard) = self.task_hook.lock() {
             *guard = Some(hook);
@@ -375,15 +297,14 @@ impl TerminalRendererRegistry {
         self.task_hook.lock().ok().and_then(|guard| guard.clone())
     }
 
-    /// Install the #1620 hook settings directory (idempotent, last write wins).
+    /// Install the hook settings directory (idempotent, last write wins).
     pub fn set_hook_settings_dir(&self, dir: PathBuf) {
         if let Ok(mut guard) = self.hook_settings_dir.lock() {
             *guard = Some(dir);
         }
     }
 
-    /// Delete the generated hook settings file for `card_id`, if this
-    /// registry owns a settings directory. The path is derived here from the
+    /// Delete the generated hook settings file for `card_id`; the path is derived from the
     /// server-owned directory and the card id only.
     pub fn remove_hook_settings(&self, card_id: &str) {
         let Some(dir) = self.hook_settings_dir.lock().ok().and_then(|g| g.clone()) else {
@@ -392,10 +313,8 @@ impl TerminalRendererRegistry {
         crate::terminal_hooks::remove_settings_file(&dir, card_id);
     }
 
-    /// Append a hook signal to the CURRENT renderer entry of `terminal_id`,
-    /// under the registry lock so a concurrent drop/ensure cannot route it to
-    /// a superseded generation. Returns the seq, `None` when there is no live
-    /// entry or the delivery was a duplicate.
+    /// Append a hook signal to the CURRENT renderer entry, under the registry lock so a concurrent
+    /// drop/ensure cannot route it to a superseded generation. `None` when no live entry or duplicate.
     pub fn push_signal(
         &self,
         terminal_id: &str,
@@ -408,8 +327,7 @@ impl TerminalRendererRegistry {
         entry.signals.push(idempotency_key, incoming, now_ms)
     }
 
-    /// Spawn a PTY proc on the supervisor and stand up the in-process
-    /// renderer. Returns a handle the WS pump (in 3b) will use.
+    /// Spawn a PTY proc on the supervisor and stand up the in-process renderer.
     pub async fn ensure(
         &self,
         cfg: RendererConfig,
@@ -455,9 +373,8 @@ impl TerminalRendererRegistry {
                 {
                     return Err(anyhow::anyhow!("concurrent renderer identity changed; retain owned launch for reconciliation").into());
                 }
-                // A read-only caller has no handoff proof. A fresh caller still
-                // owns its observed PID and must finish the same durable handoff
-                // even when the UI installed this exact renderer first.
+                // A read-only caller has no handoff proof; a fresh caller still owns its observed PID and
+                // must finish the same durable handoff even when the UI installed this renderer first.
                 existing.clone()
             } else {
                 tracing::info!(terminal_id=%entry.terminal_id, "terminal renderer registry inserted entry");
@@ -512,9 +429,8 @@ impl TerminalRendererRegistry {
         let event_rx = event_tx.subscribe();
         let (supervisor_tx, _supervisor_rx) = mpsc::unbounded_channel::<SupervisorControl>();
         let (_exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
-        // No attach reader in a fixture entry: drop the sender right away so a
-        // teardown sees `ReaderGone` (honest) instead of waiting out a budget
-        // for a reader that does not exist.
+        // No attach reader in a fixture entry: drop the sender right away so a teardown sees
+        // `ReaderGone` instead of waiting out a budget.
         let exit_persisted = watch::channel(false).1;
         let entry = Arc::new(RendererEntry {
             terminal_id: cfg.terminal_id.clone(),
@@ -554,30 +470,9 @@ impl TerminalRendererRegistry {
             .unwrap_or(false)
     }
 
-    /// Tear down a renderer: drop the broadcast, signal Term/Kill to
-    /// the supervisor via a fresh UDS connection, and remove from the map.
-    ///
-    /// # Latency contract (#993 F3) — read this before calling it in a loop
-    ///
-    /// * Common case (child dies on SIGTERM): returns as soon as the attach
-    ///   reader has persisted `Exited`, typically single-digit ms. The old
-    ///   unconditional `sleep(TERM_TO_KILL_GRACE)` is gone — note that this
-    ///   shortens the TERM→KILL window for *other members* of the child's
-    ///   process group too; see `TERM_TO_KILL_GRACE` for why that is accepted.
-    /// * Worst case (child ignores SIGTERM *and* a grandchild holds the pty
-    ///   slave past the supervisor's drain grace):
-    ///   `TERM_TO_KILL_GRACE + EXIT_PERSIST_GRACE` = **1.2 s**.
-    ///
-    /// The batch teardown paths — `routes::tracks` track-delete,
-    /// `terminal_sweeper::sweep`, `routes::areas` — call this serially, once
-    /// per terminal, so a track of N terminals costs up to `N * 1.2 s` in the
-    /// worst case. That is accepted deliberately rather than fanned out: those
-    /// loops interleave per-card repo writes and event emission whose ordering
-    /// the callers rely on, and every one of them is a rare
-    /// administrative/janitor path with no interactive latency budget. The
-    /// worst case also requires a wedged child *per terminal*; the realistic
-    /// batch cost is N × single-digit ms. If a fan-out ever becomes necessary,
-    /// the unit to parallelise is this call, not the surrounding repo work.
+    /// Tear down a renderer: drop the broadcast, signal Term/Kill to the supervisor, remove from
+    /// the map. Returns as soon as the exit is persisted (single-digit ms typically); worst case
+    /// `TERM_TO_KILL_GRACE + EXIT_PERSIST_GRACE`. Batch callers run this serially on purpose.
     pub async fn drop_entry(&self, terminal_id: &str) {
         let _ = self.drop_entry_with_outcome(terminal_id).await;
     }
@@ -614,27 +509,19 @@ impl TerminalRendererRegistry {
         tracing::info!(terminal_id, "terminal renderer registry dropping entry");
         let term_at = tokio::time::Instant::now();
         entry.shutdown_signal(ProcSignal::Term).await;
-        // Wait for the exit to be *persisted* instead of sleeping the full
-        // grace: a child that dies on SIGTERM cuts the teardown from a fixed
-        // 200ms to single-digit ms, which is what keeps the serial batch paths
-        // cheap (#993 F3). A child that ignores SIGTERM costs exactly the old
-        // 200ms.
+        // Wait for the exit to be persisted instead of sleeping the full grace; a child that ignores
+        // SIGTERM costs exactly the grace.
         let mut outcome = entry.await_exit_persisted(TERM_TO_KILL_GRACE).await;
         if outcome == ExitPersistWait::ReaderGone {
-            // #993 R3-A: the reader died early (attach stream error), so
-            // nothing will ever persist this exit — but the SIGTERM→SIGKILL
-            // window belongs to the *child*, not to our bookkeeping. Burn what
-            // is left of it instead of escalating instantly; only the reader
-            // is degraded here, the child may still be exiting cleanly.
+            // The reader died early, so nothing will ever persist this exit — but the SIGTERM→SIGKILL
+            // window belongs to the child; burn what is left of it instead of escalating instantly.
             tokio::time::sleep_until(term_at + TERM_TO_KILL_GRACE).await;
         }
-        // Unconditional, even when the child is already gone: this signals the
-        // whole *process group*, so it is also what reaps group members that
-        // outlived the SIGTERM. Skipping it would leak them.
+        // Unconditional, even when the child is already gone: this signals the whole process group,
+        // which is what reaps members that outlived the SIGTERM.
         entry.shutdown_signal(ProcSignal::Kill).await;
-        // #993 R1: `Exited` can lag the kill by up to the supervisor's pty
-        // drain grace, and the attach reader is what persists it. Let it
-        // finish before the abort — but only while it is still alive.
+        // `Exited` can lag the kill by up to the supervisor's pty drain grace; let the reader finish
+        // before the abort, but only while it is still alive.
         if outcome == ExitPersistWait::Timeout {
             outcome = entry.await_exit_persisted(EXIT_PERSIST_GRACE).await;
         }
@@ -874,10 +761,8 @@ async fn ensure_entry(
         };
 
     let (exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
-    // Teardown's persistence signal. The sender lives inside the attach reader
-    // task, so it is dropped the moment that task ends — which is how
-    // `await_exit_persisted` tells "ended without persisting" apart from
-    // "still working" (#993 R3-A).
+    // The sender lives inside the attach reader task, so it is dropped the moment that task ends —
+    // which is how `await_exit_persisted` tells "ended without persisting" apart from "still working".
     let (exit_persisted_tx, exit_persisted) = watch::channel(false);
     let attach_task = attach_reader::spawn_supervisor_attach_reader(
         attach_conn,
@@ -977,7 +862,6 @@ where
     }
 }
 
-// Copied from crates/calm-session/src/bin/daemon.rs::signal_child_direct as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 async fn signal_child_direct(supervisor_sock: &Path, proc_id: &str, sig: ProcSignal) {
     let mut conn = match UnixStream::connect(supervisor_sock).await {
         Ok(conn) => conn,

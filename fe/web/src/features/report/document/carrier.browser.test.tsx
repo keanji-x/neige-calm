@@ -1,35 +1,9 @@
-/*
- * A document that carries its own maintenance contract, measured (#1185).
- *
- * A report may keep its policy — which sections it has, how to write them — in
- * a leading HTML comment: dropped wherever the document is rendered, readable
- * to everything that reads the body source. `sanitizeAstPolicy` already removes
- * the node, so jsdom can prove the *text* never appears (see `public.test.tsx`).
- *
- * What jsdom cannot prove is the part a reader actually sees. The block is a
- * grid item in a `row-gap` grid, so an emptied block still holds a row open and
- * every report opens with a band of blank space. That is a layout claim, and
- * jsdom computes no layout: `display`, `row-gap` and every box it reports are
- * inert. Hence this file.
- *
- * Note for whoever changes `ProseBlock`: returning `null` for an empty AST and
- * returning an empty fragment produce *the same DOM* — React emits no children
- * either way, so that early return carries nothing and deleting it leaves every
- * assertion here green. The load-bearing production change on this front end is
- * the `.row:has(> .block:empty)` rule in `document.module.css`, and this is the
- * test that covers it.
- *
- * The rule is on the ROW because the row is `display: contents`: the block and
- * its backlink sidenote are siblings in the same grid, so hiding only the block
- * leaves a lone `◂ N` in the gutter beside nothing. The third case below is
- * that one.
- */
+/* A document carrying its maintenance contract in a leading HTML comment, measured: an emptied block is still a grid item holding a `row-gap` row open. The load-bearing rule is `.row:has(> .block:empty)` in `document.module.css`; the row is `display: contents`, so the backlink sidenote is a sibling grid item. */
 import { render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
-/* The whole cascade, before the CSS Module — see the import-order note in
-   `features/chat/thread/thread.browser.test.tsx`. */
+/* The whole cascade before the CSS Module: layer order is first-come. */
 import '../../../styles/entry.css';
 
 import type { ReportBlock } from '../../../../../core/domain/report.ts';
@@ -89,9 +63,7 @@ describe('a contract block takes no room', () => {
 
     const block = document.querySelector('#b_1') as HTMLElement;
     expect(block.childNodes.length).toBe(0);
-    // The row is what carries `display: none`; the block's own computed
-    // `display` stays `block` inside a hidden subtree, which is why this asks
-    // the row and then asks the engine whether the block renders at all.
+    // The row carries `display: none`; the block's own computed `display` stays `block` inside a hidden subtree.
     expect(getComputedStyle(block.parentElement!).display).toBe('none');
     expect(block.checkVisibility()).toBe(false);
     expect(block.getBoundingClientRect().height).toBe(0);
@@ -104,9 +76,7 @@ describe('a contract block takes no room', () => {
     const withContract = topInFrame(document.querySelector('#b_2')!);
     document.body.replaceChildren();
 
-    // The control: the same document without the contract. The reader must not
-    // be able to tell the two apart, and before the `:empty` rule they differed
-    // by one `row-gap` (`--space-8`).
+    // The control: the same document without the contract.
     render(<Page blocks={[prose('b_2', SECTION)]} />);
     const withoutContract = topInFrame(document.querySelector('#b_2')!);
 
@@ -114,13 +84,7 @@ describe('a contract block takes no room', () => {
   });
 
   it('takes its backlink sidenote with it, and still costs the next section nothing', async () => {
-    /*
-     * The orphan-marker case. A contract block is citable — it keeps a stable
-     * id in `area.outline` — so another report can link straight at it and the
-     * slot grows a `◂ N` sidenote in column 3. `.row` is `display: contents`,
-     * so that sidenote is a grid item in its own right: a rule that hid only
-     * the block would leave the marker alone on an otherwise blank row.
-     */
+    /* A contract block is citable, so the slot can grow a `◂ N` sidenote in column 3 — a grid item in its own right under `display: contents`. */
     await browserPage.viewport(1200, 800);
     const cited = new Map([['b_1', 3]]);
 
@@ -133,8 +97,6 @@ describe('a contract block takes no room', () => {
     const withContract = topInFrame(document.querySelector('#b_2')!);
     document.body.replaceChildren();
 
-    // The same control as above: a cited contract block must be as invisible as
-    // an uncited one, including in where it leaves the next section.
     render(<Page blocks={[prose('b_2', SECTION)]} />);
     expect(withContract).toBe(topInFrame(document.querySelector('#b_2')!));
   });

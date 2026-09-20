@@ -44,8 +44,6 @@ async fn task_recovery_gate_observation_reads_exact_execution_and_gate_bytes() {
         .unwrap();
     sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,gate_json,gate_attempt,claim_context_json,created_at_ms,updated_at_ms,finished_at_ms) VALUES(?1,?2,'b','terminal','true','{}','failed',?3,2,?4,1,1,1)")
         .bind(&previous_id).bind(track.id.as_str()).bind(&gate).bind(serde_json::to_string(&refs).unwrap()).execute(&mut *tx).await.unwrap();
-    // A valid historical allocation pair is the input to evidence reading;
-    // this does not invoke or advertise S1 post-execution recovery admission.
     let receipt = crate::db::sqlite::task_recovery_allocate_tx(
         &mut tx,
         track.id.as_str(),

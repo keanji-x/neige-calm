@@ -1,7 +1,4 @@
-//! Shared app state passed to every handler.
-//!
-//! `Clone` is cheap — everything inside is wrapped in `Arc` or already
-//! reference-counted internally.
+//! Shared app state passed to every handler. `Clone` is cheap — everything inside is `Arc`.
 
 use crate::card_kind::CardKindRegistry;
 use crate::card_role_cache::CardRoleCache;
@@ -45,11 +42,8 @@ const HOOK_INGEST_CACHE_CAPACITY: usize = 4096;
 
 pub use crate::state_clients::{CodexClient, DaemonClient};
 
-/// Fixed-size FIFO cache for hook ingest idempotency keys.
-///
-/// This is intentionally process-local: after a server restart the first
-/// re-posted hook can emit again, and downstream harness/dispatcher replay
-/// guards are the remaining defense.
+/// Fixed-size FIFO cache for hook ingest idempotency keys. Process-local: after a
+/// restart the first re-posted hook can emit again.
 #[derive(Debug)]
 pub(crate) struct HookIngestCache {
     capacity: usize,
@@ -85,19 +79,13 @@ impl HookIngestCache {
     }
 }
 
-/// #480 PR1 write-surface slice shared by route and worker substates.
-/// Clone-cheap: both caches alias their underlying `Arc<DashMap<...>>`.
 pub use calm_truth::state::WriteContext;
 
-/// #480 PR1 route-facing state slice for future handler extraction.
-/// Mirrors existing `AppState` handles without changing caller behavior.
 #[derive(Clone)]
 pub struct RouteState {
     pub repo: Arc<dyn RouteRepo>,
-    /// #1147 D2 — root for server-managed track workspaces
-    /// (`<root>/<area_id>/<track_id>`). Resolved once at boot from
-    /// `--workspace-root` / `CALM_WORKSPACE_ROOT`; never read from env at
-    /// request time.
+    /// Root for server-managed track workspaces (`<root>/<area_id>/<track_id>`).
+    /// Resolved once at boot; never read from env at request time.
     pub workspace_root: PathBuf,
     /// Server-resolved default used by both scheduler admission and report
     /// diagnostics. Read once at boot; request handlers never consult env.
@@ -105,125 +93,30 @@ pub struct RouteState {
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
-    /// See [`AppState::database_id`].
     pub database_id: Arc<String>,
     pub write: WriteContext,
     pub operation_runtime: Arc<OperationRuntime>,
     pub harness: HarnessRegistry,
-    /// #1628 S4 — the context the kernel's MCP tools run in, shared with the
-    /// HTTP layer so `GET /api/tracks/{id}/report/series/{block_id}` and
-    /// `calm.report.read` hydrate a `chart.series` block through the same
-    /// `SeriesResolver` (one in-flight set, one lane per plugin) and the
-    /// same `report_series::hydrate` step. Production: the `Arc`
-    /// `AppState::new` handed to `McpServer::spawn_with_context`.
-    /// `from_parts`: an equivalent context with no listener behind it; the
-    /// `fixtures`-gated [`AppState::with_mcp_context`] swaps in a test's own.
+    /// The context the kernel's MCP tools run in, shared with the HTTP layer.
     pub mcp_context: Arc<crate::mcp_server::registry::AppContext>,
-    /// #1635 S4 — the template roster every route reads: `POST /api/tracks`
-    /// admits `template_id` against it, `GET /api/track-templates` lists it,
-    /// the area default-template check consults it. `&'static` because the
-    /// entries are borrowed across a create transaction and the admitted key's
-    /// bytes are what `tracks.template_id` stores.
-    ///
-    /// In production this is [`crate::templates::TemplateRoster::for_boot`]'s
-    /// value, built by [`AppState::boot`] before storage is opened and handed
-    /// to [`AppState::new`]: the builtin entries, plus one `site/<stem>`
-    /// entry per file under `--templates-dir` when that flag was given (#1635
-    /// S5). `from_parts` carries
-    /// [`crate::templates::TemplateRoster::builtin`]; the `fixtures`-gated
-    /// [`AppState::with_templates_dir`] puts a merged roster here through the
-    /// same `for_boot`. Nothing downstream tells the two kinds apart.
+    /// The template roster every route reads. `&'static` because entries are borrowed
+    /// across a create transaction and the admitted key's bytes are what `tracks.template_id` stores.
     pub templates: &'static crate::templates::TemplateRoster,
-    /// #1620 — hook ingest appends Terminal-card signals to the live renderer
-    /// entry instead of projecting worker state.
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
-    /// Issue #649 i2 — per-card serialization for `/planner/input` lazy harness
-    /// recovery. Concurrent Sends racing a registry miss must not both call
-    /// `spawn_recovered_harness` (the second spawn shuts the first down
-    /// mid-turn). Entries self-clean when the last guard drops.
-    ///
-    /// Lock order: this is the INNER of the two per-card maps. See
-    /// `conversation_first_message_locks` — `conversation_first_message_locks`
-    /// → `planner_recovery_locks` is the only order any path takes today, and a
-    /// path taking them in the reverse order would close a deadlock cycle
-    /// against it.
+    /// Per-card lock for lazy planner harness recovery. Lock order:
+    /// `conversation_first_message_locks` → `planner_recovery_locks`, never the reverse.
     pub(crate) planner_recovery_locks: crate::per_card_lock::PerCardLocks,
-    /// Per-card claim serializing the "has this card ever been sent a message?
-    /// then send one" step of `routes::today_summary`'s bootstrap recovery.
-    /// Without it two concurrent triggers against a card with an empty
-    /// transcript both read "no user message yet" and both send the standing
-    /// instruction — measured, two bootstraps.
-    ///
-    /// Deliberately a SEPARATE map from `planner_recovery_locks`: the claim is
-    /// held across the call into `send_planner_input`, whose
-    /// `ensure_live_planner_harness` takes `planner_recovery_locks` for the same
-    /// card on the registry-miss path. `tokio::sync::Mutex` is not reentrant,
-    /// so sharing one map would self-deadlock the request.
-    ///
-    /// **Two premises this lock's correctness rests on. Both are load-bearing;
-    /// neither is enforced by the type system.**
-    ///
-    /// 1. *In-process only.* This is an `Arc<DashMap<_, tokio::Mutex<_>>>`
-    ///    living in one `RouteState`. It serializes nothing across processes,
-    ///    so it is correct exactly because the deployment is ONE calm-server
-    ///    per SQLite data directory (the operation driver runs in this process
-    ///    too). Run two instances against one DB and the claim degrades to
-    ///    "each process reads `events` once": worst case one card's bootstrap
-    ///    is delivered twice. Multi-instance would need a DB-level claim, not
-    ///    a bigger map.
-    /// 2. *One permitted lock order:* `conversation_first_message_locks` →
-    ///    `planner_recovery_locks`, and never the reverse. Two distinct facts,
-    ///    kept apart because round 3 caught them conflated:
-    ///    * *Sharing ONE map* for both purposes self-deadlocks a single
-    ///      request outright: it would re-enter the same `tokio::sync::Mutex`
-    ///      for the same card while still holding its guard, and
-    ///      `tokio::sync::Mutex` is not reentrant. That is why these are two
-    ///      maps.
-    ///    * *There is one forward-order nesting.* `routes::today_summary`'s
-    ///      bootstrap recovery (#1253 PR2) holds this claim across
-    ///      `send_planner_input` → `ensure_live_planner_harness`. It also
-    ///      holds it across a `planner-harness-start` operation on its dormant
-    ///      branch, which blocks on a codex RPC; that submits no per-card lock
-    ///      of its own (the adapter's mint map is private and is taken and
-    ///      released inside the operation), so it closes no cycle.
-    ///    * *Taking the two maps in the reverse order* does NOT self-deadlock
-    ///      — they are different mutexes, so one task alone completes fine.
-    ///      It deadlocks only when it runs concurrently with a
-    ///      forward-order holder for the same card, closing the cycle. That
-    ///      failure is intermittent and load-dependent, which is precisely
-    ///      why the order is stated here instead of being left to chance.
-    ///      Today no reverse-order path exists (boot replay, `/planner/input`
-    ///      and `/planner/reset` take only the recovery lock and never enter
-    ///      the Today bootstrap arm); any new caller must preserve this order.
+    /// Per-card claim for the Today bootstrap's first-message send. A SEPARATE map from
+    /// `planner_recovery_locks`: the claim is held across a call that takes that lock and
+    /// `tokio::sync::Mutex` is not reentrant. In-process only — one calm-server per data directory.
     pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
-    /// #1430 — `None` in production. Armed by the cross-instance primary-key
-    /// race case so the losing racer is *held* between lookup 1 and the mint
-    /// instead of hoping a scheduler orders two requests that way. Lives on
-    /// [`RouteState`] rather than in a `static` for the same reason
-    /// [`crate::routes::today::SystemAreaMintRendezvous`] does: a process-global
-    /// is shared by every state in the process, which a threaded test binary
-    /// turns into cross-case interference. The field is unconditional and the
-    /// route's `if let Some(..)` is compiled into every build; only
-    /// [`AppState::with_track_create_mint_rendezvous`] is `fixtures`-gated.
+    /// `None` in production; armed by the cross-instance primary-key race test.
     pub(crate) track_create_mint_rendezvous: crate::routes::tracks::TrackCreateMintRendezvous,
-    /// Per-track fence shared by single-track deletion and direct runtime
-    /// recovery/reattach paths that bypass `OperationRuntime`. Once DELETE owns
-    /// this lock, those paths cannot install a runtime behind its teardown
-    /// snapshot; the guard transfers to the owned deletion saga and survives
-    /// request cancellation through commit or compensation.
-    ///
-    /// The deployment contract is one calm-server per SQLite data directory.
-    /// Multi-process serving would require a durable database fence.
+    /// Per-track fence between deletion and the direct runtime recovery/reattach paths that
+    /// bypass `OperationRuntime`; the guard transfers to the deletion saga and survives request cancellation.
     pub(crate) track_delete_locks: crate::per_card_lock::KeyedLocks,
-    /// #1505 S6-PR1 — one planner attachment upload per card at a time. The
-    /// per-card byte budget is measured and then written against, and the
-    /// staging sweep an upload runs at the end deletes by age; both need the
-    /// card's uploads serialized. See
-    /// [`crate::planner_attachments::store::store_upload`].
-    ///
-    /// Takes no other lock and is taken by nothing else, so it closes no cycle
-    /// with `conversation_first_message_locks` -> `planner_recovery_locks`.
+    /// One planner attachment upload per card at a time. Takes no other lock.
     pub(crate) planner_attachment_locks: crate::per_card_lock::PerCardLocks,
     /// Serializes a user-area delete with the ordinary track-create route.
     /// The creator holds it through workspace materialization and planner
@@ -231,8 +124,6 @@ pub struct RouteState {
     pub(crate) area_delete_locks: crate::per_card_lock::KeyedLocks,
 }
 
-/// #480 PR1 worker-facing state slice for dispatcher/background flows.
-/// Mirrors existing `AppState` handles without changing caller behavior.
 #[derive(Clone)]
 pub struct WorkerState {
     pub repo: Arc<dyn Repo>,
@@ -244,8 +135,6 @@ pub struct WorkerState {
     pub write: WriteContext,
 }
 
-/// #480 PR1 codex-shell state slice for shared app-server flows.
-/// Mirrors existing `AppState` handles without changing caller behavior.
 #[derive(Clone)]
 pub struct CodexShellState {
     pub codex: Arc<CodexClient>,
@@ -255,17 +144,10 @@ pub struct CodexShellState {
     pub plugin: Arc<PluginHost>,
 }
 
-/// #480 PR1 boot aggregate that materializes compat fields plus slices.
-/// Constructors build this only after resolving all boot handles.
 pub struct BootState {
     pub repo: Arc<dyn Repo>,
-    /// #1147 D2 — see [`RouteState::workspace_root`].
     pub workspace_root: PathBuf,
-    /// #1147 S2 — owns the auto-allocated workspace root when one was minted
-    /// for a test/replay `AppState`. `None` in production, where the root is
-    /// the user's real, persistent directory. Held so the sandbox is removed
-    /// when the state drops instead of accumulating a git repository per test
-    /// run under the system temp dir.
+    /// Owns the auto-allocated workspace root of a test/replay state; `None` in production.
     pub workspace_root_guard: Option<Arc<tempfile::TempDir>>,
     pub task_budget_default: i64,
     pub events: EventBus,
@@ -274,19 +156,13 @@ pub struct BootState {
     pub plugin: Arc<PluginHost>,
     pub codex: Arc<CodexClient>,
     pub db_instance_id: Arc<String>,
-    /// See [`AppState::database_id`].
     pub database_id: Arc<String>,
-    /// #1635 S4 — see [`RouteState::templates`].
     pub templates: &'static crate::templates::TemplateRoster,
     pub card_role_cache: CardRoleCache,
     pub track_area_cache: TrackAreaCache,
-    /// #477 PR5 — kernel card-kind handler registry. Substate placement is
-    /// left to PR2/PR3 once call sites migrate; for PR1 it stays on `AppState`
-    /// alongside the other 17 compat fields and rides through `BootState`.
     pub card_kind_registry: Arc<CardKindRegistry>,
     pub dispatcher: Arc<Dispatcher>,
     pub mcp_server: Option<Arc<McpServer>>,
-    /// See [`RouteState::mcp_context`].
     pub mcp_context: Arc<crate::mcp_server::registry::AppContext>,
     pub harness: HarnessRegistry,
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
@@ -381,123 +257,50 @@ impl BootState {
     }
 }
 
-/// Route-facing handle: the trait object `AppState::repo` exposes. Excludes
-/// `RepoSyncDomainRaw` — see `db/mod.rs` module doc for the capability split.
-///
-/// `Arc<dyn RouteRepo>` is what handlers see; integration tests that need
-/// to seed fixtures reach `&dyn Repo` via [`AppState::raw_repo`], which
-/// is gated behind the `fixtures` cargo feature (only enabled for the
-/// `tests/*.rs` integration crates via the self-loop dev-dep). No
-/// production module reaches for `raw_repo` today.
+/// Route-facing handle: excludes `RepoSyncDomainRaw`. Tests reach `&dyn Repo` via the
+/// `fixtures`-gated [`AppState::raw_repo`].
 #[derive(Clone)]
 pub struct AppState {
-    /// Narrow trait object: reads + eventized writes + out-of-domain writes.
-    /// Sync-domain raw writes (`area_create`, `track_update`, `card_delete`,
-    /// `overlay_upsert`, etc.) are unreachable from this handle — handlers
-    /// must funnel them through `db::write_with_event_typed`.
+    /// Sync-domain raw writes are unreachable from this handle — handlers must funnel
+    /// them through `db::write_with_event_typed`.
     pub repo: Arc<dyn RouteRepo>,
     pub events: EventBus,
-    /// #1253 — per-server observation of the one race in `routes::today` that
-    /// is reachable. See [`crate::routes::today::SystemAreaMintCounters`] for
-    /// why it lives on the state rather than in a `static`, and why it is not
-    /// gated behind `fixtures`.
     pub system_area_mint: Arc<crate::routes::today::SystemAreaMintCounters>,
-    /// #1253 — `None` in production. Armed by the system-area concurrency case
-    /// so that race is created rather than waited for; see
-    /// [`crate::routes::today::SystemAreaMintRendezvous`].
+    /// `None` in production; armed by the system-area concurrency test.
     pub system_area_mint_rendezvous: crate::routes::today::SystemAreaMintRendezvous,
-    /// #1253 PR2 — per-server observation of `POST /api/today/summary`'s create
-    /// arm. See [`crate::routes::today_summary::TodaySummaryCreateCounters`]
-    /// for why it is not `fixtures`-gated.
     pub today_summary_create: Arc<crate::routes::today_summary::TodaySummaryCreateCounters>,
-    /// #1253 PR2 — `None` in production. Armed by the create-race case so that
-    /// one-request-wide window is created rather than waited for; see
-    /// [`crate::routes::today_summary::TodaySummaryCreateRendezvous`].
+    /// `None` in production; armed by the create-race test.
     pub today_summary_create_rendezvous: crate::routes::today_summary::TodaySummaryCreateRendezvous,
-    /// #1253 PR2 — `None` in production. Armed by the first-message race case;
-    /// see [`crate::routes::today_summary::TodaySummaryBootstrapRendezvous`].
+    /// `None` in production; armed by the first-message race test.
     pub today_summary_bootstrap_rendezvous:
         crate::routes::today_summary::TodaySummaryBootstrapRendezvous,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub plugin: Arc<PluginHost>,
     pub codex: Arc<CodexClient>,
-    /// UUID v4 minted once per server-process boot, surfaced on
-    /// `/api/version` as `dbInstanceId`. Lets the web client detect when the
-    /// underlying sqlite DB has been recreated under it (e.g. `make dev
-    /// RESET_DB=1` or a fresh-migrations branch swap) and bust its
-    /// IndexedDB-backed React Query cache + WS event cursor before they
-    /// paint stale ids that 404 at the route loader.
-    ///
-    /// Deliberately not persisted to the DB: the whole point is that it
-    /// changes whenever the DB *might* have changed underneath us. A new
-    /// process = a new instance id, full stop. `Arc<String>` so the value
-    /// is cheap to clone across handler dispatches.
+    /// UUID v4 minted once per server-process boot, surfaced on `/api/version` as
+    /// `dbInstanceId` so the client can bust its caches when the DB was recreated. Never persisted.
     pub db_instance_id: Arc<String>,
-    /// #1722 S1b — the stable identity of the database itself, served by
-    /// `/api/version` as `databaseId` next to `dbInstanceId`.
-    ///
-    /// The complement of the field above: `db_instance_id` names the *boot*
-    /// (fresh per process, so a client can discard state that belongs to a
-    /// replaced database), this names the *database* (minted once into the
-    /// one-row `database_identity` table by migration 0110's first open and
-    /// read back by every later open, so a client can keep per-database state
-    /// — read receipts, baselines — across restarts). Read from the repo,
-    /// which minted or read it in `SqlxRepo::open`; never generated here.
+    /// Stable identity of the database itself (`databaseId` on `/api/version`), minted once
+    /// into `database_identity` and read back by every later open.
     pub database_id: Arc<String>,
-    /// #854 slice 1 — ceiling on the number of rows a single WS replay may
-    /// stream (see `ws::events::run_replay` for the over-cap routing).
-    /// Resolved ONCE at construction from `NEIGE_WS_REPLAY_MAX_EVENTS`
-    /// (default 10_000) rather than per-connection, so tests can inject a
-    /// small cap via [`AppState::with_ws_replay_cap`] without mutating
-    /// process-global env (env mutation raced sibling tests in the same
-    /// binary — review finding on PR #867).
+    /// Ceiling on rows a single WS replay may stream. Resolved once at construction so tests
+    /// can inject a cap without mutating process-global env.
     pub ws_replay_cap: i64,
-    /// PR3 (#136) — `CardId -> CardRole` cache used by `role_gate::enforce_role`
-    /// at every audited write entry. Clone-cheap (`Arc<DashMap<…>>` inside).
-    /// Production builds seed this from the cards table during
-    /// [`AppState::new`]; tests construct an empty cache via
-    /// [`AppState::from_parts`] when they don't need role-gating coverage,
-    /// or pre-populate it manually otherwise. The cache is also threaded
-    /// into every `_tx`-suffixed card helper so the insert/delete path
-    /// stays write-through inside the surrounding transaction.
+    /// `CardId -> CardRole` cache used by `role_gate::enforce_role`; threaded into every
+    /// `_tx` card helper so it stays write-through inside the surrounding transaction.
     pub card_role_cache: CardRoleCache,
-    /// #234 — `TrackId -> AreaId` cache the role gate consults alongside
-    /// `card_role_cache` to cross-check `scope.area` against a Worker
-    /// card's home area. Mirrors the shape + clone semantics of
-    /// `card_role_cache`. Production builds seed this from the tracks
-    /// table in [`AppState::new`]; tests use the empty default via
-    /// [`AppState::from_parts`] or pre-populate it manually.
+    /// `TrackId -> AreaId` cache the role gate consults to cross-check `scope.area`
+    /// against a Worker card's home area.
     pub track_area_cache: TrackAreaCache,
-    /// #477 PR5 — registry of kernel-owned card kind handlers. Unknown card
-    /// kinds stay opaque; built-ins expose validation + metadata for future
-    /// OpenAPI / metrics readers.
+    /// Registry of kernel-owned card kind handlers; unknown card kinds stay opaque.
     pub card_kind_registry: Arc<CardKindRegistry>,
-    /// PR5 (#136) — dispatcher worker handle. Subscribes via
-    /// [`EventBus::subscribe_filtered`] to `*.worker_requested` envelopes
-    /// and starts the matching worker operation for each, gated by a
-    /// global semaphore (default 8 permits, override via
-    /// `NEIGE_DISPATCHER_PERMITS`). Held as
-    /// `Arc<Dispatcher>` so tests can probe permit counts via
-    /// [`Dispatcher::permits`] / [`Dispatcher::semaphore`]; production
-    /// callers don't touch the field after construction. Dropping the
-    /// `AppState` doesn't immediately abort the dispatcher task —
-    /// closure happens when the event bus's `tx` drops too.
+    /// Dropping the `AppState` doesn't abort the dispatcher task — closure happens when
+    /// the event bus's `tx` drops too.
     pub dispatcher: Arc<Dispatcher>,
-    /// PR7a (#136) — kernel-as-MCP-server handle. Bound to a Unix domain
-    /// socket under `<data_dir>/mcp/kernel.sock`; per-card codex daemons
-    /// connect through `neige-mcp-stdio-shim` and authenticate via the
-    /// per-card token in `card_mcp_tokens`. The handle's `shim_config`
-    /// is passed through card MCP token setup so codex-launched shim
-    /// processes can reach the kernel MCP server.
-    ///
-    /// `Option` because `from_parts` (replay / unit tests) skips the
-    /// listener boot — neither the replay binary nor most integration
-    /// tests need a live MCP server. The production `AppState::new`
-    /// path always populates this.
+    /// Kernel-as-MCP-server handle. `None` when `from_parts` (replay / unit tests) skips the listener boot.
     pub mcp_server: Option<Arc<McpServer>>,
     pub harness: HarnessRegistry,
-    /// PR4 (#410) — one server-wide codex app-server supervisor.
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
     /// FIFO attribution registry for empty cards that fresh-start a thread
     /// through the shared daemon's TUI.
@@ -510,29 +313,11 @@ pub struct AppState {
     /// Explicit boot configuration, retained across fixture registry rebuilds.
     #[cfg_attr(not(feature = "fixtures"), allow(dead_code))]
     isolated_codex_backend: Option<Arc<IsolatedCodexBackend>>,
-    /// Full-capability handle. Held separately from `repo` so the gate at
-    /// `AppState::repo` survives even though the underlying concrete impl
-    /// is the same `SqlxRepo`. Kept private — callers must go through
-    /// [`AppState::raw_repo`] (only visible under `--features fixtures`).
-    /// `allow(dead_code)` because in non-`fixtures` builds (the production
-    /// binary, the `replay` lib, etc.) nothing reads this field — it's
-    /// stored so the `fixtures`-only accessor still has something to hand
-    /// out, but the production build keeps the field opaque on purpose.
+    /// Full-capability handle, kept private so the gate at `AppState::repo` survives;
+    /// reachable only through the `fixtures`-gated [`AppState::raw_repo`].
     #[allow(dead_code)]
     raw: Arc<dyn Repo>,
-    /// #1147 S2 — see [`BootState::workspace_root_guard`].
-    ///
-    /// `allow(dead_code)` because this is an **RAII guard**: its value is never
-    /// read, only dropped, and the drop is the entire point (it removes the
-    /// per-`AppState` sandbox). The one place that touches it afterwards —
-    /// `with_workspace_root`, which releases it — is `fixtures`-gated, so under
-    /// default features nothing mentions the field at all.
-    ///
-    /// Not `expect(dead_code)`: whether the lint fires depends on the feature
-    /// set (under `fixtures` the write in `with_workspace_root` counts as a
-    /// use), and an unfulfilled `expect` is itself a warning — which, under
-    /// this workspace's `RUSTFLAGS=-D warnings`, would just move the build
-    /// failure to the other feature combination.
+    /// RAII guard: never read, only dropped (the drop removes the per-`AppState` sandbox).
     #[allow(dead_code)]
     workspace_root_guard: Option<Arc<tempfile::TempDir>>,
     route: RouteState,
@@ -555,12 +340,9 @@ struct OperationAdapterInputs {
     harness: HarnessRegistry,
     mcp_server: Option<Arc<McpServer>>,
     gate_logs_dir: PathBuf,
-    /// #1147 D2 — see [`RouteState::workspace_root`].
     workspace_root: PathBuf,
 }
 
-/// #1620 — the terminal-create adapter's hook configuration, derived from the
-/// same client config the Claude card path uses.
 fn terminal_hook_settings(codex: &CodexClient) -> crate::terminal_hooks::TerminalHookSettings {
     crate::terminal_hooks::TerminalHookSettings {
         bridge_bin: codex.bridge_bin.clone(),
@@ -716,15 +498,8 @@ impl AppState {
         self.isolated_codex_backend.is_some()
     }
 
-    /// Bypass the sync-domain gate. **For test-fixture seeding only** —
-    /// production code MUST go through `write_with_event_typed` /
-    /// `log_pure_event`. Gated behind the `fixtures` cargo feature so
-    /// production builds (the binary, `routes/*`, `plugin_host/*`,
-    /// `terminal_sweeper`, and the `replay` lib) physically cannot reach
-    /// this method — invoking it from a production module fails at
-    /// compile time with E0599 (`no method named raw_repo`). Integration
-    /// tests pick up the feature automatically via the `[dev-dependencies]`
-    /// self-loop in `Cargo.toml`.
+    /// Bypass the sync-domain gate. For test-fixture seeding only — production code MUST
+    /// go through `write_with_event_typed` / `log_pure_event`.
     #[cfg(feature = "fixtures")]
     pub fn raw_repo(&self) -> &dyn Repo {
         self.raw.as_ref()
@@ -734,17 +509,13 @@ impl AppState {
         self.raw.sqlite_pool()
     }
 
-    /// Override the WS replay cap (#854 slice 1). Test seam: lets a test
-    /// pin a small cap on its own `AppState` instead of mutating the
-    /// process-global `NEIGE_WS_REPLAY_MAX_EVENTS` env var, which is racy
-    /// against sibling tests booting servers in the same binary. Production
-    /// keeps the env-derived default from construction.
+    /// Test seam: pin a small replay cap without mutating the process-global env var.
     pub fn with_ws_replay_cap(mut self, cap: i64) -> Self {
         self.ws_replay_cap = cap;
         self
     }
 
-    /// #1147 D2 — the managed workspace root this process was booted with.
+    /// The managed workspace root this process was booted with.
     pub fn workspace_root(&self) -> &std::path::Path {
         &self.route.workspace_root
     }
@@ -753,47 +524,18 @@ impl AppState {
         &self.route.track_delete_locks
     }
 
-    /// #1147 S2 test seam — pin the managed workspace root. `from_parts`
-    /// defaults to a per-`AppState` directory under the system temp dir so no
-    /// test can silently materialize repositories into the developer's real
-    /// `$HOME/neige-workspaces`; a test that wants to *inspect* the tree
-    /// points this at its own `TempDir` instead.
-    ///
-    /// `fixtures`-gated because it MUST rebuild the operation runtime: the
-    /// codex-worker adapter carries its own copy of the root (it re-runs
-    /// materialization when taking a lease), and a stale copy there would make
-    /// the adapter reject the very workspace the routes just created — the
-    /// containment assertion would compare against the wrong root.
+    /// Test seam — pin the managed workspace root. Rebuilds the operation runtime because
+    /// the codex-worker adapter carries its own copy of the root.
     #[cfg(feature = "fixtures")]
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.route.workspace_root = root;
-        // Release the auto-allocated sandbox: the caller supplied its own root,
-        // so the default one is unreachable and would otherwise only be swept
-        // when this state drops.
+        // Release the auto-allocated sandbox; the caller supplied its own root.
         self.workspace_root_guard = None;
         self.rebuild_operation_runtime();
         self
     }
 
-    /// #1253 — arm the system-area mint rendezvous so the concurrency case can
-    /// *create* that race instead of hoping for it.
-    ///
-    /// **These builders are an attribute-sensitive run: adding a function
-    /// between an existing `#[cfg(..)]` and the function it was written for
-    /// silently retargets the attribute.** This one was first inserted
-    /// immediately above `with_workspace_root` and stole its
-    /// `#[cfg(feature = "fixtures")]`, leaving that function unconditional
-    /// while the `rebuild_operation_runtime` it calls stayed fixtures-only —
-    /// so the non-fixtures lib stopped compiling, and nothing that enables
-    /// `fixtures` (which is every test command, via the dev-dep self-loop)
-    /// could see it. Put a new builder *after* a complete function, never
-    /// between a function and the attributes above it.
-    ///
-    /// Gating the BUILDER behind `fixtures` costs nothing the "production and
-    /// test run the same instructions" rule protects: the field itself is
-    /// unconditional and the mint path's `if let Some(..)` is compiled into
-    /// every build. Only the ability to arm it is test-only, exactly like
-    /// `with_workspace_root` above.
+    /// Arm the system-area mint rendezvous so the concurrency test can create that race.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
     pub fn with_system_area_mint_rendezvous(
@@ -804,10 +546,7 @@ impl AppState {
         self
     }
 
-    /// #1253 PR2 — arm the create-race rendezvous. Same shape, same reasons as
-    /// [`Self::with_system_area_mint_rendezvous`]: the field is unconditional
-    /// and the `if let Some(..)` is compiled into every build; only the ability
-    /// to arm it is test-only.
+    /// Arm the create-race rendezvous.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
     pub fn with_today_summary_create_rendezvous(
@@ -818,8 +557,7 @@ impl AppState {
         self
     }
 
-    /// #1253 PR2 — arm the first-message race rendezvous. Same shape and same
-    /// reasons as the sibling above.
+    /// Arm the first-message race rendezvous.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
     pub fn with_today_summary_bootstrap_rendezvous(
@@ -843,14 +581,8 @@ impl AppState {
         .await
     }
 
-    /// #953 §5 — arm the deferred (post-heal) planner harness recovery task.
-    /// Called from the boot path ONLY when the daemon spawn failed; the task
-    /// waits on the supervisor readiness watch and runs a claim-based
-    /// recovery pass on the first observed `running: true`. The boot caller
-    /// detaches the returned JoinHandle (PR2 review D3): the task owns
-    /// Arc-cloned parts (including the supervisor, so the watch sender it
-    /// waits on can never drop under it) and lives until a pass completes
-    /// or process teardown.
+    /// Arm the deferred (post-heal) planner harness recovery task; called from boot only
+    /// when the daemon spawn failed. The caller detaches the returned handle.
     pub fn arm_deferred_harness_recovery(&self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(crate::harness::recover_harnesses_deferred(
             crate::harness::DeferredRecoveryParams {
@@ -867,25 +599,8 @@ impl AppState {
         ))
     }
 
-    /// Test / replay-lib hatch: build an `AppState` from already-constructed
-    /// pieces, skipping the boot-time plugin registry load + background
-    /// task spawn that `new` does. Public so `replay::boot_in_memory` and
-    /// integration tests can compose the struct without bypassing the
-    /// `raw` field's privacy (which is what guards the capability split
-    /// from external `AppState { ... }` literals).
-    ///
-    /// PR3 (#136): `card_role_cache` defaults to an empty cache when the
-    /// caller passes `None`. Tests that exercise role-gating manually
-    /// pre-populate the cache via `CardRoleCache::insert` before calling
-    /// this; the replay path uses an empty cache because replay events
-    /// are seeded via `log_pure_event` from `ActorId::User` (which the
-    /// gate lets through without a cache lookup).
-    ///
-    /// #234: `track_area_cache` follows the same shape — `None` yields
-    /// an empty cache. Tests that exercise the Worker area-cross-check
-    /// pre-populate the cache via `TrackAreaCache::insert` before
-    /// calling this. Most existing tests don't touch the Worker path,
-    /// so an empty cache is fine.
+    /// Test / replay-lib hatch: build an `AppState` from already-constructed pieces, skipping
+    /// the boot-time plugin registry load and background task spawn. `None` caches default to empty.
     pub fn from_parts(
         repo: Arc<dyn Repo>,
         events: EventBus,
@@ -907,10 +622,8 @@ impl AppState {
         )
     }
 
-    /// Replay-lib hatch for constructing the first `OperationRuntime`
-    /// with a terminal spawn hook. The dispatcher is spawned from that
-    /// same runtime, so replay worker requests cannot fall back to the
-    /// real process supervisor.
+    /// Replay-lib hatch: the dispatcher is spawned from the same runtime, so replay worker
+    /// requests cannot fall back to the real process supervisor.
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts_with_terminal_spawn_hook(
         repo: Arc<dyn Repo>,
@@ -957,8 +670,7 @@ impl AppState {
         ));
         let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
         let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
-        // #1147 S2 — allocated before the adapters so the codex-worker adapter
-        // and the routes agree on one root (it re-materializes on lease).
+        // Allocated before the adapters so the codex-worker adapter and the routes agree on one root.
         let workspace_root_sandbox = Arc::new(
             tempfile::Builder::new()
                 .prefix("neige-calm-test-workspaces-")
@@ -1007,13 +719,8 @@ impl AppState {
         let task_budget_default = crate::scheduler::Scheduler::budget_from_env(
             crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         );
-        // #1628 S4 — the series route reads through an `AppContext` even
-        // without an MCP listener. The plugin-host cell is filled because the
-        // resolver's route pre-check reads it; the operation-runtime cell is
-        // left empty on purpose — nothing dispatches a tool through this
-        // context, and the runtime built below is replaced by the fixture
-        // builders (`with_operation_runtime`, `rebuild_operation_runtime`),
-        // so a value set here would be the one thing that could go stale.
+        // The operation-runtime cell is left empty on purpose: the runtime built below is
+        // replaced by the fixture builders, so a value set here could go stale.
         let plugin_host_cell = Arc::new(tokio::sync::OnceCell::new());
         let _ = plugin_host_cell.set(plugin.clone());
         let mcp_context = crate::mcp_server::registry::AppContext::new(
@@ -1026,13 +733,6 @@ impl AppState {
             TaskVerifyAdapter::default_gate_logs_dir(),
             task_budget_default,
         );
-        // PR5 (#136): every `AppState` carries a live dispatcher. Test
-        // call sites that need to assert on dispatcher behavior reach
-        // through `state.dispatcher`; the rest see a passive worker
-        // that's silent until something emits a `*.worker_requested`
-        // event. Permit count honors `NEIGE_DISPATCHER_PERMITS` for
-        // the rare test that twiddles the env var; the default 8 is
-        // the value tests will see otherwise.
         let dispatcher = Arc::new(
             Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
                 repo.clone(),
@@ -1041,8 +741,6 @@ impl AppState {
                 codex.clone(),
                 daemon.clone(),
                 terminal_renderer.clone(),
-                // `from_parts` is the test / replay hatch — no live MCP
-                // server. PR7a.1 (#136 followup) added this slot.
                 None,
                 harness.clone(),
                 shared_codex_appserver.clone(),
@@ -1059,11 +757,6 @@ impl AppState {
         let database_id = repo.database_id();
         BootState {
             repo,
-            // #1147 S2 — `from_parts` is the test / replay hatch. A per-instance
-            // `TempDir` keeps managed materialization inside a sandbox AND
-            // sweeps it when the state drops; an un-owned path under the system
-            // temp dir accumulated a git repository per test run. A test that
-            // wants to *inspect* the tree calls `with_workspace_root`.
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
             workspace_root_guard: Some(workspace_root_sandbox),
             task_budget_default,
@@ -1072,21 +765,13 @@ impl AppState {
             terminal_renderer,
             plugin,
             codex,
-            // Fresh UUID per `AppState` — same boot-scoped semantics as
-            // `AppState::new`. Each integration test gets its own id,
-            // which is the right behavior: two tests sharing one binary
-            // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
-            // ... while the database identity is the repo's: two states over
-            // one sqlite file share it, exactly like two real boots would.
             database_id,
             templates: crate::templates::TemplateRoster::builtin(),
             card_role_cache,
             track_area_cache,
             card_kind_registry,
             dispatcher,
-            // `from_parts` is the test / replay-lib hatch — no live MCP
-            // server. Production goes through `new` below.
             mcp_server: None,
             mcp_context,
             harness,
@@ -1120,15 +805,8 @@ impl AppState {
         self
     }
 
-    /// #1430 — arm the track-create mint rendezvous so the cross-instance
-    /// primary-key race is *constructed* rather than hoped for.
-    ///
-    /// Same shape and same reasons as
-    /// [`Self::with_system_area_mint_rendezvous`]: the field is unconditional
-    /// and the route's `if let Some(..)` is compiled into every build, so the
-    /// tested binary executes the instructions the shipped one does; only the
-    /// ability to arm it is test-only. Placed *after* a complete function, per
-    /// that builder's warning about attribute-sensitive insertion.
+    /// Arm the track-create mint rendezvous so the cross-instance primary-key race is
+    /// constructed rather than hoped for.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
     pub fn with_track_create_mint_rendezvous(
@@ -1147,9 +825,7 @@ impl AppState {
         self
     }
 
-    /// #1628 S4 — route the series read through a test's own `AppContext`
-    /// (its recording `SeriesResolver`, its plugin host), the way production
-    /// shares one context between the MCP listener and the HTTP layer.
+    /// Route the series read through a test's own `AppContext`.
     #[cfg(feature = "fixtures")]
     pub fn with_mcp_context(
         mut self,
@@ -1174,23 +850,8 @@ impl AppState {
         self
     }
 
-    /// #1635 S5 test seam — the roster `--templates-dir <dir>` would give this
-    /// process, on a `from_parts` state.
-    ///
-    /// Goes through [`crate::templates::TemplateRoster::for_boot`], the same
-    /// function [`AppState::boot`] calls, so an integration test exercises the
-    /// production loader (file listing, front matter, `id == stem`, the
-    /// `site/` prefix, the compile and header checks) and not a
-    /// re-implementation of it. What it does not exercise is the boot order
-    /// (roster before storage) and the hand-over into [`AppState::new`];
-    /// those are `main.rs`'s tests, on [`AppState::boot`] itself.
-    /// Panics with the loader's own error on a directory that does not load —
-    /// the fail-closed cases are unit tests in `crate::templates`, where the
-    /// error variants are nameable; this seam is for the happy path.
-    ///
-    /// Only `RouteState.templates` reads the roster, so nothing else is
-    /// rebuilt. Placed after a complete function, per the warning on
-    /// [`Self::with_system_area_mint_rendezvous`].
+    /// Test seam — the roster `--templates-dir <dir>` would give this process, through the
+    /// same `for_boot` the production boot uses. Panics on a directory that does not load.
     #[cfg(feature = "fixtures")]
     pub fn with_templates_dir(mut self, dir: &std::path::Path) -> Self {
         self.route.templates = crate::templates::TemplateRoster::for_boot(Some(dir))
@@ -1274,23 +935,8 @@ impl AppState {
         &self.route.write
     }
 
-    /// The production boot, in the order that keeps a refused configuration
-    /// free of persistent side effects (#1635 S5):
-    ///
-    ///   1. the template roster — `--templates-dir` is read and validated
-    ///      here, fail-closed, before anything is created; the error names
-    ///      the offending file and `main`'s `?` exits non-zero on it;
-    ///   2. storage — `cfg.db_url`, or an in-memory `SqlxRepo` for `mock`
-    ///      (`sqlite::memory:`, so dev parity with the sqlite backend is
-    ///      exact: cascades, FK enforcement); this is where the database
-    ///      file, its WAL and the migrations come into being;
-    ///   3. [`Self::new`], which creates the plugin / data / workspace
-    ///      directories and spawns the boot tasks.
-    ///
-    /// `main` calls exactly this and nothing else before serving, so a test
-    /// on this function is a test of the boot: `main.rs`'s
-    /// `a_bad_templates_dir_fails_the_boot_before_storage_exists` and
-    /// `a_templates_dir_reaches_the_picker_through_the_boot`.
+    /// The production boot: template roster first (fail-closed, before storage exists),
+    /// then storage, then [`Self::new`].
     pub async fn boot(cfg: &Config) -> anyhow::Result<Self> {
         let templates = crate::templates::TemplateRoster::for_boot(cfg.templates_dir.as_deref())
             .map_err(|error| anyhow::anyhow!("template roster: {error}"))?;
@@ -1305,27 +951,9 @@ impl AppState {
         Self::new(cfg, repo, templates).await
     }
 
-    /// Real boot-time constructor. Loads the plugin manifest registry from
-    /// `cfg.plugins_dir`, creating the directory if it doesn't exist (fresh
-    /// install path), wires up `DaemonClient` + `EventBus` + `PluginHost`,
-    /// and auto-spawns every enabled plugin via `PluginHost::autospawn_enabled`.
-    ///
-    /// If the registry load returns an error we surface it: `load_from_dir`
-    /// only errors when `plugins_dir` itself cannot be read, which is a hard
-    /// misconfiguration the operator needs to fix. Per-plugin failures — a
-    /// broken manifest, an unresolvable entry, or a second entry claiming an
-    /// id already loaded (#1168) — are downgraded to `tracing::warn!` plus a
-    /// `LoadReport::skipped` entry so one broken plugin can't block boot; the
-    /// count below is a summary, the per-entry detail is in those warnings.
-    /// Shared CODEX_HOME seeding stays here because it is colocated with the
-    /// CodexClient owner and `AppState::new` is the boot-time-only path.
-    ///
-    /// `templates` is a parameter, not read from `cfg` here (#1635 S5): the
-    /// roster is validated by [`Self::boot`] *before* `repo` exists, so a bad
-    /// `--templates-dir` never creates a database. This function only carries
-    /// it onto `RouteState.templates`; `main.rs`'s
-    /// `a_templates_dir_reaches_the_picker_through_the_boot` is what holds
-    /// that hand-over (writing `builtin()` here instead turns it red).
+    /// Boot-time constructor. Per-plugin load failures are downgraded to warnings so one
+    /// broken plugin can't block boot. `templates` is a parameter because the roster is
+    /// validated before `repo` exists.
     pub async fn new(
         cfg: &Config,
         repo: Arc<dyn Repo>,
@@ -1340,8 +968,7 @@ impl AppState {
         };
         let plugins_dir = cfg.plugins_dir_resolved();
         if !plugins_dir.exists() {
-            // Fresh-install path: a missing dir is normal on first boot. We
-            // create it so that subsequent installs (Slice D) have a target.
+            // Fresh-install path: a missing dir is normal on first boot.
             tracing::info!(
                 plugins_dir = %plugins_dir.display(),
                 "creating plugins dir"
@@ -1355,9 +982,7 @@ impl AppState {
             "plugin registry loaded"
         );
 
-        // #1147 D2 — the managed workspace root. Created at boot for the same
-        // reason the plugin dirs are: the first track create should not be the
-        // thing that discovers the parent is unwritable.
+        // Created at boot so the first track create is not what discovers the parent is unwritable.
         let workspace_root = cfg.workspace_root_resolved();
         if !workspace_root.exists() {
             tracing::info!(
@@ -1366,12 +991,8 @@ impl AppState {
             );
             std::fs::create_dir_all(&workspace_root)?;
         }
-        // #1147 D3 contract (2) — canonicalize ONCE, at boot. Every downstream
-        // prefix comparison (materialization's containment assertion, S5's
-        // recycle guard) is only sound against a canonical root; comparing a
-        // canonical path against a root that still contains a symlink or a
-        // `..` would reject correct workspaces and, worse, could accept
-        // incorrect ones.
+        // Canonicalize once, at boot: every downstream prefix comparison is only sound
+        // against a canonical root.
         let workspace_root = std::fs::canonicalize(&workspace_root).map_err(|error| {
             anyhow::anyhow!(
                 "canonicalize managed workspace root {}: {error}",
@@ -1379,8 +1000,6 @@ impl AppState {
             )
         })?;
 
-        // Same treatment for the data dir — Slice B/C will write into per-plugin
-        // subdirs of this, so make sure the root exists at boot.
         let plugins_data_dir = cfg.plugins_data_dir_resolved();
         if !plugins_data_dir.exists() {
             tracing::info!(
@@ -1395,39 +1014,18 @@ impl AppState {
             crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         );
 
-        // PR3 (#136) — boot-time role cache. Seed from the cards table
-        // *after* migrations have run (which `SqlxRepo::open` did) and
-        // *before* any background task is spawned, so the FSM projector
-        // / sweeper / plugin host all see the same cache state the first
-        // REST write will. Cache is clone-cheap; we stash one clone on
-        // `AppState` and hand the FSM/sweeper their own clones —
-        // `Arc<DashMap<…>>` under the hood, so it's the same underlying
-        // map.
+        // Seed after migrations and before any background task is spawned, so every task
+        // sees the same cache state the first REST write will.
         let card_role_cache = CardRoleCache::new();
         repo.seed_card_role_cache(&card_role_cache).await?;
-        // #234 — boot-time track→area cache. Same seed-then-spawn order
-        // as the role cache: every background task that runs the role
-        // gate downstream (FSM, sweeper, dispatcher, plugin host, MCP
-        // server) needs both caches populated before it can authorize
-        // a write.
+        // Same seed-then-spawn order as the role cache.
         let track_area_cache = TrackAreaCache::new();
         repo.seed_track_area_cache(&track_area_cache).await?;
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
 
-        // Per-card FSM (phase 1: codex cards only). Subscribes to the bus
-        // and projects `codex.hook` events onto a 6-state FSM, writing
-        // `Overlay { kind: "status" }` rows for cards and track-union rows
-        // for tracks. See `card_fsm` module docs for the scope rationale.
         crate::card_fsm::spawn(repo.clone(), events.clone(), write.clone());
 
-        // Share one `DaemonClient` + `CodexClient` between the
-        // dispatcher and the `AppState` fields — both are
-        // construction-cheap, but a single instance keeps the
-        // resolved-binary state consistent (the codex bin path
-        // resolution writes its result into the struct, so two
-        // instances could diverge if `current_exe()` shifts between
-        // calls, which is a no-op today but unnecessary risk).
         let daemon = Arc::new(DaemonClient::new(cfg));
         let codex = Arc::new(CodexClient::new(cfg));
         if let Err(e) = codex.shared_codex_home.seed() {
@@ -1436,12 +1034,8 @@ impl AppState {
                 "shared CODEX_HOME seed failed; continuing; legacy per-card homes still functional"
             );
         }
-        // #863 one-time boot repair for historically-seeded homes: strip
-        // unexpected `[mcp_servers.*]` / `hooks` from config.toml and delete
-        // a leaked `.env`. Runs after seed and before ensure_daemon_mcp_config
-        // / the shared-daemon boot guard, so a legacy verbatim-seeded home
-        // converges without operator action. On failure the launch-time guard
-        // refuses the shared daemon; calm-server itself stays up.
+        // One-time boot repair for historically-seeded homes. On failure the launch-time
+        // guard refuses the shared daemon; calm-server itself stays up.
         match codex
             .shared_codex_home
             .sanitize_unexpected_mcp_servers(crate::shared_codex_home::EXPECTED_MCP_SERVERS)
@@ -1461,20 +1055,8 @@ impl AppState {
             }
         }
 
-        // PR7a (#136) — boot the kernel-as-MCP-server. Socket lives at
-        // `<data_dir>/mcp/kernel.sock`; `neige-mcp-stdio-shim` is the
-        // bridge binary the codex daemon launches per session. We
-        // build the tool registry now (emit + track-state + track-report
-        // tools) and let `McpServer::spawn` own the listener task. Boot
-        // failure surfaces as a hard
-        // anyhow error — no MCP server means planner / worker cards
-        // can't emit events, which would silently break the track
-        // FSM. The operator deserves a clear boot-time failure.
-        //
-        // PR7a.1 (#136 followup) — moved up before `Dispatcher::spawn`
-        // so the dispatcher can take an `Arc<McpServer>` at construction
-        // time and use it for worker codex daemon spawn (mirrors the
-        // planner card path in `routes::tracks::create_track`).
+        // Boot failure is a hard error: no MCP server means planner / worker cards can't
+        // emit events, which would silently break the track FSM.
         let mcp_socket_path =
             crate::mcp_server::transport::default_socket_path(&cfg.data_dir_resolved());
         let mcp_shim_bin = resolve_mcp_stdio_shim_bin(cfg);
@@ -1484,13 +1066,10 @@ impl AppState {
         let daemon_mcp_token_hash = crate::mcp_server::auth::hash_token(&daemon_mcp_token);
         let plugin_host_cell = Arc::new(tokio::sync::OnceCell::new());
         let operation_runtime_cell = Arc::new(tokio::sync::OnceCell::new());
-        // Issue #644 PR-C (PR #685 F3) — ONE resolution of the gate-logs
-        // dir, shared by the gate runner (TaskVerifyAdapter below) and
-        // the MCP `plan/<key>/gate.log` view, so a `--data-dir` CLI flag
-        // without `CALM_DATA_DIR` cannot split writer and reader.
+        // One resolution of the gate-logs dir, shared by the gate runner and the MCP
+        // `gate.log` view, so writer and reader cannot split.
         let gate_logs_dir = cfg.data_dir_resolved().join("gate-logs");
-        // #1628 S4 — one context for both readers: the MCP listener below and
-        // `RouteState::mcp_context` hold the same `Arc`.
+        // One context for both readers: the MCP listener and `RouteState::mcp_context` hold the same `Arc`.
         let mcp_context = crate::mcp_server::registry::AppContext::new(
             repo.clone(),
             events.clone(),
@@ -1531,10 +1110,6 @@ impl AppState {
             ))
             .map_err(|_| anyhow::anyhow!("terminal interaction already initialized"))?;
         let harness = HarnessRegistry::new();
-        // #1722 — the `kernel/track/activity` projector: bus wake-ups + a
-        // 30 s reconcile over every unarchived track, recomputed from
-        // durable rows. Spawned here, right after the registry it consults
-        // for backend (i), so it does not wait for `AppState` assembly.
         crate::track_activity::spawn(repo.clone(), events.clone(), write.clone(), harness.clone());
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
@@ -1609,14 +1184,8 @@ impl AppState {
         );
         let _ = operation_runtime_cell.set(operation_runtime.clone());
 
-        // PR5 (#136) — dispatcher worker. Subscribes to
-        // `*.worker_requested` envelopes and starts worker operations
-        // (Cap: `NEIGE_DISPATCHER_PERMITS` env override, default 8).
-        // Spawned here (between role-cache seed and plugin autospawn)
-        // so the bus has at least one *.Requested-aware listener
-        // before plugins start emitting; the role cache is already
-        // seeded so the dispatcher's `card_create_with_id_tx` write-
-        // through into the cache sees the seeded state.
+        // Spawned between role-cache seed and plugin autospawn so the bus has a
+        // `*.Requested`-aware listener before plugins start emitting.
         let dispatcher = Arc::new(
             crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
                 repo.clone(),
@@ -1625,9 +1194,6 @@ impl AppState {
                 codex.clone(),
                 daemon.clone(),
                 terminal_renderer.clone(),
-                // PR7a.1 — hand the MCP server handle to the dispatcher so
-                // worker codex spawns can join the same MCP wire the planner
-                // card uses.
                 Some(mcp_server.clone()),
                 harness.clone(),
                 shared_codex_appserver.clone(),
@@ -1637,9 +1203,7 @@ impl AppState {
             ),
         );
 
-        // Auto-spawn every enabled plugin row. Per-plugin errors are logged
-        // inside `autospawn_enabled`; we never let one broken plugin block
-        // the rest of the boot path.
+        // Per-plugin errors are logged inside `autospawn_enabled`; one broken plugin never blocks boot.
         plugin.autospawn_enabled().await;
 
         let running_plugin_ids = plugin.running_plugin_ids().await;
@@ -1692,15 +1256,8 @@ impl AppState {
             terminal_renderer,
             plugin,
             codex,
-            // See struct doc for `db_instance_id`: one fresh UUID v4 per
-            // process boot. `AppState::new` is called exactly once per boot
-            // (from `AppState::boot`), so this is the boot-scoped id the rest
-            // of the server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
-            // #1722 S1b — the database's own id, minted or read back by
-            // `SqlxRepo::open`; see the `database_id` field doc.
             database_id,
-            // #1635 S4/S5 — the `templates` parameter, built by `Self::boot`.
             templates,
             card_role_cache,
             track_area_cache,
@@ -1718,27 +1275,15 @@ impl AppState {
         };
         let state = state.into_app_state();
 
-        // Orphan-terminal sweeper (Scope C). Ticks every 30s, reaps
-        // terminal rows whose card has no active worker session (with a
-        // 1-minute grace window), and emits `Event::TerminalDeleted`
-        // through the same `write_with_event`
-        // pipeline every other write uses so the cleanup is audited; the
-        // same tick's second arm ends worker sessions left running on
-        // completed tracks (#1743 §4.2). See `terminal_sweeper` module docs
-        // and `docs/sync-engine-design.md` §10.
+        // Orphan-terminal sweeper; emits `TerminalDeleted` through the audited write pipeline. The
+        // same tick also ends worker sessions left running on completed tracks.
         crate::terminal_sweeper::spawn(state.clone());
 
-        // Track VCS objects are content-addressed and can be shared by multiple
-        // tracks, so track/area deletion only removes refs + commits. Reclaim
-        // unreferenced objects on a slower hourly cadence with a one-hour
-        // grace window; see `track_vcs::sweep_unreferenced_objects_once`.
+        // VCS objects are content-addressed and shared by multiple tracks, so deletion only
+        // removes refs + commits; unreferenced objects are reclaimed hourly with a grace window.
         if let Some(pool) = state.raw.sqlite_pool() {
             crate::track_vcs::spawn_unreferenced_object_sweeper(pool.clone());
             crate::track_vcs::spawn_track_history_pruner(pool.clone());
-            // Events retention pruner (#854 slice 2). Allowlist-only,
-            // age-horizoned, keep-latest overlay carve-out; see
-            // `calm_truth::events_prune` module docs and
-            // `docs/events-retention.md`.
             crate::events_prune::spawn_events_pruner(pool);
         }
 

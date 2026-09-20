@@ -1,11 +1,5 @@
-//! Property gate for recursive SQL over `tracks.parent_track_id`.
-//!
-//! This deliberately does not maintain a declaration registry. It scans the
-//! production Rust and SQL sources of every crate that executes track-tree SQL,
-//! decodes each Rust string literal independently, strips SQL comments, and
-//! checks the dangerous property itself: a recursive member which traverses
-//! `parent_track_id` must upper-bound the recursive CTE alias's own `depth` in
-//! that member's ON/WHERE predicate.
+//! Property gate for recursive SQL over `tracks.parent_track_id`: every recursive member that
+//! traverses `parent_track_id` must upper-bound the CTE alias's own `depth` in its ON/WHERE predicate.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -63,11 +57,8 @@ fn literal_concat(stream: TokenStream) -> Option<String> {
     Some(combined)
 }
 
-/// Decode each literal separately, plus the expansion of literal-only
-/// `concat!` invocations. Combining an entire token group creates a false SQL
-/// program (unrelated consts in one file donate tokens to each other), while
-/// ignoring a real `concat!("WITH ...", "parent_track_id ...")` would create a
-/// false negative. Scoping concatenation to the macro invocation buys both.
+/// Decode each literal separately, plus literal-only `concat!` expansions: joining a whole token
+/// group makes unrelated consts donate tokens to each other.
 fn decoded_string_literals(stream: TokenStream, literals: &mut Vec<String>) {
     let tokens = stream.into_iter().collect::<Vec<_>>();
     let mut index = 0usize;
@@ -310,9 +301,8 @@ fn is_numbered_parameter(tokens: &[String]) -> bool {
             .all(|character| character.is_ascii_digit())
 }
 
-/// The deliberately small accepted grammar. The recursive member must carry
-/// a direct, parameterized comparison leaf; constants, functions, CASE, IS,
-/// arithmetic, and boolean postfixes are rejected rather than interpreted.
+/// The accepted grammar is deliberately small: anything but a direct parameterized comparison leaf
+/// is rejected rather than interpreted.
 fn direct_parameterized_depth_bound(tokens: &[String], aliases: &BTreeSet<String>) -> bool {
     let tokens = strip_wrapping_parens(tokens);
     if tokens.len() != 6 {
@@ -321,16 +311,13 @@ fn direct_parameterized_depth_bound(tokens: &[String], aliases: &BTreeSet<String
     let forward = recursive_depth_at(tokens, 0, aliases)
         && matches!(tokens[3].as_str(), "<" | "<=")
         && is_numbered_parameter(&tokens[4..]);
-    // Preserve the already-approved equivalent spelling `?N >= alias.depth`.
     let reversed = is_numbered_parameter(&tokens[..2])
         && matches!(tokens[2].as_str(), ">" | ">=")
         && recursive_depth_at(tokens, 3, aliases);
     forward || reversed
 }
 
-/// Accept a bound only when it is itself a conjunction leaf. A sibling term
-/// may contain OR (`bound AND (flag OR fallback)`), but an OR surrounding the
-/// comparison, or any wrapper other than parentheses, makes it ineligible.
+/// A bound counts only as a conjunction leaf: an OR surrounding the comparison makes it ineligible.
 fn conjunct_has_direct_bound(tokens: &[String], aliases: &BTreeSet<String>) -> bool {
     let tokens = strip_wrapping_parens(tokens);
     let mut depth = 0usize;
@@ -533,8 +520,7 @@ fn every_recursive_parent_track_cte_in_workspace_members_bounds_its_recursive_va
     let mut files = Vec::new();
     for crate_root in workspace_member_roots(&workspace) {
         production_sources_below(&crate_root.join("src"), true, &mut files);
-        // `include_str!`, `query_file!`, and migrations commonly keep SQL
-        // outside `src`; scan every .sql file in the executing crate.
+        // `include_str!`, `query_file!`, and migrations keep SQL outside `src`.
         production_sources_below(&crate_root, false, &mut files);
     }
     files.sort();

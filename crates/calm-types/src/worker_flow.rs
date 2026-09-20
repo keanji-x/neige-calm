@@ -1,37 +1,16 @@
-//! Worker-flow vocabulary — the normalized agent-activity stream (#695 PR1).
-//!
-//! [`WorkerFlowItem`] is the provider-agnostic unit a flow source emits while
-//! *passively* draining a worker's wire (Codex/Claude transcript bytes,
-//! tool-call traffic, exec output). It is the read-model counterpart to
-//! [`crate::observation::Observation`]: observations are the kernel→agent push
-//! direction; flow items are the agent→read-model capture direction. The
-//! capture-seam traits live in calm-exec; this crate only owns the shape.
-//!
-//! Like the rest of calm-types it is pure data and IO-free. **Not TS-exported
-//! and not `ToSchema`** — PR1 keeps the vocabulary off the wire (no
-//! `generated-events.ts` / OpenAPI churn); a later PR surfaces it deliberately.
-//!
-//! Every variant of [`WorkerFlowItem`] carries a `#[serde(flatten)]`
-//! [`FlowEnvelope`] (sequencing + provenance) followed by its payload. Unions
-//! are internally tagged with a camelCase `"type"` discriminator.
+//! Worker-flow vocabulary — the normalized agent-activity stream a flow source emits while passively
+//! draining a worker's wire. Not TS-exported and not `ToSchema`: kept off the wire deliberately.
 
 use serde::{Deserialize, Serialize};
 
 use crate::worker::{WorkerProviderKind, WorkerSessionId};
 
-// ---------------------------------------------------------------------------
-// ToolCallId
-// ---------------------------------------------------------------------------
-
-/// Provider-issued tool/function-call identifier. Same opaque
-/// `#[serde(transparent)]` newtype pattern as [`crate::ids`] — the wire shape
-/// stays a bare string.
+/// Provider-issued tool/function-call identifier; the wire shape is a bare string.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ToolCallId(pub String);
 
 impl ToolCallId {
-    /// Borrow the underlying string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -54,10 +33,6 @@ impl std::fmt::Display for ToolCallId {
         std::fmt::Display::fmt(&self.0, f)
     }
 }
-
-// ---------------------------------------------------------------------------
-// FlowEnvelope + RawRef
-// ---------------------------------------------------------------------------
 
 /// Sequencing + provenance flattened onto every [`WorkerFlowItem`]. `seq`
 /// orders items within a session; `turn` groups them by agent turn.
@@ -82,14 +57,8 @@ pub struct RawRef {
     pub record_type: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// WorkerFlowItem
-// ---------------------------------------------------------------------------
-
-/// One normalized, provider-agnostic item in a worker's activity stream.
-///
-/// Flat union: each variant flattens a [`FlowEnvelope`] then carries its
-/// payload. Internally tagged with a camelCase `"type"` discriminator.
+/// One normalized, provider-agnostic item in a worker's activity stream; each variant flattens a
+/// [`FlowEnvelope`], internally tagged with a camelCase `"type"` discriminator.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum WorkerFlowItem {
@@ -222,9 +191,7 @@ impl WorkerFlowItem {
         }
     }
 
-    /// The tool-call id this item is keyed by, when it has one. Variants that
-    /// never carry a call id (messages, reasoning, plans, …) return `None`,
-    /// as do the call-id-optional variants whose field is absent.
+    /// The tool-call id this item is keyed by, when it has one.
     pub fn call_id(&self) -> Option<&ToolCallId> {
         match self {
             WorkerFlowItem::ToolCall { call_id, .. }
@@ -244,10 +211,6 @@ impl WorkerFlowItem {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Supporting types
-// ---------------------------------------------------------------------------
 
 /// A block inside a user message (mirrors Codex/Claude multi-part input).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -427,9 +390,7 @@ mod tests {
         assert_round_trip(&item);
 
         let value = serde_json::to_value(&item).unwrap();
-        // Internally-tagged camelCase discriminator.
         assert_eq!(value["type"], json!("userMessage"));
-        // The envelope is flattened to the top level, not nested under `env`.
         assert_eq!(value["seq"], json!(7));
         assert!(value.get("env").is_none());
     }
@@ -484,7 +445,6 @@ mod tests {
 
         let value = serde_json::to_value(&item).unwrap();
         assert_eq!(value["type"], json!("fileChange"));
-        // Nested union tag is camelCase too.
         assert_eq!(value["changes"][1]["kind"]["type"], json!("update"));
     }
 

@@ -1,13 +1,4 @@
-// Crypto-strong UUID v4 with a fallback path for non-secure contexts.
-//
-// Why this exists: `crypto.randomUUID()` is restricted to secure contexts
-// (https + localhost). When the app is served over plain http from a LAN
-// IP (e.g. http://192.168.x.x:4040 in a dev cluster), the method is
-// `undefined` and any caller throws `TypeError: crypto.randomUUID is not
-// a function` — see XtermView's WS client_id and plugin-iframe's MCP
-// call_id. `crypto.getRandomValues` IS available in non-secure contexts,
-// so we synthesise a v4 UUID from 16 random bytes when the high-level
-// helper isn't there.
+// `crypto.randomUUID()` is undefined outside secure contexts (plain-http LAN); `getRandomValues` is not, so synthesise a v4 there.
 export function makeUuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();

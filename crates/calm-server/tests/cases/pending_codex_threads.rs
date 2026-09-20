@@ -669,12 +669,8 @@ async fn expire_drops_pending_when_terminal_row_deleted() {
 
 #[tokio::test]
 async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
-    // Followup gate #3 (PR6 R6 P2-A): when the FRONT pending entry is
-    // dropped due to a dead terminal, we MUST NOT loop with the same
-    // thread_id and bind it to the next-in-queue live entry. The thread
-    // belongs (soft-deterministically) to the dropped card's TUI request,
-    // and binding it to a different card would cross-attribute. We orphan
-    // the thread_id and let the live card wait for its OWN thread/started.
+    // When the front pending entry is dropped for a dead terminal, the thread_id is orphaned rather than
+    // bound to the next live entry: it belongs to the dropped card's TUI request.
     let (repo, events, track_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let dead_card = seed_card(&repo, &track_id, "term-dead").await;
@@ -689,14 +685,12 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
 
     let bound = registry.on_thread_started("T-live").await.unwrap();
 
-    // Was the front (dead) entry dropped? Yes.
     assert_eq!(
         bound, None,
         "thread_id must be orphaned, not cross-attributed"
     );
     let dead = projected_card(&repo, &dead_card).await;
     assert_eq!(dead.payload["codex_thread_status"], "failed_to_spawn");
-    // The live card is still pending — it'll receive its OWN thread/started later.
     assert_eq!(registry.pending_count().await, 1);
     let live_runtime = repo
         .session_projection_active_for_card(&live_card)
@@ -704,7 +698,6 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
         .unwrap()
         .expect("live runtime");
     assert_eq!(live_runtime.thread_id, None);
-    // When the live card's OWN thread/started arrives, it binds correctly.
     let next = registry.on_thread_started("T-live-own").await.unwrap();
     assert_eq!(next.as_deref(), Some(live_card.as_str()));
     let runtime = repo
@@ -883,10 +876,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
 
 #[tokio::test]
 async fn on_thread_started_stale_front_drop_orphans_only_one_per_event() {
-    // Per the gate #3 mitigation: each thread/started can only drop the
-    // CURRENT front entry; if the new front is also dead, it stays in the
-    // queue (will be cleaned up by the next thread/started or by TTL
-    // expire). This is intentional — bounded effect per event.
+    // Each thread/started can only drop the CURRENT front entry; a dead new front waits for the next thread/started or TTL expire.
     let (repo, events, track_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     for label in ["term-dead-a", "term-dead-b"] {
@@ -902,9 +892,7 @@ async fn on_thread_started_stale_front_drop_orphans_only_one_per_event() {
         registry.on_thread_started("T-orphan-1").await.unwrap(),
         None
     );
-    // Only the front (term-dead-a) was dropped; term-dead-b remains.
     assert_eq!(registry.pending_count().await, 1);
-    // A second thread/started drops the next one.
     assert_eq!(
         registry.on_thread_started("T-orphan-2").await.unwrap(),
         None

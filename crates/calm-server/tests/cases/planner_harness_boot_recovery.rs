@@ -27,12 +27,7 @@ use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use serde_json::json;
 use tempfile::TempDir;
 
-/// The stored `planner-harness-start` payload every boot-recovery fixture in
-/// this file needs, differing only in `goal`.
-///
-/// One place spells the struct so a field added to it is a compile error here
-/// once rather than five times, and so the five fixtures cannot drift apart on
-/// a field none of them is about.
+/// The stored `planner-harness-start` payload every boot-recovery fixture needs, differing only in `goal`.
 fn start_payload(
     track_id: &str,
     planner_card_id: &CardId,
@@ -90,20 +85,8 @@ fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
     )
 }
 
-/// A track's planner card, minted with the role production gives it.
-///
-/// `Repo::card_create` defaults to `CardRole::Worker`, which used to be
-/// invisible in the replay tests below: `spawn_recovered_harness` replayed the
-/// planner push stream regardless of role. #1189 gated that replay on
-/// `CardRole::Planner` — the same role the live pusher resolves
-/// (`Dispatcher::resolve_planner_card`) — so a Worker-role row no longer stands in
-/// for a planner card, and these fixtures have to write the role they mean.
-///
-/// The payload comes from `routes::tracks::planner_harness_card_payload`, the same
-/// function the mint route calls, rather than a hand-written
-/// `{"schemaVersion": 1}`: the production shape also carries `codex_source` and
-/// `planner_harness`, and a fixture that omits them would be silently unlike every
-/// real planner card the moment anything backend-side starts reading either key.
+/// A track's planner card, minted with the role production gives it: `Repo::card_create` defaults to `CardRole::Worker`,
+/// and recovery replays the planner push stream only for `CardRole::Planner`. The payload is the production shape from `planner_harness_card_payload`.
 async fn seed_planner_card_row(repo: &SqlxRepo, track_id: &TrackId) -> calm_server::model::Card {
     let mut tx = repo.pool().begin().await.unwrap();
     let card = card_create_with_id_tx(
@@ -535,11 +518,6 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     handle.shutdown().await.unwrap();
 }
 
-/// #953 test 3 — boot-spawn failure no longer skips harness recovery
-/// forever: the Err arm arms a DEFERRED claim-based recovery (not run
-/// immediately), and the first `running: true` on the supervisor readiness
-/// watch triggers a pass that recovers what the user didn't touch and never
-/// shutdown-replaces a runtime the user resumed in the meantime.
 #[tokio::test]
 async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -554,15 +532,12 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
     )
     .await
     .unwrap();
-    // Deferred-armed, NOT run: nothing is recovered while the daemon stays
-    // down.
+    // Deferred-armed, NOT run: nothing is recovered while the daemon stays down.
     assert_eq!(recovered, 0);
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert!(state.harness.get(&untouched_runtime_id).is_none());
     assert!(state.harness.get(&user_runtime_id).is_none());
 
-    // The user resumes one runtime before the daemon heals (today's
-    // shutdown-replace semantics).
     let user_runtime = repo
         .session_projection_by_id(&user_runtime_id)
         .await
@@ -584,7 +559,6 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
     .installed()
     .expect("user resume registers a harness");
 
-    // First heal success: the readiness watch flips running.
     state
         .shared_codex_appserver
         .publish_readiness_for_test(1, true);
@@ -600,8 +574,6 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
     .await
     .expect("deferred recovery must recover the untouched runtime after heal");
 
-    // The user's harness was never shutdown-replaced: its run loop still
-    // accepts observations and its registry slot is intact.
     tokio::time::sleep(Duration::from_millis(100)).await;
     user_handle
         .observe(Observation::TrackGoal {
@@ -617,10 +589,7 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
     }
 }
 
-/// #953 test 8 — deterministic claim race: the user's registration lands
-/// AFTER the deferred task's per-runtime eligibility check (fixtures-only
-/// post-eligibility hook) and BEFORE its claim ⇒ `try_reserve` returns None
-/// ⇒ the runtime is skipped without any shutdown-replace.
+/// The user's registration lands after the per-runtime eligibility check (fixtures-only hook) and before its claim, so `try_reserve` returns None.
 #[tokio::test]
 async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -637,8 +606,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
     let registry = HarnessRegistry::new();
     let events = EventBus::new();
 
-    // The user's harness, built but NOT registered yet — the hook lands it
-    // inside the eligibility→claim window.
+    // The user's harness, built but NOT registered yet — the hook lands it inside the eligibility→claim window.
     let user_handle = PlannerHarness::run(PlannerHarnessParams {
         worker_session_id: runtime_id.clone(),
         track_id: TrackId::from(
@@ -699,8 +667,6 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         .unwrap();
 
     assert_eq!(hook_fired.load(Ordering::SeqCst), 1);
-    // try_reserve lost against the user's registration: no shutdown-replace
-    // — the user's run loop still accepts observations and holds the slot.
     user_handle
         .observe(Observation::TrackGoal {
             text: "user wins the claim".into(),
@@ -714,13 +680,8 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         .unwrap();
 }
 
-/// #953 PR2 review D1 — claim-boundary daemon re-check: the daemon leaves
-/// Running inside the eligibility→claim window (which contains the
-/// potentially long event replay — the fixtures post-eligibility hook fires
-/// at the start of exactly that window). The deferred task must NOT install
-/// a harness against the stale generation: it abandons the pass without
-/// reserving anything, re-arms the wait loop, and recovers only after the
-/// daemon heals again (new generation).
+/// The daemon leaves Running inside the eligibility→claim window (the fixtures hook fires at its start); the deferred
+/// task must abandon the pass without reserving, re-arm, and recover only after the daemon heals again.
 #[tokio::test]
 async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_during_replay() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -741,9 +702,7 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
             if *eligible_runtime_id != hook_target {
                 return;
             }
-            // First pass only: the daemon fails (readiness invalidated with
-            // the outgoing generation — what transition ENTRY publishes)
-            // inside the eligibility→claim window.
+            // First pass only: the daemon fails (readiness invalidated with the outgoing generation) inside the eligibility→claim window.
             if hook_fired_in_hook.fetch_add(1, Ordering::SeqCst) == 0 {
                 hook_daemon.publish_readiness_for_test(1, false);
             }
@@ -760,7 +719,6 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
         post_eligibility_hook: Some(post_eligibility_hook),
     }));
 
-    // First heal success: pass 1 starts, eligibility sees Running(gen 1).
     daemon.publish_readiness_for_test(1, true);
     tokio::time::timeout(Duration::from_secs(5), async {
         while hook_fired.load(Ordering::SeqCst) == 0 {
@@ -770,9 +728,7 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
     .await
     .expect("pass 1 must reach the post-eligibility window");
 
-    // Let replay + the claim-boundary re-check run to completion: nothing
-    // may be installed against the stale generation, and the task must
-    // re-arm (still alive) rather than finish its pass.
+    // Nothing may be installed against the stale generation, and the task must re-arm rather than finish its pass.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         registry.get(&runtime_id).is_none(),
@@ -783,7 +739,6 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
         "the deferred task must abandon the pass and re-arm, not exit"
     );
 
-    // The daemon heals again (new generation): recovery resumes and installs.
     daemon.publish_readiness_for_test(2, true);
     tokio::time::timeout(Duration::from_secs(5), driver)
         .await
@@ -1423,15 +1378,8 @@ async fn force_new_thread_recovery_after_phase2_crash() {
     }
 }
 
-/// Issue #644 PR-C (§6.5/§8) — the boot replay applies the SAME
-/// gated-self-report consultation as the live push branch: a gated
-/// task's `task.completed` is NOT replayed to the planner (the gate
-/// verdict is what wakes it), an ungated task's self-report and the
-/// `task.gate_result` itself replay as observations. Round-3 review
-/// F1: a stale `task.failed` against a gated row the gate owns
-/// (`verifying` here) is suppressed too, while a gated task whose
-/// worker genuinely failed pre-gate (`failed` + `worker-reported`)
-/// replays as today.
+/// The boot replay applies the same gated-self-report consultation as the live push: a gated task's `task.completed`
+/// is not replayed (the gate verdict wakes the planner); a stale `task.failed` against a gate-owned row is suppressed too.
 #[tokio::test]
 async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -1459,7 +1407,6 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         .unwrap();
     let card = seed_planner_card_row(&repo, &track.id).await;
 
-    // One gated and one ungated tasks row.
     let mk_task = |key: &str, gate: Option<String>| calm_server::model::Task {
         id: format!("{}:{key}", track.id.as_str()),
         track_id: track.id.as_str().to_string(),
@@ -1492,9 +1439,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let gated = mk_task("gated", Some(gate_json.clone()));
     let mut ungated = mk_task("ungated", None);
     ungated.status = calm_server::model::TaskStatus::Done;
-    // Round-3 review F1 — a gated task whose worker genuinely failed
-    // pre-gate: the failure landed on the row, so its `task.failed`
-    // replays as today.
+    // A gated task whose worker genuinely failed pre-gate: the failure landed on the row, so its `task.failed` replays.
     let mut gated_failed = mk_task("gated-failed", Some(gate_json));
     gated_failed.status = calm_server::model::TaskStatus::Failed;
     gated_failed.status_detail = Some("worker-reported".to_string());
@@ -1533,9 +1478,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             artifacts: Vec::new(),
             agent_message: None,
         },
-        // Round-3 review F1 — a stale/retried `task.failed` against
-        // the gated row the gate owns (`verifying`): the failure never
-        // landed on the row, so it must NOT replay.
+        // A stale/retried `task.failed` against the gated row the gate owns (`verifying`): never landed on the row, must NOT replay.
         Event::TaskFailed {
             idempotency_key: gated_id.clone(),
             reason: "stale worker claim".into(),
@@ -1663,7 +1606,6 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         "gated self-report must be suppressed in replay (§6.5): {:?}",
         stored.pending_observations()
     );
-    // Round-3 review F1 — failure split.
     assert!(
         !stored.pending_observations().iter().any(|obs| matches!(
             obs,
@@ -1685,27 +1627,8 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     handle.shutdown().await.unwrap();
 }
 
-/// #1189 A1 — a kernel restart mid-conversation.
-///
-/// Two halves of one bug, on one ordinary (non-area-chat) track:
-///
-/// * **the selector.** `session_projection_recover_harnesses_on_boot`'s second
-///   `OR` arm was written for area chat (`executor` + `role = 'worker'` +
-///   `plain_chat`) and a track assistant matches none of its three conjuncts. A
-///   restart during an assistant turn therefore left the `worker_sessions` row
-///   alive with no run loop behind it: `GET /planner/run` answers dormant and the
-///   user's reply never arrives.
-/// * **the replay.** `spawn_recovered_harness` called
-///   `replay_harness_events_since` for every role. That function replays the
-///   PLANNER push stream — task completions, report edits, gate verdicts — which
-///   the live dispatcher only ever pushes to the card whose role is
-///   `CardRole::Planner` (`Dispatcher::resolve_planner_card`). A freshly minted
-///   assistant starts at watermark 0, so the first recovery would have queued
-///   the track's entire planner backlog into a conversation.
-///
-/// The fixture keeps all four recovery classes side by side so a fix that
-/// widened the selector too far is red as well: the real codex worker must stay
-/// out, and the area chat must stay in.
+/// A kernel restart mid-conversation on an ordinary track. All four recovery classes sit side by side so a selector
+/// widened too far is red as well: the real codex worker must stay out, and the area chat must stay in.
 #[tokio::test]
 async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_backlog() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -1731,7 +1654,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
         })
         .await
         .unwrap();
-    // An area chat track alongside it: the #1098 recovery class must keep working.
+    // An area chat track alongside it: that recovery class must keep working.
     let chat_track = repo
         .track_create(NewTrack {
             template_input: None,
@@ -1811,9 +1734,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
     .unwrap();
 
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    // The persisted session says a turn was pending when the kernel stopped.
-    // Keep the snapshot in the matching non-issuable phase too: an Idle
-    // harness may legitimately drain the replayed planner queue on its first
+    // Keep the snapshot in a non-issuable phase: an Idle harness may drain the replayed planner queue on its first
     // run-loop tick before the assertions below can observe the catch-up.
     snapshot.phase = HarnessPhaseTag::TurnRunning;
     let planner_runtime_id = new_id();
@@ -1852,8 +1773,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
                 card_id: card_id.to_string(),
                 kind,
                 agent_provider: Some(AgentProvider::Codex),
-                // `turn_pending` is the state the bug bites in: a turn was in
-                // flight when the kernel went down.
+                // `turn_pending`: a turn was in flight when the kernel went down.
                 status: WorkerSessionState::TurnPending,
                 terminal_run_id: None,
                 thread_id: Some(format!("thread-{card_id}")),
@@ -2019,31 +1939,9 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
     }
 }
 
-/// #1449 — a start re-driven after a crash must hand the racer's undelivered
-/// sentence to the runtime it ACTUALLY starts, not only to the row.
-///
-/// The shape is the one `app_server_interact`'s deferred branch exists for: this
-/// operation's placeholder was displaced by another runtime while the thread was
-/// being minted, so at re-drive time the card's active row is a stranger. That
-/// stranger is retired here, and — since #1449 — whatever it never delivered is
-/// harvested into the successor.
-///
-/// Boot recovery rather than a hand-built race: the deferred window is inside
-/// one serially-driven operation, so nothing in-process can race into it, and
-/// buying the race with a second `fixtures`-gated park in the deferred window
-/// would be production state that exists only for a test. A crash between the
-/// mint transaction and the thread mint is a genuinely reachable path, and
-/// `recover_operations_on_boot` is the production code that re-drives it.
-///
-/// **What this pins that a row assertion would not.** The harvest writes three
-/// copies of "what the successor owes": the row (inside the transaction), the
-/// operation checkpoint (inside the transaction) and `output`.
-/// `spawn_side_effect` builds the harness from `output` and then calls
-/// `handle.persist_snapshot()`, which writes that snapshot straight back over
-/// the row. So a harvest that reached only the row is not merely incomplete —
-/// it is erased moments later, by the successful path, with the source rows
-/// already stamped as taken. Asserting on the started runtime is what catches
-/// that; asserting on the row inside the transaction would not.
+/// A start re-driven after a crash must hand the racer's undelivered sentence to the runtime it ACTUALLY starts.
+/// `spawn_side_effect` builds the harness from `output` and then `persist_snapshot()` overwrites the row, so a
+/// harvest that reached only the row is erased; assert on the started runtime.
 #[tokio::test]
 async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it_starts() {
     const STRANDED: &str = "the racer never got to say this";
@@ -2091,16 +1989,9 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
             Some(card.id.to_string()),
             serde_json::to_value(&card).unwrap(),
         );
-        // Exactly what `prepare_tx` committed: the placeholder's own snapshot,
-        // which knows nothing about the racer.
-        //
-        // #1316: the retiring key below, and the same one in the `fail_runtime`
-        // step args further down, are not names this file chooses.
-        // `planner_harness_start_adapter.rs` reads them back out of rows
-        // written by shipped binaries (`output_string` and `step.arg_string`).
-        // Spelling them anything else would build a payload the adapter cannot
-        // read, so these fixtures would stop standing for the stored row they
-        // exist to reproduce.
+        // Exactly what `prepare_tx` committed: the placeholder's own snapshot, which knows nothing about the racer.
+        // The retiring key (and the `fail_runtime` step args below) are read back by `planner_harness_start_adapter.rs`
+        // from rows written by shipped binaries; spelling them otherwise builds a payload the adapter cannot read.
         output.data = json!({
             "card_id": card.id.to_string(),
             "track_id": track.id.to_string(),
@@ -2134,11 +2025,8 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         )
         .await
         .unwrap();
-        // 2. ...displaced by a runtime that took the card's active slot while
-        //    the thread was being minted. This is the production pair that does
-        //    it (`/planner/reset` reaches `session_supersede_and_start_tx`), and
-        //    it deliberately does NOT stamp the placeholder: nothing has taken
-        //    the placeholder's queue.
+        // 2. ...displaced by a runtime that took the card's active slot while the thread was being minted; this pair
+        //    deliberately does NOT stamp the placeholder: nothing has taken its queue.
         session_supersede_and_start_tx(
             &mut tx,
             &placeholder_id,
@@ -2227,11 +2115,7 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         "premise: the re-drive must start the placeholder's harness"
     );
 
-    // THE assertion: the DAEMON got it. Asserting on the row would be the weak
-    // form — since S1 the row is the single home for a queue, so it is the one
-    // copy that is correct by construction, and a harvest that reached the row
-    // and nowhere else would still pass. What has to be true is that the
-    // runtime this re-drive actually started delivered the sentence.
+    // THE assertion: the daemon got it. The row is correct by construction, so a harvest that reached the row and nowhere else would still pass a row assertion.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let delivered = loop {
         let handed_over =
@@ -2249,16 +2133,8 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         "the harvested sentence must be delivered by the runtime the re-drive actually started, \
          exactly once"
     );
-    // #1449 B2 — and the undo journal names the racer.
-    //
-    // This is a structural assertion, deliberately: the end-to-end witness
-    // would need this operation to fail AFTER its app-server transaction
-    // committed, and the reachable failure injections all land before it. What
-    // the journal records is exactly what was missing — `taken_from` was built
-    // inside the transaction closure and dropped there, so
-    // `output.data["harvested_from"]`, the only thing compensation reads, never
-    // learned about the racer's sentence and a later failure stranded it on a
-    // `failed` row.
+    // The undo journal names the racer. Structural, deliberately: the end-to-end witness would need this operation to
+    // fail after its app-server transaction committed, and the reachable failure injections all land before it.
     let tx_output: String =
         sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id = ?1")
             .bind(&op_id)
@@ -2295,28 +2171,9 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
     }
 }
 
-/// #1449 S1 — a harness is started from the queue on its OWN ROW, never from
-/// the copy its operation output has been carrying since `prepare_tx`.
-///
-/// `output` is durable (`operations.tx_output_json`) and is written once, at
-/// mint time. Everything else in it is the operation's own decision and rightly
-/// travels there — but the pending queue is shared state that later mints move
-/// between rows, and no transfer can reach a copy sitting in a finished
-/// operation's output.
-///
-/// So an operation whose `prepare_tx` committed and which is re-driven later —
-/// after a crash, or on a second `AppState` over the same file — would start its
-/// harness from a queue somebody else has already taken, deliver the sentence a
-/// second time, and then write the resurrected queue back over the row via
-/// `handle.persist_snapshot()`. That is one of the four concurrency
-/// constructions the second review round found, and it is the reason the row is
-/// now the single home for a queue.
-///
-/// Staged at **`TxCommitted`**, not `SpawnStarted`. That is the whole point of
-/// the phase choice: `app_server_interact` runs on the way through and writes
-/// the row itself, so a version of this rule that only converted
-/// `spawn_side_effect` passes at `SpawnStarted` and fails here — which is
-/// exactly how the second writer survived a round of review.
+/// A harness is started from the queue on its OWN ROW, never from the copy in the operation output: the pending queue
+/// is shared state later mints move between rows. Staged at `TxCommitted`, not `SpawnStarted`: `app_server_interact`
+/// writes the row on the way through.
 #[tokio::test]
 async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_output() {
     const MOVED_AWAY: &str = "this sentence already belongs to somebody else";
@@ -2350,8 +2207,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
         let card = seed_planner_card_row(&repo, &track.id).await;
 
         let worker_session_id = new_id();
-        // The row: the queue is empty, because a mint in between moved the
-        // sentence to another runtime.
+        // The row: the queue is empty, because a mint in between moved the sentence to another runtime.
         let row_snapshot = HarnessSnapshot::initial(0, vec![]);
         // The carried output: still holds it, frozen at `prepare_tx` time.
         let carried_snapshot = HarnessSnapshot::initial(
@@ -2377,9 +2233,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
             "cwd": track.workspace.path.clone(),
             "goal": null,
             "report_card_id": null,
-            // No `codex_thread_id`: with one already in the output the
-            // app-server phase short-circuits and never writes the row, which
-            // is precisely the writer under test.
+            // No `codex_thread_id`: with one already in the output the app-server phase short-circuits and never writes the row, the writer under test.
             "snapshot": serde_json::to_value(&carried_snapshot).unwrap(),
         });
         let op_id = new_id();
@@ -2466,8 +2320,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
         "premise: the re-drive must start the harness: op {op_id}"
     );
 
-    // The harness must have started from the row's (empty) queue. Give the run
-    // loop room to drain anything it thinks it owes before concluding.
+    // Give the run loop room to drain anything it thinks it owes before concluding.
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while std::time::Instant::now() < deadline {
         let handed_over =
@@ -2497,22 +2350,8 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
     }
 }
 
-/// #1449 S3 — the give-back returns only what is still on the failing
-/// runtime's queue.
-///
-/// The construction the second review round called out: `A` harvests `X` off a
-/// retired row `R`; another mint then takes `X` onward off `A`; only afterwards
-/// does `A`'s `thread/start` failure compensate. A give-back that trusted its
-/// journal alone would put `X` back on `R` while somebody else is also holding
-/// it — the same sentence in two places, which is the unconditional-restore
-/// failure wearing a different coat.
-///
-/// The condition is identity: return a message only if its id is still on the
-/// failing runtime's queue. Here it is not, so nothing comes back and `R` keeps
-/// its marker — its queue left legitimately.
-///
-/// Staged at `Phase::Compensating` so boot recovery resumes the compensation,
-/// which is how a crash between the failure and the undo is re-driven.
+/// The give-back returns a message only if its id is still on the failing runtime's queue; here another mint took
+/// it onward, so nothing comes back. Staged at `Phase::Compensating` so boot recovery resumes the compensation.
 #[tokio::test]
 async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
     const MOVED_ONWARD: &str = "a sentence that has since moved on";
@@ -2548,8 +2387,7 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
 
         // `R`: harvested from, therefore emptied and stamped.
         let source_id = new_id();
-        // The failing runtime: its queue no longer holds the sentence, because
-        // another mint inherited it away.
+        // The failing runtime: its queue no longer holds the sentence, because another mint inherited it away.
         let failing_id = new_id();
         let now = now_ms();
 
@@ -2706,19 +2544,8 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
     );
 }
 
-/// #1449 — the give-back must not delete a sentence it cannot identify.
-///
-/// `remaining.is_empty()` has two causes and the code cannot tell them apart
-/// from the value alone: every id went back, or the entry never had one. An
-/// entry with no ids was enqueued before #1449 shipped — migration 0095
-/// deliberately does not stamp live rows, so such a queue is still harvestable
-/// — and it is NOT returned, because the give-back only returns ids the failing
-/// runtime still holds. Pruning it as "returned" deletes it from the successor
-/// while the source row has already been emptied: gone from both sides, with no
-/// error and no log line.
-///
-/// It is also the exact opposite of what `HarnessSnapshot::pending_message_ids`
-/// documents. The false statement and the defect were the same thing.
+/// `remaining.is_empty()` has two causes: every id went back, or the entry never had one. An entry with no ids was
+/// enqueued before ids existed (migration 0095 does not stamp live rows) and must not be pruned as "returned".
 #[tokio::test]
 async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
     const LEGACY: &str = "typed before the upgrade, no id to its name";
@@ -2757,8 +2584,7 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
         let failing_id = new_id();
         let now = now_ms();
 
-        // The failing runtime holds both: an upgraded entry with no identity,
-        // and one this operation harvested and can name.
+        // The failing runtime holds both: an upgraded entry with no identity, and one this operation harvested and can name.
         let seeded = HarnessSnapshot::initial(
             0,
             vec![
@@ -2770,10 +2596,7 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
                 ),
             ],
         );
-        // The first entry is made into what a row written before #1505 PR1 and
-        // #1449 actually holds: a user sentence with neither an addressable
-        // `QueueEntryId` nor a transfer identity. Editing the JSON is the only
-        // way to reach that shape — no constructor produces it, deliberately.
+        // A user sentence with neither an addressable `QueueEntryId` nor a transfer identity; editing the JSON is the only way to reach that shape.
         let mut seeded_value = serde_json::to_value(&seeded).unwrap();
         seeded_value["pending_entry_meta"][0] = serde_json::Value::Null;
         seeded_value["pending_message_ids"][0] = json!([]);

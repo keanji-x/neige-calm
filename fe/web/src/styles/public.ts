@@ -16,7 +16,7 @@ export type SemanticColorToken =
   | '--warn-text' | '--success-text' | '--error-soft' | '--error-border'
   | '--text-on-accent';
 
-/** Area identity slots. An area's colour is a slot name, never a free-form hex (§6.2). */
+/** Area identity slots. An area's colour is a slot name, never a free-form hex. */
 export type AreaIdentityToken =
   | '--area-1' | '--area-2' | '--area-3' | '--area-4'
   | '--area-5' | '--area-6' | '--area-7' | '--area-8';
@@ -54,11 +54,8 @@ export type ScalarToken =
   | TypeScaleToken | LeadingToken | TrackingToken | RadiusToken | SpacingToken | MotionToken
   | WeightToken;
 
-/**
- * Box scale is its own top-level family, not part of ScalarToken: §9.1's managed-property
- * table takes its allowed values per family, and folding these in would make
- * `font-size: var(--rail-w)` a legal declaration.
- */
+/** Box scale is its own top-level family, not part of ScalarToken: the managed-property table takes its allowed
+ * values per family, and folding these in would make `font-size: var(--rail-w)` a legal declaration. */
 export type BoxScaleToken =
   | '--row-h-sm' | '--row-h' | '--row-h-lg'
   | '--control-h-sm' | '--control-h' | '--control-h-lg'

@@ -1,6 +1,3 @@
-// Copied from web/src/cards/builtins/terminal.tsx chrome: `.term` + CardHead
-// + `.term-body`. The PTY renderer stays in systems/terminal.
-
 import { Suspense, useCallback, useEffect } from 'react';
 
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
@@ -22,24 +19,10 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle
     readonly gateCwd: string | null;
   };
   host: CardHostCapabilities;
-  /** The board's delete, already resolved — see `CardComponentProps.onRemove`. */
   onRemove?: () => void;
-  /**
-   * The kernel's verdict for this card, already resolved — see
-   * `CardComponentProps.activity`. The head's indicator comes from this and
-   * nothing else (INV-APP-118): not from `card.sessionState`, which is the
-   * session reading (`runtime.status`) that is `running` for as long as a
-   * process exists, and not from the surface's connection status, which says
-   * whether *this tab* is attached. A process being alive and a socket being
-   * open are both facts this head still prints as words, below.
-   */
+  /** The head's indicator comes from this alone — not `card.sessionState` (alive while a process exists) nor the surface's connection status (this tab's attachment). */
   activity: CardActivity | null;
-  /**
-   * Head label when the kernel row carries no title. Claude and codex worker
-   * cards share this renderer (they are PTYs too) and must not announce
-   * themselves as "terminal"; `LetterAvatar` also colours the avatar off this
-   * string.
-   */
+  /** Claude and codex worker cards share this renderer and must not announce themselves as "terminal". */
   fallbackTitle?: string;
 }) {
   const [visible, setVisible] = useState(() => host.lifecycle.getSnapshot().visible);
@@ -61,8 +44,6 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle
       : status === 'exited' || card.sessionState === 'exited' ? 'Session exited.'
         : card.sessionState === 'starting' ? `Starting ${fallbackTitle}…`
           : 'No terminal session available.';
-  /* The head's words: how the session ended, else how this tab's connection
-     stands — and nothing while it is simply connected. */
   const statusText = ended ? message
     : !attached ? null
       : status === 'closed' ? 'Disconnected'
@@ -77,13 +58,6 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle
       <CardHead
         className="card-drag-handle"
         title={card.title || fallbackTitle}
-        /* Two facts, side by side and from two sources: the kernel's verdict
-           (the indicator) and the session / connection text. Neither stands
-           in for the other — a failed session can be red AND say `Session
-           failed.`, and a connected terminal with no verdict says nothing.
-           The verdict is spoken (`activityLabelOf`): the words beside it
-           describe the session or the connection, never the verdict, so
-           nothing else in this head would name it. */
         status={activity === null && statusText === null ? undefined : <>
           {activity !== null && (
             <ActivityIndicator state={cardActivityState(activity)} spoken={activityLabelOf(cardActivityState(activity))} />

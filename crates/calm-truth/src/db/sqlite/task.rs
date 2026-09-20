@@ -4,28 +4,13 @@ use sqlx::Transaction;
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
-// ---------------------------------------------------------------------------
-// Tasks (issue #644 — track-scoped task plan, migration 0041)
-//
-// The `_tx` helpers run inside the caller's eventized write so the row
-// writes and the `plan.updated` event land (or roll back) together —
-// same shape as `track_update_tx` above. Reads are mirrored on
-// `RepoRead` for the tool layer's pre-checks and `calm.plan.list`.
-// ---------------------------------------------------------------------------
-
-/// Shared SELECT column list for `tasks` rows. One spelling so the
-/// `FromRow` mapping can't drift between the pool reads and the in-tx
-/// reads.
+/// One spelling so the `FromRow` mapping can't drift between pool and in-tx reads.
 pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
      running_deadline_ms, context_stale_at_ms, declared_by, spawn, created_at_ms, updated_at_ms, \
      finished_at_ms";
 
-/// In-tx read of a track's full plan, in scheduler order
-/// (`priority DESC, created_at_ms ASC, key ASC` — design §5.2). Used by
-/// `calm.plan.upsert` so dep/cycle/mutability validation sees state
-/// consistent with the rows it is about to write.
 pub async fn tasks_by_track_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
@@ -41,12 +26,8 @@ pub async fn tasks_by_track_tx(
     Ok(rows)
 }
 
-/// Revise a still-`pending` plan row. Only the planner-revisable payload
-/// columns move (design §4.1 rule 5: goal/context/acceptance/cwd/deps/
-/// priority/gate); identity, status, and the gate bookkeeping columns
-/// are untouched. Guarded `WHERE status = 'pending'`: a row that left
-/// `pending` between the caller's in-tx read and this write surfaces as
-/// `Conflict` so the whole batch rolls back instead of half-applying.
+/// Guarded `WHERE status = 'pending'`: a row that left `pending` since the
+/// caller's read surfaces as `Conflict` so the whole batch rolls back.
 pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) -> Result<()> {
     let res = sqlx::query(
         r#"UPDATE tasks
@@ -76,10 +57,6 @@ pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) 
     Ok(())
 }
 
-/// In-tx single-row read of one plan row. Used by `calm.plan.cancel`
-/// to disambiguate a 0-row guarded flip (concurrent cancel → idempotent
-/// success vs. concurrent dispatch → conflict) against state consistent
-/// with the write it just attempted.
 pub async fn task_get_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Option<Task>> {
     let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1");
     let row = sqlx::query_as::<_, Task>(&sql)
@@ -108,11 +85,8 @@ pub async fn task_mark_sub_track_running_tx(
     .rows_affected())
 }
 
-/// In-tx track-existence guard for the plan writers. `tasks.track_id`
-/// deliberately has no FK to `tracks` (design §2 — events-outlive-rows
-/// convention), so without this check a delete/upsert race could insert
-/// plan rows for a track whose row was just removed. Surfaced as
-/// `Conflict` so the tool layer maps it onto the 409-style vocabulary.
+/// `tasks.track_id` has no FK to `tracks`, so without this check a
+/// delete/upsert race could insert plan rows for a removed track.
 pub async fn require_track_exists_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
@@ -129,9 +103,7 @@ pub async fn require_track_exists_tx(
     Ok(())
 }
 
-/// Guarded `pending → canceled` flip (design §3.1). Returns the number
-/// of rows moved (`0` = the task was not `pending`; the caller decides
-/// between idempotent success and the in-flight refusal).
+/// Returns rows moved (`0` = the task was not `pending`; the caller decides).
 pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64) -> Result<u64> {
     let res = sqlx::query(
         r#"UPDATE tasks
@@ -145,21 +117,12 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
-/// Issue #644 PR-B — in-tx read of one track's lifecycle plus its raw
-/// `task_budget` override. The scheduler's claim tx re-checks
-/// schedulability against this (not the pre-claim snapshot) so a track
-/// moved to Blocked/Canceled/Done between the ready-set pass and the
-/// claim can never have new work claimed (review F4), and the budget is
-/// revalidated in the same tx so a PATCH that shrank it mid-window
-/// cannot over-fill the track (round-2 review F1). `None` = the track row
-/// is gone (concurrent delete); the inner `Option<i64>` is the nullable
-/// `task_budget` column (NULL = kernel default).
+/// The claim tx re-checks schedulability against this, not the pre-claim
+/// snapshot. `None` = track row gone; inner `None` = NULL `task_budget`.
 pub async fn track_lifecycle_and_budget_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
 ) -> Result<Option<(TrackLifecycle, Option<i64>)>> {
-    // #679 PR1 — `TrackLifecycle` lost its `sqlx::Type` derive when it
-    // moved to calm-types; decode TEXT and parse via `TryFrom<String>`.
     let row: Option<(String, Option<i64>)> =
         sqlx::query_as("SELECT lifecycle, task_budget FROM tracks WHERE id = ?1")
             .bind(track_id)
@@ -173,10 +136,7 @@ pub async fn track_lifecycle_and_budget_tx(
     .transpose()
 }
 
-/// Issue #644 PR-C — the track-level gate policy flag
-/// (`tracks.require_task_gates`, §6.6), read inside `calm.plan.upsert`'s
-/// tx for the rule-6 check. A gone track row reads as `false` — the
-/// caller's `require_track_exists_tx` already errored that case loudly.
+/// A gone track row reads as `false`; `require_track_exists_tx` already errored that case.
 pub async fn track_require_task_gates_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
@@ -188,12 +148,8 @@ pub async fn track_require_task_gates_tx(
     Ok(row.is_some_and(|(v,)| v != 0))
 }
 
-/// Issue #644 PR-B — the scheduler's single-winner claim
-/// (`pending → dispatched`, design §5.4). Returns rows moved (`0` =
-/// someone else won the claim; the caller skips silently). Runs inside
-/// the same tx that appends `Event::TaskDispatched` and the
-/// `Dispatching → Working` promotion so projections never observe a
-/// claimed row without its dispatch record.
+/// Single-winner claim `pending → dispatched`; `0` rows = someone else won.
+/// Runs in the same tx as the dispatch event.
 const TASK_CLAIM_PENDING_SQL: &str = r#"UPDATE tasks
            SET status = 'dispatched',
                claim_context_json = ?1,
@@ -247,12 +203,8 @@ mod claim_sql_tests {
     }
 }
 
-/// Issue #644 PR-B — the scheduler's post-spawn running stamp (design
-/// §3/§5.4). Guarded `WHERE status = 'dispatched'`: a fast worker that
-/// already reported (`done`/`failed`, or `verifying` once gates land)
-/// makes this a no-op so the late scheduler write can never regress the
-/// row. `worker_card_id` is `COALESCE`-stamped — whichever side (this
-/// stamp or the report tx) lands first wins; neither overwrites.
+/// Guarded on `dispatched` so a fast worker's report is never regressed;
+/// `worker_card_id` is COALESCE-stamped — whichever side lands first wins.
 pub async fn task_mark_running_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -277,9 +229,7 @@ pub async fn task_mark_running_tx(
     Ok(res.rows_affected())
 }
 
-/// Upgrade/lost-stamp backfill for agent tasks already running when
-/// liveness deadlines were introduced. Guarded so terminal rows and
-/// live-path stamped rows are untouched.
+/// Backfill for agent tasks already running when liveness deadlines were introduced.
 pub async fn task_stamp_missing_running_deadline_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -303,37 +253,11 @@ pub async fn task_stamp_missing_running_deadline_tx(
     Ok(res.rows_affected())
 }
 
-/// Round-4 review F1/F2 — durable ownership proof for the
-/// unstamped-row window: is `card_id` the card the worker-spawn
-/// operation for `task_id` actually created?
-///
-/// The worker-spawn op (`kind 'codex-worker' | 'terminal-worker' |
-/// 'claude-worker'`,
-/// `idempotency_key = task id`) records its created card as the
-/// operation target: `prepare_tx_and_advance` stamps
-/// `target_type = 'card'` / `target_id` in the SAME tx in which the
-/// adapter's `prepare_tx` creates the card, and the operations table
-/// has no client-reachable write path. Card payloads, by contrast,
-/// stay patchable via `PATCH /api/cards/{id}` (the kind validators
-/// allow extra fields), so a payload `idempotency_key` echo proves
-/// nothing.
-///
-/// Round-5 review F2: the op must additionally be SCHEDULER-created —
-/// its persisted `payload_json` actor is `ActorId::KernelDispatcher`
-/// (`build_worker_payload` stamps it; serde shape
-/// `{"actor":{"kind":"KernelDispatcher"}}`). A legacy
-/// `calm.task.dispatch` operation carries the requesting envelope's
-/// actor (the planner card, `{"kind":"AiPlanner",...}`) and could otherwise
-/// collide on the same idempotency key — that foreign op's worker card
-/// must NOT be able to flip the plan task during the unstamped
-/// `dispatched` window (the scheduler classifies the payload-hash
-/// conflict as a permanent spawn failure instead).
-///
-/// Returns `false` when no scheduler worker op row targets the card —
-/// including the crash window between the claim and the op insert,
-/// where NO ownership is provable: unstamped reports are rejected
-/// there, the sweep's dispatched arm resubmits the op, and the real
-/// worker spawned by that resubmit can report.
+/// Ownership proof for the unstamped-row window: the scheduler-created
+/// worker-spawn op (actor `KernelDispatcher`, `idempotency_key` = task id)
+/// records its created card as the op target in the same tx, and `operations`
+/// has no client-reachable write path — unlike card payloads. `false` in the
+/// crash window between the claim and the op insert.
 pub async fn worker_op_targets_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
     task_id: &str,
@@ -356,26 +280,13 @@ pub async fn worker_op_targets_card_tx(
     Ok(owns)
 }
 
-/// Who is asserting a worker-report flip (round-2 review F2).
-///
-/// The two-sided `worker_card_id` guard from round 1 only protects
-/// rows that already carry a stamp; an UNSTAMPED `dispatched` row (the
-/// report-beat-the-running-stamp window) would otherwise accept any
-/// same-track worker that echoes the task id. The ownership proof for
-/// that window is the worker-spawn operation's immutable target card
-/// ([`worker_op_targets_card_tx`], round-4 review F1/F2) — NOT the
-/// reporting card's payload, which is mutable via
-/// `PATCH /api/cards/{id}` and therefore forgeable.
+/// Who is asserting a worker-report flip. An UNSTAMPED `dispatched` row needs
+/// the op-target proof, not the reporting card's (forgeable) payload.
 #[derive(Clone, Copy, Debug)]
 pub enum TaskReporter<'a> {
-    /// Kernel-internal caller that owns the row by construction (the
-    /// scheduler's spawn-failure reconcile). Bypasses the card guard
-    /// and leaves `worker_card_id` untouched (NULL COALESCE arm).
+    /// Kernel-internal caller that owns the row by construction; bypasses the card guard.
     Kernel,
-    /// A worker card's report. `owns_key` must be the result of
-    /// [`worker_op_targets_card_tx`] for the REPORTING card — `true`
-    /// is the unstamped-row ownership proof; stamped rows are still
-    /// guarded by `worker_card_id = card_id`.
+    /// `owns_key` must be [`worker_op_targets_card_tx`] for the REPORTING card.
     Card { card_id: &'a str, owns_key: bool },
 }
 
@@ -389,29 +300,11 @@ impl<'a> TaskReporter<'a> {
     }
 }
 
-/// Issue #644 PR-B — worker-reported success flip
-/// (`dispatched/running → done`, design §3), run **inside** the
-/// `calm.task.complete` emit tx (and by the terminal-exit completion
-/// paths) so there is no event-persisted-but-row-stale crash window.
-///
-/// `dispatched` is included because a fast worker can report before the
-/// scheduler's `wait()` returns. `gate_json IS NULL` is load-bearing
-/// since PR-C: a gated row goes to `verifying` (see
-/// [`task_start_verifying_from_worker_tx`]), never straight to `done` —
-/// the worker's self-report is a claim, not evidence (§3/§6).
-///
-/// `track_id` is part of the guard so a caller can never flip another
-/// track's row even if it echoes a foreign task id.
-///
-/// The card guard is two-sided (review F3 + round-2 F2 + round-4 F1):
-/// besides the COALESCE stamp, a [`TaskReporter::Card`] caller only
-/// flips a row whose `worker_card_id` matches it, or an unstamped row
-/// when the reporting card proves op-target ownership (`owns_key`,
-/// [`worker_op_targets_card_tx`]). A sibling worker echoing another
-/// task's idempotency key — even via a forged card payload — can
-/// therefore never terminalize that row, stamped or not.
-/// [`TaskReporter::Kernel`] bypasses — reserved for kernel callers
-/// that own the row.
+/// `dispatched/running → done`, run inside the emit tx. `dispatched` is
+/// included because a fast worker can report before the scheduler's `wait()`
+/// returns; `gate_json IS NULL` because a gated row goes to `verifying`, never
+/// straight to `done`. `track_id` plus the two-sided card guard keep a sibling
+/// worker from ever terminalizing another task's row.
 pub async fn task_complete_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -443,12 +336,8 @@ pub async fn task_complete_from_worker_tx(
     Ok(res.rows_affected())
 }
 
-/// Which row flip a successful worker report performed (issue #644
-/// PR-C). `Done` = ungated row terminalized; `Verifying` = gated row
-/// handed to the gate runner (lifecycle promotion is suppressed — the
-/// gate-result tx promotes instead, §3); `None` = the guarded UPDATEs
-/// matched nothing (no row / already moved on / ownership miss — the
-/// caller disambiguates).
+/// `None` = the guarded UPDATEs matched nothing (no row / already moved on /
+/// ownership miss — the caller disambiguates).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuccessReportFlip {
     Done,
@@ -456,15 +345,7 @@ pub enum SuccessReportFlip {
     None,
 }
 
-/// Issue #644 PR-C — worker-reported success flip for GATED rows
-/// (`dispatched/running → verifying`, design §3): the same write that
-/// persists the worker's `task.completed` hands the row to the gate
-/// runner instead of terminalizing it. Identical guards to
-/// [`task_complete_from_worker_tx`] except the gate condition is
-/// inverted (`gate_json IS NOT NULL`). `gate_result_json` from any
-/// prior track of the plan is untouched (rows can only re-enter
-/// `verifying` via a fresh report on a non-terminal row, which the
-/// status guard already excludes).
+/// Same guards as [`task_complete_from_worker_tx`] with the gate condition inverted.
 pub async fn task_start_verifying_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -495,11 +376,7 @@ pub async fn task_start_verifying_from_worker_tx(
     Ok(res.rows_affected())
 }
 
-/// Issue #644 PR-C — the ONE success-report flip both report paths
-/// (`calm.task.complete` emit tx, terminal-exit completion) run:
-/// ungated rows terminalize (`done`), gated rows enter `verifying`.
-/// The two guarded UPDATEs are mutually exclusive on `gate_json`, so
-/// at most one matches.
+/// The two guarded UPDATEs are mutually exclusive on `gate_json`, so at most one matches.
 pub async fn task_report_success_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -516,11 +393,8 @@ pub async fn task_report_success_from_worker_tx(
     Ok(SuccessReportFlip::None)
 }
 
-/// Issue #644 PR-C — the gate adapter's guarded attempt bump (design
-/// §6.2 `prepare_tx`): exactly one `task-verify` operation may prepare
-/// attempt `N`, and only while the row is still `verifying`. 0 rows =
-/// a different attempt won or the task moved on; the caller fails the
-/// op benignly.
+/// Exactly one `task-verify` op may prepare attempt `N`, and only while the
+/// row is still `verifying`; 0 rows = the caller fails the op benignly.
 pub async fn task_gate_attempt_bump_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -541,13 +415,8 @@ pub async fn task_gate_attempt_bump_tx(
     Ok(res.rows_affected())
 }
 
-/// Issue #644 PR-C — the gate-result flip
-/// (`verifying → done|failed`, design §3/§6.2): records the verdict,
-/// clears the gate-process bookkeeping triple, and stamps
-/// `finished_at_ms`, guarded on `status = 'verifying'` AND the attempt
-/// number so a superseded attempt's late observer writes nothing.
-/// Callers append `Event::TaskGateResult` + the lifecycle promotion in
-/// the SAME tx only when this returns 1.
+/// Guarded on `verifying` AND the attempt number so a superseded attempt's
+/// late observer writes nothing; callers append the event only when this returns 1.
 pub async fn task_apply_gate_result_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -581,30 +450,19 @@ pub async fn task_apply_gate_result_tx(
     Ok(res.rows_affected())
 }
 
-/// Longest `status_detail` reason tail persisted beside a classifier.
-/// Operation `last_error` texts are unbounded (they can carry a whole
-/// git stderr); the task row only needs the readable head.
+/// Operation `last_error` texts are unbounded; the row only needs the readable head.
 const STATUS_DETAIL_REASON_MAX: usize = 480;
 
-/// Issue #1147 slice ① — `status_detail` is a CLASSIFIER followed by an
-/// optional `": "` + human reason tail. Everything that dispatches on
-/// the vocabulary (`worker-reported` / `spawn-failed` / `worker-timeout`
-/// / `gate-*`) must compare against this, never against the whole
-/// string: before #1147 the spawn-failure reason stopped in the
-/// operation's `phase_detail_json` and the row read a bare
-/// `spawn-failed`, so neither the planner nor the FE could say WHY.
+/// `status_detail` is a CLASSIFIER followed by an optional `": "` + reason
+/// tail; dispatch on the class, never on the whole string.
 pub fn status_detail_class(detail: &str) -> &str {
     detail.split_once(": ").map_or(detail, |(class, _)| class)
 }
 
-/// Build `"<class>: <reason>"`. An empty or whitespace-only reason
-/// degrades to the bare classifier, so the vocabulary is never widened
-/// by an empty tail. The tail is folded to a single line and is at most
-/// [`STATUS_DETAIL_REASON_MAX`] chars INCLUDING the ellipsis.
+/// An empty reason degrades to the bare classifier; the tail is single-line
+/// and at most [`STATUS_DETAIL_REASON_MAX`] chars INCLUDING the ellipsis.
 pub fn status_detail_with_reason(class: &str, reason: &str) -> String {
-    // Fail-closed: a classifier containing the separator would make
-    // `status_detail_class` parse a prefix of itself, silently dropping
-    // the row out of the failure vocabulary.
+    // Fail-closed: a classifier containing the separator would parse as a prefix of itself.
     debug_assert!(
         !class.contains(": "),
         "status_detail classifier must not contain the \": \" separator: {class:?}"
@@ -616,19 +474,9 @@ pub fn status_detail_with_reason(class: &str, reason: &str) -> String {
     format!("{class}: {tail}")
 }
 
-/// Fold a reason into the single-line, budget-bounded tail used by
-/// [`status_detail_with_reason`]. Returns an empty string for an empty
-/// or whitespace-only reason.
-///
-/// Takes an ITERATOR rather than a `&str` on purpose: the load-bearing
-/// property here is not the output but how much input is consumed to
-/// produce it, and that is only assertable if a test can count what the
-/// fold pulls. See `stops_pulling_once_the_budget_is_met`.
-///
-/// One streaming pass, no intermediate `Vec<&str>`: `last_error` is
-/// unbounded (a whole git stderr, or worse), and an error path must not
-/// materialize megabytes just to discard them a line later. Once the
-/// budget is met the fold pulls AT MOST ONE more char before stopping.
+/// Takes an iterator on purpose: the test counts how much input the fold
+/// pulls. One streaming pass (`last_error` is unbounded), and once the budget
+/// is met the fold pulls AT MOST ONE more char.
 fn fold_reason_tail(reason: impl Iterator<Item = char>) -> String {
     let mut tail = String::new();
     let mut len = 0usize;
@@ -637,18 +485,8 @@ fn fold_reason_tail(reason: impl Iterator<Item = char>) -> String {
     for ch in reason {
         if ch.is_whitespace() {
             if len >= STATUS_DETAIL_REASON_MAX {
-                // Budget already full: nothing further can be appended,
-                // so walking the rest of the run would be pure scanning.
-                // Bailing here is what bounds the work — without it,
-                // `"x" * MAX + " " * 50_000_000 + "y"` costs a full 50M
-                // pass to produce the very same output.
-                //
-                // Conservative by construction: a reason ending in
-                // nothing but whitespace is marked truncated even though
-                // only whitespace was dropped. Deliberate — the
-                // alternative is an unbounded look-ahead to prove a
-                // negative, and trailing whitespace carries no meaning a
-                // reader can lose.
+                // Budget full: bail rather than scan the rest of the whitespace run. A reason
+                // ending in whitespace is conservatively marked truncated.
                 truncated = true;
                 break;
             }
@@ -668,8 +506,7 @@ fn fold_reason_tail(reason: impl Iterator<Item = char>) -> String {
         len += 1;
     }
     if truncated && !tail.is_empty() {
-        // Make room so the ellipsis fits INSIDE the budget rather than
-        // pushing the tail one char past it.
+        // Make room so the ellipsis fits INSIDE the budget.
         while len >= STATUS_DETAIL_REASON_MAX {
             tail.pop();
             len -= 1;
@@ -679,18 +516,8 @@ fn fold_reason_tail(reason: impl Iterator<Item = char>) -> String {
     tail
 }
 
-/// Issue #644 PR-B — worker-reported / kernel-observed failure flip
-/// (`dispatched/running → failed`, design §3). Same guards as the
-/// success flip except the gate condition: a worker failure never runs
-/// a gate (§3), so gated rows fail the same way. `status_detail`
-/// distinguishes `'worker-reported'` (the worker said so, or its
-/// terminal exited non-zero) from `'spawn-failed'` (the scheduler could
-/// not start it).
-///
-/// `reporter` carries the same two-sided guard as the success flip
-/// (review F3 + round-2 F2 + round-4 F1): a card only flips a
-/// matching-stamp row or an unstamped row it proves op-target
-/// ownership of; `Kernel` bypasses.
+/// `dispatched/running → failed`. A worker failure never runs a gate, so gated
+/// rows fail the same way; `reporter` carries the same guard as the success flip.
 pub async fn task_fail_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -738,8 +565,7 @@ mod status_detail_tests {
             ),
             "spawn-failed"
         );
-        // A bare colon (no space) is not a separator — gate details and
-        // any future single-token vocabulary stay intact.
+        // A bare colon (no space) is not a separator.
         assert_eq!(status_detail_class("gate-red"), "gate-red");
         assert_eq!(status_detail_class("weird:thing"), "weird:thing");
     }
@@ -762,8 +588,6 @@ mod status_detail_tests {
         assert_eq!(detail, "spawn-failed: not a git repo");
         assert_eq!(status_detail_class(&detail), "spawn-failed");
 
-        // Multi-byte input must not panic and must stay bounded. The
-        // ellipsis lives INSIDE the budget — the cap is the cap.
         let long = "错误".repeat(4000);
         let detail = status_detail_with_reason("spawn-failed", &long);
         assert_eq!(status_detail_class(&detail), "spawn-failed");
@@ -771,8 +595,6 @@ mod status_detail_tests {
         assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
         assert!(tail.ends_with('…'));
 
-        // Same for a whitespace-heavy tail, where folding decides where
-        // the budget runs out.
         let spaced = "错误 ".repeat(4000);
         let tail = status_detail_with_reason("spawn-failed", &spaced)
             .strip_prefix("spawn-failed: ")
@@ -783,8 +605,6 @@ mod status_detail_tests {
         assert!(!tail.contains("  "), "runs of whitespace must fold");
     }
 
-    /// A reason that exactly fills the budget must NOT gain an ellipsis
-    /// — the truncation marker has to mean "there was more".
     #[test]
     fn exactly_full_reason_is_not_marked_truncated() {
         let exact = "x".repeat(STATUS_DETAIL_REASON_MAX);
@@ -800,24 +620,12 @@ mod status_detail_tests {
         assert!(tail.ends_with('…'));
     }
 
-    /// Item 3 — the fold must stop pulling input once the output budget
-    /// is met, however much input remains.
-    ///
-    /// Deliberately NOT a wall-clock test. A timing bound is a weak
-    /// oracle here: the unbounded version folds 50M chars in ~1.7s in an
-    /// unoptimized test build, so any threshold loose enough to be
-    /// non-flaky under parallel test load is also loose enough to let the
-    /// regression through (verified — a 2s bound did exactly that). The
-    /// counting iterator asserts the actual invariant instead, and is
-    /// deterministic.
+    /// Deliberately NOT a wall-clock test: any non-flaky timing bound is loose
+    /// enough to let the regression through.
     #[test]
     fn stops_pulling_once_the_budget_is_met() {
-        // The input shape is load-bearing. `"x ".repeat(n)` does NOT
-        // probe this: once the budget is met the very next char is a
-        // non-space, so even an unbounded implementation exits at once.
-        // The long WHITESPACE run is what separates "stops at the
-        // budget" from "keeps scanning past it"; the trailing `y` proves
-        // the run was skipped rather than the input merely having ended.
+        // The long WHITESPACE run separates "stops at the budget" from "keeps
+        // scanning"; the trailing `y` proves the run was skipped, not merely ended.
         let pathological = format!(
             "{}{}y",
             "x".repeat(STATUS_DETAIL_REASON_MAX),
@@ -837,9 +645,6 @@ mod status_detail_tests {
         assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
         assert!(tail.ends_with('…'), "the `y` was dropped, so say so");
 
-        // A pure whitespace tail takes the same bounded path. Marking it
-        // truncated is the documented conservative choice (proving the
-        // negative would need the unbounded scan this test forbids).
         let trailing_only = format!(
             "{}{}",
             "x".repeat(STATUS_DETAIL_REASON_MAX),
@@ -857,8 +662,6 @@ mod status_detail_tests {
         assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
     }
 
-    /// The public entry point must inherit the same bound end-to-end,
-    /// so the guarantee is not an artifact of testing the inner fold.
     #[test]
     fn pathological_reason_stays_bounded_end_to_end() {
         let pathological = format!(
@@ -871,24 +674,18 @@ mod status_detail_tests {
         let elapsed = started.elapsed();
         let tail = detail.strip_prefix("spawn-failed: ").expect("tail");
         assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
-        // Smoke only — `stops_pulling_once_the_budget_is_met` owns the
-        // real oracle; this just catches a wildly pathological rebuild.
+        // Smoke only — `stops_pulling_once_the_budget_is_met` owns the real oracle.
         assert!(
             elapsed < std::time::Duration::from_secs(5),
             "took {elapsed:?}"
         );
     }
 
-    // `debug_assert!` compiles away in release, where the call returns
-    // normally and `should_panic` would fail. The repo does not enable
-    // `debug-assertions` for release profiles, so gate on the same cfg
-    // the assertion itself is gated on.
+    // `debug_assert!` compiles away in release, where `should_panic` would fail.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "must not contain")]
     fn classifier_carrying_the_separator_is_rejected_in_debug() {
-        // Fail-closed guard: such a class would parse back as a prefix
-        // of itself and fall out of the failure vocabulary.
         let _ = status_detail_with_reason("spawn-failed: oops", "boom");
     }
 }

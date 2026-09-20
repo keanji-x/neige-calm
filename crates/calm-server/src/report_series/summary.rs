@@ -1,9 +1,4 @@
-//! The per-row summary (#1628 D4) and the row TTL that reads it (D3).
-//!
-//! `summarize` runs once, in the resolver, right before the row is written;
-//! both readers (`calm.report.read` and the HTTP route) only deserialize what
-//! is stored. `row_ttl` is the one function the read end and the drain-side
-//! admission share, so "is this row still fresh" has a single definition.
+//! The per-row summary and the row TTL. `summarize` runs once in the resolver; readers only deserialize what is stored. `row_ttl` is shared by the read end and drain-side admission.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -138,10 +133,7 @@ pub fn summarize(reply: &ValidatedReply, fields: &[String]) -> Summary {
     Summary { series }
 }
 
-/// How long a row stays fresh (D3, S2.7): an `ok` row whose every series is
-/// `ok` lives `SERIES_TTL`; an `unavailable` row, or an `ok` row with any
-/// non-`ok` series, lives `SERIES_UNAVAILABLE_TTL`. Pinned rows never expire
-/// — callers check `pinned` before asking.
+/// An `ok` row whose every series is `ok` lives `SERIES_TTL`; anything else lives `SERIES_UNAVAILABLE_TTL`. Pinned rows never expire — callers check `pinned` first.
 pub fn row_ttl(status: &str, summary: Option<&Value>) -> i64 {
     if status != "ok" {
         return SERIES_UNAVAILABLE_TTL_MS;

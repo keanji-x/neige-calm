@@ -1,172 +1,39 @@
-//! Planner-card binding (PR6 of #136).
-//!
-//! Every track gets a single auto-minted **planner card** at create-time. The
-//! planner card is the track's "AI authority": the only card whose `AiPlanner`
-//! actor is allowed to emit `Event::TrackUpdated` (per `enforce_role`),
-//! and the one whose Codex daemon runs with a system prompt scoped to
-//! the track's goal + acceptance criteria.
-//!
-//! This module owns the role-specific prompts and Codex environment
-//! construction:
-//!
-//!   1. [`PLANNER_SYSTEM_PROMPT_TEMPLATE`] — the system prompt used when
-//!      starting the planner card's Codex thread. Its prose is data in
-//!      `prompts/planner.md` (#1635); this module only embeds it and
-//!      substitutes the per-spawn placeholders.
-//!   2. The worker and assistant prompts, likewise data under
-//!      `prompts/worker/` and `prompts/assistant/` (#1635 S1b), assembled
-//!      with `concat!` + `include_str!` so shared parts exist once.
-//!
-//! Atomicity story for the planner card itself lives in
-//! `routes::tracks::create_track` — the planner card row and both
-//! `Event::TrackUpdated` / `Event::CardAdded` envelopes are produced in a
-//! single `write_with_events_typed` transaction.
+//! Planner-card binding: the role-specific system prompts (data under `prompts/`, embedded at compile time) and their per-spawn placeholder substitution.
 
-/// The planner-agent system prompt template. The prose is data, not code:
-/// it lives in `prompts/planner.md` (issue #1635 S1a) and is embedded here
-/// byte-for-byte so the binary needs no file at runtime.
-///
-/// Placeholders substituted by [`render_system_prompt`]:
-///
-/// * `{track_id}`: when the Codex thread starts, the kernel replaces it with
-///   the freshly minted track id so the agent has a stable reference for the
-///   `calm.*` track-state / report tools.
-/// * `{planner_wake_authors}`: rendered from
-///   [`crate::dispatcher::PLANNER_WAKE_AUTHORS`], the dispatcher's own wake
-///   set for `track.report_edited`. Rendered rather than hand-written so
-///   editing the dispatch rule rewrites the prompt in the same commit.
-///
-/// Wording is pinned by the whole-document golden
-/// `tests/goldens/issue_development_planner_prompt.txt` (regenerate with
-/// `REGEN_PLANNER_PROMPT_GOLDEN=1`, then hand-verify the diff). The
-/// code-relation tests — what the prompt must agree with elsewhere in the
-/// code (tool registry, dispatcher wake set, task kinds, birth skeleton) —
-/// live in `mod tests` below.
+/// The planner-agent system prompt template, embedded from `prompts/planner.md`. Placeholders `{track_id}` and `{planner_wake_authors}` are substituted by [`render_system_prompt`].
+/// Wording is pinned by `tests/goldens/issue_development_planner_prompt.txt` (regenerate with `REGEN_PLANNER_PROMPT_GOLDEN=1`, then hand-verify the diff).
 pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/planner.md");
 
-/// Worker-agent system prompt for the **claude** (CLI-completion) provider.
-/// PR8 (#136) replaced the PR6 stub with the production prompt: workers are
-/// short-lived, fire-and-forget, driven by the kernel scheduler from the
-/// planner-maintained plan. They run one job and exit.
-///
-/// The prose is data (#1635 S1b): `prompts/worker/head-cli.md` is everything
-/// before the shared reads tail and `prompts/worker/tail.md` is that tail,
-/// shared byte-for-byte with [`WORKER_CODEX_SYSTEM_PROMPT`]. Both are embedded
-/// at compile time; `concat!` keeps the const `&'static str` with no runtime
-/// allocation and no second copy of the tail that could go stale.
-///
-/// The name retains the `_PLACEHOLDER` suffix only to avoid churn in
-/// downstream call sites; the content is production. A followup can rename
-/// this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry with
-/// [`PLANNER_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR touching this
-/// file.
-///
-/// Wording is pinned by the whole-document golden
-/// `tests/goldens/worker_prompt_cli.txt` (regenerate with
-/// `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff).
+/// Worker-agent system prompt for the **claude** (CLI-completion) provider; `prompts/worker/tail.md` is shared byte-for-byte with [`WORKER_CODEX_SYSTEM_PROMPT`].
+/// Wording is pinned by `tests/goldens/worker_prompt_cli.txt` (regenerate with `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff).
 pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = concat!(
     include_str!("../prompts/worker/head-cli.md"),
     include_str!("../prompts/worker/tail.md")
 );
 
-/// codex worker variant (#838 Move 2): `prompts/worker/head-mcp.md` plus the
-/// same `prompts/worker/tail.md`. It differs from
-/// [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in how completion is reported:
-/// through the native `calm.task.complete` / `calm.task.fail` MCP tools
-/// (channel 2 — DaemonTrust + codex-injected `_meta.threadId`) instead of the
-/// `neige` shell CLI. This decouples the kernel-critical completion path from
-/// the per-thread `shell_environment_policy` env (channel 3) that keeps
-/// getting silently dropped (#738/#747/#836).
-///
-/// claude keeps [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] (it has no codex thread
-/// to authenticate against — the native-MCP resolver is
-/// `AgentProvider::Codex`-only — and `claude_adapter`'s contract test asserts
-/// the CLI surface). Reads stay on the `neige` shell CLI for both providers
-/// (#339/#377 read-via-CLI principle), which is why the tail is one file
-/// concatenated into both consts.
-///
-/// Wording is pinned by `tests/goldens/worker_prompt_mcp.txt`.
+/// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `calm.task.complete` / `calm.task.fail` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
 pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
     include_str!("../prompts/worker/head-mcp.md"),
     include_str!("../prompts/worker/tail.md")
 );
 
-/// #1189 — the track assistant's system prompt: `prompts/assistant/
-/// ordinary-head.md` (identity), `prompts/assistant/mechanics.md` (the tool
-/// surface and marker protocol shared by **both** assistant identities), and
-/// `prompts/assistant/ordinary-tail.md` (the closing paragraph that is true
-/// only on an ordinary track — see [`LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE`]
-/// for why it is its own file). Embedded at compile time so the const stays
-/// `&'static str`.
-///
-/// Deliberately not a trimmed copy of [`PLANNER_SYSTEM_PROMPT_TEMPLATE`]: most of
-/// that prompt instructs the agent to drive the lifecycle state machine and the
-/// plan, and every one of those tools rejects `CardRole::Assistant` at the
-/// handler. Describing them here would teach the agent to spend turns on calls
-/// that can only come back `-32602`.
-///
-/// Two things in the mechanics are load-bearing rather than stylistic:
-///
-/// * **read with markers before you rewrite** — a `calm.report.write` style
-///   full-document rewrite is unavailable to this role, and a block write that
-///   re-mints ids reads as "delete every task block and create new ones", which
-///   the task-block guard rejects as a whole transaction (design §3.2a-bis.4).
-///   The marker read is what keeps existing block ids stable.
-/// * **the assistant does not own the plan** — the guard exists, but an agent
-///   that keeps trying to write task blocks produces a stream of rejected turns
-///   instead of answering the user.
-///
-/// #1343 forks the assistant's *identity* — first duty, and who owns the
-/// document — and nothing else; keeping the mechanics in one file is what stops
-/// the halves that are not in dispute from drifting.
-///
-/// Wording is pinned by `tests/goldens/assistant_prompt.txt`.
+/// The track assistant's system prompt: ordinary head, the mechanics shared by both assistant identities, and the ordinary tail.
+/// Deliberately not a trimmed planner prompt: every lifecycle/plan tool rejects `CardRole::Assistant` at the handler. Pinned by `tests/goldens/assistant_prompt.txt`.
 pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
     include_str!("../prompts/assistant/ordinary-head.md"),
     include_str!("../prompts/assistant/mechanics.md"),
     include_str!("../prompts/assistant/ordinary-tail.md")
 );
 
-/// #1343 — the assistant on **Today's launchpad track**:
-/// `prompts/assistant/launchpad-head.md`, the shared
-/// `prompts/assistant/mechanics.md`, and `prompts/assistant/launchpad-tail.md`.
-///
-/// Same tools, same marker protocol, different job. Measured on the 4140
-/// preview: told explicitly to write a block, the agent wrote one (`docRev`
-/// 1→2), so the tool surface, the CAS handshake and the write permission were
-/// all already working. Told casually what had happened, it made zero tool
-/// calls and answered in chat. The prompt was the cause, in two places:
-///
-/// * the ordinary identity's first duty is answering the user, with writing
-///   the report listed as a capability, not a duty, so chatting was the
-///   default path;
-/// * the ordinary closing paragraph describes the agent as a guest in a
-///   document the planner agent maintains. On an ordinary track that is true.
-///   On the launchpad there is no planner agent writing today's report — by
-///   design this conversation is the writer — so the prompt was telling it
-///   the document was not its to touch.
-///
-/// This template inverts both and leaves the mechanics identical. It changes
-/// nothing for any other track: the fork is selected by
-/// [`routes::today::is_launchpad_track`] at `thread/start`, the one criterion
-/// the activity briefing also uses.
-///
-/// **`developer_instructions` are handed over at thread start**, so a
-/// conversation that already exists keeps the identity it was started with. A
-/// new conversation is what picks this up.
-///
-/// Wording is pinned by `tests/goldens/assistant_prompt_launchpad.txt`.
-///
-/// [`routes::today::is_launchpad_track`]: crate::routes::today::is_launchpad_track
+/// The assistant on Today's launchpad track: same mechanics, inverted identity (this conversation is the report's writer). Selected by `routes::today::is_launchpad_track` at `thread/start`.
+/// `developer_instructions` are handed over at thread start, so an existing conversation keeps the identity it was started with. Pinned by `tests/goldens/assistant_prompt_launchpad.txt`.
 pub(crate) const LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
     include_str!("../prompts/assistant/launchpad-head.md"),
     include_str!("../prompts/assistant/mechanics.md"),
     include_str!("../prompts/assistant/launchpad-tail.md")
 );
 
-/// Render the report-edit authors that wake the planner, straight from the
-/// dispatcher's wake set, in the wire spelling the `track.report_edited`
-/// payload actually carries (so the prompt names what the agent will see).
+/// Render the report-edit authors that wake the planner, in the wire spelling the `track.report_edited` payload carries.
 fn planner_wake_authors_prose() -> String {
     crate::dispatcher::PLANNER_WAKE_AUTHORS
         .iter()
@@ -175,9 +42,7 @@ fn planner_wake_authors_prose() -> String {
         .join(" / ")
 }
 
-/// Substitute the per-spawn placeholders into a prompt template:
-/// `{track_id}` and `{planner_wake_authors}`. Lifted out as its own helper so
-/// call sites do not need rewriting when the substitution set grows.
+/// Substitute the per-spawn placeholders `{track_id}` and `{planner_wake_authors}` into a prompt template.
 pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
     template
         .replace("{track_id}", track_id)
@@ -200,9 +65,7 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "command passed verbatim to `/bin/sh -c`, and forbids `goal`."
 );
 
-/// Exact paragraph oracle for the static task-block protocol. The shipped
-/// template's fully rendered prompt has a separate whole-document golden;
-/// free-text contradictions cannot be proved absent with a keyword list.
+/// Exact paragraph oracle for the static task-block protocol; free-text contradictions cannot be proved absent with a keyword list.
 #[cfg(test)]
 pub(crate) fn validate_planner_prompt_contract(prompt: &str) -> Result<(), String> {
     let start = prompt
@@ -222,12 +85,7 @@ pub(crate) fn validate_planner_prompt_contract(prompt: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// Test-only seam (#838 A1 e2e): render the rendered worker prompt for the
-/// provider under test. `codex=true` yields the native-MCP-completion body
-/// ([`WORKER_CODEX_SYSTEM_PROMPT`], what `codex_adapter` ships);
-/// `codex=false` yields the CLI body ([`WORKER_SYSTEM_PROMPT_PLACEHOLDER`],
-/// what `claude_adapter` ships and the RED baseline). Doc-hidden so it does
-/// not widen the public prompt API beyond the e2e harness.
+/// Test-only seam: the rendered worker prompt for the provider under test. Doc-hidden so it does not widen the public prompt API.
 #[doc(hidden)]
 pub fn render_worker_prompt_for_e2e(track_id: &str, codex: bool) -> String {
     let role = if codex {
@@ -238,57 +96,28 @@ pub fn render_worker_prompt_for_e2e(track_id: &str, codex: bool) -> String {
     render_system_prompt(role.prompt_template(), track_id)
 }
 
-/// Test-only seam (#1189): the exact `developer_instructions` string a track
-/// assistant's `thread/start` must carry.
-///
-/// Exposed rather than re-spelled in the test on purpose. An integration test
-/// that asserted on a substring ("contains `assistant`") would stay green if the
-/// assistant profile were wired to the PLANNER prompt, which is one of the two
-/// mutations #1189's A2 gate has to catch; a test that re-declared the template
-/// would stay green if the adapter stopped rendering the placeholder. Handing
-/// out the rendered string makes the assertion an equality against production's
-/// own value.
+/// Test-only seam: the exact `developer_instructions` string a track assistant's `thread/start` must carry, so the test asserts equality against production's own value.
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub fn render_assistant_prompt_for_test(track_id: &str) -> String {
     render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, track_id)
 }
 
-/// #1343 — the same seam for the launchpad assistant's identity.
-///
-/// Its own function rather than a bool parameter on the one above: the
-/// adapter's fork picks between two named templates, and a test that passed a
-/// flag would be asserting on the flag rather than on which template shipped.
+/// The same seam for the launchpad assistant's identity; its own function so a test asserts on which template shipped, not on a flag.
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub fn render_launchpad_assistant_prompt_for_test(track_id: &str) -> String {
     render_system_prompt(LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE, track_id)
 }
 
-/// Roles that legitimately need role-specific Codex setup.
-/// Carved out of [`crate::model::CardRole`] so the seeding helper can
-/// only ever be handed a value that maps to a system-prompt template
-/// (no general Worker path to silently fall through). PR6 followup of
-/// issue #136 — note 3 from the original review.
-///
-/// User-facing Worker cards still flow through `routes::codex_cards`'s
-/// simpler seed path (which writes a no-prompt config.toml inline); they
-/// must not reach this helper.
+/// Roles that legitimately need role-specific Codex setup; carved out of `CardRole` so the seeding helper cannot be handed a role with no template.
+/// User-facing Worker cards use `routes::codex_cards`'s simpler seed path and must not reach this helper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SeededCardRole {
-    /// Planner card minted by `routes::tracks::create_track`. Gets
-    /// [`PLANNER_SYSTEM_PROMPT_TEMPLATE`].
     Planner,
-    /// Worker card minted by the dispatcher for a **claude** provider.
-    /// Gets [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] — completion is reported
-    /// through the `neige` shell CLI (claude has no codex thread for the
-    /// native-MCP path and its contract test asserts the CLI surface).
+    /// Worker card for a **claude** provider: completion is reported through the `neige` shell CLI.
     Worker,
-    /// Worker card minted by the dispatcher for a **codex** provider
-    /// (#838 Move 2). Gets [`WORKER_CODEX_SYSTEM_PROMPT`] — completion is
-    /// reported through the native `calm.task.complete` / `calm.task.fail`
-    /// MCP tools, decoupling the kernel-critical completion path from the
-    /// channel-3 exec-shell env.
+    /// Worker card for a **codex** provider: completion is reported through the native `calm.task.complete` / `calm.task.fail` MCP tools.
     WorkerCodex,
 }
 
@@ -325,8 +154,6 @@ mod tests {
         }
     }
 
-    /// The role → template relation: each seeded role hands out its own
-    /// const, and the three consts are distinct documents.
     #[test]
     fn render_system_prompt_preserves_role_template_content() {
         assert_eq!(
@@ -395,11 +222,7 @@ mod tests {
         }
     }
 
-    /// #1252 S0-1: the prompt's wake list is *rendered* from
-    /// `dispatcher::PLANNER_WAKE_AUTHORS`, so a change to who the dispatcher
-    /// wakes rewrites the prompt. The expected wire spellings are pinned
-    /// here on purpose: they are the independent statement of the contract
-    /// that catches a silent shrink of the const.
+    /// The expected wire spellings are pinned here on purpose: they are the independent statement that catches a silent shrink of the const.
     #[test]
     fn planner_prompt_renders_the_dispatcher_report_edit_wake_set() {
         let p = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-wake");
@@ -408,8 +231,6 @@ mod tests {
             !p.contains("{planner_wake_authors}"),
             "wake-author placeholder must be substituted; got: {p}"
         );
-        // The exact rendered sequence, stated independently of the const:
-        // a silent shrink of `PLANNER_WAKE_AUTHORS` fails here.
         let expected_list = "`user` / `plugin` / `assistant`";
         assert_eq!(
             planner_wake_authors_prose(),
@@ -441,20 +262,12 @@ mod tests {
         );
     }
 
-    /// The reviewed ordinary assistant prompt, byte for byte. The #1343
-    /// follow-up corrects its shared mechanics after a real turn proved the
-    /// previous prompt advertised planner/worker-only CLI reads and omitted
-    /// deferred MCP discovery.
     const ASSISTANT_PROMPT_GOLDEN: &str = include_str!("../tests/goldens/assistant_prompt.txt");
 
-    /// #1343's launchpad identity, byte for byte.
     const LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN: &str =
         include_str!("../tests/goldens/assistant_prompt_launchpad.txt");
 
-    /// Equality against a whole document, not a keyword list: both assistant
-    /// identities share `prompts/assistant/mechanics.md`, and a stray newline
-    /// at either seam is exactly the kind of change a `contains` check cannot
-    /// see.
+    /// Whole-document equality: a stray newline at either seam is what a `contains` check cannot see.
     #[test]
     fn the_ordinary_assistant_prompt_matches_its_reviewed_golden() {
         assert_eq!(
@@ -463,18 +276,7 @@ mod tests {
         );
     }
 
-    /// #1343 — the launchpad identity, pinned, and pinned as *different*.
-    ///
-    /// Three assertions, and the last two are what make the first mean
-    /// something. The whole-document equality would be satisfied by a golden
-    /// regenerated from a launchpad template that had quietly become the
-    /// ordinary one; `assert_ne!` against the ordinary prompt is what rules
-    /// that out, and it is the assertion the "delete the launchpad branch"
-    /// mutation is aimed at from the adapter side.
-    ///
-    /// The mechanics are asserted shared rather than described as shared: the
-    /// marker protocol is the same paragraph in both, so a fork that drifted on
-    /// the CAS handshake would be a real defect and this says so.
+    /// `assert_ne!` against the ordinary prompt rules out a golden regenerated from a launchpad template that had quietly become the ordinary one.
     #[test]
     fn the_launchpad_assistant_prompt_owns_the_report_and_keeps_the_mechanics() {
         let launchpad = render_system_prompt(
@@ -489,7 +291,6 @@ mod tests {
             "the launchpad identity has to differ from the ordinary one; if it \
              does not, nothing about #1343 shipped"
         );
-        // …and the mechanics really are one file, not two that can drift.
         let mechanics = include_str!("../prompts/assistant/mechanics.md");
         assert!(!mechanics.is_empty(), "the shared mechanics file is empty");
         assert!(
@@ -498,15 +299,10 @@ mod tests {
         );
     }
 
-    /// #1635 S1b — the two worker prompts, byte for byte, rendered for one
-    /// fixed track id. They had no golden before this slice; the move of
-    /// their prose out of Rust is proved by these files not changing.
     const WORKER_PROMPT_CLI_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_cli.txt");
     const WORKER_PROMPT_MCP_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_mcp.txt");
 
-    /// Whole-document equality for both worker prompts. Regenerate with
-    /// `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff: the goldens are
-    /// the reviewed wording, so a regen is a review, not a fix.
+    /// Regenerate with `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff: a regen is a review, not a fix.
     #[test]
     fn the_worker_prompts_match_their_reviewed_goldens() {
         let regen = std::env::var_os("REGEN_PROMPT_GOLDENS").is_some();
@@ -583,23 +379,12 @@ mod tests {
         );
     }
 
-    /// #1185 — the kernel prompt must name NO report section.
-    ///
-    /// Section vocabulary is policy: it belongs to the document, which carries
-    /// it in a leading HTML comment that every read returns. A prompt that
-    /// names sections re-imposes one template's shape on every document in the
-    /// area. The banned-section loop is the invariant: section names that
-    /// once lived in the kernel prompt or skeleton and must not return. The
-    /// golden would show such a return as a diff; this test says it is a
-    /// policy violation, which a diff cannot.
+    /// Section vocabulary is policy and belongs to the document; a prompt that names sections re-imposes one template's shape on every document.
     #[test]
     fn planner_prompt_carries_no_section_vocabulary() {
         let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
 
-        // `# 进行中` was dropped in #1172: the TASKS panel renders the real
-        // task runtime state, so making the planner agent hand-maintain a prose
-        // mirror of it every turn is pure LLM restatement of kernel-known,
-        // already-rendered data. It must not come back via the skeleton either.
+        // `# 进行中` must not come back via the skeleton either: the TASKS panel renders the real task runtime state.
         assert!(
             !p.contains("# 进行中"),
             "prompt must NOT reintroduce `# 进行中` — task runtime state is owned by the TASKS panel"
@@ -611,12 +396,7 @@ mod tests {
             "the birth skeleton must NOT reintroduce `# 进行中` either"
         );
 
-        // —— the main invariant ——
-        // #1635 S2c — the live section names are read off the two contract
-        // headers, so a section renamed there is banned under its new name
-        // without anyone editing this list. The retired literals are history
-        // (names that once lived in the prompt or skeleton), not derivable
-        // from anything, and stay hand-written.
+        // The live section names are read off the two contract headers, so a renamed section is banned under its new name; the retired literals are not derivable and stay hand-written.
         let live = calm_types::track_report::work_brief_header()
             .sections
             .into_iter()
@@ -639,15 +419,8 @@ mod tests {
         }
     }
 
-    /// Every `calm.`-prefixed token in `text`, wherever it appears (prose,
-    /// code span, signature): an occurrence of `calm.` whose preceding byte is
-    /// not `[A-Za-z0-9_.]`, extended over `[A-Za-z0-9_.]`, with trailing `.`s
-    /// stripped. A token whose unstripped end is followed by `*` is a wildcard
-    /// family (`calm.*`, `calm.report.blocks.*`) and is dropped. Uppercase is
-    /// part of the continuation on purpose: tool names are lowercase, so
-    /// `calm.plan.listX` must stay one (unregistered) token rather than
-    /// truncate to a registered prefix. Hand-rolled on purpose: no regex
-    /// dependency for one test.
+    /// Every `calm.`-prefixed token in `text`: `calm.` not preceded by `[A-Za-z0-9_.]`, extended over `[A-Za-z0-9_.]`, trailing `.`s stripped, wildcard families (`calm.*`) dropped.
+    /// Uppercase is part of the continuation so `calm.plan.listX` stays one unregistered token.
     fn calm_tool_tokens(text: &str) -> Vec<&str> {
         let bytes = text.as_bytes();
         let mut tokens = Vec::new();
@@ -688,16 +461,7 @@ mod tests {
         }
     }
 
-    /// #1635 S1a — every `calm.`-prefixed token anywhere in the rendered
-    /// planner prompt, backticked or bare, is the complete name of a tool the
-    /// Planner role can see in `tools/list`. The deleted per-name asserts
-    /// stated this one tool at a time (no retired `calm.update_track_state`,
-    /// no hidden `calm.plan.upsert`, no CLI-only `calm.track.cat` /
-    /// `calm.track.ls`); stated once against the registry it also covers the
-    /// names nobody thought to ban. Tokens are whole-token matched, so a
-    /// misspelling or a stray suffix (`calm.plan.list2`) is red, not a prefix
-    /// hit; only wildcard families (`calm.*`, `calm.report.blocks.*`) are
-    /// skipped.
+    /// Tokens are whole-token matched, so a misspelling or a stray suffix (`calm.plan.list2`) is red, not a prefix hit; only wildcard families are skipped.
     #[test]
     fn planner_prompt_names_only_tools_the_planner_role_can_see() {
         use std::collections::BTreeSet;
@@ -726,32 +490,8 @@ mod tests {
         }
     }
 
-    /// Every `calm.*` token in `prompt` (see [`calm_tool_tokens`]) checked
-    /// against the tool registry, with every exception explicit and
-    /// self-checking:
-    ///
-    /// * each token is a **registered, non-alias** tool name, whatever role
-    ///   it belongs to — a typo, a retired name, or a deprecated alias is red
-    ///   no matter what the lists say;
-    /// * each token in neither list is **visible to `role`** in `tools/list`
-    ///   (`descriptors_for_role`);
-    /// * each `callable_but_hidden` entry is registered and NOT visible to
-    ///   `role`. The classification itself — that the role can call the tool
-    ///   despite the descriptor — is supplied by the caller and proven by the
-    ///   tests the caller cites, not by this helper; what this helper checks
-    ///   is that the entry is still registered and still hidden, so an entry
-    ///   that became visible is stale and goes red;
-    /// * each `named_to_forbid` entry is registered and NOT visible to
-    ///   `role`: the prompt names it only to say the role may not call it.
-    ///   Same staleness check;
-    /// * every entry of either list must actually be named by the prompt —
-    ///   an exception nobody uses is dead weight and goes red — and no name
-    ///   may sit in both lists;
-    /// * with `must_name_all_visible`, every tool visible to `role` is named
-    ///   by the prompt (the role's whole tool surface is advertised);
-    /// * anti-vacuity: the prompt names at least `min_named` distinct tools.
-    ///   This guards against an empty scanner, not visible-tool coverage —
-    ///   that is `must_name_all_visible`'s job.
+    /// Every `calm.*` token in `prompt` checked against the tool registry: each must be a registered non-alias name; tokens in neither list must be visible to `role`; `callable_but_hidden` and `named_to_forbid` entries must be registered, NOT visible, and actually named by the prompt.
+    /// With `must_name_all_visible` every tool visible to `role` must be named; `min_named` guards against an empty scanner only.
     fn assert_prompt_tool_names(
         label: &str,
         prompt: &str,
@@ -851,26 +591,10 @@ mod tests {
         }
     }
 
-    /// #1635 S1b — the worker prompts, both providers, name only tools the
-    /// Worker role can see, except the two Planner-only tools each prompt
-    /// names in order to forbid them (`calm.task.dispatch`,
-    /// `calm.task.verdict`). The same statement S1a makes for the planner;
-    /// the Worker's visible set is pinned exactly by
-    /// `tools_list_for_worker_role_returns_completion_tools`.
-    ///
-    /// The codex prompt additionally has to name **every** tool the Worker
-    /// can see (`must_name_all_visible`): its completion protocol is the
-    /// native `calm.task.complete` / `calm.task.fail` pair (#838 Move 2), and
-    /// a prompt that advertised only one of them would leave a codex worker
-    /// with no way to report the other outcome. This is the code relation
-    /// the deleted wording test carried, now stated against the registry.
-    /// The CLI prompt completes through `neige task-completed` and is exempt.
+    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `calm.task.complete` / `calm.task.fail` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task-completed` and is exempt.
     #[test]
     fn worker_prompts_name_only_tools_the_worker_role_can_see() {
-        // `min_named` guards against an empty scanner only. The CLI prompt
-        // names exactly the two forbidden tools (it completes through the
-        // `neige` CLI, not a `calm.*` tool); the codex prompt adds the two
-        // visible completion tools, which `must_name_all_visible` covers.
+        // `min_named` guards against an empty scanner only: the CLI prompt names exactly the two forbidden tools; the codex prompt adds the two visible completion tools.
         for (label, template, must_name_all_visible, min_named) in [
             (
                 "CLI worker prompt",
@@ -892,21 +616,8 @@ mod tests {
         }
     }
 
-    /// #1635 S1b — both assistant identities name only tools the Assistant
-    /// role can see, with two explicit exceptions:
-    ///
-    /// * `calm.report.read` is callable but hidden (#1189 F6): its handler
-    ///   admits the Assistant — `mcp_assistant_tool_gate::
-    ///   assistant_token_can_read_the_report_with_concurrency_tokens` proves
-    ///   the call succeeds — while its descriptor is visible to Planner only,
-    ///   so `tools_list_for_assistant_role_returns_block_channel_only` pins
-    ///   it absent from the Assistant's `tools/list`. The prompt is therefore
-    ///   the Assistant's only contract for the read, which is exactly why it
-    ///   must keep naming it.
-    /// * `calm.report.write` is named to forbid it.
-    ///
-    /// `neige` CLI mentions are not `calm.*` tokens, so the scanner never
-    /// sees them; they are pinned only by the goldens.
+    /// `calm.report.read` is callable but hidden: its handler admits the Assistant while its descriptor is visible to Planner only, so the prompt is the Assistant's only contract for the read. `calm.report.write` is named to forbid it.
+    /// `neige` CLI mentions are not `calm.*` tokens and are pinned only by the goldens.
     #[test]
     fn assistant_prompts_name_only_tools_the_assistant_role_can_see() {
         for (label, template) in [
@@ -931,11 +642,7 @@ mod tests {
         }
     }
 
-    /// #1635 S1a — the task `kind` vocabulary the prompt teaches is
-    /// `WorkerProviderKind`, spelled as its wire/DB string. The match is
-    /// exhaustive on purpose: a new variant fails to compile at the match,
-    /// which points a maintainer at the list next to it; every listed kind
-    /// then has to be named by the prompt.
+    /// The match is exhaustive on purpose: a new `WorkerProviderKind` variant fails to compile at the match, and every listed kind must be named by the prompt.
     #[test]
     fn planner_prompt_names_every_worker_provider_kind() {
         use calm_types::worker::WorkerProviderKind;
@@ -959,12 +666,7 @@ mod tests {
         }
     }
 
-    /// The provider split is one shared tail plus two distinct heads: both
-    /// worker consts end with `prompts/worker/tail.md` byte-for-byte (reads
-    /// stay on the `neige` CLI for both providers), and what precedes it
-    /// differs (completion is reported differently). Stated against the
-    /// file, not a marker string, so a second copy of the tail that drifted
-    /// would fail here rather than pass a `contains` check.
+    /// Stated against the file, not a marker string, so a second copy of the tail that drifted would fail here rather than pass a `contains` check.
     #[test]
     fn worker_prompts_share_identical_reads_tail() {
         let tail = include_str!("../prompts/worker/tail.md");

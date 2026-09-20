@@ -2,10 +2,7 @@
 
 set -euo pipefail
 
-# Install a repository-scoped GitHub Actions runner without disturbing the
-# other runner instances on the host. Run this script as the interactive
-# administrator account; it obtains the short-lived registration token with
-# that account's `gh` login and uses sudo only for host/user service changes.
+# Install a repository-scoped GitHub Actions runner without disturbing the host's other runners. Run as the interactive administrator: the registration token comes from that account's `gh` login, sudo is used only for host/user service changes.
 
 repo="${REPO:-keanji-x/neige-calm}"
 runner_user="${RUNNER_USER:-runner}"
@@ -67,9 +64,7 @@ for file in "${runner_files[@]}"; do
   fi
 done
 
-# Fail before prompting for sudo if the GitHub login cannot administer the
-# target repository. The registration token is short-lived and never written
-# to disk by this script.
+# Fail before prompting for sudo if the GitHub login cannot administer the repository.
 gh api "repos/$repo" --jq '.permissions.admin' | grep -qx true || {
   echo "error: active gh account is not an administrator of $repo" >&2
   exit 1

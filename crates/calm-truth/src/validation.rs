@@ -1,54 +1,5 @@
-//! Per-kind payload validators (D4) and per-kind schema versions.
-//!
-//! The kernel persists two opaque-by-default JSON columns: `Card.payload` and
-//! `Overlay.payload`. The architectural invariant is that plugin-defined kinds
-//! (anything that isn't built into the kernel vocabulary) stay opaque — the
-//! kernel does **not** validate or interpret them.
-//!
-//! This module narrows that opacity for the small set of kinds the kernel
-//! itself owns. For those, we check the JSON shape at every write boundary
-//! and reject malformed payloads with `CalmError::BadRequest` (→ HTTP 400).
-//! Bad writes used to silently land in the DB; frontend zod schemas only
-//! catch them on read.
-//!
-//! Kinds covered:
-//!
-//! | Field | Kind | Shape |
-//! |---|---|---|
-//! | `Card.payload`    | `"terminal"`  | `{ terminal_id?: String }` (optional — freshly-created cards may not yet have one) |
-//! | `Card.payload`    | `"codex"`     | object or null (opaque diagnostic blob) |
-//! | `Overlay.payload` | `"status"`    | `{ state: String }` |
-//! | `Overlay.payload` | `"progress"`  | `{ value: f64 }` |
-//! | `Overlay.payload` | `"eta"`       | `{ text: String }` |
-//! | `Overlay.payload` | `"now"`       | `{ text: String }` |
-//! | `Overlay.payload` | `"layout"`    | `{ positions: { <card_id>: { x,y,w,h: u32 }, … } }` |
-//! | `Overlay.payload` | `"any_card_needs_input"` | `{ value: bool }` (track-scoped — see issue #254) |
-//! | `Overlay.payload` | `"activity"` | `{ working, attention, activity_at_ms, items[], cards[] }` (track-scoped — #1722 §4.1) |
-//!
-//! Anything else (`ui://*` cards, plugin-defined overlay kinds) is accepted
-//! unchanged — the validator returns `Ok(())` without inspecting the payload.
-//!
-//! `Plugin.user_config` and `ToolCallBody.arguments` are intentionally NOT
-//! covered: those carry per-plugin / per-tool semantics that the kernel has
-//! no schema for.
-//!
-//! ## `schemaVersion` (Tier A — upgrade-stability policy)
-//!
-//! Per `docs/upgrade-stability.md`, kernel-owned card and overlay payloads
-//! are a Tier A persistence contract. Each kernel-owned kind carries a
-//! `schemaVersion: u32` constant; at write time the validator enforces:
-//!
-//!   * absent `schemaVersion` → accepted, treated as version 1 (the only
-//!     version that has ever existed for any of these kinds today, so
-//!     historical rows written before this field was introduced are
-//!     backward-compatible without a DB migration);
-//!   * present and matching the per-kind constant → accepted;
-//!   * present and any other value → rejected with `CalmError::BadRequest`
-//!     carrying a "kernel supports N, got M" message so old binaries refuse
-//!     to silently process payloads from future ones.
-//!
-//! Plugin-owned overlay payloads are explicitly **not** inspected for a
-//! `schemaVersion` — they pass through opaquely (no version policy from us).
+//! Per-kind payload validators and schema versions for the card and overlay kinds the kernel owns.
+//! Plugin-defined kinds stay opaque.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -64,56 +15,26 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::model::Overlay;
 
-// ---------------- Per-kind schema versions (Tier A) ----------------
-//
-// One constant per kernel-owned kind. Bumping these is a Tier A breaking
-// change: the same PR that bumps a version must add the migrator helper
-// for older rows in `payload_schema_version`'s neighborhood (see the
-// comment there). All start at `1` — the only shape any of these kinds
-// has ever had.
-
 /// `schemaVersion` for `Card.payload` when `kind == "terminal"`.
 pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
-/// #1620 — `Card.payload` key stamped `true` at creation ONLY on terminals
-/// opened by the Planner with hook signals (`calm.terminal.open`). It is the
-/// durable provenance the hook ingest route keys on: a hook for such a card
-/// is advisory telemetry (renderer ring), never worker state. Codex and
-/// Claude Worker cards also own terminal rows and REST-created Terminal
-/// cards also have `kind == "terminal"`, so neither the row nor the kind can
-/// carry this fact; the marker survives a `kind` PATCH and the terminal
-/// row's deletion.
+/// `Card.payload` key stamped `true` at creation only on terminals the Planner opened with hook
+/// signals; a hook for such a card is advisory telemetry, never worker state.
 pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
-/// #1704 S1 — `Card.payload` key stamped at creation ONLY on terminals the
-/// Planner opened with a `claude_permissions` scope: the effective Claude
-/// Code `permissions` block the kernel rendered and wrote to the terminal's
-/// settings file (`{allow, ask, deny}` rule lists). It is the durable audit
-/// trail of the rules that terminal's Claude Code was given; absent on every
-/// other card.
+/// `Card.payload` key stamped at creation only on terminals the Planner opened with a
+/// `claude_permissions` scope: the effective permissions block written to the terminal's settings file.
 pub const TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY: &str = "claude_permissions";
-/// #1704 S2 — `Card.payload` key stamped beside [`TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`]
-/// with a [`ClaudePermissionsSource`] spelling: which scope the block came
-/// from (`declared`, `track_policy`, `declared_within_policy`). Absent on a
-/// card stamped before S2, which reads as `declared`.
+/// `Card.payload` key stamped beside [`TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`] with a
+/// [`ClaudePermissionsSource`]; absent reads as `declared`.
 pub const TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY: &str = "claude_permissions_source";
-/// The `Card.payload` keys only the kernel writes (`card_with_terminal_create_tx`
-/// and the terminal adapter's stamp), refused from every client at every
-/// public write boundary and kept sticky by `card_update_tx`.
+/// `Card.payload` keys only the kernel writes: refused from every client and kept sticky on update.
 pub const SERVER_OWNED_TERMINAL_PAYLOAD_KEYS: [&str; 3] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY,
     TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY,
 ];
 
-/// Whether a STORED value of a server-owned key is the shape the kernel mints
-/// — and therefore the one `card_update_tx` re-inserts into a replacement
-/// payload (and whose presence refuses a non-object replacement):
-/// `terminal_signals` only when `true`, `claude_permissions` only when it is a
-/// JSON object, `claude_permissions_source` only when it is a JSON STRING that
-/// is one of the three source spellings (the kernel writes the string form;
-/// serde also decodes the `{"declared": null}` map form of a unit variant,
-/// which was never minted). Any other stored shape was never minted by the
-/// kernel and is not kept sticky (the #1620 contract for the marker,
-/// unchanged by #1704).
+/// Whether a stored value of a server-owned key is the shape the kernel mints (and so is kept
+/// sticky by `card_update_tx`); the map form of a unit variant was never minted.
 pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     match key {
         TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
@@ -126,18 +47,8 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     }
 }
 
-/// #1620 / #1704 — refuse a CLIENT-supplied `Card.payload` that carries any
-/// of [`SERVER_OWNED_TERMINAL_PAYLOAD_KEYS`]. The hook-routing provenance
-/// marker and the effective permissions block are stamped by the kernel
-/// itself (`card_with_terminal_create_tx(planner_hooks = true)`, the terminal
-/// adapter) and kept sticky on update (`card_update_tx`); a payload arriving
-/// over a public write boundary — REST card create / PATCH, the tool-call
-/// `structuredContent`, plugin `neige.card.create` / `neige.card.update` —
-/// with such a key present is a `BadRequest` (HTTP 400) whatever its value
-/// and whatever the card kind. Kind-agnostic on purpose: the hook ingest
-/// route reads the marker from the payload, never from the patchable `kind`,
-/// so a `codex` / `claude` / plugin card with the key would divert its hooks
-/// too. Stored payloads keep the keys (reads and round-trips are unaffected).
+/// Refuse a client-supplied `Card.payload` carrying any server-owned key, whatever the card kind:
+/// the hook ingest route reads the marker from the payload, never from the patchable `kind`.
 pub fn reject_client_supplied_server_owned_keys(payload: &Value) -> Result<()> {
     for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
         if payload.get(key).is_some() {
@@ -152,17 +63,8 @@ pub fn reject_client_supplied_server_owned_keys(payload: &Value) -> Result<()> {
 pub const CODEX_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "claude"`.
 pub const CLAUDE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
-/// `schemaVersion` for `Card.payload` when `kind == "track-report"` (issue
-/// #229 PR B). Mirrors `calm_types::track_report::TrackReportPayload::SCHEMA_VERSION`.
-///
-/// `4` since #1456: terminal task blocks use `command` while agent task
-/// blocks use `goal`. There is no SQL migration — older rows are normalized
-/// on read and lazily upgraded to v4 on
-/// their next write through the report-edit boundary
-/// (`calm_server::track_report::write::persist`), whose CRDT migrator
-/// (`ReportDoc::ensure_blocks_layout`) rebuilds the block layout. The
-/// read path carries no version guard for this kind, so v1 rows stay
-/// readable in place.
+/// `schemaVersion` for `Card.payload` when `kind == "track-report"`; mirrors
+/// `TrackReportPayload::SCHEMA_VERSION`. No SQL migration: older rows are upgraded on their next write.
 pub const TRACK_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 4;
 /// `schemaVersion` for `Overlay.payload` when `kind == "status"`.
 pub const OVERLAY_STATUS_SCHEMA_VERSION: u32 = 1;
@@ -174,25 +76,14 @@ pub const OVERLAY_ETA_SCHEMA_VERSION: u32 = 1;
 pub const OVERLAY_NOW_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "layout"`.
 pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
-/// The reserved `plugin_id` namespace the kernel stamps on overlay rows it
-/// authors itself (`card_fsm`'s status / `any_card_needs_input` aggregates and
-/// the `view` layout marker).
-///
-/// Rows under this namespace are read as kernel-authored fact (the `view`
-/// layout is rebuilt by the kernel's own track structure code), so nothing
-/// outside the process may write it: the plugin RPC path forces `plugin_id` to
-/// the calling plugin's own id, and the public REST endpoints reject it
-/// outright (issue #1297). Kept here as the single definition so those call
-/// sites cannot drift apart.
+/// The reserved `plugin_id` namespace for overlay rows the kernel authors itself; nothing outside
+/// the process may write it.
 pub const KERNEL_OVERLAY_PLUGIN_ID: &str = "kernel";
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
 pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
-/// `schemaVersion` for `Overlay.payload` when `kind == "any_card_needs_input"`
-/// — the track-scoped boolean aggregate written by `card_fsm` (issue #254).
+/// `schemaVersion` for `Overlay.payload` when `kind == "any_card_needs_input"`.
 pub const OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION: u32 = 1;
-/// `schemaVersion` for `Overlay.payload` when `kind == "activity"` — the
-/// track-scoped `kernel/track/activity` projection (#1722 §4.1): `working`,
-/// `attention`, the monotone `activity_at_ms`, `items[]` and `cards[]`.
+/// `schemaVersion` for `Overlay.payload` when `kind == "activity"`.
 pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy)]
@@ -332,15 +223,10 @@ fn validate_any_card_needs_input_overlay_payload(payload: &Value) -> Result<()> 
     )
 }
 
-/// #1722 §4.1 — the `kernel/track/activity` payload. Mirrors
-/// `calm_server::track_activity::ActivityPayload` field for field; every
-/// enum is closed and every struct is `deny_unknown_fields`, so a row a
-/// newer binary shaped differently is refused at the external write gates
-/// (the kernel's own `overlay_upsert_tx` does not validate, F2.16).
+/// The `kernel/track/activity` payload; mirrors `calm_server::track_activity::ActivityPayload`
+/// field for field and is closed against unknown fields.
 fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
-    /// A nullable field that must still be PRESENT: serde treats a missing
-    /// `Option` as `None`, and §4.1 makes `activity_at_ms` / `card_id`
-    /// required-nullable, not optional.
+    /// A nullable field that must still be PRESENT: serde treats a missing `Option` as `None`.
     fn present<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -472,16 +358,8 @@ pub type OverlayRouteScopeFn = for<'a> fn(&'a dyn RepoRead, &'a str) -> OverlayS
 pub struct OverlayEntityScopeEntry {
     pub kind: &'static str,
     pub route_scope_fn: OverlayRouteScopeFn,
-    /// May a writer outside the kernel process (a plugin over RPC, a client
-    /// over `POST /api/overlays`) attach overlays to this entity kind?
-    ///
-    /// `false` marks a kernel-reserved namespace: `view` and `system` carry
-    /// projections the kernel itself reads back as fact (`layout` is rebuilt
-    /// by the kernel's own track structure code), so both entry points must
-    /// refuse them. Renamed from `plugin_writable` in #1297 —
-    /// the plugin RPC path had been asking this column since it was
-    /// introduced, the REST path had not, and the name made the second
-    /// caller look out of place.
+    /// May a writer outside the kernel process attach overlays to this entity kind? `false` marks a
+    /// kernel-reserved namespace whose rows the kernel reads back as fact.
     pub externally_writable: bool,
 }
 
@@ -510,8 +388,6 @@ impl OverlayEntityScopeRegistry {
         }
     }
 
-    /// Unknown kinds fall through to `false` — an entity kind nobody
-    /// registered is not one an outside writer gets to invent.
     pub fn externally_writable(&self, kind: &str) -> bool {
         self.lookup(kind)
             .map(|entry| entry.externally_writable)
@@ -586,36 +462,13 @@ pub static OVERLAY_ENTITY_SCOPE_REGISTRY: OverlayEntityScopeRegistry =
         },
     ]);
 
-/// Return the maximum `schemaVersion` this kernel knows how to interpret for
-/// an overlay `kind`. `Some(N)` for kernel-owned kinds; `None` for
-/// plugin-defined kinds (which we keep fully opaque — no version policy).
-///
-/// Used by the overlay read-side guard (see `routes::overlays::list_overlays`)
-/// to filter out rows that a future kernel wrote at a higher `schemaVersion`
-/// than this binary supports. The write path's `check_schema_version` already
-/// rejects future versions on ingest; this helper lets the read path do the
-/// same for rows that snuck in via a newer binary on the same DB (downgrade
-/// or split-deploy scenarios — see issue #198 concern 4).
-///
-/// Bumping any of the kernel-owned constants above automatically widens what
-/// this returns, so the read guard tracks the write guard without a separate
-/// update.
+/// Maximum `schemaVersion` this kernel interprets for an overlay `kind`; `None` for plugin-defined
+/// kinds. Backs the read-side guard against rows a newer binary wrote into the same DB.
 pub fn max_supported_overlay_schema_version(kind: &str) -> Option<u32> {
     OVERLAY_KIND_REGISTRY.max_supported_schema_version(kind)
 }
 
-/// Read the `schemaVersion` field from a payload, defaulting to `1` when
-/// the field is absent or unparsable.
-///
-/// Treating absent-as-1 means rows written before this field existed
-/// keep reading correctly with no DB migration — every kernel-owned kind
-/// only has version 1 today, so the missing field is unambiguous.
-///
-/// `// migrators will live here when v2 is introduced` — once any kind
-/// gets a v2, the rule shifts from "absent → 1" to "absent → 1, then
-/// run the v1→current migrator on the parsed shape". That migrator lives
-/// adjacent to this helper, not behind it; the helper itself stays a
-/// trivial reader.
+/// Read the `schemaVersion` field from a payload, defaulting to `1` when absent or unparsable.
 pub fn payload_schema_version(payload: &Value) -> u32 {
     payload
         .get("schemaVersion")
@@ -624,27 +477,10 @@ pub fn payload_schema_version(payload: &Value) -> u32 {
         .unwrap_or(1)
 }
 
-/// Per-row predicate behind the overlay read-side guard: return `true` if the
-/// given overlay row carries a `schemaVersion` higher than this binary's
-/// max for its kind, and so must be dropped before being handed to a client
-/// (HTTP route response or `/api/events` WS frame).
-///
-/// Returns `false` (keep the row) for:
-///   * plugin-owned kinds (no kernel version policy);
-///   * kernel-owned kinds at or below the supported version.
-///
-/// When the row is filtered out, a structured `tracing::warn!` records the
-/// reason — matches the behavior of [`filter_unsupported_overlay_versions`]
-/// in `routes::overlays`, which is now a thin wrapper around this helper.
-///
-/// Lives here in `validation.rs` (rather than in `routes::overlays`) so the
-/// WS broadcast/replay path in `ws::events` can call it without a routes →
-/// ws dependency. Followup to PR #214 (issue #198 concern 4) — see that PR
-/// for the wider rationale on why kernel-owned overlay payloads need a
-/// read-side guard at every surface that ships them to a client.
+/// Read-side guard: `true` if the overlay row carries a `schemaVersion` above this binary's max for
+/// its kind and must be dropped before reaching a client.
 pub fn should_skip_overlay(overlay: &Overlay) -> bool {
     let Some(max) = max_supported_overlay_schema_version(&overlay.kind) else {
-        // Plugin-owned kind — opaque, no version policy.
         return false;
     };
     let version = payload_schema_version(&overlay.payload);
@@ -666,20 +502,7 @@ pub fn should_skip_overlay(overlay: &Overlay) -> bool {
     }
 }
 
-/// Extension of [`should_skip_overlay`] to the broadcast/replay surface:
-/// given an `Event` about to be shipped over `/api/events`, return `true`
-/// if the event embeds an overlay row with an unsupported `schemaVersion`
-/// (the `Event::OverlaySet` variant) and so must not reach the client.
-///
-/// Only `Event::OverlaySet(Overlay)` ships a full `Overlay` payload across
-/// the WS wire today — `Event::OverlayDeleted` carries only id metadata, so
-/// there is no payload to gate. Every other variant returns `false`
-/// (forward as usual).
-///
-/// This helper is the single point of policy for the WS write barrier, so
-/// future overlay-bearing event variants only need to extend the match arm
-/// here to inherit the guard at both the live-broadcast and replay
-/// sites in `ws::events`.
+/// [`should_skip_overlay`] for the WS surface: only `Event::OverlaySet` ships a full overlay payload.
 pub fn should_skip_event_for_overlay_version(event: &Event) -> bool {
     match event {
         Event::OverlaySet(overlay) => should_skip_overlay(overlay),
@@ -687,15 +510,10 @@ pub fn should_skip_event_for_overlay_version(event: &Event) -> bool {
     }
 }
 
-/// Enforce the `schemaVersion` rule for a kernel-owned kind:
-///
-///   * absent → accept (treated as `expected`);
-///   * present and `== expected` → accept;
-///   * any other value → `BadRequest`.
+/// Enforce the `schemaVersion` rule for a kernel-owned kind: absent or `== expected` accepts,
+/// anything else is `BadRequest`.
 fn check_schema_version(kind: &str, payload: &Value, expected: u32) -> Result<()> {
-    // Non-object payloads (null, scalar, array) can't carry a
-    // `schemaVersion` field by construction — the kind-specific validator
-    // owns whether those are accepted; this check stays out of the way.
+    // Non-object payloads can't carry `schemaVersion`; the kind-specific validator decides on them.
     if !payload.is_object() {
         return Ok(());
     }
@@ -716,45 +534,17 @@ fn check_schema_version(kind: &str, payload: &Value, expected: u32) -> Result<()
     }
 }
 
-/// Validate an `Overlay.payload` for a given `kind`.
-///
-/// Returns `Ok(())` for unknown / plugin-specific kinds. Returns
-/// `Err(CalmError::BadRequest)` when a kernel-owned kind has the wrong shape.
+/// Validate an `Overlay.payload` for a given `kind`; unknown / plugin-specific kinds are `Ok(())`.
 pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
     OVERLAY_KIND_REGISTRY.validate(kind, payload)
 }
 
-/// Grid column count — mirrors `web/src/TrackGrid.tsx::COLS`. Any layout
-/// whose `x + w` exceeds this would render off-screen, so the kernel
-/// rejects it at the write boundary rather than coping with the resulting
-/// half-broken RGL state on the client. If `COLS` ever changes on the
-/// frontend, this constant must move in lock-step.
+/// Grid column count — must move in lock-step with `web/src/TrackGrid.tsx::COLS`.
 const LAYOUT_GRID_COLS: u32 = 12;
 
-/// Validate a `layout` overlay payload — the TrackGrid card position
-/// record that backs `useOverlayState({ entity_kind: 'view', kind: 'layout' })`
-/// per design doc §5.2.
-///
-/// Schema (strict — unknown fields anywhere reject):
-/// ```text
-/// {
-///   "positions": {
-///     "<card_id>": { "x": <u32>, "y": <u32>, "w": <u32>, "h": <u32> },
-///     ...
-///   }
-/// }
-/// ```
-///
-/// Geometry constraints:
-///   * `w >= 1`, `h >= 1`
-///   * `x + w <= LAYOUT_GRID_COLS` (`= 12`)
-///   * card_id keys must be non-empty
+/// Validate a `layout` overlay payload: strict shape, `w, h >= 1`, `x + w <= LAYOUT_GRID_COLS`,
+/// non-empty card-id keys.
 fn validate_layout_payload(payload: &Value) -> Result<()> {
-    // `deny_unknown_fields` stays on so a typo in the writer (e.g. a stray
-    // `positoins` key) is caught at the boundary. We allow `schemaVersion`
-    // explicitly because every kernel-owned payload now carries it on
-    // write; per-kind value enforcement happens in `check_schema_version`
-    // before we get here.
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     #[allow(dead_code)]
@@ -764,9 +554,7 @@ fn validate_layout_payload(payload: &Value) -> Result<()> {
         schema_version: Option<u32>,
     }
 
-    // `y` is parsed (to enforce the `u32` non-negativity bound + the
-    // `deny_unknown_fields` strictness) but isn't otherwise checked — RGL
-    // doesn't have a "max rows" concept; cards just keep stacking down.
+    // `y` has no upper bound: RGL has no max-rows concept, cards just keep stacking down.
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     #[allow(dead_code)]
@@ -798,9 +586,7 @@ fn validate_layout_payload(payload: &Value) -> Result<()> {
                 pos.h
             )));
         }
-        // `u32` already excludes negatives; only the grid-column bound needs
-        // a check. Use `checked_add` so an attacker can't smuggle through an
-        // overflowed sum that wraps under `LAYOUT_GRID_COLS`.
+        // `checked_add` so an overflowed sum can't wrap under `LAYOUT_GRID_COLS`.
         match pos.x.checked_add(pos.w) {
             Some(sum) if sum <= LAYOUT_GRID_COLS => {}
             _ => {
@@ -857,10 +643,6 @@ mod tests {
         );
     }
 
-    /// `view` and `system` scope to `EventScope::System`. This used to be
-    /// covered through `POST /api/overlays`; since #1297 that route refuses
-    /// both kinds, so the mapping is asserted here against the registry the
-    /// kernel-internal writers still route through.
     #[tokio::test]
     async fn overlay_entity_scope_registry_reserved_kinds_scope_to_system() {
         let repo = SqlxRepo::open("sqlite::memory:")
@@ -891,10 +673,6 @@ mod tests {
         assert_eq!(scope, EventScope::System);
     }
 
-    // ---------------- Card: terminal ----------------
-
-    /// #1723 — the source key is sticky only in the string form the kernel
-    /// writes; serde's map spelling of a unit variant is not a minted shape.
     #[test]
     fn server_owned_source_is_sticky_only_as_a_string() {
         let sticky = |value: Value| {
@@ -927,7 +705,6 @@ mod tests {
 
     #[test]
     fn terminal_extra_fields_tolerated() {
-        // Unknown fields stay in the JSON — serde ignores them by default.
         validate_builtin_card("terminal", &json!({ "terminal_id": "t1", "extra": "ok" })).unwrap();
     }
 
@@ -943,11 +720,8 @@ mod tests {
         assert!(is_bad_request(&err));
     }
 
-    // ---------------- Card: opt-out for plugin kinds ----------------
-
     #[test]
     fn ui_prefixed_card_accepts_anything() {
-        // Acceptance criterion: a junk payload under a ui://* kind must NOT 400.
         validate_builtin_card("ui://example/view", &json!({ "junk": "ok" })).unwrap();
         validate_builtin_card("ui://example/view", &json!([1, 2, 3])).unwrap();
         validate_builtin_card("ui://example/view", &Value::Null).unwrap();
@@ -957,8 +731,6 @@ mod tests {
     fn plugin_prefixed_card_accepts_anything() {
         validate_builtin_card("plugin:foo:bar", &json!({ "whatever": true })).unwrap();
     }
-
-    // ---------------- OverlayKindRegistry ----------------
 
     #[test]
     fn overlay_kind_registry_lookup_known_kinds() {
@@ -1105,7 +877,7 @@ mod tests {
         }
     }
 
-    /// A complete, valid `kernel/track/activity` payload (#1722 §4.1).
+    /// A complete, valid `kernel/track/activity` payload.
     fn activity_payload_fixture() -> Value {
         json!({
             "schemaVersion": OVERLAY_ACTIVITY_SCHEMA_VERSION,
@@ -1127,18 +899,11 @@ mod tests {
         })
     }
 
-    // ---------------- Overlay: activity (#1722) ----------------
-
-    /// The `activity` registry entry is closed: every field of §4.1 is
-    /// required, every enum value is one of the design's, and an unknown
-    /// field anywhere — top level, an item, a card — is a `BadRequest`.
     #[test]
     fn activity_overlay_payload_is_closed_to_the_design_shape() {
         OVERLAY_KIND_REGISTRY
             .validate("activity", &activity_payload_fixture())
             .unwrap();
-        // `activity_at_ms: null` is the Draft → quiet seed; `items`/`cards`
-        // may be empty.
         OVERLAY_KIND_REGISTRY
             .validate(
                 "activity",
@@ -1217,8 +982,6 @@ mod tests {
         }
     }
 
-    // ---------------- Overlay: status ----------------
-
     #[test]
     fn status_happy() {
         validate_overlay_payload("status", &json!({ "state": "running" })).unwrap();
@@ -1236,8 +999,6 @@ mod tests {
         assert!(is_bad_request(&err));
     }
 
-    // ---------------- Overlay: progress ----------------
-
     #[test]
     fn progress_happy() {
         validate_overlay_payload("progress", &json!({ "value": 0.42 })).unwrap();
@@ -1245,7 +1006,6 @@ mod tests {
 
     #[test]
     fn progress_happy_integer() {
-        // serde_json accepts integers as f64.
         validate_overlay_payload("progress", &json!({ "value": 1 })).unwrap();
     }
 
@@ -1260,8 +1020,6 @@ mod tests {
         let err = validate_overlay_payload("progress", &json!({ "value": "fast" })).unwrap_err();
         assert!(is_bad_request(&err));
     }
-
-    // ---------------- Overlay: eta ----------------
 
     #[test]
     fn eta_happy() {
@@ -1280,8 +1038,6 @@ mod tests {
         assert!(is_bad_request(&err));
     }
 
-    // ---------------- Overlay: now ----------------
-
     #[test]
     fn now_happy() {
         validate_overlay_payload("now", &json!({ "text": "writing tests" })).unwrap();
@@ -1298,8 +1054,6 @@ mod tests {
         let err = validate_overlay_payload("now", &json!({ "text": null })).unwrap_err();
         assert!(is_bad_request(&err));
     }
-
-    // ---------------- Overlay: any_card_needs_input ----------------
 
     #[test]
     fn any_card_needs_input_happy_true() {
@@ -1332,8 +1086,6 @@ mod tests {
             .unwrap_err();
         assert!(is_bad_request(&err));
     }
-
-    // ---------------- Overlay: file-viewer-nav ----------------
 
     #[test]
     fn file_viewer_nav_happy_code_with_nulls() {
@@ -1429,16 +1181,12 @@ mod tests {
         assert!(is_bad_request(&err));
     }
 
-    // ---------------- Overlay: unknown / opaque kinds ----------------
-
     #[test]
     fn unknown_overlay_kind_accepts_anything() {
         validate_overlay_payload("custom-plugin-kind", &json!({ "anything": true })).unwrap();
         validate_overlay_payload("custom-plugin-kind", &json!([])).unwrap();
         validate_overlay_payload("custom-plugin-kind", &Value::Null).unwrap();
     }
-
-    // ---------------- Overlay: layout ----------------
 
     #[test]
     fn layout_happy_empty_positions() {
@@ -1456,7 +1204,6 @@ mod tests {
 
     #[test]
     fn layout_happy_card_at_right_edge() {
-        // `x + w == COLS` is allowed (exact fit, no overflow).
         validate_overlay_payload(
             "layout",
             &json!({ "positions": { "c": { "x": 8, "y": 0, "w": 4, "h": 2 } } }),
@@ -1508,8 +1255,6 @@ mod tests {
 
     #[test]
     fn layout_rejects_negative_x() {
-        // serde_json refuses to coerce a negative number into `u32` —
-        // the deserialize step returns BadRequest.
         let err = validate_overlay_payload(
             "layout",
             &json!({ "positions": { "c": { "x": -1, "y": 0, "w": 2, "h": 2 } } }),
@@ -1530,7 +1275,6 @@ mod tests {
 
     #[test]
     fn layout_rejects_missing_position_field() {
-        // Missing `h` — serde rejects.
         let err = validate_overlay_payload(
             "layout",
             &json!({ "positions": { "c": { "x": 0, "y": 0, "w": 2 } } }),
@@ -1566,8 +1310,6 @@ mod tests {
         assert!(bad_request_message(&err).is_some_and(|m| m.contains("non-empty card id")));
     }
 
-    // ---------------- schemaVersion: payload_schema_version helper ----------------
-
     #[test]
     fn payload_schema_version_defaults_to_one_when_absent() {
         assert_eq!(payload_schema_version(&json!({})), 1);
@@ -1583,14 +1325,9 @@ mod tests {
 
     #[test]
     fn payload_schema_version_defaults_when_wrong_type() {
-        // Non-integer values are not migration markers — fall back to 1 so
-        // downstream code can still read the (mis-typed) payload while the
-        // validator rejects it on the write boundary.
         assert_eq!(payload_schema_version(&json!({ "schemaVersion": "1" })), 1);
         assert_eq!(payload_schema_version(&json!({ "schemaVersion": null })), 1);
     }
-
-    // ---------------- schemaVersion: card validators ----------------
 
     #[test]
     fn terminal_accepts_missing_schema_version() {
@@ -1641,8 +1378,6 @@ mod tests {
         assert!(msg.contains("codex"), "msg = {msg}");
     }
 
-    // ---------------- Card: track-report (issue #229 PR B) ----------------
-
     #[test]
     fn track_report_happy() {
         validate_builtin_card(
@@ -1654,9 +1389,6 @@ mod tests {
 
     #[test]
     fn track_report_accepts_missing_schema_version() {
-        // Missing schemaVersion is accepted — legacy v1 rows never
-        // carried one reliably; they are lazily upgraded at the next
-        // persist, not rejected at the write gate.
         validate_builtin_card(
             "track-report",
             &json!({ "summary": "hi", "body": "# Done\n" }),
@@ -1745,9 +1477,6 @@ mod tests {
 
     #[test]
     fn track_report_tolerates_unknown_fields() {
-        // Forward-compat: extra fields are passed through (serde
-        // ignores by default). A v2 that adds e.g. `lastWriter` lands
-        // without an old-binary error.
         validate_builtin_card(
             "track-report",
             &json!({
@@ -1760,8 +1489,6 @@ mod tests {
         )
         .unwrap();
     }
-
-    // ---------------- schemaVersion: overlay validators ----------------
 
     #[test]
     fn status_accepts_matching_schema_version() {
@@ -1838,13 +1565,8 @@ mod tests {
         assert!(bad_request_message(&err).is_some_and(|m| m.contains("schemaVersion")));
     }
 
-    // ---------------- schemaVersion: plugin-owned overlay passthrough ----------------
-
     #[test]
     fn plugin_overlay_passthrough_with_arbitrary_schema_version() {
-        // A plugin-defined overlay kind carries whatever payload its author
-        // chose — we don't inspect `schemaVersion` for these, even if the
-        // value would be rejected on a kernel-owned kind.
         validate_overlay_payload(
             "custom-plugin-kind",
             &json!({ "schemaVersion": 999, "anything": true }),
@@ -1857,8 +1579,6 @@ mod tests {
         .unwrap();
     }
 
-    // ---------------- schemaVersion: invalid type ----------------
-
     #[test]
     fn rejects_non_integer_schema_version_on_kernel_kinds() {
         let err = validate_overlay_payload(
@@ -1869,11 +1589,8 @@ mod tests {
         assert!(bad_request_message(&err).is_some_and(|m| m.contains("schemaVersion")));
     }
 
-    // ---------------- max_supported_overlay_schema_version ----------------
-
     #[test]
     fn max_supported_overlay_schema_version_kernel_kinds() {
-        // Every kernel-owned overlay kind reports its compile-time version.
         assert_eq!(
             max_supported_overlay_schema_version("status"),
             Some(OVERLAY_STATUS_SCHEMA_VERSION)
@@ -1902,7 +1619,6 @@ mod tests {
 
     #[test]
     fn max_supported_overlay_schema_version_plugin_kinds_return_none() {
-        // Plugin-defined kinds opt out — the read guard must not touch them.
         assert_eq!(max_supported_overlay_schema_version("custom-badge"), None);
         assert_eq!(
             max_supported_overlay_schema_version("ui://example/view"),

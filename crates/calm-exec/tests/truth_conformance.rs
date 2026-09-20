@@ -1,7 +1,4 @@
-//! Scoped T1-T4 truth-layer conformance for #679 PR2.
-//!
-//! The implementation lives in `calm-truth-test-harness` so `calm-exec`
-//! carries no direct or depth-2 `sqlx` dependency even for all-target tests.
+//! Scoped T1-T4 truth-layer conformance tests; implementations live in `calm-truth-test-harness`.
 
 #[tokio::test]
 async fn t1_decision_write_couples_state_and_event() {

@@ -1,11 +1,6 @@
 /**
- * Owner manifest for INV-DUP-001..010. P8 may reference this file; it must not
- * duplicate these ownership decisions.
- *
- * `unique-symbol` means the named public implementation may only be declared
- * at canonicalPath and consumers must import it from there. The markdown pair
- * additionally owns disjoint third-party import families so each fence has an
- * independent mutation signal while sharing core/markdown/public.ts.
+ * Owner manifest for the duplication invariants. `unique-symbol`: the named implementation may only be
+ * declared at `canonicalPath` and consumers must import it from there. `import-fence`: the path additionally owns the listed package families.
  */
 /**
  * @typedef {Readonly<{

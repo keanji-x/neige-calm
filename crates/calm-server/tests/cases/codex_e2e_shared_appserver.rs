@@ -18,8 +18,8 @@ use calm_server::shared_codex_appserver::{
 };
 use clap::Parser;
 use serde_json::json;
-// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
-// self-skip via `skip!`. Tests must never probe/spawn a PATH codex.
+// No-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒ self-skip via `skip!`.
+// Tests must never probe/spawn a PATH codex.
 use support::codex_fixture::resolve_codex_bin;
 
 fn cfg(root: &tempfile::TempDir, codex_bin: &Path) -> Config {

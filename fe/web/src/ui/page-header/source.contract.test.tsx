@@ -14,10 +14,8 @@ function productionTypeScriptUnder(directory: string): string[] {
 describe('page-header scroll seam source contract', () => {
   it('has no production data-nc-scrolled writer until the §6.4 listener lands', () => {
     const sourceRoot = resolve(import.meta.dirname, '../..');
-    // Deliberately broad and fail-closed: TypeScript has no reader for this
-    // CSS-consumed seam, so either spelling anywhere means a writer. Prefer a
-    // false positive over missing an unfamiliar write form. Delete this test
-    // when the shared §6.4 listener is implemented.
+    // Deliberately broad and fail-closed: TypeScript has no reader for this CSS-consumed seam, so either spelling
+    // anywhere means a writer. Delete this test when the shared scroll listener is implemented.
     const spellings = /data-nc-scrolled|ncScrolled/;
     const files = productionTypeScriptUnder(sourceRoot);
     // Canary against directory discovery being silently narrowed while still

@@ -1,39 +1,5 @@
-//! #1449 — the set of ways a `worker_sessions` row can disappear, asked of
-//! SQLite rather than re-derived from migration text.
-//!
-//! # Why this is a ratchet and not a one-off scan
-//!
-//! The planner harness's run loop refuses to issue a turn once its own row has
-//! left the active set (`runtime_is_still_the_live_carrier`). That check reads
-//! a single row by id and refuses when the row is missing, because the only
-//! way to get a missing row is that somebody deleted it, and every deleting
-//! path is a context where issuing a turn would be wrong.
-//!
-//! **That reasoning is a statement about the schema, and schemas drift.** Add
-//! one `ON DELETE CASCADE` pointing at `worker_sessions` — from any table, in
-//! any future migration — and rows start vanishing under live handles with
-//! nobody's shutdown involved. A one-off scan proves "no cascade today"; this
-//! proves "the next migration that adds one goes red here".
-//!
-//! It matters more, not less, if the check becomes fail-CLOSED: then a vanished
-//! row does not let a runtime speak when it should not, it silently stops one
-//! that should, forever. Either way the row-disappearance set is the load-bearing
-//! fact, and it is exactly the kind that rots quietly.
-//!
-//! # What is authoritative here and what is not, stated rather than blurred
-//!
-//! * **Foreign keys: authoritative.** `PRAGMA foreign_key_list` is SQLite's own
-//!   answer about its own schema. The repository has burned rounds on checkers
-//!   that re-derived from source text what an installed tool already knew; this
-//!   does not repeat that.
-//! * **Triggers: textual, and said so.** SQLite exposes no pragma for what a
-//!   trigger's body writes to, so the trigger half matches `sqlite_master.sql`.
-//!   A trigger that deleted from the table through a view or an alias would slip
-//!   past it. Recorded as the known limit of this gate rather than papered over.
-//!
-//! Both halves run through the SAME two functions in the positive and the
-//! negative case below, so the negative fixture proves the check that actually
-//! guards the tree, not a copy of it.
+//! The set of ways a `worker_sessions` row can disappear, asked of SQLite rather than re-derived from migration text.
+//! Foreign keys come from `PRAGMA foreign_key_list`; triggers are matched textually because SQLite has no pragma for a trigger's write targets.
 
 use crate::support::migration_replay::replay_to_head;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -60,9 +26,7 @@ async fn references_to_worker_sessions(pool: &SqlitePool) -> Vec<ReferenceToWork
 
     let mut found = Vec::new();
     for table in tables {
-        // The table name cannot be bound — PRAGMA takes an identifier, not a
-        // value — so it is quoted. It comes from `sqlite_master`, not from a
-        // caller.
+        // PRAGMA takes an identifier, not a bound value, so the name (from `sqlite_master`) is quoted.
         let rows = sqlx::query(&format!(r#"PRAGMA foreign_key_list("{table}")"#))
             .fetch_all(pool)
             .await
@@ -83,10 +47,7 @@ async fn references_to_worker_sessions(pool: &SqlitePool) -> Vec<ReferenceToWork
     found
 }
 
-/// Every trigger whose body deletes from `worker_sessions`.
-///
-/// Textual, for the reason in the module header: SQLite has no pragma for a
-/// trigger's write targets.
+/// Every trigger whose body deletes from `worker_sessions`; textual, because SQLite has no pragma for a trigger's write targets.
 async fn triggers_deleting_from_worker_sessions(pool: &SqlitePool) -> Vec<String> {
     let rows: Vec<(String, Option<String>)> =
         sqlx::query_as("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
@@ -117,16 +78,11 @@ async fn head_pool() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .expect("open in-memory sqlite");
-    // `replay_to_head` runs `MIGRATOR` — the production chain, embedded by
-    // calm-truth — exactly the way production boot runs it.
     replay_to_head(&pool).await;
     pool
 }
 
-/// THE ratchet. If this fails, a migration widened the set of ways a
-/// `worker_sessions` row can vanish, and `runtime_is_still_the_live_carrier`'s
-/// treatment of a missing row has to be re-decided before the expectation below
-/// is updated.
+/// The ratchet: a failure means a migration widened the set of ways a `worker_sessions` row can vanish; re-decide `runtime_is_still_the_live_carrier` before updating the expectation.
 #[tokio::test]
 async fn nothing_in_the_schema_deletes_a_worker_sessions_row_behind_its_owner() {
     let pool = head_pool().await;
@@ -148,9 +104,7 @@ async fn nothing_in_the_schema_deletes_a_worker_sessions_row_behind_its_owner() 
         "a trigger now deletes from worker_sessions: {triggers:#?}"
     );
 
-    // The full inventory, frozen. Not only "nothing cascades": a reference that
-    // changes its action, or a new one appearing at all, is a change to the
-    // reasoning and has to be looked at.
+    // The full inventory, frozen: a changed action or a new reference is a change to the reasoning.
     insta_like_assert(&references);
 }
 
@@ -177,15 +131,7 @@ fn insta_like_assert(references: &[ReferenceToWorkerSessions]) {
     );
 }
 
-/// Every foreign key in the head schema that points at `worker_sessions`, with
-/// the action SQLite reports for it. Read off `PRAGMA foreign_key_list`, not off
-/// the migrations.
-///
-/// None of them is `CASCADE`, and the two directions are worth keeping straight:
-/// `cards.session_id` and `worker_flow_items.worker_session_id` are `SET NULL`,
-/// which fires when a `worker_sessions` row is deleted and clears the pointer to
-/// it — that is a consequence of the delete, not a cause. Nothing here can
-/// remove a `worker_sessions` row as a side effect of deleting something else.
+/// Every foreign key in the head schema pointing at `worker_sessions`; the `SET NULL` ones fire on a delete of the row, never cause one.
 const EXPECTED_REFERENCES: &[(&str, &str, &str)] = &[
     ("cards", "session_id", "SET NULL"),
     ("tracks", "root_session_id", "NO ACTION"),
@@ -194,12 +140,7 @@ const EXPECTED_REFERENCES: &[(&str, &str, &str)] = &[
     ("worker_sessions", "requester_session_id", "NO ACTION"),
 ];
 
-/// The counter-fixture, and the reason this file is a gate rather than a
-/// decoration: a gate that has only ever been observed green proves nothing
-/// about what it would do when the invariant breaks.
-///
-/// Both halves are re-checked through the SAME functions the test above calls,
-/// against a database that is a real head schema plus one violation each.
+/// Counter-fixture: both halves re-checked through the same functions, against a head schema plus one violation each.
 #[tokio::test]
 async fn the_ratchet_sees_a_cascade_and_a_trigger_when_one_exists() {
     let pool = head_pool().await;

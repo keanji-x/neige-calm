@@ -39,12 +39,8 @@ pub fn is_sqlite_busy(e: &sqlx::Error) -> bool {
 
 pub(super) fn is_sqlite_busy_code(code: &str) -> bool {
     if let Ok(code) = code.parse::<i64>() {
-        // 5 = SQLITE_BUSY, 6 = SQLITE_LOCKED. Plain code 6 includes the
-        // shared-cache unlock_notify deadlock ("database is deadlocked",
-        // #930). Retrying on it is ONLY safe at BEGIN, where the fresh tx
-        // holds nothing; a mid-transaction statement retry keeps the tx's
-        // table locks and re-deadlocks deterministically (see
-        // deadlock_semantics_tests).
+        // 5 = SQLITE_BUSY, 6 = SQLITE_LOCKED (plain 6 includes the shared-cache "database is deadlocked"). Retrying on it
+        // is ONLY safe at BEGIN, where the fresh tx holds nothing; a mid-transaction statement retry re-deadlocks deterministically.
         return matches!(code & 0xFF, 5 | 6);
     }
     matches!(code, "SQLITE_BUSY" | "SQLITE_LOCKED")
@@ -52,35 +48,13 @@ pub(super) fn is_sqlite_busy_code(code: &str) -> bool {
         || code.starts_with("SQLITE_LOCKED_")
 }
 
-// ---- helpers -----------------------------------------------------------------
-
-/// Tier-A upgrade stability guard: refuse to boot when `_sqlx_migrations`
-/// contains a `version` not known to the binary's embedded `Migrator`.
-///
-/// This is the "old binary reading new DB" case from
-/// `docs/upgrade-stability.md`. Downgrade is unsupported — once the user's
-/// data has been migrated forward, an older binary must not continue
-/// against a schema it can't reason about.
-///
-/// Behavior:
-///
-/// * The `_sqlx_migrations` table may not exist on a brand-new DB (sqlx
-///   creates it on first `run()`). Treat absence as "no applied migrations
-///   yet" — opens normally.
-/// * `success = false` rows are still included in the diff: their `version`
-///   is what matters for "binary doesn't know about". A half-applied future
-///   migration is still a future migration.
-/// * If multiple unknown versions exist, the error names the lowest one
-///   (most useful for debugging: it's the first row that drifted past
-///   what this binary knows). The remaining unknown versions are appended
-///   in parentheses so operators can see the full extent of the drift.
+/// Refuse to boot when `_sqlx_migrations` contains a `version` not known to the binary's embedded `Migrator`
+/// (downgrade is unsupported). A missing table means no applied migrations yet; `success = false` rows still count.
 pub(super) async fn check_no_unknown_future_migrations(
     pool: &SqlitePool,
     migrator: &sqlx::migrate::Migrator,
 ) -> Result<()> {
-    // Does `_sqlx_migrations` exist? `sqlite_master` is always present.
-    // We pre-check existence rather than catching the "no such table"
-    // error so we don't conflate it with a real driver failure.
+    // Pre-check existence rather than catching "no such table", so it is not conflated with a real driver failure.
     let table_exists: Option<(String,)> = sqlx::query_as(
         r#"SELECT name FROM sqlite_master
            WHERE type = 'table' AND name = '_sqlx_migrations'"#,
@@ -110,8 +84,6 @@ pub(super) async fn check_no_unknown_future_migrations(
     let detail = if unknown.len() == 1 {
         String::new()
     } else {
-        // List the remaining unknown versions so operators can see the
-        // full forward-drift surface without grepping the DB themselves.
         let rest: Vec<String> = unknown[1..].iter().map(|v| v.to_string()).collect();
         format!(" (additional unknown versions: {})", rest.join(", "))
     };
@@ -121,11 +93,7 @@ pub(super) async fn check_no_unknown_future_migrations(
     )))
 }
 
-/// Compute the next sort value (max + 1) within a scoped table.
-///
-/// `scope_sql` is appended verbatim after `FROM <table>`; supply `""` for
-/// global scope, or `"WHERE area_id = ?1"` etc. Bind a single optional
-/// scope parameter via `scope_id`.
+/// Compute the next sort value (max + 1) within a scoped table; `scope_sql` is appended verbatim after `FROM <table>`.
 pub(super) async fn next_sort_scoped_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     table: &str,

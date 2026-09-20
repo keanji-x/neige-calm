@@ -26,10 +26,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
-/// (or any other process env read by the fake codex shim). Peer test
-/// binaries keep their own `ENV_LOCK` because each test binary is a separate
-/// process.
+/// Serializes intra-binary tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Boot {
@@ -56,10 +53,7 @@ fn cfg(root: &TempDir) -> Config {
         "10",
         "--shared-codex-appserver-restart-max-delay-ms",
         "50",
-        // #949: keep the cold-start deadline short — the respawn-failure
-        // tests force `FAKE_CODEX_FAIL_INITIALIZE` with a live child, which
-        // now (correctly) retries until this deadline instead of a hardcoded
-        // 10s; the 120s production default would stall those tests.
+        // Keep the cold-start deadline short: the respawn-failure tests retry until this deadline.
         "--shared-codex-appserver-start-timeout-secs",
         "3",
     ])
@@ -280,9 +274,7 @@ async fn create_prompt_card_writes_runtime_and_projects_thread_id() {
 
     let card_id = card["id"].as_str().unwrap();
     assert_eq!(card["payload"]["codex_thread_id"], "fake-thread-0001");
-    // Use projectable (broadened to include terminal-status rows) so the
-    // assertion is robust to CI-only timing where the codex TUI fixture
-    // exits quickly → attach_reader marks runtime Exited before this read.
+    // Projectable (includes terminal-status rows): on CI the codex fixture can exit before this read.
     let runtime = boot
         .repo
         .session_projection_projectable_for_card(&card_id.to_string())

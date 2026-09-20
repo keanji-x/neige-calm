@@ -1,31 +1,5 @@
-//! `/api/settings` — app-global key/value settings.
-//!
-//! The Settings page in the UI reads the whole bag with `GET /api/settings`
-//! and writes back the full edited bag with `PUT /api/settings`. There's no
-//! per-key DELETE / PATCH; the bag is small (a handful of keys at most) and
-//! "send the whole form" is simpler than diffing on the client.
-//!
-//! ## Empty-string semantics
-//!
-//! On the wire we model values as `Option<String>` so the client can either
-//! omit a key entirely or send it explicitly as `null` / `""`. On the
-//! write boundary here:
-//!
-//!   * `null` — delete the key (clear the override).
-//!   * `""` (empty string) — delete the key (same as null; an empty proxy
-//!     is the same as "use container defaults").
-//!   * Non-empty value — upsert.
-//!
-//! This keeps the codex spawn reader simple: "if the key isn't in the bag,
-//! don't override the env." We never store empty rows, so the reader never
-//! has to decide whether `""` means "disable" vs "default".
-//!
-//! ## First-class keys
-//!
-//! `http_proxy`, `https_proxy`, and `task_budget_default` are the first-class
-//! keys the kernel actively reads. The schema is intentionally open: any
-//! string key/value pair is allowed, so future settings can land without a
-//! wire-level migration.
+//! `/api/settings` — app-global key/value settings. `null` and `""` both delete a key;
+//! empty rows are never stored.
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -46,9 +20,7 @@ fn parse_task_budget_default(value: &str) -> Option<i64> {
     value.trim().parse::<i64>().ok().filter(|value| *value > 0)
 }
 
-/// A malformed row can only arrive through a manual database edit or an older
-/// binary. Fail closed to the boot-resolved deployment default instead of
-/// letting it disable scheduling or inflate the budget unpredictably.
+/// A malformed row (manual DB edit or older binary) fails closed to the boot-resolved default.
 pub(crate) fn effective_task_budget_default(value: Option<&str>, fallback: i64) -> i64 {
     value
         .and_then(parse_task_budget_default)
@@ -65,17 +37,13 @@ fn settings_bag(rows: Vec<(String, String)>, task_budget_fallback: i64) -> Setti
     SettingsBag { settings }
 }
 
-/// Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
-/// deterministic ordering in the response so the OpenAPI spec consumers
-/// see stable test diffs.
+/// Wire-shape: a flat string map of key -> value; `BTreeMap` for deterministic ordering.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SettingsBag {
     pub settings: BTreeMap<String, String>,
 }
 
-/// Request body for `PUT /api/settings`. Values are `Option<String>` so
-/// the client can clear a key by sending `null`. Empty strings are also
-/// treated as deletes; see module docs for the rationale.
+/// Request body for `PUT /api/settings`. `null` and `""` both clear a key.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct SettingsPutBody {
     #[serde(default)]
@@ -113,9 +81,8 @@ pub(crate) async fn put_settings(
     State(worker): State<WorkerState>,
     Json(p): Json<SettingsPutBody>,
 ) -> Result<Json<SettingsBag>> {
-    // Validate every typed key before writing the first row. The KV endpoint
-    // accepts an arbitrary bag, so validation inside the write loop would let
-    // an earlier unrelated key land before a later typed value returns 400.
+    // Validate every typed key before writing the first row, so an earlier unrelated key
+    // cannot land before a later typed value returns 400.
     if let Some(Some(value)) = p.settings.get(TASK_BUDGET_DEFAULT_KEY)
         && !value.is_empty()
         && parse_task_budget_default(value).is_none()
@@ -128,8 +95,7 @@ pub(crate) async fn put_settings(
     let mut proxy_changed = false;
     let mut task_budget_changed = false;
     for (key, maybe_val) in p.settings.iter() {
-        // Skip empty keys silently — a malformed JSON object with "" keys
-        // shouldn't break the call; we just refuse to persist them.
+        // Skip empty keys silently rather than persisting them.
         if key.is_empty() {
             continue;
         }
@@ -162,7 +128,6 @@ pub(crate) async fn put_settings(
                 s.repo.settings_upsert(key, v).await?;
             }
             _ => {
-                // None or empty string → clear.
                 s.repo.settings_delete(key).await?;
             }
         }
@@ -171,10 +136,8 @@ pub(crate) async fn put_settings(
         cs.shared_codex_appserver.mark_needs_respawn();
     }
     if task_budget_changed {
-        // Raising the default can release already-pending work without another
-        // domain event to poke the scheduler. Lowering is harmless here: the
-        // sweep never cancels in-flight work and its claim transaction applies
-        // the new budget before admitting anything else.
+        // Raising the default can release already-pending work without another domain event
+        // to poke the scheduler. Lowering is harmless: the sweep never cancels in-flight work.
         let scheduler = worker.dispatcher.scheduler();
         tokio::spawn(async move { scheduler.sweep_all().await });
     }
@@ -182,8 +145,7 @@ pub(crate) async fn put_settings(
     Ok(Json(settings_bag(rows, s.task_budget_default)))
 }
 
-/// Internal helper: snapshot the first-class settings the kernel consumes.
-/// Unknown keys stay persisted in the wire bag but are ignored here.
+/// Snapshot of the first-class settings the kernel consumes; unknown keys are ignored here.
 #[derive(Debug, Default, Clone)]
 pub struct Settings {
     pub http_proxy: Option<String>,
@@ -195,9 +157,7 @@ impl Settings {
     pub fn from_pairs(pairs: Vec<(String, String)>) -> Self {
         let mut out = Settings::default();
         for (k, v) in pairs {
-            // Empty values should never make it into the table (the route
-            // strips them) but guard anyway so a manual SQL edit can't
-            // sneak a `""` proxy in.
+            // The route strips empty values, but guard anyway so a manual SQL edit can't sneak a `""` proxy in.
             if v.is_empty() {
                 continue;
             }
@@ -212,10 +172,7 @@ impl Settings {
     }
 }
 
-/// Async helper used by `routes::codex` — pulls the snapshot in one shot.
-/// Bound on the narrow `RepoRead` trait so the helper can be invoked from
-/// route handlers via the `AppState::repo` handle (which is a `RouteRepo`,
-/// transitively a `RepoRead`).
+/// Pulls the snapshot in one shot; bound on `RepoRead` so route handlers can call it.
 pub async fn load_settings(repo: &dyn crate::db::RepoRead) -> Result<Settings> {
     let pairs = repo.settings_get_all().await?;
     Ok(Settings::from_pairs(pairs))

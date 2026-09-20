@@ -1,28 +1,4 @@
 //! `/api/fs/listdir` — read-only directory listing for the DirectoryPicker.
-//!
-//! The frontend's `DirectoryPicker` uses this to let users navigate the host
-//! filesystem and pick a `cwd` for spawn-style cards (currently codex; could
-//! be terminal in the future). Strictly read-only — no create/move/delete.
-//!
-//! ## Contract
-//!
-//! `GET /api/fs/listdir?path=<absolute_path>`
-//!   * `path` omitted → start at `$HOME` (falls back to server cwd).
-//!   * Path is canonicalized server-side (`tokio::fs::canonicalize`) so
-//!     symlinks resolve and `..` segments collapse — the response always
-//!     carries the canonical absolute path the frontend should treat as
-//!     "current".
-//!   * Entries include conventional Unix dotfiles and are sorted
-//!     directories-first, then case-insensitive alphabetic. Navigation
-//!     pseudo-entries `.` and `..` are never returned.
-//!   * 200 with `{ path, parent, entries }` on success.
-//!   * 400 if the resolved path doesn't exist or isn't a directory.
-//!   * 403 if read permission is denied at the OS level.
-//!
-//! Security: kernel is a single-user process; this endpoint sits at the
-//! same trust level as `/api/areas`, `/api/cards`, etc. — no auth gate
-//! beyond what's wrapped around the whole router. If we ever multi-tenant
-//! the server, this is one of the first endpoints to lock down.
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::state::{AppState, RouteState};
@@ -167,9 +143,6 @@ pub(crate) async fn listdir(
         .map(PathBuf::from)
         .unwrap_or_else(default_start);
 
-    // Canonicalize → resolve symlinks, collapse `..`, materialize an
-    // absolute path. Doing it before the metadata check means error
-    // messages and the response path agree on what was actually probed.
     let canon = match tokio::fs::canonicalize(&raw).await {
         Ok(p) => p,
         Err(e) => return Err(map_io_err(&raw, e)),
@@ -213,15 +186,10 @@ async fn list_directory_entries(path: &Path) -> Result<Vec<DirEntry>> {
                 if !directory_entry_visible(&name) {
                     continue;
                 }
-                // `file_type()` is cheap (no extra stat on most platforms).
-                // Symlinks are reported by what they point at; on a broken
-                // link we fall back to "not a dir" which is the safe choice
-                // (clicking it would error in `canonicalize` anyway).
+                // A broken symlink reads as "not a dir"; clicking it would error in `canonicalize` anyway.
                 let is_dir = match entry.file_type().await {
                     Ok(ft) => {
                         if ft.is_symlink() {
-                            // Probe the target — if it resolves to a dir,
-                            // surface it as such so users can click through.
                             tokio::fs::metadata(entry.path())
                                 .await
                                 .map(|m| m.is_dir())
@@ -236,9 +204,7 @@ async fn list_directory_entries(path: &Path) -> Result<Vec<DirEntry>> {
             }
             Ok(None) => break,
             Err(e) => {
-                // Mid-iteration EACCES on a child shouldn't kill the whole
-                // listing — log and skip. A genuinely unreadable directory
-                // would have failed at `read_dir` above.
+                // Mid-iteration EACCES on a child shouldn't kill the whole listing.
                 tracing::debug!(error = %e, path = %path.display(), "skip unreadable child");
                 continue;
             }
@@ -471,21 +437,9 @@ pub(crate) struct OpenWorkspaceFile {
     pub(crate) size: u64,
 }
 
-/// Which symlinks `openat2` may follow while resolving a workspace path.
-///
-/// #1505 review round 4. This is a parameter and not a constant because the two
-/// callers need different answers, and picking one for both is how a real
-/// cross-card read shipped:
-///
-/// * [`WorkspaceSymlinks::FollowedInsideRoot`] is what the workspace file
-///   readers want. `RESOLVE_BENEATH` rejects a symlink whose target leaves the
-///   root, and permits one whose target stays inside it — which is a deliberate
-///   feature there, pinned by `workspace_file_allows_a_symlink_that_stays_inside_the_root`.
-/// * [`WorkspaceSymlinks::Refused`] adds `RESOLVE_NO_SYMLINKS`, so a symlink
-///   anywhere on the path is `ELOOP` however local its target. A caller whose
-///   root contains several mutually-untrusted subtrees needs this: "beneath the
-///   root" is not the same statement as "inside the directory I derived", and
-///   the planner attachment store learned the difference the expensive way.
+/// Which symlinks `openat2` may follow. `FollowedInsideRoot` permits a symlink whose
+/// target stays inside the root; `Refused` adds `RESOLVE_NO_SYMLINKS`, which a root
+/// holding mutually-untrusted subtrees needs.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkspaceSymlinks {
@@ -494,12 +448,6 @@ pub(crate) enum WorkspaceSymlinks {
 }
 
 /// The resolve flags, stated once.
-///
-/// #1505 S6 review. Two openers share them — [`open_workspace_regular_file`]
-/// and [`open_workspace_directory`] — and a second copy of this expression is
-/// a second place `RESOLVE_NO_SYMLINKS` could be forgotten. The write path the
-/// directory opener exists for was shipped once WITHOUT that flag, which is
-/// precisely the drift a duplicated flag set produces.
 #[cfg(target_os = "linux")]
 fn workspace_resolve_flags(symlinks: WorkspaceSymlinks) -> nix::fcntl::ResolveFlag {
     use nix::fcntl::ResolveFlag;
@@ -529,35 +477,10 @@ async fn open_workspace_root(workspace_root: &Path) -> Result<std::fs::File> {
     Ok(root.into_std().await)
 }
 
-/// Open one regular file beneath `workspace_root`, with the root's descriptor
-/// as the authority. `openat2` resolves and opens atomically, so a concurrent
-/// worker cannot swap a checked parent for an escaping symlink before the read.
-///
-/// # What this establishes, and what it does not
-///
-/// The list is meant to be exhaustive, because an enumeration presented as
-/// exhaustive and read as exhaustive is what let a cross-card read ship in
-/// #1505 round 3 — the omitted line was the third one below.
-///
-/// * `RESOLVE_BENEATH` — every component resolves beneath `workspace_root`,
-///   not just the last one, so a path leaving the root is `EXDEV`;
-/// * `RESOLVE_NO_MAGICLINKS` — no `/proc/self/fd` style reopen;
-/// * **`RESOLVE_BENEATH` says nothing about symlinks whose target stays inside
-///   the root.** `a -> ../b/c` resolves and opens exactly as if it were the
-///   file. Only `RESOLVE_NO_SYMLINKS` — [`WorkspaceSymlinks::Refused`] —
-///   refuses those, and callers that treat subdirectories of the root as
-///   separate trust domains must ask for it;
-/// * `O_NONBLOCK` — a FIFO on the path returns `ENXIO` instead of parking the
-///   blocking thread until a writer appears;
-/// * the `is_file()` check on the returned descriptor — not on the name — so a
-///   directory, socket or device is refused after the open, with no window
-///   between the check and the handle.
-///
-/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
-/// internal: its messages carry the requested host path.** That sentence
-/// belongs here, on the function that returns the error — a review round put
-/// it on the private flag helper, which returns neither an error nor a path,
-/// where the caller who needs it would never look.
+/// Open one regular file beneath `workspace_root`, with the root's descriptor as the
+/// authority; `openat2` resolves and opens atomically. `RESOLVE_BENEATH` still follows
+/// a symlink whose target stays inside the root. Callers outside `routes::fs` must
+/// treat the returned [`CalmError`] as internal: its messages carry the host path.
 #[cfg(target_os = "linux")]
 pub(crate) async fn open_workspace_regular_file(
     workspace_root: &Path,
@@ -570,21 +493,8 @@ pub(crate) async fn open_workspace_regular_file(
         .await
 }
 
-/// Open the root itself as a directory descriptor.
-///
-/// The anchor everything else resolves against. `open_workspace_directory`
-/// cannot express it — a relative path of `"."` is refused by
-/// `workspace_relative_path`, correctly, since `.` and `..` are exactly what a
-/// relative path must not contain — and a caller that needs to create the
-/// first level under the root has nothing else to hold.
-///
-/// The root is the trust base rather than something derived from workspace
-/// contents: `planner_attachments::attachment_root` builds it from the track's
-/// stored workspace path and refuses one that is not absolute or not under the
-/// server's workspace root.
-///
-/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
-/// internal: its messages carry the requested host path.**
+/// Open the root itself as a directory descriptor. Callers outside `routes::fs` must
+/// treat the returned [`CalmError`] as internal: its messages carry the host path.
 #[cfg(target_os = "linux")]
 pub(crate) async fn open_workspace_root_directory(
     workspace_root: &Path,
@@ -605,32 +515,11 @@ pub(crate) async fn open_workspace_root_directory(
 }
 
 #[cfg(target_os = "linux")]
-/// Open one directory beneath `workspace_root`, under the same resolution
-/// rules [`open_workspace_regular_file`] uses.
-///
-/// # Why a caller wants a directory descriptor and not a path
-///
-/// #1505 S6 review, and it is the whole reason this exists. A guarded *read*
-/// establishes nothing about a *write*: `create_dir_all`, `rename` and
-/// `remove_file` all take paths, and a path is resolved again, by the kernel,
-/// with no `RESOLVE_*` flags at all. So a component somebody replaced with a
-/// symlink between the check and the write decides where the bytes land — and
-/// the planner attachment store shipped exactly that, verifying its
-/// destination only AFTER renaming into it.
-///
-/// A descriptor cannot be re-pointed. Syscalls that take one plus a single
-/// NAME component (`mkdirat`, `openat` with `O_EXCL`, `renameat`, `unlinkat`)
-/// therefore perform no path resolution the caller has to defend: there is no
-/// intermediate component left to swap. That — not this function alone — is
-/// what makes a write safe, so a caller must keep the descriptor and never
-/// rebuild a path from it.
-///
-/// `O_DIRECTORY` is passed and the `is_dir` check is kept anyway: the flag is
-/// the atomic guarantee, the check is what turns a kernel that ignored it into
-/// a refusal rather than a surprise.
-///
-/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
-/// internal: its messages carry the requested host path.**
+/// Open one directory beneath `workspace_root`, under the same resolution rules
+/// [`open_workspace_regular_file`] uses. A write is only safe through this descriptor
+/// plus a single name component (`mkdirat`, `renameat`, ...), never a rebuilt path.
+/// Callers outside `routes::fs` must treat the returned [`CalmError`] as internal:
+/// its messages carry the host path.
 #[cfg(target_os = "linux")]
 pub(crate) async fn open_workspace_directory(
     workspace_root: &Path,
@@ -845,9 +734,7 @@ pub(crate) async fn open_workspace_regular_file_at(
     ))
 }
 
-/// Same placeholder for the directory opener. Fail-closed: a platform without
-/// `openat2` cannot make the guarantee this function's callers rely on, and a
-/// caller must not fall back to an unguarded path.
+/// Same placeholder for the directory opener; fail-closed, no unguarded fallback.
 #[cfg(not(target_os = "linux"))]
 pub(crate) async fn open_workspace_directory(
     _workspace_root: &Path,
@@ -1216,8 +1103,6 @@ async fn git_show_head(root: &Path, rel: &str) -> Result<(Option<String>, bool)>
 }
 
 fn map_git_spawn_err(context: impl Display, e: std::io::Error) -> CalmError {
-    // File viewer git endpoints shell out to the system binary; the server
-    // runtime must provide `git` on PATH.
     if e.kind() == ErrorKind::NotFound {
         CalmError::Internal("git is not installed or not on PATH on the server".into())
     } else {
@@ -1285,10 +1170,6 @@ fn default_start() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
-/// Translate a `std::io::Error` from `canonicalize`/`metadata`/`read_dir`
-/// into the right `CalmError` variant. `NotFound`/`InvalidInput` →
-/// `BadRequest` (the path is bad as input); `PermissionDenied` →
-/// `Forbidden`; anything else → `Internal`.
 fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
     match e.kind() {
         ErrorKind::NotFound | ErrorKind::InvalidInput => {
@@ -1594,9 +1475,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let real = workspace.path().join("real.txt");
         std::fs::write(&real, "inside\n").unwrap();
-        // Relative symlinks remain constrained by the root directory fd.
-        // Absolute symlinks are rejected by RESOLVE_BENEATH even when their
-        // current spelling happens to point back into this directory.
+        // Relative symlinks stay constrained by the root fd; absolute ones are rejected by RESOLVE_BENEATH.
         symlink("real.txt", workspace.path().join("alias.txt")).unwrap();
 
         let opened = open_workspace_regular_file(
@@ -1678,8 +1557,7 @@ mod tests {
                 assert!(matches!(error, CalmError::BadRequest(_)));
             }
             Err(_) => {
-                // Clean up the deliberately blocked pre-fix open so the test
-                // runtime can shut down before reporting the timeout.
+                // Unblock the stuck open so the runtime can shut down before reporting the timeout.
                 let writer = std::thread::spawn(move || {
                     std::fs::OpenOptions::new().write(true).open(fifo).unwrap()
                 });

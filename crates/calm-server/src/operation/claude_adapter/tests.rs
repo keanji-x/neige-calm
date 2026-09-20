@@ -619,7 +619,6 @@ async fn claude_worker_fast_exit_preservation_returns_noop_and_marks_runtime_run
     assert_eq!(runtime.status, WorkerSessionState::Running);
 }
 
-/// #1149 — the claude worker card is titled after its task's plan key.
 #[tokio::test]
 async fn claude_worker_prepare_titles_card_with_task_key() {
     let harness = claude_worker_harness().await;

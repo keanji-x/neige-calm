@@ -9,29 +9,22 @@ export type AgentProvider = "codex" | "claude";
 
 export type Area = { id: AreaId, name: string, color: string, sort: number, kind: AreaKind, 
 /**
- * Built-in Track template preselected by the official New Track surface.
- * `None` keeps "No template" as the Area's creation default.
+ * Built-in Track template preselected by the official New Track surface; `None` keeps "No template".
  */
 default_template_id: string | null, 
 /**
- * Exact attached Git working directory preselected for a new Track.
- * `None` keeps the server-managed Neige workspace default.
+ * Exact attached Git working directory preselected for a new Track; `None` keeps the server-managed default.
  */
 default_cwd: string | null, created_at: number, updated_at: number, };
 
 /**
- * One row per claimed directory; `path` is absolute and globally
- * unique across the table. A folder transparently covers every
- * descendant path — the kernel resolves a `cwd` to its owning area by
- * finding the claim that covers it (see `GET /api/areas/resolve`).
- * The create endpoint rejects ancestor/descendant overlap with a 409,
- * so at most one claim can cover any given path.
+ * One row per claimed directory; `path` is absolute and globally unique across the table. A folder
+ * covers every descendant path, and overlapping claims are rejected.
  */
 export type AreaFolder = { id: number, area_id: AreaId, path: string, created_at: number, };
 
 /**
- * Area identifier. UUID-shaped (32 hex, no dashes) in practice, but the
- * kernel treats the value as opaque; never parses it.
+ * Area identifier.
  */
 export type AreaId = string;
 
@@ -41,9 +34,7 @@ export type AreaId = string;
 export type AreaKind = "user" | "system";
 
 /**
- * Issue #250 PR 1 — 200 body for `GET /api/areas/resolve`. The
- * resolve endpoint returns `null` (not 404) on miss; this struct is
- * the `Some(_)` payload.
+ * 200 body for `GET /api/areas/resolve`; the endpoint returns `null` (not 404) on miss.
  */
 export type AreaResolve = { area_id: AreaId, folder_id: number, folder_path: string, };
 
@@ -53,50 +44,29 @@ export type AreaResolve = { area_id: AreaId, folder_id: number, folder_path: str
 export type ArtifactRef = string;
 
 /**
- * `<uuid-v4>.<ext>` — an attachment's id *and* its file name.
- *
- * The inner string is private and the only constructor is
- * [`AttachmentId::parse`], so a value of this type is always a single path
- * segment matching
- * `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}.(png|jpg|gif|webp)`.
- * `Deserialize` goes through the same gate, so an id off the wire is checked
- * before it can reach a `join`.
+ * `<uuid-v4>.<ext>` — an attachment's id *and* its file name. The only constructor is
+ * [`AttachmentId::parse`] and `Deserialize` goes through the same gate.
  */
 export type AttachmentId = string;
 
 export type Card = { id: CardId, track_id: TrackId, 
 /**
- * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
- * plugin-provided cards (the canonical MCP Apps resource URI). The
- * kernel never interprets beyond that prefix. `[legacy]`
- * `"plugin:<plugin-id>:<view-id>"` may still appear on persisted rows.
+ * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for plugin-provided cards.
+ * `[legacy]` `"plugin:<plugin-id>:<view-id>"` may still appear on persisted rows.
  */
 kind: string, sort: number, 
 /**
- * Opaque JSON blob — ts-rs would otherwise emit `unknown` via the
- * `serde-json-impl` feature, but we pin it explicitly so a future
- * feature-flag change can't silently widen / narrow the surface.
+ * Opaque JSON blob.
  */
 payload: unknown, title?: string, runtime?: CardRuntimeView, 
 /**
- * Issue #229 PR A — system-card guard. `true` for user-facing cards
- * (the default; all pre-#229 rows backfill via the column DEFAULT in
- * migration 0013). `false` for kernel-owned cards that the user
- * cannot remove via REST / plugin callbacks — currently planner cards
- * (retroactively undeletable via the same migration's UPDATE) and
- * PR B's track-report cards.
- *
- * `#[serde(default = "default_deletable")]` so wire payloads emitted
- * before #229 landed (event-log replay fixtures, old test seeds)
- * parse as `true` without forcing a fixture rewrite — matches the
- * DB DEFAULT (1) in migration 0013. The default-fn lives below
- * because `bool::default()` would give `false` (the *un*safe
- * fallback for a deny-by-omission auth bit).
+ * System-card guard: `true` for user-facing cards, `false` for kernel-owned cards the user cannot
+ * remove. Defaults to `true` because `bool::default()` is the unsafe fallback for a deny-by-omission auth bit.
  */
 deletable: boolean, created_at: number, updated_at: number, };
 
 /**
- * Card identifier. See [`AreaId`] for the opacity contract.
+ * Card identifier.
  */
 export type CardId = string;
 
@@ -106,23 +76,12 @@ export type CardId = string;
 export type CardRole = "worker" | "planner" | "reportcard" | "assistant";
 
 /**
- * Live runtime projection read from `worker_sessions` when a card is fetched
- * or serialized.
- *
- * This view is not part of the idempotency contract: across retries the
- * worker session may have advanced, so `Card.runtime` may differ between the
- * first POST response and a retry POST response returning the same operation
- * result. Future cleanup (#581 item 4) will remove the legacy payload-key
- * projection; this typed view is the forward-compatible reader path.
+ * Live runtime projection read from `worker_sessions` when a card is fetched or serialized. Not
+ * part of the idempotency contract: it may differ between a first POST response and a retry.
  */
 export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKind, status: WorkerSessionState, updated_at_ms?: number, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, 
 /**
- * #1722 S1b — when the card's last non-interrupted turn ended (the newest
- * `turn/completed` transcript row whose status is not `interrupted`), or
- * absent when it has none. Optional like `updated_at_ms`: this view is
- * persisted inside `card.added` / `card.updated` events, and a required
- * field would invalidate every stored snapshot. A reader treats absence
- * as "never completed" (never unread), which is the safe direction.
+ * When the card's last non-interrupted turn ended, or absent when it has none.
  */
 last_turn_completed_ms?: number, };
 
@@ -134,26 +93,15 @@ export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
 export type ChannelVerdictKind = "approved" | "changes_requested";
 
 /**
- * A declared Claude Code permission scope: the `claude_permissions` argument
- * of `calm.terminal.open` and, since S2, the value of
- * `tracks.claude_permissions_policy`.
- *
- * The derive is lenient on unknown keys on purpose: it decodes stored rows
- * and stored operation payloads, which a newer binary may have written with
- * a key this one does not know, and a list route must not fail for a whole
- * area over one such row. Strictness (unknown key, wrong list type, a JSON
- * array or `null` in place of the object) lives in [`parse_scope_named`],
- * which every untrusted entry runs first.
+ * A declared Claude Code permission scope: the `claude_permissions` argument of `calm.terminal.open`
+ * and the value of `tracks.claude_permissions_policy`. The derive is lenient on unknown keys on
+ * purpose (stored rows from a newer binary); strictness lives in [`parse_scope_named`].
  */
 export type ClaudePermissionsScope = { edit?: Array<string>, bash?: Array<string>, deny?: Array<string>, };
 
 /**
- * #1704 S2 — which scope a terminal's rendered `permissions` block came
- * from; stamped on the card beside the block as
- * `Card.payload.claude_permissions_source` and echoed by the open.
- *
- * A card that carries `claude_permissions` and NO source predates S2 and
- * reads as [`Declared`](Self::Declared); S3 (the card view) must apply that.
+ * Which scope a terminal's rendered `permissions` block came from; stamped on the card beside the
+ * block as `Card.payload.claude_permissions_source`. A card with no source reads as [`Declared`](Self::Declared).
  */
 export type ClaudePermissionsSource = "declared" | "track_policy" | "declared_within_policy";
 
@@ -175,55 +123,29 @@ export type EnrollmentRedeem = { enrollmentId: string, attemptId: string, attemp
 export type EnrollmentRedeemed = { enrollmentId: string, attemptId: string, sessionFingerprint: string, };
 
 /**
- * The full set of WS event envelopes the kernel emits on `/api/events`.
- *
- * `ts-rs` derives a matching TypeScript discriminated union, written to
- * `fe/core/api/generated/wire.ts` when `cargo test export_bindings_` runs
- * (driven by `npm run gen:api`). The serde `tag`/`content` attributes are
- * honored — the emitted TS uses the same `{ ev, data }` envelope.
- *
- * Note for future variants: ts-rs requires every payload type referenced
- * here to also derive `TS`. Inline struct variants (e.g. `AreaDeleted { id }`)
- * are emitted directly; tuple variants over a named struct (e.g.
- * `AreaUpdated(Area)`) pull in the struct's own export.
+ * The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every
+ * payload type referenced here to also derive `TS`.
  */
 export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "track.updated", "data": TrackUpdatedPayload } | { "ev": "track.deleted", "data": { id: TrackId, area_id: AreaId, } } | { "ev": "track.lifecycle_changed", "data": { id: TrackId, area_id: AreaId, from: TrackLifecycle, to: TrackLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, track_id: TrackId, } } | { "ev": "worker_session.started", "data": { worker_session_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "worker_session.status_changed", "data": { worker_session_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "worker_session.superseded", "data": { old_worker_session_id: string, new_worker_session_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, 
 /**
- * Number of `harness_items` rows deleted by this reset.
- * `None` on pre-#1252 rows only.
+ * Number of `harness_items` rows deleted by this reset; `None` on unmeasured historical rows.
  */
 cleared_item_count: number | null, 
 /**
- * Summed byte length of those rows' `params` payloads — the only
- * cumulative-size measure the `harness_items` schema carries
- * (there is no token-count column). `None` on pre-#1252 rows only.
+ * Summed byte length of those rows' `params` payloads; `None` on unmeasured historical rows.
  */
 cleared_params_bytes: number | null, 
 /**
- * Card age at reset: emit time minus the card row's `created_at`,
- * in milliseconds. Lets a retrospective tell "reset an hour in"
- * from "reset after a week". `None` on pre-#1252 rows only.
+ * Card age at reset in milliseconds; `None` on unmeasured historical rows.
  */
 card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueued", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "harness.queue.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, entry_id: string, change: HarnessQueueChange, actor: ActorId, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
 /**
- * Submitting plugin id when `author == EditAuthor::Plugin`
- * (#955 §5.3); `None` for every other author.
- * `#[serde(default)]` keeps pre-#955 history rows replayable
- * (field absent on old events ⇒ `None`).
+ * Submitting plugin id when `author == EditAuthor::Plugin`; `None` for every other author.
  */
 author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
- * Crash reason / initialize-rejected message, surfaced to the WS so
- * the UI can show it without a separate `/log` fetch. `None` for
- * healthy transitions (Spawning → Running, etc.). Wire shape locked
- * in design doc §7.
- *
- * `#[serde(default, skip_serializing_if = "Option::is_none")]`
- * combined with `#[ts(optional)]` matches the runtime behavior: the
- * field is absent on the wire when the inner `Option` is `None`, and
- * the TS type marks it as `last_error?: string`. (Without `optional`,
- * ts-rs would emit `last_error: string | null` which would diverge
- * from what the server actually serializes.)
+ * Crash reason / initialize-rejected message, surfaced to the WS so the UI can show it without a
+ * separate `/log` fetch; `None` for healthy transitions.
  */
 last_error?: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "codex.hook", "data": { 
 /**
@@ -231,9 +153,7 @@ last_error?: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id
  */
 card_id: CardId, 
 /**
- * Snake_case discriminator: `hook.codex.<event_name>` (e.g.
- * `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
- * the codex payload; defaults to `hook.codex.unknown` if missing.
+ * Snake_case discriminator: `hook.codex.<event_name>`; defaults to `hook.codex.unknown` if missing.
  */
 kind: string, 
 /**
@@ -263,20 +183,15 @@ hook_idempotency_key: string,
  */
 payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.file_publication_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "task.candidate_verification_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "task.execution_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { track_id: TrackId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { track_id: TrackId, reason: string, } } | { "ev": "ratify.resolved", "data": { track_id: TrackId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
 /**
- * Submitting plugin. Injected kernel-side from the callback
- * connection (never trusted from plugin input) and
- * cross-checked against the envelope actor by `role_gate`.
+ * Submitting plugin, injected kernel-side from the callback connection (never trusted from plugin input).
  */
 plugin_id: string, 
 /**
- * Proposal subject kind — `"report"` is the only accepted
- * value today; this field is the wire's single extension
- * point (design D2).
+ * Proposal subject kind — `"report"` is the only accepted value today.
  */
 subject_kind: string, 
 /**
- * Opaque Automerge canonical-heads token of the snapshot the
- * plugin proposed against (`ReportDoc::doc_heads`).
+ * Opaque Automerge canonical-heads token of the snapshot the plugin proposed against.
  */
 base_doc_heads: string, ops: Array<ProposalOp>, 
 /**
@@ -284,34 +199,23 @@ base_doc_heads: string, ops: Array<ProposalOp>,
  */
 note: string, 
 /**
- * Pending-scoped idempotency key: while a `(plugin, track,
- * idem_key)` proposal is pending, re-submits return the
- * original proposal id; resolution releases the key.
+ * Pending-scoped idempotency key: re-submits while pending return the original proposal id;
+ * resolution releases the key.
  */
 idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, } } | { "ev": "worktree.removed", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
 
 /**
  * Where an event lives in the area → track → card hierarchy.
- *
- * `EventScope::System` is the catch-all for events that genuinely don't
- * belong to a single area/track/card (`Event::PluginState`, the
- * AreaCreated case where the area doesn't exist before the event, and
- * malformed legacy rows). Prefer the narrowest available scope.
  */
 export type EventScope = { "kind": "System" } | { "kind": "Area", "id": { area: AreaId, } } | { "kind": "Track", "id": { track: TrackId, area: AreaId, } } | { "kind": "Card", "id": { card: CardId, track: TrackId, area: AreaId, } };
 
 /**
- * Issue #250 PR 1 — 409 body for the folder-create conflict case.
- * Hand-written DTO so the frontend gets a structured shape rather
- * than the generic `{error, code}` envelope.
+ * 409 body for the folder-create conflict case.
  */
 export type FolderConflict = { folder_id: number, area_id: AreaId, conflict_path: string, conflict_kind: FolderConflictKind, };
 
 /**
- * Issue #250 PR 1 — kind of overlap detected by the
- * `POST /api/areas/:area_id/folders` conflict check. Surfaces in the
- * 409 response body so the frontend can render a precise message
- * without re-parsing strings.
+ * Kind of overlap detected by the `POST /api/areas/:area_id/folders` conflict check.
  */
 export type FolderConflictKind = "equal" | "ancestor" | "descendant";
 
@@ -321,39 +225,17 @@ export type FolderConflictKind = "equal" | "ancestor" | "descendant";
 export type ForgeMergeSubject = { phase: string, slice_id: string, pr_number: number, };
 
 /**
- * How one segment of a harness `userMessage` should be presented to a human.
- *
- * Codex calls every turn input a `userMessage`, including observations the
- * kernel injected on the user's behalf. The rendered English in that item is
- * not a protocol: wording changes must not turn a system update into something
- * the UI attributes to the user. The harness derives one value per structured
- * [`crate::observation::Observation`] before the batch is flattened for
- * `turn/start`.
+ * How one segment of a harness `userMessage` should be presented to a human. The rendered English
+ * is not a protocol: wording changes must not turn a system update into something the UI attributes to the user.
  */
 export type HarnessInputPresentation = "user" | "system" | "system_worker_turn_finished" | "system_report_edited" | "system_task_completed" | "system_task_failed";
 
 /**
  * One observation in the exact order and wording sent to `turn/start`.
- * Keeping the rendered text beside its typed presentation makes a mixed batch
- * reversible without teaching a reader how Rust joined or phrased it.
  */
 export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string, 
 /**
- * #1505 S6 — the images this segment carried into `turn/start`.
- *
- * Carried here rather than left for the client to dig out of the
- * transcript row's own `params`. Two reasons, and the second one is why
- * the first is not merely tidier: that blob is codex's own item, and a
- * transcript rendering from it would have to turn the server's private
- * naming of the bytes back into a REST url — a second, guessable naming
- * of the same thing. The id is the naming; the read-back url is built
- * from it by the same server function the upload response used. Because
- * nothing reads a path from that blob, the transcript route redacts the
- * one this slice put there (#1505 S6 review).
- *
- * `#[serde(default)]` because every segment persisted before this slice
- * has no such key, and an old transcript is a transcript with no
- * attachments rather than an unreadable one.
+ * The images this segment carried into `turn/start`.
  */
 attachments: Array<PlannerAttachment>, };
 
@@ -362,14 +244,7 @@ export type HarnessItem = { id: number, worker_session_id: string, card_id: Card
 export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
 
 /**
- * #1505 PR2 — what happened to one entry in the harness pending queue.
- *
- * Five values. Two got their emitter in that slice, `dropped` in PR2b,
- * `steered` in #1625 P3 and `restored` in its first review round; the first
- * four were declared at once because the wire vocabulary is a versioned
- * artifact: adding a value to a client-visible enum is the same class of
- * change as adding the event, and doing it once is cheaper than doing it
- * three times. Each variant says below what emits it.
+ * What happened to one entry in the harness pending queue.
  */
 export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" | "dropped";
 
@@ -389,8 +264,7 @@ entity_kind: string, entity_id: string,
  */
 kind: string, 
 /**
- * Opaque JSON blob — see `Card.payload` for the rationale on the
- * explicit `unknown` override.
+ * Opaque JSON blob.
  */
 payload: unknown, updated_at: number, };
 
@@ -407,66 +281,32 @@ export type PairingRedeem = { id: string, secret: string, };
 export type PendingPair = { id: string, deviceName: string, verificationCode: string, };
 
 /**
- * One attachment as the frontend sees it in a queue entry or a transcript
- * segment.
+ * One attachment as the frontend sees it in a queue entry or a transcript segment.
  */
 export type PlannerAttachment = { id: AttachmentId, 
 /**
- * Derived from `id`, never stored separately — see
- * [`PlannerAttachment::new`].
+ * Derived from `id`, never stored separately.
  */
 contentType: string, size: number, 
 /**
- * Where to read the bytes. Also derived, by [`attachment_url`].
- *
- * #1505 S6. Carried rather than left for the client to build: the
- * transcript and the pending-queue read both need a way to reach these
- * bytes, and a client that assembles `/api/cards/{card}/planner/
- * attachments/{id}` for itself is a second spelling of a route only the
- * router should own. The host path the server holds beside this is NOT
- * here and must not be.
+ * Where to read the bytes; derived by [`attachment_url`]. The server's host path is NOT here and must not be.
  */
 url: string, };
 
 /**
- * Position anchor for proposed block creation / moves (design §5.2.1).
- *
- * Proposals are asynchronous, so positions are expressed against
- * stable block ids — never numeric indexes (an unrelated insertion
- * would silently shift index semantics while every block rev still
- * matches). Externally-tagged serde gives `"at_start"` / `"at_end"` /
- * `{"after_block_id": "b_0001"}` on the wire; `after_block_id` may
- * reference a block created earlier in the same proposal via the
- * `temp:<temp_id>` form.
+ * Position anchor for proposed block creation / moves, expressed against stable block ids, never
+ * numeric indexes.
  */
 export type ProposalAnchor = { "after_block_id": string } | "at_start" | "at_end";
 
 /**
- * How a pending proposal was resolved. Two events, four decisions
- * (design §5.6): `accepted` / `rejected` / `stale` are user-driven
- * adjudications (`stale` is the accept attempt whose in-tx anchoring
- * checks failed); `withdrawn` is the submitting plugin reclaiming its
- * own pending slot — the only plugin-side exit, so quota can't be
- * pinned forever by abandoned proposals.
- *
- * Wire shape: bare lowercase string (matches the surrounding
- * event-payload enum conventions, e.g. `EditAuthor`).
+ * How a pending proposal was resolved. Wire shape: bare lowercase string.
  */
 export type ProposalDecision = "accepted" | "rejected" | "stale" | "withdrawn";
 
 /**
- * One proposed mutation of the track-report block document
- * (design §5.2.1). A deliberately *stricter* sibling of the
- * interactive `calm.report.blocks.*` tool DTOs: anchoring must be
- * complete because apply happens asynchronously, and the wholesale
- * `WriteMarkdown` / `Replace` shapes are excluded on purpose (full
- * overwrites and string matching cannot be meaningfully proposed).
- *
- * Field-requirement rules (`if_rev` mandatory when replacing, exactly
- * one of `block_id` / `temp_id`, anchor mandatory for creations) are
- * historical: before the channel was withdrawn in #973, these constraints
- * were enforced by its submit handler. The wire type keeps them `Option`
- * only where two legal shapes share a variant.
+ * One proposed mutation of the track-report block document; a stricter sibling of the interactive
+ * `calm.report.blocks.*` tool DTOs.
  */
 export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: string, kind: string, payload: unknown, if_rev?: number, anchor?: ProposalAnchor, } | { "op": "move_block", block_id: string, if_rev: number, anchor: ProposalAnchor, } | { "op": "delete_block", block_id: string, if_rev: number, };
 
@@ -487,23 +327,18 @@ export type ReviewSubject = { phase: string, slice_id: string, pr_number: number
  */
 export type SourceOrigin = { "kind": "plugin", plugin_id: string, tool: string, args_sha256: string, 
 /**
- * Canonicalization version behind `args_sha256` (`v1`: compact
- * serde_json text with sorted keys).
+ * Canonicalization version behind `args_sha256` (`v1`: compact serde_json text with sorted keys).
  */
 args_canon: string, content_id?: string, } | { "kind": "manual", url?: string, content_id?: string, };
 
 /**
- * What the body *is*: the Planner's declaration, page-visible.
- * `full_text` / `summary` / `web_page` bodies come from a recorded plugin
- * call (the kernel vouches for the bytes); `manual` bodies are the
- * Planner's own and are marked as not kernel-verified.
+ * What the body *is*: the Planner's declaration, page-visible. `manual` bodies are the Planner's
+ * own and are marked as not kernel-verified.
  */
 export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
 
 /**
- * One anchor of a source: `text` is a byte-exact substring of the body
- * (`body[start..end]`, UTF-8 byte offsets — a kernel-side detail; the page
- * locates the anchor by `text`).
+ * One anchor of a source: `text` is a byte-exact substring of the body (`body[start..end]`, UTF-8 byte offsets).
  */
 export type SourceQuote = { id: string, text: string, start: number, end: number, };
 
@@ -548,54 +383,15 @@ export type TaskRecoveryView = { key: string, current: TaskAttemptView | null, a
 
 export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: TrackLifecycle, 
 /**
- * Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
- *
- * Rust readers must use `workspace.path`; this field only preserves the
- * existing wire shape.
+ * Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
  */
 cwd: string, 
 /**
- * Template this track was created from.
- *
- * Names the birth snapshot only: later edits to the report do not touch
- * this column, and this column does not describe the report's current
- * content.
- *
- * Separate from [`Self::plugin_scope`], which records the owning plugin,
- * and separate from where the report's bytes came from: naming a template
- * here is not by itself the statement that the report was born from that
- * template's recipe.
- *
- * The `serde(alias)` below is a deserialization-only compatibility read
- * for pre-#1209 event-log rows; serialization emits only this name.
+ * Template this track was created from. Names the birth snapshot only.
  */
 template_id: string | null, 
 /**
  * The plugin that owns this track, recorded when the row is created.
- *
- * A separate persisted fact from the report's source: it says which plugin
- * owns the track, not where the report's bytes came from. Two runtime
- * paths put a plugin id here — over the crates' `src` directories, every
- * other non-test hit is a read or a `None`; on writes from outside that
- * set see the last paragraph — and they take it from different places:
- * `POST /api/tracks` copies the plugin whose manifest claims the requested
- * [`Self::template_id`] (`calm-server/src/routes/tracks.rs:778`), while a
- * child track inherits the parent's value and gets no `template_id` of its
- * own (`calm-server/src/operation/child_track_adapter.rs:265`, pinned
- * there by "plugin_scope must inherit so Only(X) does not widen to All").
- * So a value here is not by itself a statement that this track named a
- * template.
- *
- * Not part of the ordinary track update (`calm-truth`'s `TrackUpdate`,
- * INV-1110-004), so the ordinary track edit cannot change it. It is not
- * immutable in the strongest sense either: adopting an existing track as
- * an area's launchpad clears it together with `template_id` and
- * `template_input` (`calm-server/src/routes/today.rs:393`). Nor were the
- * oldest values in this column written by a runtime path at all —
- * migration 0076 added the column and backfilled the rows that already
- * existed. Deliberately no claim here about the full set of statements
- * that write it: the two runtime writers named above were found over the
- * crates' `src` directories, a set that does not contain the migrations.
  */
 plugin_scope: string | null, 
 /**
@@ -604,80 +400,40 @@ plugin_scope: string | null,
 purpose: string | null, 
 /**
  * Template input is validated at creation and otherwise remains opaque.
- *
- * Carries the same deserialization-only alias as `template_id`.
  */
 template_input: unknown, 
 /**
- * Issue #250 PR 2 — unix-ms timestamp the track most recently
- * entered a terminal lifecycle state (Done / Canceled / Failed),
- * or `None` while the track is non-terminal. Stamped inside the
- * same transaction as the `TrackLifecycleChanged` event by
- * `track_update_tx`; cleared back to `None` when a terminal track
- * returns to Planning or Working. The calendar window query
- * `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
- * terminal_at >= since)` to keep open tracks visible across every
- * day they span.
- *
- * Backfill semantics: rows that existed before this migration
- * stay `None` even when their lifecycle is already terminal —
- * the event log carries the original transition timestamp but
- * the migration deliberately doesn't read from `events` (mixing
- * migration with replay is fragile). A user-driven reopen →
- * re-Done cycle stamps the column with the current time, which
- * is the first defensible point.
+ * Unix-ms timestamp the track most recently entered a terminal lifecycle state, or `None` while non-terminal.
  */
 terminal_at: number | null, 
 /**
- * The user recipe ([`TrackRecipe`]) this track was instantiated from.
- *
- * Deliberately not `template_id`: that field is resolved against running
- * plugins' manifests to recover a bound template descriptor, and a recipe
- * has no manifest to match, so a recipe id there would make every
- * recipe-created track report a resolution failure for an entirely normal
- * situation. It is recorded on the track rather than derived because
- * instantiation is a value copy — once the recipe is edited or deleted
- * there is nothing left to derive the origin from.
- *
- * May name a recipe that no longer exists. That is not a broken link to
- * repair: it is the truthful answer to "where did this come from".
+ * The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists.
  */
 recipe_id: string | null, 
 /**
- * The recipe's `revision` at the moment this track was created. Frozen:
- * later edits to the recipe bump the recipe's revision and leave this
- * alone, which is what makes it identify a version rather than a row.
+ * The recipe's `revision` at the moment this track was created.
  */
 recipe_revision: number | null, workspace: TrackWorkspace, 
 /**
- * #1704 S2 — the user-set Claude Code permission policy of this track's
- * TREE, stored on the tree root only (`tracks.claude_permissions_policy`,
- * migration 0109): a child row is always `null` and a PATCH of a child
- * is refused, while every CEILING read (`calm.terminal.open`) resolves
- * the root. This field is the raw column, so a child shows `null` here
- * even when its root carries a policy. `null` for every track without
- * one; always serialized (the `recipe_id` convention).
+ * The user-set Claude Code permission policy of this track's TREE, stored on the tree root only;
+ * a child row is always `null` here even when its root carries a policy.
  */
 claude_permissions_policy: ClaudePermissionsScope | null, created_at: number, updated_at: number, };
 
 /**
- * One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
+ * One row of `GET /api/tracks/{track_id}/conversations`.
  */
 export type TrackConversationSummary = { 
 /**
- * The assistant card's id. This is the conversation's identity everywhere,
- * and it is also the card the CARDS panel and `/api/cards/{id}/planner/*`
- * address.
+ * The assistant card's id; the conversation's identity everywhere.
  */
 id: string, 
 /**
- * The track this conversation lives on. Always the track in the request
- * path; carried so a client holding a bare row can navigate.
+ * The track this conversation lives on.
  */
 trackId: string, 
 /**
- * The conversation's own name, or null before it has one. Never the
- * track's title.
+ * The conversation's own name, or null before it has one.
  */
 title: string | null, 
 /**
@@ -685,11 +441,7 @@ title: string | null,
  */
 kind: string, 
 /**
- * The live session's state, or **null when the card has no session row**.
- *
- * The query LEFT JOINs so a card whose session is gone (failed start,
- * superseded runtime, shut down harness) stays visible. Never fill it with
- * an invented value.
+ * The live session's state, or **null when the card has no session row**. Never fill it with an invented value.
  */
 state: WorkerSessionState | null, 
 /**
@@ -697,11 +449,7 @@ state: WorkerSessionState | null,
  */
 updatedAt: number, 
 /**
- * #1722 S1b — when the conversation's last non-interrupted turn ended:
- * the newest `turn/completed` transcript row whose status is not
- * `interrupted`, or `null` when there is none. `updated_at` keeps its
- * meaning (it drives the ordering); this is the instant a read receipt
- * compares against. Required and nullable on the wire.
+ * When the conversation's last non-interrupted turn ended, or `null` when there is none.
  */
 lastTurnCompletedAt: number | null, };
 
@@ -724,56 +472,23 @@ export type TrackFsRunVerdict = { at: number, reason: string | null, status: str
 export type TrackFsRunVerdictSummary = { at: number, status: string, };
 
 /**
- * Track identifier. See [`AreaId`] for the opacity contract.
+ * Track identifier.
  */
 export type TrackId = string;
 
 /**
- * Issue #145 — Track lifecycle state machine.
- *
- * One explicit state per track, advanced through a typed state machine
- * (see `crate::track_lifecycle`). The Planner Agent drives the happy path
- * (`draft → planning → dispatching → working → reviewing → done`);
- * the user can cancel any non-terminal state and reopen terminals;
- * worker cards have no authority to touch this field at all.
- *
- * **`archived` is intentionally NOT a lifecycle state.** Archive is
- * visibility / history management, orthogonal to execution semantics —
- * a `done`/`failed`/`canceled` track can also be archived without
- * destroying the lifecycle truth. Archival continues to live on the
- * existing `archived_at: Option<i64>` field.
- *
- * Persisted as a lowercase string in `tracks.lifecycle` (migration
- * 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
- * and storage shape stable; ts-rs exports the matching TS union into
- * `fe/core/api/generated/wire.ts` so the frontend can render the
- * badge against the same vocabulary.
+ * Track lifecycle state machine. `archived` is intentionally NOT a lifecycle state: archival lives
+ * on `archived_at`, orthogonal to execution semantics.
  */
 export type TrackLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
 
 /**
- * A user-defined starting point for a new track.
- *
- * A recipe is a saved report: `title` doubles as the report summary, and
- * `body`'s `neige-block` fences **are** its tasks. It is deliberately not a
- * track — #1300 removed "template = a hidden track" because storing recipes
- * that way cost seven "this track is special" exceptions across unrelated
- * subsystems plus a kernel report write that impersonated the user. A
- * recipe row has neither problem: nothing schedules it, nothing lists it
- * among tracks, and every byte in one was written by a human.
- *
- * The built-in templates (`crates/calm-server/templates/builtin/*.md`,
- * loaded into the roster at boot) and operator templates (`--templates-dir`,
- * `site/<stem>`) are **not** rows here. Both feed the same instantiation
- * seam, so "built-in" and "mine" differ only in where the payload came
- * from — see `routes::track_recipes`.
+ * A user-defined starting point for a new track: a saved report whose `title` doubles as the
+ * summary and whose `neige-block` fences are its tasks.
  */
 export type TrackRecipe = { id: string, 
 /**
- * Picker label *and* the instantiated report's summary. One field, not
- * two: the three built-in templates already write the same string in
- * both places, so a second column would not preserve an existing
- * distinction — it would mint a new way for them to disagree.
+ * Picker label *and* the instantiated report's summary.
  */
 title: string, 
 /**
@@ -781,13 +496,7 @@ title: string,
  */
 body: string, 
 /**
- * Optimistic-lock anchor. Writers pass the revision they read and the
- * UPDATE validates + bumps in one statement.
- *
- * Deliberately not `updated_at`: a wall clock is not a version. Two
- * writes inside the same millisecond are indistinguishable by
- * timestamp, and a clock that steps backwards makes a stale write look
- * current.
+ * Optimistic-lock anchor. Writers pass the revision they read and the UPDATE validates + bumps in one statement.
  */
 revision: number, created_at: number, 
 /**
@@ -796,71 +505,34 @@ revision: number, created_at: number,
 updated_at: number, };
 
 /**
- * The payload persisted in a track-report card's `payload` JSON column.
- *
- * Wire shape (camelCase to match the rest of the kernel's payloads):
- *
- * ```json
- * {
- *   "schemaVersion": 4,
- *   "docRev": 7,
- *   "summary": "Refactored the dispatcher into a typed actor",
- *   "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
- * }
- * ```
- *
- * `summary` is the one-line previewable in sidebars / list views;
- * `body` is the Markdown source the TrackReportCard renders. The
- * frontend derives sections from `body` by splitting on H1 headings;
- * the storage layer does not impose a section vocabulary.
+ * The payload persisted in a track-report card's `payload` JSON column; `summary` is the one-line
+ * preview, `body` the Markdown source the TrackReportCard renders.
  */
 export type TrackReportPayload = { 
 /**
- * Tier A persistence contract — see
- * `TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
- * `validation.rs`. `4` since #1456 discriminated terminal `command`
- * from agent `goal`; blocks remain authoritative and `body` is their
- * flat projection. Older rows remain readable and are lazily
- * upgraded at the next persist via the CRDT-layer migrator
- * (`ReportDoc::ensure_blocks_layout`).
+ * Tier A persistence contract; older rows remain readable and are lazily upgraded at the next persist.
  */
 schemaVersion: number, 
 /**
- * Document-wide optimistic-concurrency revision. This is mirrored
- * from the authoritative CRDT root and increments after every
- * successful report persist (whole-document or block-level).
+ * Document-wide optimistic-concurrency revision, mirrored from the authoritative CRDT root.
  */
 docRev: number, 
 /**
- * One-line summary used by sidebars / track-list previews. Empty
- * string is valid (means "planner agent has not produced a summary
- * yet"); the field stays a required `String` per the
- * [[required-over-option]] rule.
+ * One-line summary used by sidebars / track-list previews; empty string is valid.
  */
 summary: string, 
 /**
- * Markdown source. Sections are derived at render time by
- * splitting at H1 (`^# `) headings; the kernel reads that structure
- * only to check the contract header once at the persist funnel
- * (#1635 D2) and to answer `report_startup_read_required` (#1635 D3:
- * unwritten iff `summary` is empty and either the body carries a
- * header, block 0 is only HTML comments and every later block is a
- * bare declared `# <h1>`, or it carries no header and is byte-equal to
- * the frozen pre-header body; a body the funnel check rejects reads as
- * written).
+ * Markdown source. Sections are derived at render time by splitting at H1 (`^# `) headings.
  */
 body: string, 
 /**
- * Block mirror of the authoritative CRDT block map (#960 PR2).
- * Since schema v2 the CRDT `blocks`/`order` layout is the source
- * of truth; this JSON field and `body` are both projections the
+ * Block mirror of the authoritative CRDT block map; this field and `body` are both projections the
  * persist boundary rewrites on every write. v1 rows may omit it.
  */
 blocks?: Array<ReportBlock> | null, };
 
 /**
- * A captured source with its body: the raw text the kernel stored,
- * verbatim (the panel does not render it as Markdown).
+ * A captured source with its body: the raw text the kernel stored, verbatim.
  */
 export type TrackSourceDetail = { source_id: string, provenance: SourceProvenance, origin: SourceOrigin, title: string, published_at?: string, content_id?: string, url?: string, body_bytes: number, body_sha256: string, captured_at: string, quotes: Array<SourceQuote>, body: string, };
 
@@ -884,61 +556,19 @@ url?: string, body_bytes: number, body_sha256: string,
 captured_at: string, quotes: Array<SourceQuote>, };
 
 /**
- * Payload for `Event::TrackUpdated`.
- *
- * `track` is flattened to preserve the historical wire shape: the event data
- * remains the full track row at top level.
+ * Payload for `Event::TrackUpdated`; `track` is flattened to preserve the historical wire shape.
  */
 export type TrackUpdatedPayload = { agent_message?: string, id: TrackId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: TrackLifecycle, 
 /**
- * Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
- *
- * Rust readers must use `workspace.path`; this field only preserves the
- * existing wire shape.
+ * Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
  */
 cwd: string, 
 /**
- * Template this track was created from.
- *
- * Names the birth snapshot only: later edits to the report do not touch
- * this column, and this column does not describe the report's current
- * content.
- *
- * Separate from [`Self::plugin_scope`], which records the owning plugin,
- * and separate from where the report's bytes came from: naming a template
- * here is not by itself the statement that the report was born from that
- * template's recipe.
- *
- * The `serde(alias)` below is a deserialization-only compatibility read
- * for pre-#1209 event-log rows; serialization emits only this name.
+ * Template this track was created from. Names the birth snapshot only.
  */
 template_id: string | null, 
 /**
  * The plugin that owns this track, recorded when the row is created.
- *
- * A separate persisted fact from the report's source: it says which plugin
- * owns the track, not where the report's bytes came from. Two runtime
- * paths put a plugin id here — over the crates' `src` directories, every
- * other non-test hit is a read or a `None`; on writes from outside that
- * set see the last paragraph — and they take it from different places:
- * `POST /api/tracks` copies the plugin whose manifest claims the requested
- * [`Self::template_id`] (`calm-server/src/routes/tracks.rs:778`), while a
- * child track inherits the parent's value and gets no `template_id` of its
- * own (`calm-server/src/operation/child_track_adapter.rs:265`, pinned
- * there by "plugin_scope must inherit so Only(X) does not widen to All").
- * So a value here is not by itself a statement that this track named a
- * template.
- *
- * Not part of the ordinary track update (`calm-truth`'s `TrackUpdate`,
- * INV-1110-004), so the ordinary track edit cannot change it. It is not
- * immutable in the strongest sense either: adopting an existing track as
- * an area's launchpad clears it together with `template_id` and
- * `template_input` (`calm-server/src/routes/today.rs:393`). Nor were the
- * oldest values in this column written by a runtime path at all —
- * migration 0076 added the column and backfilled the rows that already
- * existed. Deliberately no claim here about the full set of statements
- * that write it: the two runtime writers named above were found over the
- * crates' `src` directories, a set that does not contain the migrations.
  */
 plugin_scope: string | null, 
 /**
@@ -947,59 +577,23 @@ plugin_scope: string | null,
 purpose: string | null, 
 /**
  * Template input is validated at creation and otherwise remains opaque.
- *
- * Carries the same deserialization-only alias as `template_id`.
  */
 template_input: unknown, 
 /**
- * Issue #250 PR 2 — unix-ms timestamp the track most recently
- * entered a terminal lifecycle state (Done / Canceled / Failed),
- * or `None` while the track is non-terminal. Stamped inside the
- * same transaction as the `TrackLifecycleChanged` event by
- * `track_update_tx`; cleared back to `None` when a terminal track
- * returns to Planning or Working. The calendar window query
- * `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
- * terminal_at >= since)` to keep open tracks visible across every
- * day they span.
- *
- * Backfill semantics: rows that existed before this migration
- * stay `None` even when their lifecycle is already terminal —
- * the event log carries the original transition timestamp but
- * the migration deliberately doesn't read from `events` (mixing
- * migration with replay is fragile). A user-driven reopen →
- * re-Done cycle stamps the column with the current time, which
- * is the first defensible point.
+ * Unix-ms timestamp the track most recently entered a terminal lifecycle state, or `None` while non-terminal.
  */
 terminal_at: number | null, 
 /**
- * The user recipe ([`TrackRecipe`]) this track was instantiated from.
- *
- * Deliberately not `template_id`: that field is resolved against running
- * plugins' manifests to recover a bound template descriptor, and a recipe
- * has no manifest to match, so a recipe id there would make every
- * recipe-created track report a resolution failure for an entirely normal
- * situation. It is recorded on the track rather than derived because
- * instantiation is a value copy — once the recipe is edited or deleted
- * there is nothing left to derive the origin from.
- *
- * May name a recipe that no longer exists. That is not a broken link to
- * repair: it is the truthful answer to "where did this come from".
+ * The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists.
  */
 recipe_id: string | null, 
 /**
- * The recipe's `revision` at the moment this track was created. Frozen:
- * later edits to the recipe bump the recipe's revision and leave this
- * alone, which is what makes it identify a version rather than a row.
+ * The recipe's `revision` at the moment this track was created.
  */
 recipe_revision: number | null, workspace: TrackWorkspace, 
 /**
- * #1704 S2 — the user-set Claude Code permission policy of this track's
- * TREE, stored on the tree root only (`tracks.claude_permissions_policy`,
- * migration 0109): a child row is always `null` and a PATCH of a child
- * is refused, while every CEILING read (`calm.terminal.open`) resolves
- * the root. This field is the raw column, so a child shows `null` here
- * even when its root carries a policy. `null` for every track without
- * one; always serialized (the `recipe_id` convention).
+ * The user-set Claude Code permission policy of this track's TREE, stored on the tree root only;
+ * a child row is always `null` here even when its root carries a policy.
  */
 claude_permissions_policy: ClaudePermissionsScope | null, created_at: number, updated_at: number, };
 
@@ -1012,11 +606,8 @@ export type TrackWorkspace = { kind: TrackWorkspaceKind,
  */
 path: string, 
 /**
- * One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
- * again.
- *
- * The system-area launchpad remains unfrozen because it is repointed by
- * `today_launchpad_ensure_tx`.
+ * One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change again. The system-area
+ * launchpad stays unfrozen because it is repointed.
  */
 frozen_at: number | null, };
 
@@ -1030,16 +621,8 @@ export type TrackWorkspaceKind = "managed" | "attached";
  */
 export type UploadAttachmentResponse = { attachmentId: AttachmentId, contentType: string, size: number, 
 /**
- * Absolute REST path the browser reads the bytes back from. Server-built:
- * the client never composes a path of its own.
- *
- * Durable only once the attachment is bound. An upload lands in the
- * server's `staging/` directory, and a staged attachment is swept once it
- * is older than the 24h orphan TTL, after which this path answers 400.
- * Sending or queueing a message that names the id binds it — the bytes
- * move into `bound/`, which nothing sweeps — and from that moment this
- * path is stable for the life of the card. So the window in which this
- * url can stop working is exactly "uploaded, never sent, 24 hours".
+ * Absolute REST path the browser reads the bytes back from. Durable only once the attachment is
+ * bound: a staged upload never sent is swept after the 24h orphan TTL, after which this path answers 400.
  */
 url: string, };
 
@@ -1052,17 +635,11 @@ export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec";
 
 export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, 
 /**
- * #1722 S1b — when the card's last non-interrupted turn ended, read from
- * the transcript table by the projection SELECTs (one correlated
- * subquery, `calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY`);
- * `None` when the card has no completed turn. Optional on the wire like
- * `CardRuntimeView::updated_at_ms`: projections serialized before 0110
- * (operation outputs) omit it.
+ * When the card's last non-interrupted turn ended; `None` when the card has no completed turn.
  */
 last_turn_completed_ms?: number, };
 
 /**
- * Session state machine column (`worker_sessions.state`, issue #679 §1).
- * Single runtime/session state vocabulary (`worker_sessions.state`, issue #679 §1).
+ * Session state machine column (`worker_sessions.state`).
  */
 export type WorkerSessionState = "starting" | "running" | "idle" | "turn_pending" | "exited" | "failed" | "superseded";

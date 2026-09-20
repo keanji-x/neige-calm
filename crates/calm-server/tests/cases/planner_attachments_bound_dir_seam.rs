@@ -1,16 +1,5 @@
-//! The type-level half of "`bound/` has no deletion path".
-//!
-//! `trybuild` compiles its samples as separate crates that depend on
-//! `calm-server`, so what it pins is the *crate-external* statement: nothing
-//! downstream can turn a `BoundFd` into the `StagingFd` a deletion wants.
-//! The in-crate half is enforced by the module's own privacy — both newtypes
-//! wrap a private `OwnedFd`, so even inside `planner_attachments` there is no
-//! conversion to write except the one this case forbids.
-//!
-//! The `.stderr` file pins the *diagnostic*, not merely "it failed": a typo in
-//! a sample also makes a build fail. It is toolchain-sensitive by construction;
-//! the toolchain is pinned in `rust-toolchain.toml`, and a bump that rewords
-//! the diagnostic regenerates it with
+//! The type-level half of "`bound/` has no deletion path": a `trybuild` sample pinning that nothing downstream can
+//! turn a `BoundFd` into a `StagingFd`. A toolchain bump that rewords the diagnostic regenerates the `.stderr` with
 //! `TRYBUILD=overwrite cargo test -p calm-server --test planner_harness_suite`.
 
 #[test]

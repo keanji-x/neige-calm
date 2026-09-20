@@ -1,16 +1,4 @@
-//! #1252 S1 step 1 — the module-external half of the `WritePolicy`
-//! encapsulation check.
-//!
-//! `WritePolicy`'s fields are private, so `policy_for` is the only way to get
-//! one. This file lives outside the `calm_server` crate entirely, which is the
-//! strictest vantage point available: it can name the type, so a struct
-//! literal here would be a genuine attempt, and it fails to compile
-//! (`error[E0451]: field ... is private`).
-//!
-//! What is asserted below is only that the accessors are the working route.
-//! Everything about the *values* is declared intent — the comparison against
-//! production's existing `(actor, author, auto_promote_draft,
-//! recorder_shadow)` quadruples is S1 step 2's job.
+//! `WritePolicy` encapsulation, checked from outside the `calm_server` crate.
 
 use calm_server::error::CalmError;
 use calm_server::ids::{ActorId, CardId, TrackId};
@@ -28,9 +16,7 @@ fn user_fork() -> TrustedInitiator {
 
 #[test]
 fn a_write_policy_is_only_readable_through_its_accessors_from_outside_the_module() {
-    // A struct literal here — `WritePolicy { actor: ActorId::User, .. }` — is
-    // rejected by the compiler, not by a runtime assertion. The positive half
-    // is that the accessors work and are sufficient.
+    // A struct literal here is rejected by the compiler (private fields), not by a runtime assertion.
     let policy = policy_for(&WriteOrigin::RestUser).expect("rest user has a policy");
     assert_eq!(policy.actor(), &ActorId::User);
     assert_eq!(
@@ -58,12 +44,7 @@ fn agent(role: CardRole, provider: AgentProvider) -> WriteOrigin {
     })
 }
 
-/// The two lists driving the product below are not assumed complete. Each
-/// helper labels its values through a `match` with **no `_` arm**, so adding a
-/// variant to `CardRole` or `AgentProvider` fails to compile there and brings
-/// the author into this file; the assertion then pins how many distinct labels
-/// the list yields, which catches a list that lost or duplicated an entry. That
-/// count is written out by hand and has to be bumped by hand.
+/// The `match` has no `_` arm, so a new variant fails to compile here; the count is bumped by hand.
 fn assert_role_list_is_complete(roles: &[CardRole]) {
     fn label(role: CardRole) -> &'static str {
         match role {
@@ -100,25 +81,6 @@ fn assert_provider_list_is_complete(providers: &[AgentProvider]) {
     );
 }
 
-/// Totality, over the origins this file can actually build — which is *every*
-/// `WriteOrigin` variant, not just the unit-ish ones: `AgentOrigin`'s fields
-/// are public, so an out-of-crate caller can name it, and `TrustedInitiator`'s
-/// constructor is public too. No `WriteOrigin::Test` / `for_test` back door
-/// exists; these are the production constructors.
-///
-/// Each origin is asserted to land on a *stated* outcome, not merely to avoid
-/// one error kind: `Ok` for the four writable agent shapes plus `RestUser` and
-/// `Fork`, and `Forbidden` for the four refused agent shapes. A `policy_for`
-/// that started returning `Internal`, or that started refusing a writable
-/// origin, fails here either way.
-///
-/// The agent half is the **whole `CardRole` × `AgentProvider` product**, all
-/// eight combinations, built from the two variant lists below rather than
-/// spelled out — `Worker`/`ReportCard` are refused on both providers, not just
-/// on `Codex`. Today `policy_for` decides on the role alone, so the provider
-/// axis is redundant *for the current implementation*; enumerating it is what
-/// makes this test notice an implementation that stops being role-only, e.g.
-/// one that let `Claude` through for a role `Codex` is refused on.
 #[test]
 fn policy_for_is_total_over_the_origins_a_caller_can_build_here() {
     let roles = [

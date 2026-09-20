@@ -1,45 +1,7 @@
-//! Issue #741 D-6 — **confirmatory codex e2e** for the reaper's false-reap
-//! keystone. Empirically validates, on the **deployed codex 0.137.0** binary
-//! over the wire, the design's §0.1 ratified claim
-//! (`docs/_design-741-reaper-convergence.md`):
-//!
-//! > A turn that is **in progress** (a `TurnStarted` was persisted but no
-//! > terminal event) reads back from `thread/read(includeTurns:true)` with the
-//! > last turn's **`completedAt == null`**. A **completed** turn reads
-//! > `completedAt` SET. (Bonus) An **interrupted/aborted** turn also reads
-//! > `completedAt` SET — so the only `null` is a genuine died-mid-turn.
-//!
-//! This is the discriminator the #741-3 arbiter keys on
-//! (`confirm_durable_death` → `completed_at IS NULL` = died-mid-turn). If an
-//! in-progress turn did NOT read `null`, the whole positive-death signal would
-//! be unsound; if a completed/aborted turn read `null`, the arbiter would
-//! false-reap finished/deliberately-aborted workers.
-//!
-//! Feature-gated behind `codex-e2e` and **self-skipping** — identical
-//! convention to `codex_appserver_e2e.rs` (CI ships no `codex` binary / no
-//! auth). Run locally with:
-//!
-//! ```sh
-//! NEIGE_CODEX_BIN=/home/kenji/.nvm/versions/node/v24.4.1/bin/codex \
-//!   HTTPS_PROXY=http://127.0.0.1:2080 HTTP_PROXY=http://127.0.0.1:2080 \
-//!   NO_PROXY=127.0.0.1,localhost \
-//!   cargo test -p calm-server --features codex-e2e \
-//!     --test codex_e2e_suite codex_e2e_completed_at:: -- --nocapture
-//! ```
-//!
-//! ## Wire-value capture
-//!
-//! The typed [`CodexAppServer`] client deserializes only `completedAt`
-//! (→ `completed_at: Option<i64>`). To report the *raw* wire shape (field
-//! casing, units, the surrounding `status` object) the test ALSO sends a raw
-//! JSON-RPC `thread/read` over a second tungstenite connection and prints the
-//! verbatim `result` JSON — that raw blob is the D-6 gate artifact.
-//!
-//! ## Throwaway server — never touch the live daemon
-//!
-//! Boots its OWN `codex app-server --listen unix://<tempdir>/app.sock` (a
-//! fresh 0700 tempdir) and kills only the child it spawned (`kill_on_drop`).
-//! It NEVER touches the live neige daemon socket and NEVER `pkill`s codex.
+//! Confirms on a real codex app-server that `thread/read(includeTurns:true)` reports the last turn's
+//! `completedAt == null` only while a turn is in progress, and SET once completed or aborted — the
+//! discriminator the reaper's died-mid-turn arbiter keys on. Feature-gated behind `codex-e2e`, self-skipping,
+//! and boots its OWN throwaway app-server on a fresh 0700 tempdir socket (never the live daemon).
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
@@ -55,8 +17,7 @@ use calm_server::codex_appserver::{
 use calm_server::planner_model::TurnModelSelection;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
-// self-skip via `skip!`. Tests must never fall back to a PATH/home codex.
+// Env `NEIGE_CODEX_BIN` only; tests must never fall back to a PATH/home codex.
 use support::codex_fixture::resolve_codex_bin;
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
@@ -67,8 +28,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 const DEFAULT_PROXY: &str = "http://127.0.0.1:2080";
 const WS_URI: &str = "ws://localhost/";
 
-/// Apply the proxy env (unless explicitly disabled) so spawned app-server
-/// model turns reach the upstream through `127.0.0.1:2080`.
+/// Apply the proxy env (unless explicitly disabled) so spawned app-server model turns reach the upstream.
 fn apply_proxy(cmd: &mut Command) {
     let proxy = std::env::var("NEIGE_CODEX_PROXY").unwrap_or_else(|_| DEFAULT_PROXY.to_string());
     if !proxy.is_empty() {
@@ -79,11 +39,8 @@ fn apply_proxy(cmd: &mut Command) {
     }
 }
 
-/// Boot a throwaway `codex app-server` on a fresh 0700 tempdir socket, connect
-/// the typed client, run `initialize`. Returns `None` (skip-worthy) on any
-/// env-absence condition (no binary, boot exit, no connect within 20s) so the
-/// caller can `skip!`. The `_sock_dir` keeps the tempdir alive; `child` must
-/// be kept and killed by the caller (`kill_on_drop` also covers it).
+/// Boot a throwaway app-server and run `initialize`; `None` on any env-absence condition so the caller can `skip!`.
+/// `_sock_dir` keeps the tempdir alive; `child` is `kill_on_drop`.
 struct BootedServer {
     client: CodexAppServer,
     notifs: calm_server::codex_appserver::NotificationStream,
@@ -93,8 +50,7 @@ struct BootedServer {
 }
 
 async fn boot_throwaway_server(codex_bin: &Path) -> Option<BootedServer> {
-    // Socket must live under a USER-OWNED 0700 dir (the server chmods the
-    // parent and EPERMs on a shared sticky /tmp — spike caveat).
+    // The socket must live under a USER-OWNED 0700 dir (the server chmods the parent and EPERMs on sticky /tmp).
     let sock_dir = tempfile::tempdir().expect("mktemp -d for socket");
     let sock = sock_dir.path().join("app.sock");
     let listen = format!("unix://{}", sock.display());
@@ -161,11 +117,8 @@ async fn boot_throwaway_server(codex_bin: &Path) -> Option<BootedServer> {
     })
 }
 
-/// Send a single raw JSON-RPC `thread/read` over a fresh tungstenite
-/// connection and return the verbatim `result` JSON (the D-6 gate artifact).
-/// We do `initialize` first (the server requires it before any other method),
-/// then `thread/read`, correlating by request id. Returns `None` on any
-/// transport error (best-effort capture — the typed assertions are the gate).
+/// Raw JSON-RPC `thread/read` over a fresh connection, returning the verbatim `result` (the report artifact);
+/// `initialize` first because the server requires it before any other method.
 async fn raw_thread_read(sock: &Path, thread_id: &str) -> Option<Value> {
     let stream = UnixStream::connect(sock).await.ok()?;
     let request = WS_URI.into_client_request().ok()?;
@@ -174,7 +127,6 @@ async fn raw_thread_read(sock: &Path, thread_id: &str) -> Option<Value> {
         .ok()?;
     let (mut write, mut read) = ws.split();
 
-    // initialize (id=1)
     let init = json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {
@@ -187,7 +139,6 @@ async fn raw_thread_read(sock: &Path, thread_id: &str) -> Option<Value> {
         .await
         .ok()?;
 
-    // thread/read (id=2)
     let read_req = json!({
         "jsonrpc": "2.0", "id": 2, "method": "thread/read",
         "params": { "threadId": thread_id, "includeTurns": true }
@@ -197,7 +148,6 @@ async fn raw_thread_read(sock: &Path, thread_id: &str) -> Option<Value> {
         .await
         .ok()?;
 
-    // Pull frames until we see the response correlated to id=2.
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -218,16 +168,12 @@ async fn raw_thread_read(sock: &Path, thread_id: &str) -> Option<Value> {
             continue;
         };
         if v.get("id").and_then(Value::as_u64) == Some(2) {
-            // Return the `result` (or the whole frame if it carried an error).
             return Some(v.get("result").cloned().unwrap_or(v));
         }
     }
 }
 
-/// Pretty-print a captured `thread/read` result and pull out the last turn's
-/// `completedAt` for the report. Returns `Some(true)` if the last turn's
-/// `completedAt` is JSON-null, `Some(false)` if it is set, `None` if there is
-/// no turn / shape mismatch.
+/// `Some(true)` if the last turn's `completedAt` is JSON-null, `Some(false)` if set, `None` on shape mismatch.
 fn last_turn_completed_at_is_null(result: &Value) -> Option<bool> {
     let turns = result.get("thread")?.get("turns")?.as_array()?;
     let last = turns.last()?;
@@ -249,7 +195,6 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
     };
     eprintln!("[codex-e2e-completed-at] booted throwaway app-server + initialized");
 
-    // --- thread/start ---
     let thread = server
         .client
         .thread_start(None)
@@ -264,15 +209,7 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
         thread.model
     );
 
-    // ======================================================================
-    // (a) IN-PROGRESS turn → last turn `completedAt == null`.
-    //
-    // Use a prompt that forces enough generation to keep the turn running
-    // long enough to catch the in-progress window, then tight-poll
-    // `thread/read` from `turn/started` until we observe the last turn with
-    // `completedAt == null` (or the turn completes). We HARD-assert that the
-    // very first read after `turn/started` shows `completedAt == null`.
-    // ======================================================================
+    // (a) In-progress turn → `completedAt == null`. The prompt forces enough generation to keep the window open.
     let in_progress_prompt = "Count slowly from 1 to 40, putting each number on its own line, \
          and after the list write a one-sentence summary. Take your time.";
     let turn = server
@@ -287,14 +224,11 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
     let turn_id = turn.turn_id().map(str::to_string);
     eprintln!("[codex-e2e-completed-at] turn started: {turn_id:?}");
 
-    // Wait for the `turn/started` push so the rollout has a persisted
-    // TurnStarted before we read (the read otherwise races the persist).
+    // Wait for the `turn/started` push so the rollout has a persisted TurnStarted before reading.
     let saw_started =
         wait_for_turn_started(&mut server.notifs, &thread_id, Duration::from_secs(60)).await;
     eprintln!("[codex-e2e-completed-at] turn/started observed: {saw_started}");
 
-    // Tight poll: capture the in-progress wire value. Record the FIRST raw
-    // read, and keep polling until either we confirm null or the turn ends.
     let mut in_progress_raw: Option<Value> = None;
     let mut in_progress_null: Option<bool> = None;
     let poll_deadline = Instant::now() + Duration::from_secs(45);
@@ -312,8 +246,6 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
             eprintln!(
                 "[codex-e2e-completed-at]   in-progress poll: status={status:?} last.completed_at={last_ca:?}"
             );
-            // Capture the raw wire JSON on the first poll (and refresh while
-            // still null so the report shows a representative in-progress read).
             if let Some(raw) = raw_thread_read(&server.sock, &thread_id).await {
                 let is_null = last_turn_completed_at_is_null(&raw);
                 if in_progress_raw.is_none() || is_null == Some(true) {
@@ -321,8 +253,7 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
                     in_progress_null = is_null;
                 }
             }
-            // If the last turn already shows completedAt set, the turn
-            // finished before we could observe the window — stop polling.
+            // The turn finished before the window could be observed — stop polling.
             if matches!(last_ca, Some(Some(_))) && !matches!(status, ThreadStatus::Active { .. }) {
                 eprintln!(
                     "[codex-e2e-completed-at]   turn already completed during poll; stop in-progress poll"
@@ -330,7 +261,6 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
                 break;
             }
             if in_progress_null == Some(true) {
-                // We caught a genuine in-progress read with completedAt == null.
                 break;
             }
         }
@@ -347,9 +277,7 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
         "[codex-e2e-completed-at] OBSERVATION (a): in-progress last-turn completedAt == null ? {in_progress_null:?}"
     );
 
-    // ======================================================================
-    // (b) COMPLETED turn → last turn `completedAt` SET. HARD ASSERT.
-    // ======================================================================
+    // (b) Completed turn → `completedAt` SET. Hard assert.
     let completed =
         drain_until_completed(&mut server.notifs, &thread_id, Duration::from_secs(180)).await;
     assert!(
@@ -383,16 +311,11 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
         "GATE (b): a COMPLETED turn must read completedAt SET (Some(Some(_))), got {done_last_ca:?}"
     );
 
-    // ======================================================================
-    // (c) BEST-EFFORT: ABORTED turn → `completedAt` SET (abort != death).
-    // Start a second long turn, interrupt it, read back.
-    // ======================================================================
+    // (c) Best-effort: aborted turn → `completedAt` SET (abort != death).
     let abort_outcome = run_abort_probe(&mut server, &thread_id).await;
     eprintln!("[codex-e2e-completed-at] OBSERVATION (c) aborted-turn: {abort_outcome}");
 
-    // If we DID manage to observe an in-progress window, assert it was null —
-    // otherwise leave it as a recorded observation (a too-fast turn made the
-    // window unobservable; (b) remains the hard gate, per the brief).
+    // Assert null only if the in-progress window was actually observed; a too-fast turn makes it unobservable.
     if let Some(is_null) = in_progress_null {
         assert!(
             is_null,
@@ -474,11 +397,7 @@ async fn drain_until_completed(
     }
 }
 
-/// Best-effort abort probe: start a long turn, capture its turn id (preferring
-/// the `turn/started` push id, falling back to the `turn/start` result), call
-/// `turn/interrupt`, wait for the turn to settle, then read back the last
-/// turn's `completedAt`. Returns a human-readable outcome string for the
-/// report. NEVER fails the test (best-effort per the brief).
+/// Best-effort abort probe; returns a human-readable outcome and never fails the test.
 async fn run_abort_probe(server: &mut BootedServer, thread_id: &str) -> String {
     let long_prompt = "Write a detailed 500-word essay about the history of timekeeping. \
          Take your time and be thorough.";
@@ -496,23 +415,20 @@ async fn run_abort_probe(server: &mut BootedServer, thread_id: &str) -> String {
     };
     let result_turn_id = turn.turn_id().map(str::to_string);
 
-    // Prefer the turn id from the `turn/started` push (authoritative running
-    // id); fall back to the start-result id.
+    // Prefer the turn id from the `turn/started` push (the authoritative running id).
     let started_id = started_turn_id(&mut server.notifs, thread_id, Duration::from_secs(30)).await;
     let turn_id = started_id.or(result_turn_id);
     let Some(turn_id) = turn_id else {
         return "could not resolve a running turn id to interrupt (skipped)".to_string();
     };
 
-    // Give the turn a moment to be genuinely running, then interrupt.
     tokio::time::sleep(Duration::from_millis(500)).await;
     if let Err(e) = server.client.turn_interrupt(thread_id, &turn_id).await {
         return format!("turn/interrupt({turn_id}) failed: {e} (skipped)");
     }
     eprintln!("[codex-e2e-completed-at]   interrupted turn {turn_id}");
 
-    // Let the abort settle (drain a few notifications / give the daemon time
-    // to persist the TurnAborted terminal event).
+    // Let the abort settle so the daemon persists the terminal event.
     let _ = drain_until_completed(&mut server.notifs, thread_id, Duration::from_secs(30)).await;
     tokio::time::sleep(Duration::from_millis(1000)).await;
 

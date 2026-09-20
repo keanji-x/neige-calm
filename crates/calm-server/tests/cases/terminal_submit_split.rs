@@ -1,22 +1,14 @@
-//! #1725 — `submit` through the real MCP tools, renderer, supervisor and
-//! PTY: the program reads the text, then the CR as its own `read(2)`; one
-//! input sequence, one receipt, and a replay writes nothing.
+//! `submit` through the real MCP tools, renderer, supervisor and PTY.
 use crate::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
 
-/// Raw input (VMIN 1, no echo) with output processing kept on, so every
-/// `read(2)` is one `od -An -c` block and its rows stay left-aligned. A read
-/// that carried the text and the CR together renders `\r` at the end of the
-/// text's last row; a CR that arrived as its own read is a row of exactly
-/// `\r`. `READY` marks the moment `dd` is about to block in `read(2)`.
+/// Raw input (VMIN 1, no echo) with output processing on, so every `read(2)` is one `od -An -c`
+/// block: a CR that arrived as its own read is a row of exactly `\r`. `READY` marks the moment `dd` is about to block.
 const READ_PROBE: &str = "stty raw -echo opost; echo READY; while :; do dd bs=4096 count=1 2>/dev/null | od -An -c; done";
 
-/// The rows `od -An -c` prints for one read of `bytes`, trimmed like the
-/// observation's rows: 16 bytes per row, a printable ASCII byte as itself, a
-/// CR as `\r`, any other byte as three octal digits. A length that is a
-/// multiple of 16 would put a CR read TOGETHER with the text on a row of its
-/// own, so the probe texts avoid it (asserted where they are built).
+/// The rows `od -An -c` prints for one read of `bytes`. A length that is a multiple of 16 would put a
+/// CR read TOGETHER with the text on a row of its own, so the probe texts avoid it.
 fn od_rows(bytes: &[u8]) -> Vec<String> {
     bytes
         .chunks(16)
@@ -72,11 +64,7 @@ async fn open_probe(h: &Harness, request: &str) -> String {
     tokio::time::sleep(Duration::from_millis(200)).await;
     opened["terminal_id"].as_str().unwrap().to_owned()
 }
-/// Submits `text`, asserts the receipt and the single sequence step, waits
-/// until the text's last row and the CR octet are on the screen (whichever
-/// read carried the CR), lets the output settle and returns the rows of a
-/// fresh observation (which is also the latest observation the next input
-/// will act on).
+/// Submits `text`, waits until the text's last row and the CR octet are on the screen, lets the output settle and returns the rows of a fresh observation.
 async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str) -> Vec<String> {
     let before = h.interaction().input_ack_sequence(terminal).await.unwrap();
     let sent = h
@@ -128,8 +116,7 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
         .await;
     rows(&view)
 }
-/// 300 CJK characters (900 bytes): the size the issue measured as a paste
-/// when the CR arrived in the same read.
+/// 300 CJK characters (900 bytes): the size measured as a paste when the CR arrived in the same read.
 fn cjk_text() -> String {
     const DIGITS: [&str; 10] = [
         "\u{4e00}", "\u{4e8c}", "\u{4e09}", "\u{56db}", "\u{4e94}", "\u{516d}", "\u{4e03}",
@@ -141,13 +128,8 @@ fn cjk_text() -> String {
     text
 }
 
-/// Over up to three submits ("hello", the 300-character CJK text, "hello"
-/// again), at least one shows the CR as its own read: a row of exactly `\r`
-/// right after the text's last row, which carries no `\r`. Before #1725
-/// every read showed the text and the CR together (`h e l l o \r` on one
-/// row, never a lone `\r` row), so 0 of 3 is the decisive red; after it a
-/// false red needs the reader to lose the `SUBMIT_CR_GAP` race three times
-/// in a row.
+/// At least one of three submits shows the CR as its own read; a false red needs the reader
+/// to lose the `SUBMIT_CR_GAP` race three times in a row.
 #[tokio::test]
 async fn submit_reaches_the_pty_as_text_then_the_cr_as_its_own_read() {
     let h = Harness::start().await;
@@ -186,11 +168,6 @@ async fn submit_reaches_the_pty_as_text_then_the_cr_as_its_own_read() {
     h.stop(&terminal).await;
 }
 
-/// One submit is ONE request: the acknowledged input sequence advances by
-/// exactly one for the two physical writes; the receipt is `written` with
-/// no `steps`; a replay of the request id returns the cached receipt and
-/// writes nothing (neither the sequence nor the screen moves); a replay
-/// with another text is refused as reused arguments.
 #[tokio::test]
 async fn submit_is_one_sequence_one_receipt_and_a_replay_writes_nothing() {
     let h = Harness::start().await;
