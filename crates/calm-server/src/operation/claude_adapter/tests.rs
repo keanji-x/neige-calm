@@ -393,6 +393,166 @@ async fn claude_worker_compensation_cleans_rows_lease_and_settings_dir() {
     assert!(!settings_dir.exists());
 }
 
+/// A worker op frozen before the base was recorded recovers unpinned.
+/// Its `tx_output` has `repo_root` / `slice_branch` / `cwd` but no `base_sha`
+/// or `canonical_path` (design D12 (d)): provisioning must succeed and take
+/// today's shape — the repository's HEAD at spawn time, no check against a
+/// base it never recorded — rather than refuse the recovery.
+#[tokio::test]
+async fn pre_slice1_frozen_worker_op_provisions_unpinned() {
+    let harness = claude_worker_harness().await;
+    let (prepared, _, _) = prepare_claude_worker(&harness, "frozen").await;
+    let card_id = prepared.output_string("card_id", "test").unwrap();
+    let cwd = prepared.output_string("cwd", "test").unwrap();
+    let recorded_base = prepared.output_string("base_sha", "test").unwrap();
+    assert!(
+        prepared.output_string("canonical_path", "test").is_ok(),
+        "a lease prepared by this slice freezes canonical_path"
+    );
+
+    // The frozen shape from before slice 1: strip what the slice added.
+    let mut frozen = prepared.clone();
+    let data = frozen.data.as_object_mut().unwrap();
+    data.remove("base_sha");
+    data.remove("canonical_path");
+    assert!(
+        frozen
+            .output_optional_string("base_sha", "test")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        frozen.output_string("repo_root", "test").unwrap(),
+        prepared.output_string("repo_root", "test").unwrap()
+    );
+
+    // The repository moves on between the (old) prepare and this recovery.
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "moved after the frozen prepare",
+            ])
+            .current_dir(harness.workspace.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let moved_head = git_head(harness.workspace.path());
+    assert_ne!(moved_head, recorded_base, "test setup moved HEAD");
+
+    let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
+    let op_repo: Arc<dyn OperationRepo> =
+        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let ctx = SpawnCtx::new(
+        route_repo,
+        op_repo,
+        Arc::new(DaemonClient::new_stub()),
+        TerminalRendererRegistry::new(),
+        harness.events.clone(),
+        OperationCompletionBus::new(),
+    );
+    workspace::provision(&harness.adapter, &ctx, &frozen)
+        .await
+        .expect("a pre-slice-1 frozen op provisions without a base");
+
+    assert!(Path::new(&cwd).join("worker-source").is_file());
+    assert_eq!(
+        git_head(Path::new(&cwd)),
+        moved_head,
+        "unpinned: the worktree follows the HEAD at spawn time, as before slice 1"
+    );
+    let provisioned_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.provisioned'")
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(provisioned_events, 1);
+
+    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+        .await
+        .unwrap();
+}
+
+/// The production spawn path (`workspace::provision`, which reads the frozen
+/// `tx_output`) provisions at the base the prepare tx
+/// recorded, not at the HEAD the attached repository has moved on to.
+#[tokio::test]
+async fn claude_spawn_provisions_at_frozen_base_not_moving_head() {
+    let harness = claude_worker_harness().await;
+    let (prepared, _, _) = prepare_claude_worker(&harness, "pinned").await;
+    let card_id = prepared.output_string("card_id", "test").unwrap();
+    let cwd = prepared.output_string("cwd", "test").unwrap();
+    let recorded_base = prepared.output_string("base_sha", "test").unwrap();
+
+    // The repository moves on between prepare and spawn.
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "moved after prepare",
+            ])
+            .current_dir(harness.workspace.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let moved_head = git_head(harness.workspace.path());
+    assert_ne!(moved_head, recorded_base, "test setup moved HEAD");
+
+    let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
+    let op_repo: Arc<dyn OperationRepo> =
+        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let ctx = SpawnCtx::new(
+        route_repo,
+        op_repo,
+        Arc::new(DaemonClient::new_stub()),
+        TerminalRendererRegistry::new(),
+        harness.events.clone(),
+        OperationCompletionBus::new(),
+    );
+    workspace::provision(&harness.adapter, &ctx, &prepared)
+        .await
+        .expect("spawn provisions the prepared lease");
+
+    assert_eq!(
+        git_head(Path::new(&cwd)),
+        recorded_base,
+        "the worktree starts at the frozen base"
+    );
+    assert_ne!(
+        git_head(Path::new(&cwd)),
+        moved_head,
+        "not at the HEAD that moved after prepare"
+    );
+
+    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+        .await
+        .unwrap();
+}
+
+fn git_head(dir: &Path) -> String {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 #[tokio::test]
 async fn claude_worker_recovery_already_exited_returns_noop_without_respawn() {
     let harness = claude_worker_harness().await;

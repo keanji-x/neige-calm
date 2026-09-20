@@ -270,18 +270,24 @@ async fn acquire_test_workspace_lease(
     )
     .await
     .expect("prepare workspace lease target");
+    let base = crate::operation::workspace_lease::base::resolve_head_lease_base(&target)
+        .expect("resolve workspace lease base");
     let (lease, _event) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
         &mut tx,
         card_id,
         track_id.as_str(),
         lease_owner,
         &target,
+        &base,
     )
     .await
     .expect("acquire workspace lease");
     tx.commit().await.expect("commit lease");
-    crate::operation::workspace_lease::provision_workspace_worktree(&target)
-        .expect("provision test workspace lease worktree");
+    crate::operation::workspace_lease::provision_workspace_worktree(
+        &target,
+        &crate::operation::workspace_lease::WorktreeBase::from_lease_base(&base),
+    )
+    .expect("provision test workspace lease worktree");
     (lease.lease_id, lease.path)
 }
 

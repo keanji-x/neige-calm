@@ -30,8 +30,8 @@ pub async fn prepare_workspace_lease_target_for_test(
     .map(|target| target.repo_root)
 }
 
-/// Take a whole first-worker workspace lease: prepare → commit → provision, in that order.
-/// Returns the provisioned worktree path.
+/// Take a whole first-worker workspace lease: prepare → resolve the HEAD base → commit →
+/// provision pinned to that base, in that order. Returns the provisioned worktree path.
 #[cfg(feature = "fixtures")]
 pub async fn provision_workspace_lease_for_test(
     pool: &sqlx::SqlitePool,
@@ -47,8 +47,12 @@ pub async fn provision_workspace_lease_for_test(
         workspace_root,
     )
     .await?;
+    let base = crate::operation::workspace_lease::base::resolve_head_lease_base(&target)?;
     tx.commit().await?;
-    crate::operation::workspace_lease::provision_workspace_worktree(&target)?;
+    crate::operation::workspace_lease::provision_workspace_worktree(
+        &target,
+        &crate::operation::workspace_lease::WorktreeBase::from_lease_base(&base),
+    )?;
     Ok(target.path)
 }
 
@@ -72,6 +76,69 @@ pub async fn acquire_workspace_lease_for_test(
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// Take a lease that RECORDS ITS BASE
+/// through the production `acquire_workspace_lease_tx` (the five base
+/// columns in the one INSERT), the sibling of `acquire_workspace_lease_for_test`
+/// whose plain lease writes the legacy all-NULL tuple. `plan.list.worktree.base_sha`
+/// and `recovery.guidance.retained.base_sha` are read from that row, so a
+/// fixture that only ever takes plain leases can never see either key.
+///
+/// The lease path is production's `<repo_root>/.claude/worktrees/<track>/<card>`
+/// (returned); `canonical_path` is resolved through the parent the way the
+/// prepare tx resolves it; `git_common_dir` is `<repo_root>/.git` as given —
+/// the fixture's repository root need not be a git repository, the columns
+/// only have to be the shape the CHECK accepts. `fixtures`-only.
+#[cfg(feature = "fixtures")]
+pub async fn acquire_based_workspace_lease_for_test(
+    pool: &sqlx::SqlitePool,
+    card_id: &str,
+    track_id: &str,
+    lease_owner: &str,
+    repo_root: &std::path::Path,
+    base_sha: &str,
+) -> crate::error::Result<std::path::PathBuf> {
+    use crate::operation::workspace_lease::{
+        LeaseBase, WorkspaceLeaseTarget, acquire_workspace_lease_tx, base,
+        workspace_lease_path_for, workspace_slice_branch_for,
+    };
+    let target = WorkspaceLeaseTarget {
+        repo_root: repo_root.to_path_buf(),
+        path: workspace_lease_path_for(repo_root, track_id, card_id)?,
+        branch: workspace_slice_branch_for(track_id, card_id)?,
+    };
+    let parent = target.path.parent().ok_or_else(|| {
+        crate::error::CalmError::Internal(format!(
+            "workspace lease path {} has no parent",
+            target.path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        crate::error::CalmError::Internal(format!(
+            "create workspace lease parent directory {}: {e}",
+            parent.display()
+        ))
+    })?;
+    let lease_base = LeaseBase {
+        base_sha: base_sha.to_string(),
+        base_source: base::BaseSource::Head,
+        base_attempt_id: None,
+        canonical_path: base::lease_canonical_path(parent, card_id)?,
+        git_common_dir: repo_root.join(".git"),
+    };
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    acquire_workspace_lease_tx(
+        &mut tx,
+        card_id,
+        track_id,
+        lease_owner,
+        &target,
+        &lease_base,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(target.path)
 }
 
 /// Release a card's active workspace lease through the production "flip the row only" path

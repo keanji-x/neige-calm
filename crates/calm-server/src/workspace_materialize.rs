@@ -33,6 +33,10 @@ const HOSTILE_GIT_ENV: &[&str] = &[
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
+    // Discovery from a `-C <worktree>`: the lease module's checks read the
+    // worktree git found from that directory.
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_PREFIX",
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
     "GIT_AUTHOR_DATE",

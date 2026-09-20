@@ -1,6 +1,8 @@
 //! Provision before launching Claude, using the same Git isolation as Codex.
 use super::*;
-use crate::operation::workspace_lease::{WorkspaceLeaseTarget, provision_workspace_worktree};
+use crate::operation::workspace_lease::{
+    WorkspaceLeaseTarget, WorktreeBase, provision_workspace_worktree,
+};
 
 pub(super) async fn provision(
     adapter: &ClaudeWorkerAdapter,
@@ -21,11 +23,18 @@ pub(super) async fn provision(
         }
     };
     let path = output.output_string("cwd", "claude-worker")?;
-    provision_workspace_worktree(&WorkspaceLeaseTarget {
-        repo_root: PathBuf::from(repo_root),
-        path: PathBuf::from(&path),
-        branch,
-    })?;
+    // Pinned to the frozen `base_sha` / `canonical_path`; an op frozen before
+    // the base was recorded has neither and provisions unpinned, as it always
+    // did (design D12 (d)).
+    let base = WorktreeBase::from_tx_output(output, "claude-worker")?;
+    provision_workspace_worktree(
+        &WorkspaceLeaseTarget {
+            repo_root: PathBuf::from(repo_root),
+            path: PathBuf::from(&path),
+            branch,
+        },
+        &base,
+    )?;
     let card_id = output.output_string("card_id", "claude-worker")?;
     let track_id = output.output_string("track_id", "claude-worker")?;
     let scope = card_scope(

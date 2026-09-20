@@ -24,8 +24,8 @@ use crate::model::{Card, CardRole, new_id};
 use crate::operation::codex_adapter::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
-    acquire_workspace_lease_tx, prepare_workspace_lease_target_tx, release_workspace_lease_by_id,
-    remove_workspace_artifact_for_lease_by_id,
+    acquire_workspace_lease_tx, base::resolve_head_lease_base, prepare_workspace_lease_target_tx,
+    release_workspace_lease_by_id, remove_workspace_artifact_for_lease_by_id,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -770,6 +770,9 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &self.workspace_root,
         )
         .await?;
+        // The base is decided here, in the prepare tx, and frozen below; the
+        // spawn pins the worktree to it (design D4).
+        let lease_base = resolve_head_lease_base(&lease_target)?;
         let cwd = lease_target.path_string();
         let settings_path = self
             .codex
@@ -819,9 +822,15 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        let (lease, lease_event) =
-            acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &lease_target)
-                .await?;
+        let (lease, lease_event) = acquire_workspace_lease_tx(
+            tx,
+            &card_id,
+            card.track_id.as_str(),
+            &op.id,
+            &lease_target,
+            &lease_base,
+        )
+        .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -873,6 +882,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "lease_id": lease.lease_id,
             "repo_root": lease_target.repo_root,
             "slice_branch": lease_target.branch,
+            "base_sha": lease_base.base_sha,
+            "canonical_path": lease_base.canonical_path,
             "env": env,
             "prompt": rendered_prompt,
             "scope": scope,

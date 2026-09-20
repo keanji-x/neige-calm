@@ -5,7 +5,9 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
 use super::{InitCommit, materialize_managed_workspace, materialize_managed_workspace_inner};
-use crate::operation::workspace_lease::{WorkspaceLeaseTarget, provision_workspace_worktree};
+use crate::operation::workspace_lease::{
+    WorkspaceLeaseTarget, WorktreeBase, base::resolve_head_lease_base, provision_workspace_worktree,
+};
 
 /// The git environment is process-global, so every git-spawning test holds this lock for its whole body
 /// (a helper-scoped guard was flaky under plain `cargo test`; nextest's per-process isolation would hide it).
@@ -128,6 +130,11 @@ fn lease_target(repo_root: &Path) -> WorkspaceLeaseTarget {
     }
 }
 
+/// The base production pins a fresh lease to: the repository's HEAD now.
+fn head_base(target: &WorkspaceLeaseTarget) -> WorktreeBase {
+    WorktreeBase::from_lease_base(&resolve_head_lease_base(target).expect("resolve head base"))
+}
+
 #[test]
 fn materialized_workspace_hosts_a_worker_worktree() {
     let _env = GitEnv::c_locale();
@@ -144,7 +151,8 @@ fn materialized_workspace_hosts_a_worker_worktree() {
     );
 
     let target = lease_target(&repo_root);
-    provision_workspace_worktree(&target).expect("worktree add on a materialized workspace");
+    provision_workspace_worktree(&target, &head_base(&target))
+        .expect("worktree add on a materialized workspace");
     assert!(
         target.path.is_dir(),
         "lease worktree directory {} is missing",
@@ -176,7 +184,8 @@ fn without_the_init_commit_there_is_no_baseline_commit() {
     assert!(head_resolves(&repo_root));
     assert_eq!(count_all_commits(&repo_root), 1);
     let target = lease_target(&repo_root);
-    provision_workspace_worktree(&target).expect("worktree add after the commit is restored");
+    provision_workspace_worktree(&target, &head_base(&target))
+        .expect("worktree add after the commit is restored");
 }
 
 /// Git >= 2.42.0 infers `--orphan` for `worktree add` on an unborn HEAD and succeeds silently; older git fails.
@@ -191,7 +200,9 @@ fn worktree_add_without_a_baseline_commit_is_version_dependent() {
 
     let version = git_version();
     let target = lease_target(&repo_root);
-    let result = provision_workspace_worktree(&target);
+    // Unborn HEAD: there is no commit to pin to, which is the point of this
+    // test; the unpinned recovery shape is the only one that can be asked.
+    let result = provision_workspace_worktree(&target, &WorktreeBase::LegacyUnpinned);
 
     if version < (2, 42) {
         let error = result.expect_err(&format!(
@@ -709,7 +720,8 @@ fn materialize_survives_hostile_git_environment_variables() {
     drop(env);
     assert!(head_resolves(&repo_root));
     let target = lease_target(&repo_root);
-    provision_workspace_worktree(&target).expect("worktree add on the isolated workspace");
+    provision_workspace_worktree(&target, &head_base(&target))
+        .expect("worktree add on the isolated workspace");
 }
 
 #[test]

@@ -23,8 +23,8 @@ use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
-    WorkspaceLeaseTarget, acquire_workspace_lease_tx, prepare_workspace_lease_target_tx,
-    provision_workspace_worktree, release_workspace_lease_by_id,
+    WorkspaceLeaseTarget, WorktreeBase, acquire_workspace_lease_tx, base::resolve_head_lease_base,
+    prepare_workspace_lease_target_tx, provision_workspace_worktree, release_workspace_lease_by_id,
     remove_workspace_artifact_for_lease_by_id,
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
@@ -781,6 +781,9 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &self.workspace_root,
         )
         .await?;
+        // The base is decided here, in the prepare tx, and frozen below; the
+        // spawn pins the worktree to it (design D4).
+        let lease_base = resolve_head_lease_base(&lease_target)?;
         let cwd = lease_target.path_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_task_worker_prompt(
@@ -816,9 +819,15 @@ impl ProviderAdapter for CodexWorkerAdapter {
         )
         .await?;
 
-        let (lease, lease_event) =
-            acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &lease_target)
-                .await?;
+        let (lease, lease_event) = acquire_workspace_lease_tx(
+            tx,
+            &card_id,
+            card.track_id.as_str(),
+            &op.id,
+            &lease_target,
+            &lease_base,
+        )
+        .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -861,6 +870,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "lease_id": lease.lease_id,
             "repo_root": lease_target.repo_root_string(),
             "slice_branch": lease_target.branch,
+            "base_sha": lease_base.base_sha,
+            "canonical_path": lease_base.canonical_path,
             "worktree_provisioned_event_persisted": false,
             "terminal_launch": super::terminal_launch::fresh_state(),
             "runtime_started_event_persisted": false,
@@ -1599,7 +1610,10 @@ async fn provision_codex_worker_workspace(
         path: PathBuf::from(cwd.clone()),
         branch,
     };
-    provision_workspace_worktree(&target)?;
+    // Pinned to the frozen `base_sha` / `canonical_path`; an op frozen before
+    // the base was recorded has neither and provisions unpinned (D12 (d)).
+    let base = WorktreeBase::from_tx_output(output, "codex-worker")?;
+    provision_workspace_worktree(&target, &base)?;
 
     let provisioned_persisted = output
         .data

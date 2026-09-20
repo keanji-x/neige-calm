@@ -804,7 +804,7 @@ async fn task_recovery_of_legacy_attempt_states_its_actual_executor() {
     assert_eq!(replay, receipt);
 }
 
-fn ordinary_codex_declaration(key: &str) -> Value {
+pub(super) fn ordinary_codex_declaration(key: &str) -> Value {
     json!({"key": key, "kind": "codex", "goal": format!("do {key}"), "depends_on": [],
         "no_gate_reason": "ordinary worker timeout fixture",
         "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "ready": true})
@@ -848,6 +848,26 @@ async fn time_out_prepared_ordinary_worker(
     .execute(&pool)
     .await
     .unwrap();
+    let failed = time_out_claimed_worker_holding_lease(boot, key, &lease_id).await;
+    (failed, lease_path, lease_dir)
+}
+
+/// The second half of `time_out_prepared_ordinary_worker`, for a lease row
+/// the caller already wrote (a plain one above; a base-recording one through
+/// `test_seams::acquire_based_workspace_lease_for_test`): claim the current
+/// attempt of `key` onto `boot.worker_card_id`, mark it running, hit it with
+/// the scheduler's liveness timeout and release the lease row. Returns the
+/// failed row.
+pub(super) async fn time_out_claimed_worker_holding_lease(
+    boot: &Boot,
+    key: &str,
+    lease_id: &str,
+) -> Task {
+    let task = current(boot, key).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let card_id = boot.worker_card_id.as_str().to_string();
+    let track_id = boot.track_id.as_str().to_string();
+    let now = calm_server::model::now_ms();
     let monitor = TaskContextMonitor::new(
         boot.repo.clone(),
         boot.ctx.events.clone(),
@@ -890,7 +910,7 @@ async fn time_out_prepared_ordinary_worker(
         "UPDATE workspace_leases SET state='released', released_at_ms=?1 WHERE lease_id=?2",
     )
     .bind(now + 1)
-    .bind(&lease_id)
+    .bind(lease_id)
     .execute(&mut *tx)
     .await
     .unwrap();
@@ -904,7 +924,7 @@ async fn time_out_prepared_ordinary_worker(
             .map(calm_server::db::sqlite::status_detail_class),
         Some("worker-timeout")
     );
-    (failed, lease_path, lease_dir)
+    failed
 }
 
 fn listed_entry(list: &Value, key: &str) -> Value {

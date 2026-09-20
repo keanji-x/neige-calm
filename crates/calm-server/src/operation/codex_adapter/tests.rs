@@ -2,7 +2,9 @@ use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
-use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo};
+use crate::state::DaemonClient;
+use crate::terminal_renderer::TerminalRendererRegistry;
 use sqlx::Row;
 use std::path::Path;
 use std::process::Command;
@@ -189,6 +191,17 @@ async fn prepare_worker_with_task_key(
     key: &str,
     task_key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>) {
+    let (output, events, _op) = prepare_worker_and_op(harness, key, task_key).await;
+    (output, events)
+}
+
+/// [`prepare_worker_with_task_key`] plus the claimed operation row, for a
+/// test that carries the op past prepare the way the driver does.
+async fn prepare_worker_and_op(
+    harness: &WorkerLeaseHarness,
+    key: &str,
+    task_key: &str,
+) -> (TxOutput, Vec<BroadcastEnvelope>, Operation) {
     let payload = worker_payload(&harness.track_id, key);
     let task_id = format!("{}:{key}", harness.track_id);
     sqlx::query(
@@ -230,7 +243,7 @@ async fn prepare_worker_with_task_key(
         .unwrap();
     let events = output.post_commit_events.clone();
     tx.commit().await.unwrap();
-    (output, events)
+    (output, events, op)
 }
 
 #[test]
@@ -483,6 +496,90 @@ async fn task_key_for_card_title_swallows_a_failing_select() {
         None
     );
     tx.rollback().await.unwrap();
+}
+
+/// The production provisioning entry
+/// (`provision_codex_worker_workspace`, reached from `app_server_interact`)
+/// reads the frozen `tx_output` and provisions at the base the prepare tx
+/// recorded, not at the HEAD the attached repository has moved on to. The op
+/// is carried to `app_server_interact` with the repo's own transitions
+/// (`set_phase`, re-claim), so the checkpoint the entry writes lands.
+#[tokio::test]
+async fn codex_spawn_provisions_at_frozen_base_not_moving_head() {
+    let harness = worker_lease_harness().await;
+    let (mut output, _, op) = prepare_worker_and_op(&harness, "pinned", "pinned").await;
+    let card_id = output.output_string("card_id", "test").unwrap();
+    let cwd = output.output_string("cwd", "test").unwrap();
+    let recorded_base = output.output_string("base_sha", "test").unwrap();
+
+    // The repository moves on between prepare and spawn.
+    run_git(
+        harness.repo_root.path(),
+        ["commit", "--allow-empty", "-m", "moved after prepare"],
+    );
+    let moved_head = git_head(harness.repo_root.path());
+    assert_ne!(moved_head, recorded_base, "test setup moved HEAD");
+
+    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let kind = harness
+        .adapter
+        .app_server_interact_kind(&output, &op)
+        .unwrap();
+    op_repo
+        .set_phase(&op, Phase::AppServerInteract { kind })
+        .await
+        .unwrap()
+        .expect("the claimed op moves to app_server_interact");
+    let op = op_repo
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|claimed| claimed.id == op.id)
+        .expect("the op is re-claimed in app_server_interact");
+    let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
+    let ctx = SpawnCtx::new(
+        route_repo,
+        op_repo,
+        Arc::new(DaemonClient::new_stub()),
+        TerminalRendererRegistry::new(),
+        harness.events.clone(),
+        OperationCompletionBus::new(),
+    );
+    provision_codex_worker_workspace(
+        &ctx,
+        &harness.adapter.card_role_cache,
+        &harness.adapter.track_area_cache,
+        &op,
+        &mut output,
+    )
+    .await
+    .expect("spawn provisions the prepared lease");
+
+    assert_eq!(
+        git_head(Path::new(&cwd)),
+        recorded_base,
+        "the worktree starts at the frozen base"
+    );
+    assert_ne!(
+        git_head(Path::new(&cwd)),
+        moved_head,
+        "not at the HEAD that moved after prepare"
+    );
+
+    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+        .await
+        .unwrap();
+}
+
+fn git_head(dir: &Path) -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 fn init_git_repo(path: &Path) {
