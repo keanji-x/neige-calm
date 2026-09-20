@@ -40,8 +40,11 @@ const FAILURE_SENTENCES: &str = include_str!("../../prompts/delivery/git-deliver
 
 /// Evidence copied from `<result_path>.stdout` into `failure_reason` is cut to this many lines...
 pub(crate) const FAILURE_EVIDENCE_MAX_LINES: usize = 8;
-/// ...of at most this many bytes each.
-pub(crate) const FAILURE_EVIDENCE_MAX_LINE_BYTES: usize = 200;
+/// ...of at most this many bytes each. A production-shaped provenance observation line
+/// (`provenance realpath=<…/.claude/worktrees/<t>/<c>> common_dir=<…> registered=0`) measures
+/// 250–320 bytes; the cap must keep its `common_dir=` / `registered=` facts, which are what the
+/// 10 / 12 sentences point the reader at.
+pub(crate) const FAILURE_EVIDENCE_MAX_LINE_BYTES: usize = 1024;
 
 /// The `last_error_class` values of a forge action that ran (or was proven not to have landed):
 /// with no result file these are the only classes that mean "the script did not pin a ref".
@@ -141,7 +144,7 @@ pub(crate) fn delivery_argv(
 
 /// The four-field extraction table of a kernel delivery's `worktree.committed`
 /// (`branch`, `commit_sha`, `delivery_id`, `base_is_ancestor` from the script's JSON line).
-fn worktree_committed_delivery_fields() -> ForgeEventSpec {
+pub(super) fn worktree_committed_delivery_fields() -> ForgeEventSpec {
     let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
     ForgeEventSpec {
         event_kind: "worktree.committed".into(),

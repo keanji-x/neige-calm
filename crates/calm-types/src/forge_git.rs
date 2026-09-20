@@ -33,23 +33,30 @@ pub const GIT_LEASE_PROVENANCE_SCRIPT: &str = "neige_lease_provenance() {\n\
 
 /// The kernel delivery script (#1727 S4 D2): `$1 message, $2 branch, $3 ref, $4 base_sha,
 /// $5 canonical_path, $6 git_common_dir`; run as `sh -c "<GIT_LEASE_PROVENANCE_SCRIPT>\n<this>"`.
+/// Order: provenance, operation in progress, branch, base object, stage/commit, ancestry, ref —
+/// the in-progress check runs before the branch check because a conflicted rebase detaches HEAD.
 /// Exit vocabulary: 0 printed the JSON line and created the ref; 10 / 11 / 12 / 15 are provenance
 /// mismatches (identity, branch, unregistered, operation in progress — 15 prints its evidence
 /// first); 13 the base object is unreadable or `merge-base` failed; 14 an observation failed;
 /// anything else is git's own code. Every non-zero exit happens before `update-ref`, which is the
 /// last change the script makes; the ancestry observation is computed on the same OID the ref pins.
+/// No observation goes through ref DWIM: the branch check compares the full symbolic ref
+/// (`refs/heads/<branch>`; a tag named like the branch makes `--short` print `heads/<branch>`),
+/// and the in-progress check tests the worktree-private pseudo-ref *files* (`--git-path`; an
+/// ordinary branch named `MERGE_HEAD` resolves under `rev-parse --verify`).
 pub const GIT_DELIVERY_SCRIPT: &str = "set -e\n\
     rc=0; neige_lease_provenance \"$5\" \"$6\" || rc=$?\n\
     case $rc in 0) ;; 10|12) exit $rc;; *) exit 14;; esac\n\
-    rc=0; branch_out=$(git symbolic-ref --short -q HEAD) || rc=$?\n\
-    case $rc in 0) branch=$branch_out;; 1) branch='';; *) exit 14;; esac\n\
-    [ \"$branch\" = \"$2\" ] || exit 11\n\
     u=$(git ls-files -u) || exit 14\n\
     [ -z \"$u\" ] || { printf '%s\\n' \"$u\"; exit 15; }\n\
     for h in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD REBASE_HEAD; do\n\
-    rc=0; git rev-parse -q --verify \"$h\" >/dev/null || rc=$?\n\
-    case $rc in 0) printf '%s\\n' \"$h\"; exit 15;; 1) ;; *) exit 14;; esac\n\
+    p=$(git rev-parse --git-path \"$h\") || exit 14\n\
+    [ -e \"$p\" ] || continue\n\
+    printf '%s\\n' \"$h\"; exit 15\n\
     done\n\
+    rc=0; ref_out=$(git symbolic-ref -q HEAD) || rc=$?\n\
+    case $rc in 0) ref=$ref_out;; 1) ref='';; *) exit 14;; esac\n\
+    [ \"$ref\" = \"refs/heads/$2\" ] || exit 11\n\
     git cat-file -e \"$4^{commit}\" || exit 13\n\
     git add -A\n\
     git diff --cached --quiet || git commit -q -m \"$1\"\n\

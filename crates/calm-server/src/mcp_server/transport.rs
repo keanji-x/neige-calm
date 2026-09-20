@@ -784,6 +784,9 @@ pub(crate) async fn submit_forge_action(
     cwd_lease: PathBuf,
     payload: PluginForgePayload,
 ) -> Result<std::result::Result<ForgeActionSubmission, String>, RpcError> {
+    // A malformed payload is answered before the runtime is consulted (the pre-refactor order).
+    validate_plugin_forge_payload(&payload)?;
+
     let Some(runtime) = ctx.operation_runtime.get().cloned() else {
         return Err(RpcError::internal("operation runtime not bound"));
     };

@@ -19,11 +19,12 @@ use super::delivery::{
     candidate_ref_name, classify_failure, delivery_argv, delivery_by_id_tx,
     delivery_latest_for_attempt_tx, delivery_message, forge_payload_for,
     insert_initial_delivery_tx, lease_for_delivery_tx, settle_candidate_tx, settle_failed_tx,
-    unsettled_deliveries_for_track_tx,
+    unsettled_deliveries_for_track_tx, worktree_committed_delivery_fields,
 };
 use super::view::{
     AbandonmentFacts, CandidateBinding, CandidateWorkspace, DeliveryFailure, DeliveryState,
-    MISMATCH_ABANDONMENT_WITH_CANDIDATE, MISMATCH_DELIVERY_ROW_MISSING, NoBindingReason,
+    MISMATCH_ABANDONMENT_WITH_CANDIDATE, MISMATCH_CANDIDATE_ROW_MISSING,
+    MISMATCH_CANDIDATE_WITH_FAILED_SETTLEMENT, MISMATCH_DELIVERY_ROW_MISSING, NoBindingReason,
     UnboundReason, candidate_binding, delivery_state,
 };
 use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
@@ -403,7 +404,9 @@ fn live_and_recovery_outputs_are_byte_equal() {
 }
 
 /// A25 (script level) — HEAD off the slice branch (switched or detached) is exit 11 with an
-/// empty stdout: nothing staged, no commit, no ref. On the branch the same tree delivers.
+/// empty stdout: nothing staged, no commit, no ref. On the branch the same tree delivers, and
+/// so does a branch shadowed by a tag of the same name: the check compares the full symbolic
+/// ref, never the DWIM `--short` form (which prints `heads/<branch>` once the tag exists).
 #[test]
 fn delivery_script_refuses_switched_branch_and_detached_head() {
     let repo = ScriptRepo::new();
@@ -439,12 +442,40 @@ fn delivery_script_refuses_switched_branch_and_detached_head() {
         repo.ref_target().as_deref(),
         Some(json_line(&delivered)["commit"].as_str().unwrap())
     );
+
+    // Positive: a tag named like the slice branch. `symbolic-ref --short` disambiguates to
+    // `heads/<branch>` and would read as "switched"; the full ref is still the slice branch.
+    let repo = ScriptRepo::new();
+    let commits = repo.commit_count();
+    git(&repo.lease, &["tag", &repo.branch.clone(), "HEAD"]);
+    assert_eq!(
+        git(&repo.lease, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        format!("heads/{}", repo.branch),
+        "test setup: the tag makes the DWIM form ambiguous"
+    );
+    assert_eq!(
+        git(&repo.lease, &["symbolic-ref", "-q", "HEAD"]),
+        format!("refs/heads/{}", repo.branch)
+    );
+    repo.worker_edit("worker.txt", "tagged\n");
+    let tagged = repo.run_delivery();
+    assert_exit(&tagged, 0);
+    assert_eq!(repo.commit_count(), commits + 1, "delivered on the branch");
+    assert_eq!(
+        repo.ref_target().as_deref(),
+        Some(json_line(&tagged)["commit"].as_str().unwrap())
+    );
+    assert_eq!(json_line(&tagged)["branch"], json!(repo.branch));
 }
 
 /// A25b (script level) — an operation in progress is exit 15 with its evidence on stdout, before
 /// anything is staged: a conflicted merge (paths), a clean `--no-ff --no-commit` merge
 /// (`MERGE_HEAD`), a conflicted cherry-pick (paths, not `CHERRY_PICK_HEAD` — the index check
-/// runs first), and a cherry-pick resolved with `git add` but not continued (`CHERRY_PICK_HEAD`).
+/// runs first), a cherry-pick resolved with `git add` but not continued (`CHERRY_PICK_HEAD`),
+/// a conflicted rebase (paths; HEAD is detached, and the in-progress check runs before the
+/// branch check so this is 15, not 11), the same rebase resolved but not continued
+/// (`REBASE_HEAD`), and a clean `revert --no-commit` (`REVERT_HEAD`). The pseudo-ref check
+/// tests the worktree-private files, so an ordinary branch named `MERGE_HEAD` delivers.
 /// After `git merge --abort` the same lease delivers.
 #[test]
 fn delivery_script_refuses_in_progress_operations() {
@@ -517,6 +548,21 @@ fn delivery_script_refuses_in_progress_operations() {
     assert_exit(&merge, 15);
     assert_eq!(stdout(&merge), "MERGE_HEAD\n");
     assert!(repo.pseudo_ref_exists("MERGE_HEAD"));
+    // The lease is a linked worktree: the file the check found lives in its private gitdir.
+    let merge_head = PathBuf::from(git(
+        &repo.lease,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "MERGE_HEAD",
+        ],
+    ));
+    assert!(
+        merge_head.starts_with(repo.common_dir.join("worktrees")) && merge_head.is_file(),
+        "{}",
+        merge_head.display()
+    );
     assert_eq!(repo.commit_count(), commits);
     assert_eq!(repo.ref_target(), None);
 
@@ -553,6 +599,80 @@ fn delivery_script_refuses_in_progress_operations() {
     assert_eq!(repo.commit_count(), commits);
     assert_eq!(repo.ref_target(), None);
     assert!(repo.pseudo_ref_exists("CHERRY_PICK_HEAD"));
+
+    // 5. Positive: an ordinary branch named `MERGE_HEAD`. `rev-parse --verify MERGE_HEAD`
+    // resolves it, the worktree-private file does not exist, nothing is in progress.
+    let repo = ScriptRepo::new();
+    let commits = repo.commit_count();
+    git(&repo.lease, &["branch", "MERGE_HEAD", "HEAD"]);
+    assert!(
+        repo.pseudo_ref_exists("MERGE_HEAD"),
+        "test setup: the branch resolves under rev-parse --verify"
+    );
+    repo.worker_edit("worker.txt", "branch named MERGE_HEAD\n");
+    let delivered = repo.run_delivery();
+    assert_exit(&delivered, 0);
+    assert_eq!(repo.commit_count(), commits + 1);
+    assert_eq!(
+        repo.ref_target().as_deref(),
+        Some(json_line(&delivered)["commit"].as_str().unwrap())
+    );
+
+    // 6. Conflicted rebase: HEAD is detached, REBASE_HEAD exists, the index has unmerged
+    // entries. The in-progress check runs before the branch check: 15 with the paths, not 11.
+    let repo = ScriptRepo::new();
+    let theirs = conflicting(&repo);
+    let commits = repo.commit_count();
+    assert!(
+        !git_output(&repo.lease, &["rebase", "-q", &theirs])
+            .status
+            .success(),
+        "test setup: the rebase conflicts"
+    );
+    assert!(
+        !git_output(&repo.lease, &["symbolic-ref", "-q", "HEAD"])
+            .status
+            .success(),
+        "test setup: a conflicted rebase detaches HEAD"
+    );
+    assert!(repo.pseudo_ref_exists("REBASE_HEAD"));
+    let detached_head = repo.head();
+    let rebase = repo.run_delivery();
+    assert_exit(&rebase, 15);
+    assert!(stdout(&rebase).contains("base.txt"), "{}", stdout(&rebase));
+    assert!(
+        !stdout(&rebase).contains("REBASE_HEAD"),
+        "the index check exits first: {}",
+        stdout(&rebase)
+    );
+    assert_eq!(repo.head(), detached_head, "no commit");
+    assert_eq!(repo.commit_count(), commits);
+    assert_eq!(repo.ref_target(), None);
+    assert!(repo.pseudo_ref_exists("REBASE_HEAD"));
+
+    // 7. The same rebase resolved with `git add` but not `--continue`: only REBASE_HEAD.
+    std::fs::write(repo.lease.join("base.txt"), "resolved\n").unwrap();
+    git(&repo.lease, &["add", "base.txt"]);
+    assert_eq!(git(&repo.lease, &["ls-files", "-u"]), "");
+    let resolved = repo.run_delivery();
+    assert_exit(&resolved, 15);
+    assert_eq!(stdout(&resolved), "REBASE_HEAD\n");
+    assert_eq!(repo.head(), detached_head, "no commit");
+    assert_eq!(repo.ref_target(), None);
+    assert!(repo.pseudo_ref_exists("REBASE_HEAD"));
+
+    // 8. A clean `revert --no-commit`: only REVERT_HEAD.
+    let repo = ScriptRepo::new();
+    let commits = repo.commit_count();
+    git(&repo.lease, &["revert", "--no-commit", "HEAD"]);
+    assert_eq!(git(&repo.lease, &["ls-files", "-u"]), "");
+    assert!(repo.pseudo_ref_exists("REVERT_HEAD"));
+    let revert = repo.run_delivery();
+    assert_exit(&revert, 15);
+    assert_eq!(stdout(&revert), "REVERT_HEAD\n");
+    assert_eq!(repo.commit_count(), commits);
+    assert_eq!(repo.ref_target(), None);
+    assert!(repo.pseudo_ref_exists("REVERT_HEAD"));
 }
 
 /// A27 (script level) — a Track whose cwd is itself a linked worktree delivers (the provenance
@@ -643,6 +763,94 @@ fn delivery_script_records_base_not_ancestor_after_rebase() {
     assert_eq!(
         repo.ref_target().as_deref(),
         Some(line["commit"].as_str().unwrap())
+    );
+}
+
+/// A3b's second fixture (script level) — the worker changed a file, and a competing writer
+/// pulls the slice branch back to C0 inside the `git commit` invocation (a PATH wrapper resets
+/// the branch after forwarding the commit). The script captures `new` once, after the commit
+/// returns: it reads C0, pins the ref at C0 and prints `commit == base`; the commit it made is
+/// an orphan, not the candidate. Fed through the production event table,
+/// `candidate::from_operation_result` and `view::delivery_state`, the delivery reads
+/// `no_change` — OID equality, never "did the script commit".
+#[test]
+fn delivery_script_no_change_after_commit_reset() {
+    let repo = ScriptRepo::new();
+    let c0 = repo.base_sha.clone();
+    let lease = WorkspaceLease {
+        lease_id: "lease-1".into(),
+        card_id: CARD.into(),
+        track_id: TRACK.into(),
+        path: repo.lease.to_str().unwrap().to_string(),
+        state: "held".into(),
+        boot_id: None,
+        base: Some(LeaseBase {
+            base_sha: c0.clone(),
+            base_source: base::BaseSource::Head,
+            base_attempt_id: None,
+            canonical_path: repo.canonical_path.clone(),
+            git_common_dir: repo.common_dir.clone(),
+        }),
+        delivery_policy: Some(DeliveryPolicy::Kernel),
+    };
+    let delivery = delivery_row(None);
+    let payload = forge_payload_for(&delivery, &lease).unwrap();
+    assert_eq!(payload.argv, repo.argv(), "the production argv");
+
+    repo.worker_edit("worker.txt", "worker output\n");
+    let wrapper = format!(
+        "\"$REAL\" \"$@\"\nrc=$?\nif [ \"$1\" = commit ]; then \
+         \"$REAL\" update-ref refs/heads/{} {c0}; fi\nexit $rc",
+        repo.branch
+    );
+    let path = repo.path_with_git_wrapper(&wrapper);
+    let live = repo.run_in(&repo.lease, &payload.argv, Some(path));
+    assert_exit(&live, 0);
+    let line = json_line(&live);
+    assert_eq!(line["commit"], json!(c0), "the captured OID is the base");
+    assert_eq!(line["base_is_ancestor"], json!(true));
+    assert_eq!(repo.ref_target().as_deref(), Some(c0.as_str()), "ref → C0");
+    assert_eq!(repo.head(), c0);
+    // The orphan commit exists (the worker's file is in its tree) but nothing points at it.
+    let orphan = git(
+        &repo.lease,
+        &["rev-parse", &format!("{}@{{1}}", repo.branch)],
+    );
+    assert_ne!(orphan, c0);
+    assert_eq!(
+        git(
+            &repo.lease,
+            &["ls-tree", "--name-only", &orphan, "worker.txt"]
+        ),
+        "worker.txt"
+    );
+    assert_eq!(
+        git(&repo.lease, &["for-each-ref", "--points-at", &orphan]),
+        "",
+        "no ref points at the orphan"
+    );
+
+    // The production chain: the payload's four-field extraction table (its embedding in the
+    // payload is pinned by `delivery_payload_semantic_hash_is_stable`) → candidate row →
+    // derived state.
+    let event = worktree_committed_delivery_fields()
+        .extract_payload(0, Some(&line))
+        .unwrap();
+    let candidate = from_operation_result(&delivery, &lease, &Value::Object(event), 9).unwrap();
+    assert_eq!(candidate.commit_sha, c0);
+    assert_eq!(candidate.base_sha, c0);
+    assert_eq!(candidate.ref_name, repo.ref_name);
+    let state = delivery_state(
+        TaskStatus::Done,
+        None,
+        Some(&delivery_row(Some(candidate_settled()))),
+        Some(&candidate),
+        None,
+    );
+    assert!(matches!(state, DeliveryState::NoChange { .. }), "{state:?}");
+    assert_eq!(
+        serde_json::to_value(&state).unwrap()["state"],
+        json!("no_change")
     );
 }
 
@@ -1106,12 +1314,33 @@ async fn settlement_written_once() {
     let candidate = fx.insert_delivery("attempt-candidate").await;
     let pending = fx.insert_delivery("attempt-pending").await;
 
-    // An unsettled row refuses a non-settling UPDATE.
-    let refused =
-        sqlx::query("UPDATE task_git_deliveries SET reason = 'edited' WHERE delivery_id = ?1")
+    // An unsettled row refuses a non-settling UPDATE: one that edits metadata, and one that
+    // writes `settlement = NULL` and nothing else (only the `NEW.settlement IS NULL` clause
+    // rejects the latter; the metadata clauses do not fire).
+    for sql in [
+        "UPDATE task_git_deliveries SET reason = 'edited' WHERE delivery_id = ?1",
+        "UPDATE task_git_deliveries SET settlement = NULL WHERE delivery_id = ?1",
+    ] {
+        let refused = sqlx::query(sql)
             .bind(&pending.delivery_id)
             .execute(fx.repo.pool())
             .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("written once")),
+            "{sql}: {refused:?}"
+        );
+    }
+    // A first settlement that also changes a metadata column is refused as a whole.
+    let refused = sqlx::query(
+        "UPDATE task_git_deliveries SET settlement = 'failed', settled_event_id = 5, \
+         failure_code = 'commit_failed', failure_reason = 'x', retry_allowed = 1, \
+         wake_reason = 'failed', created_at_ms = created_at_ms + 1 WHERE delivery_id = ?1",
+    )
+    .bind(&pending.delivery_id)
+    .execute(fx.repo.pool())
+    .await;
     assert!(
         refused
             .as_ref()
@@ -1698,8 +1927,9 @@ fn classify_failure_maps_every_code() {
         assert!(!sentence.contains(G4_CLAUSE));
     }
 
-    // Evidence is cut to the fixed limits.
-    let long = "x".repeat(FAILURE_EVIDENCE_MAX_LINE_BYTES * 3);
+    // Evidence is cut to the fixed limits: a 1100-byte line is truncated to the cap.
+    let long = "x".repeat(1100);
+    assert!(long.len() > FAILURE_EVIDENCE_MAX_LINE_BYTES);
     let many = (0..FAILURE_EVIDENCE_MAX_LINES * 2)
         .map(|_| long.as_str())
         .collect::<Vec<_>>()
@@ -1712,6 +1942,35 @@ fn classify_failure_maps_every_code() {
             .iter()
             .all(|line| line.len() == FAILURE_EVIDENCE_MAX_LINE_BYTES)
     );
+
+    // A production-shaped observation line (two absolute paths with real-length ids) survives
+    // intact: the `common_dir=` and `registered=` facts the 10 / 12 sentences point at are the
+    // tail of the line, which is exactly what a 200-byte cap cut off.
+    let repo_root = "/mnt/data2/kenji/neige-calm/.claude/worktrees/wt-primary-checkout";
+    let lease_path =
+        workspace_lease_path_for(Path::new(repo_root), &"t".repeat(32), &"c".repeat(32)).unwrap();
+    let production_line = format!(
+        "provenance realpath={} common_dir={repo_root}/.git registered=0",
+        lease_path.display()
+    );
+    assert!(
+        (250..=320).contains(&production_line.len()),
+        "{} bytes: the measured production range",
+        production_line.len()
+    );
+    for code in [10, 12] {
+        let (_, reason, _) = classify_failure(
+            Some(&result_file(code, &format!("{production_line}\n"))),
+            None,
+            true,
+        );
+        assert_eq!(
+            reason.lines().nth(1),
+            Some(production_line.as_str()),
+            "{code}: the observation line is carried whole"
+        );
+        assert!(reason.ends_with(" registered=0"), "{code}: {reason}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1779,9 +2038,10 @@ fn abandonment() -> AbandonmentFacts {
     }
 }
 
-/// D2's derivation table, one assertion per input (13: the two `not_reported` statuses, the
-/// two `pending`/`canceled` no-lease statuses, `failed`, the two `inconsistent` statuses, and
-/// the six row shapes).
+/// D2's derivation table, one assertion per input (15: the two `not_reported` statuses, the
+/// two `pending`/`canceled` no-lease statuses, `failed`, the two `inconsistent` statuses, the
+/// six row shapes, and the two `inconsistent` row shapes — a `candidate` settlement without its
+/// row, a `failed` settlement with one).
 #[test]
 fn delivery_state_covers_every_row() {
     let pending = delivery_row(None);
@@ -1917,6 +2177,40 @@ fn delivery_state_covers_every_row() {
         DeliveryState::Inconsistent {
             mismatches: vec![MISMATCH_ABANDONMENT_WITH_CANDIDATE]
         }
+    );
+    // The two row shapes one transaction never leaves behind, each with its own tag.
+    for abandoned in [None, Some(abandonment())] {
+        assert_eq!(
+            delivery_state(
+                TaskStatus::Done,
+                None,
+                Some(&with_candidate),
+                None,
+                abandoned.as_ref()
+            ),
+            DeliveryState::Inconsistent {
+                mismatches: vec![MISMATCH_CANDIDATE_ROW_MISSING]
+            },
+            "candidate settlement without a candidate row ({abandoned:?})"
+        );
+        assert_eq!(
+            delivery_state(
+                TaskStatus::Done,
+                None,
+                Some(&failed),
+                Some(&committed),
+                abandoned.as_ref()
+            ),
+            DeliveryState::Inconsistent {
+                mismatches: vec![MISMATCH_CANDIDATE_WITH_FAILED_SETTLEMENT]
+            },
+            "failed settlement with a candidate row ({abandoned:?})"
+        );
+    }
+    assert_eq!(MISMATCH_CANDIDATE_ROW_MISSING, "candidate_row_missing");
+    assert_eq!(
+        MISMATCH_CANDIDATE_WITH_FAILED_SETTLEMENT,
+        "candidate_with_failed_settlement"
     );
 }
 
