@@ -264,9 +264,10 @@ impl Fx {
         self.dispatcher.scheduler()
     }
 
-    /// A kernel restart: a new Dispatcher (live listener + fresh scheduler) over the same
-    /// runtime, events bus and harness registry, then operation recovery and the boot sweep.
-    async fn reboot(&mut self) {
+    /// A new Dispatcher (live listener + fresh scheduler) over the same runtime, events bus and
+    /// harness registry — no recovery, no boot sweep: the live path resumes where
+    /// `abort_event_listener_for_test` stopped it.
+    fn respawn_dispatcher(&mut self) {
         self.dispatcher.abort_event_listener_for_test();
         let route_repo: Arc<dyn calm_server::db::RouteRepo> = self.boot.repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
@@ -277,6 +278,11 @@ impl Fx {
             terminal_renderer,
             Arc::new(DaemonClient::new_stub()),
         );
+    }
+
+    /// A kernel restart: a new Dispatcher, then operation recovery and the boot sweep.
+    async fn reboot(&mut self) {
+        self.respawn_dispatcher();
         let plan = self.runtime.recover_on_boot().await.unwrap();
         self.runtime.apply_recovery(plan).await.unwrap();
         let scheduler = self.scheduler();
@@ -692,7 +698,7 @@ async fn result_code(fx: &Fx, attempt: &str) -> Option<i32> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn claude_worker_completion_yields_kernel_candidate() {
-    let fx = fixture().await;
+    let mut fx = fixture().await;
     let planner = fx.planner().await;
     let worker = fx.claude_worker();
     let lease = fx.kernel_lease(&worker.card_id).await;
@@ -701,7 +707,38 @@ async fn claude_worker_completion_yields_kernel_candidate() {
         .await;
     std::fs::write(lease.path.join("worker.txt"), "delivered\n").unwrap();
 
+    // The report handler's own submission, observed before any scheduler pass could submit the
+    // row under the same key (a pass would hide a handler that skips Claude). The Dispatcher's
+    // live listener pokes the scheduler on `task.completed`, so it is stopped for this window;
+    // the declaration's `plan.updated` poke is drained first (`schedule_track` waits for the
+    // Track lock) and the poke count is held constant across the call.
+    fx.dispatcher.abort_event_listener_for_test();
+    let scheduler = fx.scheduler();
+    scheduler.schedule_track(fx.boot.track_id.clone()).await;
+    let pokes = scheduler.poke_count_for_test();
     fx.complete(&worker, &task.id).await;
+    let row = fx.delivery_row(&task.id).await.expect("delivery row");
+    assert_eq!(row.ordinal, 1);
+    assert!(
+        row.settlement.is_none(),
+        "no scheduler pass has run: {row:?}"
+    );
+    assert_eq!(
+        scheduler.poke_count_for_test(),
+        pokes,
+        "no scheduler poke in the window"
+    );
+    let op = fx
+        .forge_op(&row.forge_idempotency_key)
+        .await
+        .expect("the report handler submitted the delivery before returning");
+    assert_eq!(op.operation_key, row.operation_key, "under the row's key");
+    assert_eq!(fx.forge_op_count().await, 1);
+
+    // The live path resumes: a fresh listener pushes the settlement to the Planner, and the
+    // scheduler drives the row (Operation present) to settlement.
+    fx.respawn_dispatcher();
+    fx.scheduler().poke(fx.boot.track_id.clone());
     let settled = fx.wait_settled(&task.id).await;
 
     let row = fx.delivery_row(&task.id).await.expect("delivery row");

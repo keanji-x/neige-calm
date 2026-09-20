@@ -43,13 +43,17 @@ pub const GIT_LEASE_PROVENANCE_SCRIPT: &str = "neige_lease_provenance() {\n\
 /// No observation goes through ref DWIM: the branch check compares the full symbolic ref
 /// (`refs/heads/<branch>`; a tag named like the branch makes `--short` print `heads/<branch>`),
 /// and the in-progress check tests the worktree-private pseudo-ref *files* (`--git-path`; an
-/// ordinary branch named `MERGE_HEAD` resolves under `rev-parse --verify`).
+/// ordinary branch named `MERGE_HEAD` resolves under `rev-parse --verify`) plus the two state
+/// *directories* `rebase-merge` / `rebase-apply` (`[ -e ]` holds for either): an interactive
+/// rebase paused at `break` and a `git am` whose conflict was `git add`ed but not `--continue`d
+/// leave no pseudo-ref at all — the first detaches HEAD with no `REBASE_HEAD`, the second
+/// leaves HEAD on the branch with a clean index. The evidence printed for a directory is its name.
 pub const GIT_DELIVERY_SCRIPT: &str = "set -e\n\
     rc=0; neige_lease_provenance \"$5\" \"$6\" || rc=$?\n\
     case $rc in 0) ;; 10|12) exit $rc;; *) exit 14;; esac\n\
     u=$(git ls-files -u) || exit 14\n\
     [ -z \"$u\" ] || { printf '%s\\n' \"$u\"; exit 15; }\n\
-    for h in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD REBASE_HEAD; do\n\
+    for h in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD REBASE_HEAD rebase-merge rebase-apply; do\n\
     p=$(git rev-parse --git-path \"$h\") || exit 14\n\
     [ -e \"$p\" ] || continue\n\
     printf '%s\\n' \"$h\"; exit 15\n\

@@ -318,6 +318,17 @@ impl Scheduler {
 
 /// Step 3: the candidate the result names, confirmed against the ref in the lease's common dir;
 /// a result the ref does not confirm (or one the kernel cannot read) settles as `unresolved`.
+///
+/// Two observation outcomes are deliberately told apart. A `git` that runs and exits non-zero
+/// (the common dir gone, the ref unreadable) is `Ok(None)` from [`resolve_ref_commit`] and settles
+/// the row `unresolved`: the kernel observed the repository and could not confirm the candidate.
+/// A `git` the kernel could not spawn at all (binary missing from the kernel's PATH, fork
+/// failure) is an `Err` that propagates out of this function unsettled: an observation the kernel
+/// never made is not a verdict (D3.0 — failing to check is not a failed check), and settling it
+/// `unresolved` would consume the row's one settlement on a kernel-side fault the next tick may
+/// not have. Nothing is stuck: the row keeps `settlement IS NULL`, so `sweep_reconcile`'s
+/// unsettled-delivery query lists its Track on every tick and `resume_git_deliveries` drives it
+/// again (the Operation is already terminal, so the retry is this function alone).
 async fn candidate_settlement(
     delivery: &DeliveryRow,
     lease: &WorkspaceLease,
@@ -346,7 +357,18 @@ async fn candidate_settlement(
             lease.lease_id
         )));
     };
-    let resolved = resolve_ref_commit(&base.git_common_dir, &candidate.ref_name).await?;
+    let resolved = match resolve_ref_commit(&base.git_common_dir, &candidate.ref_name).await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                delivery_id = %delivery.delivery_id,
+                ref_name = %candidate.ref_name,
+                "git delivery ref observation failed; row stays unsettled, next sweep retries"
+            );
+            return Err(error);
+        }
+    };
     if resolved.as_deref() != Some(candidate.commit_sha.as_str()) {
         return Ok(failed(format!(
             "ref {} does not resolve to the reported commit {}",

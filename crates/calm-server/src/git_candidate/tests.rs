@@ -474,9 +474,12 @@ fn delivery_script_refuses_switched_branch_and_detached_head() {
 /// runs first), a cherry-pick resolved with `git add` but not continued (`CHERRY_PICK_HEAD`),
 /// a conflicted rebase (paths; HEAD is detached, and the in-progress check runs before the
 /// branch check so this is 15, not 11), the same rebase resolved but not continued
-/// (`REBASE_HEAD`), and a clean `revert --no-commit` (`REVERT_HEAD`). The pseudo-ref check
-/// tests the worktree-private files, so an ordinary branch named `MERGE_HEAD` delivers.
-/// After `git merge --abort` the same lease delivers.
+/// (`REBASE_HEAD`), a clean `revert --no-commit` (`REVERT_HEAD`), an interactive rebase paused
+/// at `break` (HEAD detached, no pseudo-ref at all — only the `rebase-merge` directory), and a
+/// `git am` whose conflict was `git add`ed but not `--continue`d (HEAD on the branch, clean
+/// index — only the `rebase-apply` directory). The pseudo-ref check tests the worktree-private
+/// files, so an ordinary branch named `MERGE_HEAD` delivers. After `git merge --abort` the same
+/// lease delivers.
 #[test]
 fn delivery_script_refuses_in_progress_operations() {
     // A branch off the base that changes `base.txt` in a conflicting way, and one that only adds.
@@ -673,6 +676,155 @@ fn delivery_script_refuses_in_progress_operations() {
     assert_eq!(repo.commit_count(), commits);
     assert_eq!(repo.ref_target(), None);
     assert!(repo.pseudo_ref_exists("REVERT_HEAD"));
+
+    // 9. An interactive rebase paused at a `break` todo line: HEAD is detached, the index is
+    // clean and there is no `REBASE_HEAD` (nor any other pseudo-ref) — only the `rebase-merge`
+    // directory in the worktree's private gitdir. Without the directory check the branch check
+    // would read this as a branch switch (11).
+    let repo = ScriptRepo::new();
+    let theirs = conflicting(&repo);
+    let commits = repo.commit_count();
+    let head_before = repo.head();
+    let rebase = neige_git_command()
+        .args(["rebase", "-i", "-q", &theirs])
+        .env("GIT_SEQUENCE_EDITOR", "sed -i '1i break'")
+        .current_dir(&repo.lease)
+        .output()
+        .expect("spawn git");
+    assert!(
+        rebase.status.success(),
+        "test setup: rebase -i stops at break\nstderr:\n{}",
+        String::from_utf8_lossy(&rebase.stderr)
+    );
+    let rebase_merge = PathBuf::from(git(
+        &repo.lease,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "rebase-merge",
+        ],
+    ));
+    assert!(
+        rebase_merge.starts_with(repo.common_dir.join("worktrees")) && rebase_merge.is_dir(),
+        "test setup: the state directory lives in the linked worktree's private gitdir: {}",
+        rebase_merge.display()
+    );
+    assert!(
+        !git_output(&repo.lease, &["symbolic-ref", "-q", "HEAD"])
+            .status
+            .success(),
+        "test setup: the paused rebase detaches HEAD"
+    );
+    assert_eq!(git(&repo.lease, &["ls-files", "-u"]), "");
+    for pseudo_ref in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "REBASE_HEAD",
+    ] {
+        assert!(
+            !repo.pseudo_ref_exists(pseudo_ref),
+            "test setup: {pseudo_ref} does not exist at a break"
+        );
+    }
+    let paused = repo.run_delivery();
+    assert_exit(&paused, 15);
+    assert_eq!(stdout(&paused), "rebase-merge\n");
+    assert_ne!(
+        repo.head(),
+        head_before,
+        "test setup: HEAD sits on the onto commit"
+    );
+    assert_eq!(
+        git(&repo.lease, &["rev-list", "--count", &repo.branch.clone()]),
+        commits.to_string(),
+        "no commit on the branch"
+    );
+    assert_eq!(repo.ref_target(), None);
+    assert!(rebase_merge.is_dir(), "the paused rebase is untouched");
+
+    // 10. `git am -3` of a conflicting patch, resolved with `git add` but not `--continue`:
+    // HEAD stays on the branch, the index is clean and no pseudo-ref exists — only the
+    // `rebase-apply` directory. Without the directory check the script commits the resolution,
+    // pins it as the candidate and leaves the worktree mid-`am`.
+    let repo = ScriptRepo::new();
+    let theirs = conflicting(&repo);
+    let commits = repo.commit_count();
+    let head_before = repo.head();
+    let patches = repo.lease.parent().unwrap().join("patches");
+    git(
+        &repo.track_root,
+        &[
+            "format-patch",
+            "-1",
+            &theirs,
+            "-q",
+            "-o",
+            patches.to_str().unwrap(),
+        ],
+    );
+    let patch = std::fs::read_dir(&patches)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "patch"))
+        .expect("one patch file");
+    assert!(
+        !git_output(&repo.lease, &["am", "-3", patch.to_str().unwrap()])
+            .status
+            .success(),
+        "test setup: the patch conflicts"
+    );
+    assert_ne!(
+        git(&repo.lease, &["ls-files", "-u"]),
+        "",
+        "test setup: the three-way fallback leaves unmerged entries"
+    );
+    std::fs::write(repo.lease.join("base.txt"), "resolved\n").unwrap();
+    git(&repo.lease, &["add", "base.txt"]);
+    assert_eq!(git(&repo.lease, &["ls-files", "-u"]), "");
+    assert_eq!(
+        git(&repo.lease, &["symbolic-ref", "-q", "HEAD"]),
+        format!("refs/heads/{}", repo.branch),
+        "test setup: `am` keeps HEAD on the branch"
+    );
+    for pseudo_ref in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "REBASE_HEAD",
+    ] {
+        assert!(
+            !repo.pseudo_ref_exists(pseudo_ref),
+            "test setup: {pseudo_ref} does not exist mid-am"
+        );
+    }
+    let rebase_apply = PathBuf::from(git(
+        &repo.lease,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "rebase-apply",
+        ],
+    ));
+    assert!(
+        rebase_apply.starts_with(repo.common_dir.join("worktrees")) && rebase_apply.is_dir(),
+        "test setup: {}",
+        rebase_apply.display()
+    );
+    let mid_am = repo.run_delivery();
+    assert_exit(&mid_am, 15);
+    assert_eq!(stdout(&mid_am), "rebase-apply\n");
+    assert_eq!(repo.head(), head_before, "no commit");
+    assert_eq!(repo.commit_count(), commits);
+    assert_eq!(repo.ref_target(), None);
+    assert!(rebase_apply.is_dir(), "the `am` is untouched");
+    assert_eq!(
+        git(&repo.lease, &["diff", "--cached", "--name-only"]),
+        "base.txt",
+        "the resolution stays staged, uncommitted"
+    );
 }
 
 /// A27 (script level) — a Track whose cwd is itself a linked worktree delivers (the provenance
