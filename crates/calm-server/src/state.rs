@@ -1722,8 +1722,10 @@ impl AppState {
         // terminal rows whose card has no active worker session (with a
         // 1-minute grace window), and emits `Event::TerminalDeleted`
         // through the same `write_with_event`
-        // pipeline every other write uses so the cleanup is audited. See
-        // `terminal_sweeper` module docs and `docs/sync-engine-design.md` §10.
+        // pipeline every other write uses so the cleanup is audited; the
+        // same tick's second arm ends worker sessions left running on
+        // completed tracks (#1743 §4.2). See `terminal_sweeper` module docs
+        // and `docs/sync-engine-design.md` §10.
         crate::terminal_sweeper::spawn(state.clone());
 
         // Track VCS objects are content-addressed and can be shared by multiple

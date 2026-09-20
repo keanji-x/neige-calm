@@ -22,6 +22,12 @@
 //! behind (session exits and feeder stamps emit no events at all,
 //! F2.25/F2.31/F2.32).
 //!
+//! #1743 §4.1 adds two rules to the fold, both computed from the same
+//! durable rows: a `done` / archived track projects no attention at all
+//! (rule 1 — `working` is still reported), and a `task` / `session` failure
+//! counts only while it is newer than the planner's last completed turn, P
+//! (rule 2 — `sql::PLANNER_LAST_TURN_SQL`). The payload shape is unchanged.
+//!
 //! Transaction shape (design §4.4, `deferred_write_tx_invariant`): every
 //! read is an autocommit single statement (`track_activity::sql`); the
 //! computed payload is compared with the stored one and only a CHANGE is
@@ -36,7 +42,7 @@
 
 pub mod sql;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -162,6 +168,9 @@ pub struct TrackRows {
     /// Worker session ids the in-process harness registry holds LIVE for
     /// this track — backend (i)'s `working` witness (§4.2 table).
     pub live_harness_sessions: Vec<String>,
+    /// P — the planner's last completed turn (#1743 §4.1 rule 2); `None`
+    /// when no planner turn of the track has ever completed.
+    pub planner_last_turn: Option<i64>,
 }
 
 /// The conclusions of one fold, before the high-water mark is merged in.
@@ -221,6 +230,10 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
     let mut working = false;
     let mut items: Vec<ActivityItem> = Vec::new();
     let mut cards: BTreeMap<String, CardState> = BTreeMap::new();
+    // The cards with `working` evidence, kept apart from the max-collapsed
+    // `cards` slots: a `failed` / `input` verdict out-ranks `working` in the
+    // slot, and rule 1 needs the working evidence back once those go.
+    let mut working_cards: BTreeSet<String> = BTreeSet::new();
     let mut e3: Option<i64> = None;
 
     fn raise(cards: &mut BTreeMap<String, CardState>, card_id: &str, state: CardState) {
@@ -229,6 +242,22 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             *slot = state;
         }
     }
+    fn raise_working(
+        cards: &mut BTreeMap<String, CardState>,
+        working_cards: &mut BTreeSet<String>,
+        card_id: &str,
+    ) {
+        working_cards.insert(card_id.to_string());
+        raise(cards, card_id, CardState::Working);
+    }
+
+    // #1743 §4.1 rule 2 — failure aging: a `task` / `session` failure
+    // counts only when it landed AFTER the planner's last completed turn
+    // (`at_ms > P`); P `None` means nothing was ever handled, so it counts.
+    // An aged failure takes its `cards[card] = failed` verdict with it.
+    // Not aged: `lifecycle` items (the track's own phase) and `input` items
+    // (a live state); a `card` item is not a task/session failure.
+    let failure_counts = |at_ms: i64| rows.planner_last_turn.is_none_or(|p| at_ms > p);
 
     // W — the task clause (§4.2 W, F2.22/F2.38/F2.39).
     for t in &rows.tasks {
@@ -237,7 +266,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             "dispatched" | "running" if !is_child_track => {
                 working = true;
                 if let Some(wc) = &t.worker_card_id {
-                    raise(&mut cards, wc, CardState::Working);
+                    raise_working(&mut cards, &mut working_cards, wc);
                 }
             }
             // A sub-track row in flight: the worker is another track, whose
@@ -247,20 +276,25 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             "verifying" => {
                 working = true;
                 if let Some(wc) = &t.worker_card_id {
-                    raise(&mut cards, wc, CardState::Working);
+                    raise_working(&mut cards, &mut working_cards, wc);
                 }
             }
             "failed" => {
-                items.push(ActivityItem {
-                    kind: ItemKind::Failed,
-                    source: ItemSource::Task,
-                    id: t.key.clone(),
-                    card_id: t.worker_card_id.clone(),
-                    at_ms: t.finished_at_ms.unwrap_or(t.updated_at_ms),
-                });
-                if let Some(wc) = &t.worker_card_id {
-                    raise(&mut cards, wc, CardState::Failed);
+                let at_ms = t.finished_at_ms.unwrap_or(t.updated_at_ms);
+                if failure_counts(at_ms) {
+                    items.push(ActivityItem {
+                        kind: ItemKind::Failed,
+                        source: ItemSource::Task,
+                        id: t.key.clone(),
+                        card_id: t.worker_card_id.clone(),
+                        at_ms,
+                    });
+                    if let Some(wc) = &t.worker_card_id {
+                        raise(&mut cards, wc, CardState::Failed);
+                    }
                 }
+                // E3 counts the failure whether or not it is still red
+                // (rule 3: unread is unchanged by aging).
                 e3 = e3.max(t.finished_at_ms);
             }
             "done" => {
@@ -288,16 +322,25 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
         // `state='failed'` item carries the exit writer's `updated_at_ms`
         // (§4.1, v8 A-MIN2).
         let stamp_at = ws.last_activity_ms.unwrap_or(ws.updated_at_ms);
+        // Every `session` failure goes through the aging rule (#1743 §4.1
+        // rule 2); `items` / `cards` are parameters so the `input` pushes
+        // below can keep borrowing them directly.
+        let failed_session =
+            |items: &mut Vec<ActivityItem>, cards: &mut BTreeMap<String, CardState>, at_ms| {
+                if failure_counts(at_ms) {
+                    items.push(session_item(ItemKind::Failed, at_ms));
+                    raise(cards, &ws.card_id, CardState::Failed);
+                }
+            };
 
         if harness {
             // (i) harness codex — planner + assistant.
             if ws.state == "turn_pending" && rows.live_harness_sessions.contains(&ws.id) {
                 working = true;
-                raise(&mut cards, &ws.card_id, CardState::Working);
+                raise_working(&mut cards, &mut working_cards, &ws.card_id);
             }
             if session_failed {
-                items.push(session_item(ItemKind::Failed, ws.updated_at_ms));
-                raise(&mut cards, &ws.card_id, CardState::Failed);
+                failed_session(&mut items, &mut cards, ws.updated_at_ms);
             }
             continue;
         }
@@ -306,8 +349,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             "codex" if ws.isolated => {
                 // (iii) isolated executor — `working` only through W.
                 if session_failed {
-                    items.push(session_item(ItemKind::Failed, ws.updated_at_ms));
-                    raise(&mut cards, &ws.card_id, CardState::Failed);
+                    failed_session(&mut items, &mut cards, ws.updated_at_ms);
                 }
             }
             "codex" => {
@@ -318,7 +360,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                     && thread_status == Some("active")
                 {
                     working = true;
-                    raise(&mut cards, &ws.card_id, CardState::Working);
+                    raise_working(&mut cards, &mut working_cards, &ws.card_id);
                 }
                 if live
                     && matches!(
@@ -330,12 +372,10 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                     raise(&mut cards, &ws.card_id, CardState::Input);
                 }
                 if live && thread_status == Some("systemError") {
-                    items.push(session_item(ItemKind::Failed, stamp_at));
-                    raise(&mut cards, &ws.card_id, CardState::Failed);
+                    failed_session(&mut items, &mut cards, stamp_at);
                 }
                 if session_failed {
-                    items.push(session_item(ItemKind::Failed, ws.updated_at_ms));
-                    raise(&mut cards, &ws.card_id, CardState::Failed);
+                    failed_session(&mut items, &mut cards, ws.updated_at_ms);
                 }
             }
             "claude" => {
@@ -345,7 +385,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                 let fsm_state = fsm.map(|r| r.state.as_str());
                 if !ws.task_bound && live && fsm_state == Some("Working") {
                     working = true;
-                    raise(&mut cards, &ws.card_id, CardState::Working);
+                    raise_working(&mut cards, &mut working_cards, &ws.card_id);
                 }
                 if let Some(row) = fsm.filter(|_| live) {
                     let card_item = |kind: ItemKind| ActivityItem {
@@ -368,8 +408,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                     }
                 }
                 if session_failed {
-                    items.push(session_item(ItemKind::Failed, ws.updated_at_ms));
-                    raise(&mut cards, &ws.card_id, CardState::Failed);
+                    failed_session(&mut items, &mut cards, ws.updated_at_ms);
                 }
             }
             // (v) terminal — never from session signals (no turn concept,
@@ -390,6 +429,23 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
         "blocked" | "reviewing" => items.push(lifecycle_item(ItemKind::Input)),
         "failed" => items.push(lifecycle_item(ItemKind::Failed)),
         _ => {}
+    }
+
+    // #1743 §4.1 rule 1 — terminal-phase filter: on a `done` or archived
+    // track nothing waits on a person. `items` go (so `attention` folds to
+    // `none`) and with them the per-card `input` / `failed` verdicts, which
+    // are the items' per-card form. `working` is NOT filtered, nor are the
+    // `working` verdicts: a task still running on a done track is not
+    // hidden — S2 (the terminal sweeper) is what ends it. `cards` is
+    // rebuilt from the working evidence, not filtered by slot: a card whose
+    // `failed` / `input` verdict had out-ranked its `working` one keeps the
+    // working verdict (review r1, A MINOR-1 / codex P2).
+    if rows.track.lifecycle == "done" || rows.track.archived_at.is_some() {
+        items.clear();
+        cards = working_cards
+            .iter()
+            .map(|card_id| (card_id.clone(), CardState::Working))
+            .collect();
     }
 
     // Deterministic order so the stored payload compares byte-stable:
@@ -481,6 +537,7 @@ impl TrackActivityProjector {
         let tasks = sql::current_tasks(&self.pool, track_id).await?;
         let sessions = sql::eligible_sessions(&self.pool, track_id).await?;
         let card_status = sql::card_status_overlays(&self.pool, track_id).await?;
+        let planner_last_turn = sql::planner_last_turn(&self.pool, track_id).await?;
         let live_harness_sessions = self
             .harness
             .live_for_track(&TrackId::from(track_id.to_string()))
@@ -493,6 +550,7 @@ impl TrackActivityProjector {
             sessions,
             card_status,
             live_harness_sessions,
+            planner_last_turn,
         }))
     }
 

@@ -9,6 +9,7 @@ use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::AgentProvider;
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_interaction::TerminalInteraction;
 use calm_server::track_area_cache::TrackAreaCache;
@@ -63,6 +64,15 @@ impl Harness {
         self.supervisor.sock().to_owned()
     }
     pub async fn start() -> Self {
+        Self::start_inner(false).await
+    }
+    /// The same stack with the fixtures fake shared codex app-server
+    /// (`new_fake_running_with_pending`) in place of the stub, for tests
+    /// that assert on `interrupted_turns_for_test()`.
+    pub async fn start_with_fake_codex() -> Self {
+        Self::start_inner(true).await
+    }
+    async fn start_inner(fake_codex: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let sql = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let repo: Arc<dyn Repo> = sql.clone();
@@ -154,6 +164,14 @@ impl Harness {
             Some(roles),
             Some(areas),
         );
+        let state = if fake_codex {
+            state.with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
+                repo.clone(),
+                None,
+            ))
+        } else {
+            state
+        };
         let app = calm_server::routes::router()
             .layer(axum::middleware::from_fn(
                 calm_server::actor::actor_middleware,

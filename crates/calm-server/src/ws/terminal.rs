@@ -81,7 +81,11 @@ async fn upgrade(
     }
 }
 
-enum LiveRenderer {
+/// What [`resolve_live_renderer_from_terminal`] found. `ChildExited` says
+/// only that NO renderer was obtained on this call (the row records an
+/// exit, the lazy reattach failed, the supervisor knows no live PTY, or the
+/// probe errored — #1743 §4.2 step 4); it is not proof the process is dead.
+pub(crate) enum LiveRenderer {
     Alive(Arc<RendererEntry>),
     ChildExited { exit_code: Option<i32> },
 }
@@ -121,7 +125,14 @@ async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
     resolve_live_renderer_from_terminal(s, term).await
 }
 
-async fn resolve_live_renderer_from_terminal(s: &AppState, term: Terminal) -> Result<LiveRenderer> {
+/// The registry entry for `term`, or a lazy reattach to the PTY the
+/// supervisor still runs (the post-restart shape, K17). `pub(crate)` for the
+/// terminal sweeper's completed-track arm (#1743 §4.2 step 4), which needs
+/// the same reattach before it can reap through a renderer.
+pub(crate) async fn resolve_live_renderer_from_terminal(
+    s: &AppState,
+    term: Terminal,
+) -> Result<LiveRenderer> {
     if let Some(entry) = s.terminal_renderer.get(&term.id) {
         return Ok(LiveRenderer::Alive(entry));
     }
