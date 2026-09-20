@@ -699,6 +699,15 @@ async fn result_code(fx: &Fx, attempt: &str) -> Option<i32> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn claude_worker_completion_yields_kernel_candidate() {
     let mut fx = fixture().await;
+    // The report handler's own submission is asserted before any scheduler pass could submit the
+    // row under the same key (a pass would hide a handler that skips Claude). Every pass in this
+    // fixture starts from the Dispatcher's live listener (`plan.updated` from the declaration,
+    // `task.completed` from the report; the backstop sweeps are boot-gated), and `poke` counts
+    // before it spawns an unjoined pass, so the listener is stopped before the test publishes its
+    // first envelope: no handler is ever spawned, nothing pokes, and `claim_running` reaches
+    // `running` by SQL. The live path resumes after the window.
+    fx.dispatcher.abort_event_listener_for_test();
+    let scheduler = fx.scheduler();
     let planner = fx.planner().await;
     let worker = fx.claude_worker();
     let lease = fx.kernel_lease(&worker.card_id).await;
@@ -707,15 +716,6 @@ async fn claude_worker_completion_yields_kernel_candidate() {
         .await;
     std::fs::write(lease.path.join("worker.txt"), "delivered\n").unwrap();
 
-    // The report handler's own submission, observed before any scheduler pass could submit the
-    // row under the same key (a pass would hide a handler that skips Claude). The Dispatcher's
-    // live listener pokes the scheduler on `task.completed`, so it is stopped for this window;
-    // the declaration's `plan.updated` poke is drained first (`schedule_track` waits for the
-    // Track lock) and the poke count is held constant across the call.
-    fx.dispatcher.abort_event_listener_for_test();
-    let scheduler = fx.scheduler();
-    scheduler.schedule_track(fx.boot.track_id.clone()).await;
-    let pokes = scheduler.poke_count_for_test();
     fx.complete(&worker, &task.id).await;
     let row = fx.delivery_row(&task.id).await.expect("delivery row");
     assert_eq!(row.ordinal, 1);
@@ -723,17 +723,17 @@ async fn claude_worker_completion_yields_kernel_candidate() {
         row.settlement.is_none(),
         "no scheduler pass has run: {row:?}"
     );
-    assert_eq!(
-        scheduler.poke_count_for_test(),
-        pokes,
-        "no scheduler poke in the window"
-    );
     let op = fx
         .forge_op(&row.forge_idempotency_key)
         .await
         .expect("the report handler submitted the delivery before returning");
     assert_eq!(op.operation_key, row.operation_key, "under the row's key");
     assert_eq!(fx.forge_op_count().await, 1);
+    assert_eq!(
+        scheduler.poke_count_for_test(),
+        0,
+        "the stopped listener never poked the scheduler"
+    );
 
     // The live path resumes: a fresh listener pushes the settlement to the Planner, and the
     // scheduler drives the row (Operation present) to settlement.
