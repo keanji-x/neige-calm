@@ -22,7 +22,7 @@ use super::{PhaseTag, TimestampMs, Tx};
 pub(crate) mod base;
 pub(crate) mod facts;
 
-pub(crate) use base::{LeaseBase, WorktreeBase};
+pub(crate) use base::{DeliveryPolicy, LeaseBase, WorktreeBase};
 
 /// The one SELECT list every reader of a lease row uses
 /// (`row_to_workspace_lease` takes columns by name at run time, so a column
@@ -30,7 +30,7 @@ pub(crate) use base::{LeaseBase, WorktreeBase};
 /// calm-truth read `db/sqlite/read.rs` `workspace_lease_for_card` builds its
 /// own five-field struct and is deliberately not on this list.
 pub(crate) const WORKSPACE_LEASE_COLUMNS: &str = "lease_id, card_id, track_id, path, state, boot_id, \
-     base_sha, base_source, base_attempt_id, canonical_path, git_common_dir";
+     base_sha, base_source, base_attempt_id, canonical_path, git_common_dir, delivery_policy";
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceLease {
@@ -44,6 +44,9 @@ pub(crate) struct WorkspaceLease {
     /// plain lease (the all-NULL tuple); every lease a worker op takes since
     /// slice 1 has one.
     pub base: Option<LeaseBase>,
+    /// `Some(Kernel)` for every lease a worker op takes since slice 2 (written
+    /// in the same INSERT as `base`); `None` is legacy — no candidate binding.
+    pub delivery_policy: Option<DeliveryPolicy>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,9 +219,10 @@ async fn acquire_workspace_lease_at_path_tx(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms,
-               base_sha, base_source, base_attempt_id, canonical_path, git_common_dir
+               base_sha, base_source, base_attempt_id, canonical_path, git_common_dir,
+               delivery_policy
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
@@ -228,7 +232,9 @@ async fn acquire_workspace_lease_at_path_tx(
     .bind(now + WORKSPACE_LEASE_MS)
     .bind(&boot_id)
     .bind(now);
+    let delivery_policy = base.map(|_| DeliveryPolicy::Kernel);
     LeaseBase::bind_columns(query, base)?
+        .bind(delivery_policy.map(DeliveryPolicy::as_column))
         .execute(&mut **tx)
         .await?;
 
@@ -253,6 +259,7 @@ async fn acquire_workspace_lease_at_path_tx(
         state: "held".into(),
         boot_id,
         base: base.cloned(),
+        delivery_policy,
     };
     Ok((
         lease,
@@ -1073,6 +1080,7 @@ fn row_to_workspace_lease(row: sqlx::sqlite::SqliteRow) -> Result<WorkspaceLease
         state: row.try_get("state")?,
         boot_id: row.try_get("boot_id")?,
         base: LeaseBase::from_row(&row)?,
+        delivery_policy: DeliveryPolicy::from_row(&row)?,
     })
 }
 

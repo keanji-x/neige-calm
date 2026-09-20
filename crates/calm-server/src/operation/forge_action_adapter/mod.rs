@@ -168,10 +168,12 @@ impl Default for ForgeActionAdapter {
     }
 }
 
+/// `<result_path>.code` and `<result_path>.stdout` as the forge wrapper left them; the delivery
+/// settlement (`git_candidate::delivery::classify_failure`) reads the exit code and the evidence lines.
 #[derive(Clone, Debug, Deserialize)]
-struct ForgeActionResultFile {
-    exit_code: i32,
-    stdout: String,
+pub(crate) struct ForgeActionResultFile {
+    pub(crate) exit_code: i32,
+    pub(crate) stdout: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -741,7 +743,7 @@ fn build_forge_event(
     Ok((Some(event), Value::Object(result)))
 }
 
-async fn read_result_file(result_path: &Path) -> Result<ForgeActionResultFile> {
+pub(crate) async fn read_result_file(result_path: &Path) -> Result<ForgeActionResultFile> {
     let code_path = result_code_path(result_path);
     let stdout_path = result_stdout_path(result_path);
     let code_text = tokio::fs::read_to_string(&code_path).await.map_err(|e| {

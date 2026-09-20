@@ -920,3 +920,5 @@ mod boot_reconcile_retry_tests {
 pub mod isolated_codex;
 
 pub mod file_delivery;
+/// Git candidate binding (#1727 S4): delivery rows, candidate rows and the read-surface derivations.
+pub(crate) mod git_candidate;

@@ -30,7 +30,7 @@ use std::sync::Arc;
 const TOOL_DISPATCH_REQUEST: &str = "calm.dispatch_request";
 pub const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
 pub const TOOL_TASK_FAIL: &str = "calm.task.fail";
-const GIT_FORGE_PLUGIN_ID: &str = "dev.neige.git-forge";
+pub(crate) const GIT_FORGE_PLUGIN_ID: &str = "dev.neige.git-forge";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(dispatch_request_descriptor(), wrap(dispatch_request));
@@ -193,8 +193,9 @@ async fn submit_worker_success_commit(
         .map_err(|e| format!("worker success commit branch: {e}"))?;
     let message = format!("neige: worker {card_id} @ track {track_id}");
 
-    let payload = PluginForgePayload {
-        argv: vec![
+    let payload = worker_delivery_payload(
+        "git.commit:auto".into(),
+        vec![
             "sh".into(),
             "-c".into(),
             GIT_COMMIT_SCRIPT.into(),
@@ -202,11 +203,8 @@ async fn submit_worker_success_commit(
             message,
             branch.clone(),
         ],
-        idem_key: "git.commit:auto".into(),
-        event_spec: Some(worktree_committed_event_spec()),
-        subject: None,
-        context: Map::new(),
-        probe: Some(ProbeSpec {
+        worktree_committed_event_spec(),
+        ProbeSpec {
             probe_argv: vec![
                 "sh".into(),
                 "-c".into(),
@@ -220,9 +218,8 @@ async fn submit_worker_success_commit(
                 "sh".into(),
                 branch,
             ]),
-        }),
-        parked: false,
-    };
+        },
+    );
 
     match submit_forge_action(
         ctx,
@@ -298,6 +295,24 @@ fn is_isolated_git_worktree(path: &Path) -> bool {
         return false;
     };
     git_top == path_top
+}
+
+/// The one constructor of a worker delivery payload; legacy auto-commit and kernel delivery both build through it.
+pub(crate) fn worker_delivery_payload(
+    idem_key: String,
+    argv: Vec<String>,
+    table: ForgeEventSpec,
+    probes: ProbeSpec,
+) -> PluginForgePayload {
+    PluginForgePayload {
+        argv,
+        idem_key,
+        event_spec: Some(table),
+        subject: None,
+        context: Map::new(),
+        probe: Some(probes),
+        parked: false,
+    }
 }
 
 fn worktree_committed_event_spec() -> ForgeEventSpec {
@@ -525,6 +540,10 @@ mod tests {
             payload["probe"]["output_probe_argv"],
             json!(["sh", "-c", GIT_COMMIT_OUTPUT_PROBE_SCRIPT, "sh", branch])
         );
+        // The legacy two-field extraction table never names the kernel delivery's fields.
+        let shape = payload.to_string();
+        assert!(!shape.contains("delivery_id"), "{shape}");
+        assert!(!shape.contains("base_is_ancestor"), "{shape}");
     }
 
     #[tokio::test]

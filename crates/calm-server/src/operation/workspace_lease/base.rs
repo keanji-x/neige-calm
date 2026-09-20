@@ -68,6 +68,41 @@ impl BaseSource {
     }
 }
 
+/// `workspace_leases.delivery_policy`: who commits and pins this lease's
+/// worktree. `Kernel` (`'kernel'`) is the one criterion for candidate
+/// binding (#1727 S4 D2); a NULL column — a lease claimed before migration
+/// 0113, or the fixtures-only plain lease — is legacy and reads as `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeliveryPolicy {
+    Kernel,
+}
+
+impl DeliveryPolicy {
+    pub(crate) fn as_column(self) -> &'static str {
+        match self {
+            DeliveryPolicy::Kernel => "kernel",
+        }
+    }
+
+    /// Decode the column of one row: NULL is legacy, `'kernel'` is `Kernel`
+    /// (and the row has a base — the CHECK admits nothing else); any other
+    /// shape is reported rather than guessed at.
+    pub(crate) fn from_row(row: &SqliteRow) -> Result<Option<DeliveryPolicy>> {
+        let value: Option<String> = row.try_get("delivery_policy")?;
+        let base_sha: Option<String> = row.try_get("base_sha")?;
+        match (value.as_deref(), base_sha) {
+            (None, _) => Ok(None),
+            (Some("kernel"), Some(_)) => Ok(Some(DeliveryPolicy::Kernel)),
+            (Some("kernel"), None) => Err(CalmError::Internal(
+                "workspace lease delivery_policy is kernel on a row without a base".into(),
+            )),
+            (Some(other), _) => Err(CalmError::Internal(format!(
+                "workspace lease delivery_policy {other:?} is not kernel"
+            ))),
+        }
+    }
+}
+
 /// The five base columns of a lease row, all present. A row written before
 /// migration 0111 (or by the fixtures-only plain lease) has none of them and
 /// reads as `None` at [`super::WorkspaceLease::base`]; the tuple CHECK keeps

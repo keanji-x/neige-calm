@@ -36,6 +36,22 @@ pub(crate) struct WorkerWorktreeFacts {
     pub removed: bool,
 }
 
+/// The `workspace_leases` row `lease_id` names, in whatever state it is: the
+/// delivery hand-off names the lease by id (`task_git_deliveries.lease_id`)
+/// and the settlement runs after the worker released it, so the active-state
+/// filter of the op-runtime readers does not apply here. `None` when no row.
+pub(crate) async fn workspace_lease_by_id_tx(
+    tx: &mut Tx<'_>,
+    lease_id: &str,
+) -> Result<Option<super::WorkspaceLease>> {
+    let sql = format!("SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases WHERE lease_id = ?1");
+    let row = sqlx::query(&sql)
+        .bind(lease_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    row.map(row_to_workspace_lease).transpose()
+}
+
 /// The latest `workspace_leases` row for `worker_card_id` (any state) joined with the latest
 /// `worktree.committed` event and the removed/provisioned ordering. `None` when the card never held a lease.
 pub(crate) async fn worker_worktree_facts_tx(
