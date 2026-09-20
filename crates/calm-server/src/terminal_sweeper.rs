@@ -1,4 +1,7 @@
-//! See `docs/sync-engine-design.md` §10.
+//! The terminal sweeper: one 30 s tick with two independent arms — the
+//! orphan arm reaps terminal rows whose card has no active worker session
+//! (issue #197), and the completed-track arm ends worker sessions that were
+//! still running on a PTY when their track was completed (#1743 §4.2).
 //!
 //! ## Two-layer cleanup model (issue #197)
 //!
