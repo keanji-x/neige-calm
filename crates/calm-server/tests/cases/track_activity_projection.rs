@@ -1782,7 +1782,11 @@ async fn done_track_failed_attempt_is_quiet() {
         "the failed verdict goes with its item: {p:?}"
     );
     assert!(!p.working);
-    assert_eq!(p.activity_at_ms, Some(4_000), "E3 is not filtered");
+    assert_eq!(
+        p.activity_at_ms,
+        Some(4_000),
+        "the mark is a high-water mark: the filter does not lower it"
+    );
     let stored = f.stored(&t).await.unwrap();
     assert_eq!(stored.attention, Attention::None);
 }
@@ -2035,7 +2039,7 @@ async fn failed_before_planner_turn_is_quiet() {
     assert_eq!(
         p.activity_at_ms,
         Some(4_000),
-        "E3 still counts the aged failure"
+        "the mark written while the failure was red is not lowered by aging"
     );
     assert_eq!(card_state(&p, &worker), None);
 
@@ -2071,6 +2075,13 @@ async fn null_planner_turn_keeps_failed_red() {
 /// P is the max over EVERY planner-role session of the track, superseded
 /// ones included: a planner restart (new session, column NULL) does not
 /// bring an already-handled failure back.
+///
+/// Also the one place rule 3 ("E3 counts an aged failure") is asserted at
+/// the moment it could be false: P = 5000 is written BEFORE the failure and
+/// before the FIRST recompute, so there is no stored mark to stick, E6
+/// excludes the harness row (the evidence max is not 5000), and
+/// `activity_at_ms == 4000` can only come from E3 counting the aged
+/// failure (review r1, A MINOR-2).
 #[tokio::test]
 async fn superseded_planner_turn_still_ages() {
     let f = fx().await;
@@ -2116,6 +2127,11 @@ async fn superseded_planner_turn_still_ages() {
     assert_eq!(current.as_deref(), Some("ws-planner-2"));
 
     let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
+    assert_eq!(
+        f.stored(&t).await,
+        None,
+        "no mark stored before the first recompute"
+    );
     let p = f.recompute(&t).await;
     assert_eq!(
         p.attention,
@@ -2124,6 +2140,12 @@ async fn superseded_planner_turn_still_ages() {
     );
     assert!(p.items.is_empty(), "{p:?}");
     assert_eq!(card_state(&p, &worker), None);
+    assert_eq!(
+        p.activity_at_ms,
+        Some(4_000),
+        "rule 3: E3 counts the aged failure on the first recompute (no stored mark, \
+         no other evidence at 4000): {p:?}"
+    );
 }
 
 /// Rule 2 ages `task` / `session` failures only: the track's own
