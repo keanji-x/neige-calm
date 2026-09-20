@@ -1,8 +1,9 @@
 //! Hook signals for Planner-opened terminals: a hooks-only Claude settings file under the
 //! server-owned `<data_dir>/terminal-hooks/` directory, and the env the bridge needs.
 //! Hook payloads are application data: forgeable by any local process, never authority.
-use crate::card_fsm::{CLAUDE_WORKER_HOOKS, ClaudeWorkerHook};
-use crate::routes::claude_cards::{build_claude_settings_json_for, claude_hook_command};
+use crate::routes::claude_cards::{
+    CLAUDE_WORKER_HOOKS, ClaudeWorkerHook, build_claude_settings_json_for, claude_hook_command,
+};
 use crate::routes::codex::to_snake_case;
 use crate::terminal_permissions::EffectiveClaudePermissions;
 use crate::terminal_renderer::{IncomingSignal, SIGNAL_MESSAGE_MAX_CHARS};

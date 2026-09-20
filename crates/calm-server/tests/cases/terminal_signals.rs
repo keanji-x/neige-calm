@@ -5,6 +5,10 @@ use calm_server::db::prelude::*;
 use calm_server::event::Event;
 use calm_server::model::{CardRole, new_id};
 use calm_server::routes::theme::RequestTheme;
+use calm_server::track_activity::{
+    ActivityPayload, Attention, CardState, INTERACTIVE_OUTPUT_WINDOW, ItemKind, ItemSource,
+    Recompute, TrackActivityProjector,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -2113,7 +2117,7 @@ async fn open_with_claim_reports_a_takeover_folded_with_its_grant() {
 /// Owning a terminal row must never route a worker's hook to the terminal-signal branch.
 #[tokio::test]
 #[allow(deprecated)] // the state's role cache is the one `enforce_role` reads
-async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
+async fn codex_worker_card_hooks_are_still_persisted() {
     let h = Harness::start().await;
     let card_id = new_id();
     let mut tx = h.sql.pool().begin().await.unwrap();
@@ -2144,12 +2148,6 @@ async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
         "{}",
         card.payload
     );
-    calm_server::card_fsm::spawn(
-        h.state.repo.clone(),
-        h.state.events.clone(),
-        h.state.write().clone(),
-    );
-    tokio::task::yield_now().await;
     let mut bus = h.state.events.subscribe();
     let stop = json!({"hook_event_name":"Stop","session_id":"codex-worker-session"});
     assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
@@ -2178,7 +2176,15 @@ async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
         1,
         "persisted, not ring-only"
     );
-    await_card_state(&h, &card_id, "Idle").await;
+    assert!(
+        h.state
+            .repo
+            .overlays_for("card", &card_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no kernel projection writes a card overlay from a hook"
+    );
     // The same body again is deduped by the worker cache, not appended twice.
     assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
     assert_eq!(h.persisted_hook_events().await, 1);
@@ -2187,7 +2193,7 @@ async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
 
 #[tokio::test]
 #[allow(deprecated)] // the state's role cache is the one `enforce_role` reads
-async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
+async fn claude_worker_card_hooks_are_still_persisted() {
     let h = Harness::start().await;
     let card_id = new_id();
     let mut tx = h.sql.pool().begin().await.unwrap();
@@ -2220,12 +2226,6 @@ async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
         "{}",
         card.payload
     );
-    calm_server::card_fsm::spawn(
-        h.state.repo.clone(),
-        h.state.events.clone(),
-        h.state.write().clone(),
-    );
-    tokio::task::yield_now().await;
     let mut bus = h.state.events.subscribe();
     let stop = json!({"hook_event_name":"Stop","session_id":"claude-worker-session"});
     assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
@@ -2254,7 +2254,15 @@ async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
         1,
         "persisted, not ring-only"
     );
-    await_card_state(&h, &card_id, "Idle").await;
+    assert!(
+        h.state
+            .repo
+            .overlays_for("card", &card_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no kernel projection writes a card overlay from a hook"
+    );
     h.stop(&term.id).await;
 }
 
@@ -2307,12 +2315,6 @@ async fn delayed_hook_after_kind_patch_and_terminal_reap_stays_a_signal() {
         "the marker survives the kind PATCH: {}",
         card.payload
     );
-    calm_server::card_fsm::spawn(
-        h.state.repo.clone(),
-        h.state.events.clone(),
-        h.state.write().clone(),
-    );
-    tokio::task::yield_now().await;
     let mut bus = h.state.events.subscribe();
     let before = h.persisted_hook_events().await;
     let stop = json!({"hook_event_name":"Stop","session_id":"late-session","message":"late"});
@@ -2337,34 +2339,10 @@ async fn delayed_hook_after_kind_patch_and_terminal_reap_stays_a_signal() {
             .overlays_for("card", &card_id)
             .await
             .unwrap()
-            .iter()
-            .all(|overlay| overlay.kind != "status"),
-        "no FSM projection"
+            .is_empty(),
+        "no card overlay"
     );
     h.stop(&terminal).await;
-}
-
-/// Polls the card's `status` overlay until the FSM projected `expected`.
-async fn await_card_state(h: &Harness, card_id: &str, expected: &str) {
-    let poll = async {
-        loop {
-            let overlays = h.state.repo.overlays_for("card", card_id).await.unwrap();
-            if overlays.iter().any(|overlay| {
-                overlay.kind == "status"
-                    && overlay.payload.get("state").and_then(Value::as_str) == Some(expected)
-            }) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    };
-    if tokio::time::timeout(Duration::from_secs(3), poll)
-        .await
-        .is_err()
-    {
-        let overlays = h.state.repo.overlays_for("card", card_id).await.unwrap();
-        panic!("no `status: {expected}` overlay on {card_id}; overlays: {overlays:?}");
-    }
 }
 
 /// A shell that prints READY and then `exec`s into `sleep`, so the pid the
@@ -2383,15 +2361,24 @@ struct PtySession {
 /// `calm.terminal.open` (the production mint: card + terminal row + a
 /// `running` session with `terminal_run_id`), waited until the child runs.
 async fn open_sleeper(h: &Harness, request_id: &str) -> PtySession {
+    open_program(h, request_id, SLEEPER, true).await
+}
+
+/// `open_sleeper` for any `/bin/sh -c` program; `ready` waits for the READY
+/// line the program prints first (a program that prints nothing passes
+/// `false`).
+async fn open_program(h: &Harness, request_id: &str, program: &str, ready: bool) -> PtySession {
     let opened = h
         .ok(
             "calm.terminal.open",
-            json!({"program":SLEEPER,"request_id":request_id}),
+            json!({"program":program,"request_id":request_id}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
     let card = opened["card_id"].as_str().unwrap().to_owned();
-    h.observe_text(&terminal, "READY").await;
+    if ready {
+        h.observe_text(&terminal, "READY").await;
+    }
     let (session, state, created_at_ms): (String, String, i64) = sqlx::query_as(
         "SELECT id, state, created_at_ms FROM worker_sessions \
           WHERE card_id = ?1 AND terminal_run_id = ?2",
@@ -3071,4 +3058,1098 @@ async fn reattach_then_reap_after_registry_reset() {
         "the reattached entry is dropped again after the reap"
     );
     h.stop(&p.terminal).await;
+}
+
+/// The projector over the harness' repo, bus and registries — the shape `AppState::new` spawns.
+fn projector(h: &Harness) -> TrackActivityProjector {
+    let repo: Arc<dyn calm_server::db::Repo> = h.sql.clone();
+    TrackActivityProjector::new(
+        repo,
+        h.state.events.clone(),
+        h.state.write().clone(),
+        h.state.harness.clone(),
+        h.state.terminal_renderer.clone(),
+    )
+    .expect("sqlite-backed repo")
+}
+
+/// The registry's last-output stamp of `terminal`.
+fn last_output_ms(h: &Harness, terminal: &str) -> Option<i64> {
+    h.state.terminal_renderer.last_output_ms(terminal)
+}
+
+/// READY may arrive in the attach replay, which is not a frame.
+async fn await_output(h: &Harness, terminal: &str) -> i64 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(at) = last_output_ms(h, terminal) {
+            return at;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "terminal {terminal} never delivered an Output frame to the reader"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// One recomputation of the harness track.
+async fn recompute(h: &Harness, projector: &TrackActivityProjector) -> ActivityPayload {
+    match projector.recompute_track(&h.track).await.unwrap() {
+        Recompute::NoTrack => panic!("track {} vanished", h.track),
+        Recompute::Unchanged(p) | Recompute::Written(p) => p,
+    }
+}
+
+/// The stored `kernel/track/activity` row of the harness track.
+async fn stored_activity(h: &Harness) -> Option<ActivityPayload> {
+    h.state
+        .repo
+        .overlays_for("track", &h.track)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|o| o.kind == "activity" && o.plugin_id == "kernel")
+        .map(|o| serde_json::from_value(o.payload).unwrap())
+}
+
+/// The loop tests' only clock, far inside the 30 s tick.
+async fn await_activity(
+    h: &Harness,
+    what: &str,
+    bound: Duration,
+    pred: impl Fn(&ActivityPayload) -> bool,
+) -> ActivityPayload {
+    let deadline = tokio::time::Instant::now() + bound;
+    loop {
+        let stored = stored_activity(h).await;
+        if let Some(p) = stored.as_ref().filter(|p| pred(p)) {
+            return p.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what} on {}: {stored:?}",
+            h.track
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn card_state(p: &ActivityPayload, card_id: &str) -> Option<CardState> {
+    p.cards
+        .iter()
+        .find(|c| c.card_id == card_id)
+        .map(|c| c.state)
+}
+
+/// Prints READY, then a line every 200 ms until `stop` exists, then exits 0.
+fn ticker_program(stop: &std::path::Path) -> String {
+    format!(
+        "printf 'READY\\n'; while [ ! -e '{}' ]; do echo tick; sleep 0.2; done; exit 0",
+        stop.display()
+    )
+}
+
+/// Prints READY and `n` more lines 100 ms apart, then runs `after`.
+fn burst_program(n: u32, after: &str) -> String {
+    format!(
+        "printf 'READY\\n'; i=0; while [ $i -lt {n} ]; do i=$((i+1)); echo tick $i; sleep 0.1; done; {after}"
+    )
+}
+
+/// The reader's ephemeral completion after a signalled exit: the session row reaches `failed`.
+async fn await_session_state(h: &Harness, id: &str, expected: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (state, _, _) = session_row(h, id).await;
+        if state == expected {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "session {id} is `{state}`, never `{expected}`"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn term(pid: i64) {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+    kill(Pid::from_raw(pid as i32), Signal::SIGTERM).unwrap();
+}
+
+/// The projector loop is running: the output's leading edge (quiet → output) wakes it, far inside the 30 s tick.
+/// The program is quiet for its first two seconds, so the open's bus wakes (`WorkerSessionStarted`, the
+/// status write) recompute on an empty replay and no frame; only the edge can light `working` inside the window.
+#[tokio::test]
+async fn interactive_terminal_output_is_working() {
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let stop = h.root.path().join("stop-output");
+    let p = open_program(
+        &h,
+        "output-working",
+        &format!("sleep 2; {}", ticker_program(&stop)),
+        false,
+    )
+    .await;
+    assert_eq!(
+        last_output_ms(&h, &p.terminal),
+        None,
+        "an empty replay and no frame yet: the bus wakes of the open read no output"
+    );
+    let quiet = stored_activity(&h).await.expect("the boot row");
+    assert!(!quiet.working, "before the first frame: {quiet:?}");
+    let a = await_activity(
+        &h,
+        "working after PTY output",
+        Duration::from_secs(5),
+        |a| a.working,
+    )
+    .await;
+    assert_eq!(card_state(&a, &p.card), Some(CardState::Working), "{a:?}");
+    assert_eq!(a.attention, Attention::None);
+    assert!(a.items.is_empty());
+    loop_task.abort();
+    h.stop(&p.terminal).await;
+}
+
+/// After the output stops, one reconcile drops `working` and the high-water mark is the last output
+/// instant — a single unread that a second reconcile does not move.
+#[tokio::test]
+async fn quiet_then_tick_is_unread_once() {
+    let h = Harness::start().await;
+    let pj = projector(&h);
+    let opened_at = calm_server::model::now_ms();
+    let p = open_program(&h, "quiet-tick", &burst_program(8, "exec sleep 600"), true).await;
+    h.observe_text(&p.terminal, "tick 8").await;
+    let quiet_since = calm_server::model::now_ms();
+    let a = recompute(&h, &pj).await;
+    assert!(a.working, "output within N s: {a:?}");
+    assert_eq!(card_state(&a, &p.card), Some(CardState::Working));
+
+    tokio::time::sleep(Duration::from_millis(5_500)).await;
+    pj.reconcile_all().await;
+    let a = stored_activity(&h).await.unwrap();
+    assert!(!a.working, "quiet after N s: {a:?}");
+    assert!(a.cards.is_empty());
+    assert_eq!(a.attention, Attention::None);
+    let mark = a.activity_at_ms.expect("the last output is the mark");
+    assert!(
+        opened_at <= mark && mark <= quiet_since,
+        "mark {mark} is the last output instant ({opened_at}..={quiet_since})"
+    );
+    assert_eq!(
+        Some(mark),
+        last_output_ms(&h, &p.terminal),
+        "E8: the mark IS the registry's stamp"
+    );
+    assert!(
+        matches!(
+            pj.recompute_track(&h.track).await.unwrap(),
+            Recompute::Unchanged(_)
+        ),
+        "once: nothing new on the next pass"
+    );
+    h.stop(&p.terminal).await;
+}
+
+/// The exit record closes the gate even though `last_output_ms` is still fresh.
+#[tokio::test]
+async fn exited_interactive_card_is_not_working() {
+    let h = Harness::start().await;
+    let pj = projector(&h);
+    let p = open_program(&h, "exited-fresh", &burst_program(10, "exit 0"), true).await;
+    let exit = await_terminal_exit(&h, &p.terminal).await;
+    assert_eq!(exit, (Some(0), false), "a normal exit");
+    let a = recompute(&h, &pj).await;
+    let stamp = last_output_ms(&h, &p.terminal).expect("the reader stamped the burst");
+    assert!(
+        calm_server::model::now_ms() - stamp < INTERACTIVE_OUTPUT_WINDOW.as_millis() as i64,
+        "the stamp is still inside the window; only the exit gate closes it"
+    );
+    assert!(!a.working, "an exited PTY is not working: {a:?}");
+    assert!(a.cards.is_empty());
+    assert_eq!(a.attention, Attention::None);
+    let (state, _, _) = session_row(&h, &p.session).await;
+    assert_eq!(state, "exited", "the ephemeral session followed the exit");
+    h.stop(&p.terminal).await;
+}
+
+/// The same PTY's output counts while the card is never bound, and once the task is `done` the
+/// still-flowing output is ignored — the mark is the task's E3, not the output.
+#[tokio::test]
+async fn task_bound_worker_output_is_ignored() {
+    let h = Harness::start().await;
+    let pj = projector(&h);
+    let stop = h.root.path().join("stop-task-bound");
+    let p = open_program(&h, "task-bound", &ticker_program(&stop), true).await;
+    await_output(&h, &p.terminal).await;
+    let a = recompute(&h, &pj).await;
+    assert!(a.working, "never bound: output counts: {a:?}");
+
+    let task_id = format!("{}:build", h.track);
+    sqlx::query(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id, \
+                           declared_by,created_at_ms,updated_at_ms) \
+         VALUES (?1,?2,'build','terminal','test','[]','running',?3,'user',?4,?4)",
+    )
+    .bind(&task_id)
+    .bind(&h.track)
+    .bind(&p.card)
+    .bind(calm_server::model::now_ms())
+    .execute(h.sql.pool())
+    .await
+    .unwrap();
+    let a = recompute(&h, &pj).await;
+    assert!(a.working, "W: the running task: {a:?}");
+    assert_eq!(card_state(&a, &p.card), Some(CardState::Working));
+
+    let finished_at = calm_server::model::now_ms();
+    sqlx::query("UPDATE tasks SET status = 'done', finished_at_ms = ?2 WHERE id = ?1")
+        .bind(&task_id)
+        .bind(finished_at)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    // The PTY keeps printing: the stamp advances past the completion.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while last_output_ms(&h, &p.terminal).is_none_or(|at| at < finished_at) {
+        assert!(tokio::time::Instant::now() < deadline, "the ticker stopped");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let a = recompute(&h, &pj).await;
+    assert!(
+        !a.working,
+        "the task is done; the card's output does not count: {a:?}"
+    );
+    assert!(a.cards.is_empty());
+    assert_eq!(a.attention, Attention::None);
+    assert_eq!(a.activity_at_ms, Some(finished_at), "E3, not the output");
+    h.stop(&p.terminal).await;
+}
+
+/// `last_thread_status = active` on a PTY that printed nothing is not working.
+#[tokio::test]
+async fn interactive_codex_card_uses_output_not_thread_status() {
+    let h = Harness::start().await;
+    let pj = projector(&h);
+    let p = open_program(&h, "codex-status", "exec sleep 600", false).await;
+    sqlx::query(
+        "UPDATE worker_sessions SET provider = 'codex', mode = 'resumable', thread_id = 't-1', \
+                last_thread_status = 'active', last_activity_ms = ?2 WHERE id = ?1",
+    )
+    .bind(&p.session)
+    .bind(calm_server::model::now_ms())
+    .execute(h.sql.pool())
+    .await
+    .unwrap();
+    let a = recompute(&h, &pj).await;
+    assert_eq!(
+        last_output_ms(&h, &p.terminal),
+        None,
+        "the PTY printed nothing"
+    );
+    assert!(!a.working, "thread status is not a working source: {a:?}");
+    assert!(a.cards.is_empty());
+    assert_eq!(a.attention, Attention::None);
+    h.stop(&p.terminal).await;
+}
+
+/// The reader writes the signal-killed session `failed` ⇒ one `session` item, the card `failed`, not working.
+#[tokio::test]
+async fn signal_killed_ephemeral_card_is_failed() {
+    let h = Harness::start().await;
+    let pj = projector(&h);
+    let p = open_sleeper(&h, "sigterm-ephemeral").await;
+    term(p.pid);
+    assert_eq!(await_terminal_exit(&h, &p.terminal).await, (None, true));
+    await_session_state(&h, &p.session, "failed").await;
+    let a = recompute(&h, &pj).await;
+    assert!(!a.working, "{a:?}");
+    assert_eq!(a.attention, Attention::Failed);
+    assert_eq!(card_state(&a, &p.card), Some(CardState::Failed));
+    assert_eq!(a.items.len(), 1, "{a:?}");
+    assert_eq!(a.items[0].kind, ItemKind::Failed);
+    assert_eq!(a.items[0].source, ItemSource::Session);
+    assert_eq!(a.items[0].id, p.session);
+    assert_eq!(a.items[0].card_id.as_deref(), Some(p.card.as_str()));
+    h.stop(&p.terminal).await;
+}
+
+/// A signal-killed codex TUI leaves its resumable session row `running` (the thread lives on the
+/// daemon) ⇒ not failed, and not working (exit gate).
+#[tokio::test]
+async fn signal_killed_codex_interactive_card_is_not_failed() {
+    let h = Harness::start().await;
+    let pj = projector(&h);
+    let p = open_sleeper(&h, "sigterm-codex").await;
+    sqlx::query(
+        "UPDATE worker_sessions SET provider = 'codex', mode = 'resumable', thread_id = 't-1' \
+          WHERE id = ?1",
+    )
+    .bind(&p.session)
+    .execute(h.sql.pool())
+    .await
+    .unwrap();
+    let entry = h.state.terminal_renderer.get(&p.terminal).unwrap();
+    term(p.pid);
+    assert_eq!(await_terminal_exit(&h, &p.terminal).await, (None, true));
+    assert!(
+        entry
+            .wait_exit_persisted_for_test(Duration::from_secs(5))
+            .await,
+        "the reader ran its whole exit arm"
+    );
+    let (state, _, _) = session_row(&h, &p.session).await;
+    assert_eq!(
+        state, "running",
+        "a resumable session is not ended by the PTY"
+    );
+    let a = recompute(&h, &pj).await;
+    assert!(!a.working, "{a:?}");
+    assert_eq!(a.attention, Attention::None);
+    assert!(a.cards.is_empty());
+    assert!(a.items.is_empty());
+    h.stop(&p.terminal).await;
+}
+
+/// The boot tick is consumed first and the exit follows at once, so the whole window sits before the
+/// next scheduled tick; nothing calls `reconcile_all` after the exit.
+#[tokio::test]
+async fn exited_interactive_card_wakes_the_projector() {
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    let stop = h.root.path().join("stop-wake");
+    let p = open_program(&h, "exit-wakes", &ticker_program(&stop), true).await;
+    let a = await_activity(&h, "working before the exit", Duration::from_secs(5), |a| {
+        a.working
+    })
+    .await;
+    assert_eq!(card_state(&a, &p.card), Some(CardState::Working));
+
+    std::fs::write(&stop, "").unwrap();
+    let exit = await_terminal_exit(&h, &p.terminal).await;
+    assert_eq!(exit, (Some(0), false));
+    let a = await_activity(
+        &h,
+        "working = false after the exit was persisted",
+        Duration::from_secs(5),
+        |a| !a.working,
+    )
+    .await;
+    assert!(a.cards.is_empty(), "{a:?}");
+    loop_task.abort();
+    h.stop(&p.terminal).await;
+}
+
+/// After a kernel restart the registry is empty: the same open, printing PTY reads `working = false`
+/// through a fresh registry while the live one reads it working — and the exit gate still reads open.
+#[tokio::test]
+async fn registry_empty_after_restart_reads_quiet() {
+    use calm_server::terminal_renderer::TerminalRendererRegistry;
+    let h = Harness::start().await;
+    let stop = h.root.path().join("stop-restart");
+    let p = open_program(&h, "registry-empty", &ticker_program(&stop), true).await;
+    await_output(&h, &p.terminal).await;
+    let live = projector(&h);
+    assert!(recompute(&h, &live).await.working, "the live registry");
+
+    let repo: Arc<dyn calm_server::db::Repo> = h.sql.clone();
+    let fresh = TrackActivityProjector::new(
+        repo,
+        h.state.events.clone(),
+        h.state.write().clone(),
+        h.state.harness.clone(),
+        TerminalRendererRegistry::new(),
+    )
+    .expect("sqlite-backed repo");
+    let rows = fresh.read_rows(&h.track).await.unwrap().unwrap();
+    let ws = rows
+        .sessions
+        .iter()
+        .find(|ws| ws.id == p.session)
+        .expect("the PTY session is eligible");
+    assert!(ws.pty_open, "the terminal row records no exit");
+    assert!(rows.output.is_empty(), "an empty registry knows no output");
+    let a = recompute(&h, &fresh).await;
+    assert!(!a.working, "blind until the WS reattaches the card: {a:?}");
+    assert!(a.cards.is_empty());
+    h.stop(&p.terminal).await;
+}
+
+/// The supervisor's own verdict on `term:<terminal>`: `proc_running` turns `false` only once the exit
+/// is recorded, which is after its pty reader drained the child's last bytes into the replay ring.
+async fn await_supervisor_exit(h: &Harness, terminal: &str) {
+    use calm_session::control::{ControlMsg, ControlReply, ProbeRequest};
+    use calm_session::{read_frame, write_frame};
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut stream = tokio::net::UnixStream::connect(h.supervisor_socket())
+            .await
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &ControlMsg::Probe(ProbeRequest {
+                proc_id: format!("term:{terminal}"),
+            }),
+        )
+        .await
+        .unwrap();
+        match read_frame::<ControlReply, _>(&mut stream).await.unwrap() {
+            ControlReply::ProbeOk {
+                proc_running: false,
+                ..
+            } => return,
+            ControlReply::ProbeOk { .. } => {}
+            other => panic!("unexpected probe reply: {other:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the supervisor never recorded the exit of {terminal}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// A program whose whole output lands in the attach replay: the attach is held until the supervisor
+/// has recorded the exit, so the reader sees `Exited` and never an `Output` frame. The fresh launch
+/// stamps the replay, and the exit wake reads `working = false` with the mark advanced to that output.
+#[tokio::test]
+async fn one_shot_output_before_attach_is_unread() {
+    use calm_server::terminal_renderer::attach_hold_for_test;
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let (entered, release) = attach_hold_for_test::arm();
+    let spawned_at = calm_server::model::now_ms();
+    let (opened, ()) = tokio::join!(
+        h.ok(
+            "calm.terminal.open",
+            json!({"program":"printf 'done\\n'; exit 0","request_id":"one-shot"}),
+        ),
+        async {
+            let terminal = entered.await.expect("the open reached the attach hold");
+            await_supervisor_exit(&h, &terminal).await;
+            release.notify_one();
+        }
+    );
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    let card = opened["card_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        await_terminal_exit(&h, &terminal).await,
+        (Some(0), false),
+        "the sticky exit followed the replay"
+    );
+    let a = await_activity(
+        &h,
+        "the mark advanced to the replayed output",
+        Duration::from_secs(5),
+        |a| a.activity_at_ms.is_some_and(|at| at >= spawned_at),
+    )
+    .await;
+    assert!(!a.working, "an exited PTY is not working: {a:?}");
+    assert_eq!(card_state(&a, &card), None, "{a:?}");
+    assert_eq!(a.attention, Attention::None);
+    let stamp = last_output_ms(&h, &terminal).expect("the fresh launch stamped its replay");
+    assert!(
+        spawned_at <= stamp && stamp <= calm_server::model::now_ms(),
+        "the stamp is the replay instant"
+    );
+    assert_eq!(
+        a.activity_at_ms,
+        Some(stamp),
+        "E8: the mark IS the replay stamp"
+    );
+    loop_task.abort();
+    h.stop(&terminal).await;
+}
+
+/// The post-restart lazy reattach replays the old screen; that replay is an earlier lifetime's output
+/// and stamps nothing: through the fresh registry the card reads `working = false` and the mark does
+/// not move.
+#[tokio::test]
+async fn reattach_replay_does_not_stamp() {
+    use calm_server::ws::terminal::{
+        TestLiveRenderer, resolve_live_renderer_from_terminal_for_test,
+    };
+    let h = Harness::start().await;
+    // READY then quiet: the reattach replay carries READY and no frame ever follows it.
+    let p = open_sleeper(&h, "reattach-replay").await;
+    await_output(&h, &p.terminal).await;
+    let live = projector(&h);
+    let before = recompute(&h, &live).await;
+    assert!(before.working, "the live registry: {before:?}");
+    let mark = before.activity_at_ms.expect("E8 from the live stamp");
+
+    let repo: Arc<dyn calm_server::db::Repo> = h.sql.clone();
+    let fresh = calm_server::state::AppState::from_parts(
+        repo.clone(),
+        h.state.events.clone(),
+        h.state.daemon.clone(),
+        h.state.plugin.clone(),
+        h.state.codex.clone(),
+        Some(h.state.card_role_cache.clone()),
+        Some(h.state.track_area_cache.clone()),
+    );
+    assert!(fresh.terminal_renderer.get(&p.terminal).is_none());
+    let term = h
+        .state
+        .repo
+        .terminal_get(&p.terminal)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(term.pid.is_some(), "the earlier lifetime persisted the pid");
+    let entry = match resolve_live_renderer_from_terminal_for_test(&fresh, term)
+        .await
+        .unwrap()
+    {
+        TestLiveRenderer::Alive(entry) => entry,
+        TestLiveRenderer::ChildExited { exit_code } => {
+            panic!("the lazy reattach did not find the live PTY: {exit_code:?}")
+        }
+    };
+    assert!(
+        fresh.terminal_renderer.get(&p.terminal).is_some(),
+        "the reattach installed the entry"
+    );
+    assert!(
+        entry.handle.render_plane.lock().unwrap().pty_seq() >= 1,
+        "the reattach replay carried the old screen"
+    );
+    assert_eq!(
+        fresh.terminal_renderer.last_output_ms(&p.terminal),
+        None,
+        "a reattach replay stamps nothing"
+    );
+    let reattached = TrackActivityProjector::new(
+        repo,
+        h.state.events.clone(),
+        h.state.write().clone(),
+        h.state.harness.clone(),
+        fresh.terminal_renderer.clone(),
+    )
+    .expect("sqlite-backed repo");
+    let a = recompute(&h, &reattached).await;
+    assert!(!a.working, "historical bytes do not light working: {a:?}");
+    assert!(a.cards.is_empty(), "{a:?}");
+    assert_eq!(a.activity_at_ms, Some(mark), "the mark did not move");
+    drop(entry);
+    fresh.terminal_renderer.drop_entry(&p.terminal).await;
+    h.stop(&p.terminal).await;
+}
+
+/// The supervisor's replay ring of `term:<terminal>` contains `needle`: a read-only attach with its
+/// own reader id, dropped after the `AttachOk`.
+async fn await_ring_contains(h: &Harness, terminal: &str, needle: &str) {
+    use calm_session::control::{AttachRequest, ControlMsg, ControlReply};
+    use calm_session::{read_frame, write_frame};
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut stream = tokio::net::UnixStream::connect(h.supervisor_socket())
+            .await
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &ControlMsg::Attach(AttachRequest {
+                proc_id: format!("term:{terminal}"),
+                from_cursor: None,
+                reader_id: "test-ring-probe".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        match read_frame::<ControlReply, _>(&mut stream).await.unwrap() {
+            ControlReply::AttachOk(attached) => {
+                if String::from_utf8_lossy(&attached.replay).contains(needle) {
+                    return;
+                }
+            }
+            other => panic!("unexpected attach reply: {other:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the replay ring of {terminal} never carried {needle:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// A lazy WS attach that races a fresh launch: it runs after the launch persisted the pid (its own
+/// replay is not evidence) and wins the registry insert while the launch is held before its attach.
+/// The launch's stamped entry loses the insert; the survivor still carries that stamp, so the card
+/// reads `working` inside the window from the wake that follows the launch.
+#[tokio::test]
+async fn concurrent_attach_keeps_the_fresh_launch_stamp() {
+    use calm_server::terminal_renderer::attach_hold_for_test;
+    use calm_server::ws::terminal::{
+        TestLiveRenderer, resolve_live_renderer_from_terminal_for_test,
+    };
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let (entered, release) = attach_hold_for_test::arm();
+    let spawned_at = calm_server::model::now_ms();
+    // The FE's own creation route: `CardAdded` is broadcast before the spawn, and a mounted grid
+    // attaches the new card's terminal on that event.
+    let create = async {
+        use tower::ServiceExt;
+        let response = h
+            .app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/tracks/{}/terminal-cards", h.track))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        json!({"program": SLEEPER, "cwd": "", "env": {},
+                            "theme": {"fg": [216,219,226], "bg": [15,20,24]}})
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let card: Value = serde_json::from_slice(&bytes).unwrap();
+        card["id"].as_str().unwrap().to_owned()
+    };
+    let (card, attach_entry) = tokio::join!(create, async {
+        let terminal = entered.await.expect("the create reached the attach hold");
+        let term = h.state.repo.terminal_get(&terminal).await.unwrap().unwrap();
+        assert!(
+            term.pid.is_some(),
+            "the hold sits after the pid persistence: the concurrent ensure is attach-shaped"
+        );
+        await_ring_contains(&h, &terminal, "READY").await;
+        assert!(
+            h.state.terminal_renderer.get(&terminal).is_none(),
+            "the held launch has not inserted its entry"
+        );
+        let entry = match resolve_live_renderer_from_terminal_for_test(&h.state, term)
+            .await
+            .unwrap()
+        {
+            TestLiveRenderer::Alive(entry) => entry,
+            TestLiveRenderer::ChildExited { exit_code } => {
+                panic!("the lazy attach did not find the live PTY: {exit_code:?}")
+            }
+        };
+        assert!(
+            h.state.terminal_renderer.get(&terminal).is_some(),
+            "the attach won the insert"
+        );
+        assert_eq!(
+            last_output_ms(&h, &terminal),
+            None,
+            "the attach's replay is an unproven lifetime's bytes and stamps nothing"
+        );
+        release.notify_one();
+        entry
+    });
+    let terminal = h
+        .state
+        .repo
+        .terminal_get_by_card(&card)
+        .await
+        .unwrap()
+        .expect("the created card has a terminal row")
+        .id;
+    let survivor = h
+        .state
+        .terminal_renderer
+        .get(&terminal)
+        .expect("the registry keeps one entry");
+    assert!(
+        Arc::ptr_eq(&survivor, &attach_entry),
+        "the launch's entry lost the insert to the attach's"
+    );
+    let stamp = last_output_ms(&h, &terminal)
+        .expect("the survivor carries the fresh launch's replay stamp");
+    assert!(
+        spawned_at <= stamp && stamp <= calm_server::model::now_ms(),
+        "the stamp is the launch's replay instant"
+    );
+    let a = await_activity(
+        &h,
+        "working from the stamp the launch handed over",
+        Duration::from_secs(5),
+        |a| a.working,
+    )
+    .await;
+    assert_eq!(card_state(&a, &card), Some(CardState::Working), "{a:?}");
+    assert_eq!(
+        a.activity_at_ms,
+        Some(stamp),
+        "E8: the mark IS the handed-over stamp"
+    );
+    loop_task.abort();
+    h.stop(&terminal).await;
+}
+
+/// The production mint of a Terminal card (card + terminal row with no pid + a `Starting` session)
+/// on the harness track, plus the `RendererConfig` the create route would derive for it — and no
+/// operation, so nothing on the bus follows the spawn.
+async fn minted_terminal_card(
+    h: &Harness,
+) -> (
+    calm_server::model::Card,
+    calm_server::model::Terminal,
+    calm_server::terminal_renderer::RendererConfig,
+) {
+    use calm_server::db::sqlite::card_with_terminal_create_tx;
+    use calm_server::db::write_in_tx_typed;
+    use calm_server::terminal_renderer::RendererConfig;
+    let cwd = h.root.path().to_str().unwrap().to_owned();
+    let (card, term) = {
+        let track_id = h.track.clone();
+        let cache = h.state.card_role_cache.clone();
+        let cwd = cwd.clone();
+        write_in_tx_typed(h.sql.as_ref(), move |tx| {
+            Box::pin(async move {
+                card_with_terminal_create_tx(
+                    tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    track_id.into(),
+                    None,
+                    None,
+                    SLEEPER.into(),
+                    cwd,
+                    json!({}),
+                    CardRole::Worker,
+                    true,
+                    &cache,
+                    RequestTheme::default_dark(),
+                    false,
+                )
+                .await
+            })
+        })
+        .await
+        .unwrap()
+    };
+    assert!(
+        term.pid.is_none(),
+        "no pid before the first ensure: a fresh launch"
+    );
+    let cfg = RendererConfig {
+        terminal_id: term.id.clone(),
+        cols: 80,
+        rows: 24,
+        buffer_bytes: 1 << 20,
+        terminal_fg: (216, 219, 226),
+        terminal_bg: (15, 20, 24),
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), SLEEPER.into()],
+        envs: vec![],
+        cwd,
+        supervisor_sock: h.supervisor_socket(),
+    };
+    (card, term, cfg)
+}
+
+/// Every envelope `bus` carried wakes no track: the registry's wake was the only carrier.
+async fn assert_no_bus_wake(
+    h: &Harness,
+    bus: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+) {
+    let classifier = projector(h);
+    while let Ok(envelope) = bus.try_recv() {
+        assert_eq!(
+            classifier.track_for_event(&envelope).await,
+            None,
+            "nothing on the bus woke the track: {envelope:?}"
+        );
+    }
+}
+
+/// The registry's post-insert wake is the only carrier of a fresh launch's replay stamp when nothing
+/// on the bus follows the insert: the registry is driven directly (no operation, so no session
+/// status write), the attach is held until the child's banner is in the ring while the child is
+/// alive, and the card reads `working` inside the window from that replay alone.
+#[tokio::test]
+async fn fresh_launch_replay_stamp_wakes_without_a_bus_event() {
+    use calm_server::terminal_renderer::attach_hold_for_test;
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let (card, term, cfg) = minted_terminal_card(&h).await;
+    let mut bus = h.state.events.subscribe();
+    let (entered, release) = attach_hold_for_test::arm();
+    let spawned_at = calm_server::model::now_ms();
+    let (ensured, ()) = tokio::join!(h.state.terminal_renderer.ensure(cfg), async {
+        let terminal = entered.await.expect("the ensure reached the attach hold");
+        assert_eq!(terminal, term.id);
+        await_ring_contains(&h, &terminal, "READY").await;
+        release.notify_one();
+    });
+    let entry = ensured.expect("the registry spawned the child");
+    let stamp = last_output_ms(&h, &term.id).expect("the fresh launch stamped its replay");
+    assert!(
+        spawned_at <= stamp && stamp <= calm_server::model::now_ms(),
+        "the stamp is the replay instant"
+    );
+    let a = await_activity(
+        &h,
+        "working from the replay stamp's own wake",
+        Duration::from_secs(5),
+        |a| a.working,
+    )
+    .await;
+    assert_eq!(
+        card_state(&a, card.id.as_str()),
+        Some(CardState::Working),
+        "{a:?}"
+    );
+    assert_eq!(
+        a.activity_at_ms,
+        Some(stamp),
+        "E8: the mark IS the replay stamp"
+    );
+    assert_no_bus_wake(&h, &mut bus).await;
+    loop_task.abort();
+    drop(entry);
+    h.stop(&term.id).await;
+}
+
+/// The same fresh launch losing the registry insert to a concurrent attach, with nothing on the bus
+/// following: the stamp handed to the survivor earns the registry's wake itself, and the card reads
+/// `working` inside the window.
+#[tokio::test]
+async fn handed_over_stamp_wakes_without_a_bus_event() {
+    use calm_server::terminal_renderer::attach_hold_for_test;
+    use calm_server::ws::terminal::{
+        TestLiveRenderer, resolve_live_renderer_from_terminal_for_test,
+    };
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let (card, term, cfg) = minted_terminal_card(&h).await;
+    let mut bus = h.state.events.subscribe();
+    let (entered, release) = attach_hold_for_test::arm();
+    let spawned_at = calm_server::model::now_ms();
+    let (ensured, attach_entry) = tokio::join!(h.state.terminal_renderer.ensure(cfg), async {
+        let terminal = entered.await.expect("the ensure reached the attach hold");
+        assert_eq!(terminal, term.id);
+        await_ring_contains(&h, &terminal, "READY").await;
+        let persisted = h.state.repo.terminal_get(&terminal).await.unwrap().unwrap();
+        assert!(
+            persisted.pid.is_some(),
+            "the concurrent ensure is attach-shaped"
+        );
+        let entry = match resolve_live_renderer_from_terminal_for_test(&h.state, persisted)
+            .await
+            .unwrap()
+        {
+            TestLiveRenderer::Alive(entry) => entry,
+            TestLiveRenderer::ChildExited { exit_code } => {
+                panic!("the lazy attach did not find the live PTY: {exit_code:?}")
+            }
+        };
+        assert_eq!(
+            last_output_ms(&h, &terminal),
+            None,
+            "the attach won the insert and its replay stamps nothing"
+        );
+        release.notify_one();
+        entry
+    });
+    let loser = ensured.expect("the losing launch still returns the survivor");
+    assert!(
+        Arc::ptr_eq(&loser, &attach_entry),
+        "the launch's entry lost the insert to the attach's"
+    );
+    let stamp = last_output_ms(&h, &term.id).expect("the survivor carries the handed-over stamp");
+    assert!(
+        spawned_at <= stamp && stamp <= calm_server::model::now_ms(),
+        "the stamp is the launch's replay instant"
+    );
+    let a = await_activity(
+        &h,
+        "working from the handed-over stamp's wake",
+        Duration::from_secs(5),
+        |a| a.working,
+    )
+    .await;
+    assert_eq!(
+        card_state(&a, card.id.as_str()),
+        Some(CardState::Working),
+        "{a:?}"
+    );
+    assert_eq!(
+        a.activity_at_ms,
+        Some(stamp),
+        "E8: the mark IS the handed-over stamp"
+    );
+    assert_no_bus_wake(&h, &mut bus).await;
+    loop_task.abort();
+    drop(loser);
+    drop(attach_entry);
+    h.stop(&term.id).await;
+}
+
+/// Rows with NO terminal row — an idle harness session (`terminal_run_id` NULL) and an interactive
+/// session whose terminal row the orphan arm deleted (FK `ON DELETE SET NULL`) — decode
+/// `pty_open = false` through the `COALESCE`, and the recomputation runs on them without error.
+#[tokio::test]
+async fn s0_row_without_terminal_row_decodes_closed() {
+    use calm_server::db::sqlite::{card_create_with_id_tx, session_start_runtime_tx};
+    use calm_server::harness::HarnessSnapshot;
+    use calm_server::model::{NewCard, NewTerminal, NewTrack};
+    use calm_server::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    use calm_server::track_activity::sql::eligible_sessions;
+    let h = Harness::start().await;
+    let track = h
+        .sql
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: h.area_id.clone().into(),
+            title: "s0-null".into(),
+            sort: None,
+            cwd: h.root.path().to_str().unwrap().into(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    // 1. the idle harness row: no PTY.
+    let planner_card = new_id();
+    let planner_ws = new_id();
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        planner_card.clone(),
+        NewCard {
+            track_id: track.clone().into(),
+            title: None,
+            kind: "planner".into(),
+            sort: None,
+            payload: json!({}),
+        },
+        CardRole::Planner,
+        true,
+        &h.state.card_role_cache,
+    )
+    .await
+    .unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: planner_ws.clone(),
+            card_id: planner_card.clone(),
+            kind: WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some("th-planner".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(
+                serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+            ),
+            spawn_op_id: None,
+            now_ms: 1_000,
+        },
+    )
+    .await
+    .unwrap();
+    // 2. the interactive terminal session whose terminal row is deleted.
+    let term_card = new_id();
+    let term_ws = new_id();
+    card_create_with_id_tx(
+        &mut tx,
+        term_card.clone(),
+        NewCard {
+            track_id: track.clone().into(),
+            title: None,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({}),
+        },
+        CardRole::Worker,
+        true,
+        &h.state.card_role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let terminal = h
+        .sql
+        .terminal_create(NewTerminal {
+            card_id: term_card.clone().into(),
+            program: "sleep 600".into(),
+            cwd: h.root.path().to_str().unwrap().into(),
+            env: json!({}),
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: term_ws.clone(),
+            card_id: term_card.clone(),
+            kind: WorkerSessionKind::Terminal,
+            agent_provider: None,
+            status: WorkerSessionState::Running,
+            terminal_run_id: Some(terminal.id.clone()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: 2_000,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.sql.terminal_delete(&terminal.id).await.unwrap();
+    let linked: Option<String> =
+        sqlx::query_scalar("SELECT terminal_run_id FROM worker_sessions WHERE id = ?1")
+            .bind(&term_ws)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    assert_eq!(linked, None, "FK ON DELETE SET NULL");
+
+    let rows = eligible_sessions(h.sql.pool(), &track).await.unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    for ws in &rows {
+        assert!(ws.terminal_run_id.is_none(), "{ws:?}");
+        assert!(!ws.pty_open, "no terminal row reads closed: {ws:?}");
+    }
+    assert!(rows.iter().any(|ws| ws.id == planner_ws));
+    assert!(rows.iter().any(|ws| ws.id == term_ws));
+    let pj = projector(&h);
+    let a = match pj.recompute_track(&track).await.unwrap() {
+        Recompute::NoTrack => panic!("track vanished"),
+        Recompute::Unchanged(p) | Recompute::Written(p) => p,
+    };
+    assert!(!a.working, "{a:?}");
+    assert_eq!(a.attention, Attention::None);
+    assert!(a.cards.is_empty());
+    h.stop("no-terminal").await;
 }

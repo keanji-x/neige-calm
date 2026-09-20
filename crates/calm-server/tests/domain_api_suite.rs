@@ -19,8 +19,6 @@ mod briefing_in_mint_tx;
 mod card_cascade_semantics;
 #[path = "cases/cards_deletable.rs"]
 mod cards_deletable;
-#[path = "cases/claude_fsm_overlay.rs"]
-mod claude_fsm_overlay;
 #[path = "cases/claude_ingest.rs"]
 mod claude_ingest;
 #[path = "cases/deferred_read_tx_deadlock_repro.rs"]

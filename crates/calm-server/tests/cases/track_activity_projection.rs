@@ -1,5 +1,6 @@
 //! The `kernel/track/activity` projector, driven through the production writers of every row
-//! it reads and asserted on the payload it writes.
+//! it reads and asserted on the payload it writes. The interactive PTY card's `working` needs a
+//! real PTY and the renderer registry: those cases live in `terminal_signals.rs`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -94,6 +95,7 @@ async fn fx() -> Fx {
         events.clone(),
         write.clone(),
         harness.clone(),
+        TerminalRendererRegistry::new(),
     )
     .expect("sqlite-backed repo");
     Fx {
@@ -459,7 +461,7 @@ impl Fx {
             .unwrap()
     }
 
-    /// Emit a hook exactly as `/internal/claude/hook` does; the real `card_fsm` task projects it onto `kernel/card/status`.
+    /// Emit a hook exactly as `/internal/claude/hook` does; persisted as a `claude.hook` event row, nothing projects it.
     async fn claude_hook(
         &self,
         track_id: &str,
@@ -491,31 +493,6 @@ impl Fx {
             )
             .await
             .unwrap();
-    }
-
-    fn spawn_fsm(&self) {
-        calm_server::card_fsm::spawn(
-            self.repo_dyn.clone(),
-            self.events.clone(),
-            self.write.clone(),
-        );
-    }
-
-    async fn await_card_status(&self, card_id: &str, expected: &str) -> i64 {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        loop {
-            let overlays = self.repo_dyn.overlays_for("card", card_id).await.unwrap();
-            if let Some(o) = overlays.iter().find(|o| o.kind == "status")
-                && o.payload.get("state").and_then(Value::as_str) == Some(expected)
-            {
-                return o.updated_at;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for kernel/card/status = {expected} on {card_id}: {overlays:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
     }
 
     /// Install a LIVE (unstarted) harness handle for `session_id` in the registry.
@@ -956,155 +933,8 @@ async fn parent_gate_verifying_is_working() {
     assert_eq!(p.attention, Attention::None);
 }
 
-#[tokio::test]
-async fn interactive_codex_card_active_is_working() {
-    let f = fx().await;
-    let t = f.track("chat").await;
-    let card = f.card(&t, "card-i", "codex", CardRole::Worker).await;
-    f.session(
-        &card,
-        "ws-i",
-        WorkerSessionKind::CodexCard,
-        WorkerSessionState::Running,
-        Some("th-i"),
-        None,
-        1_000,
-    )
-    .await;
-    f.stamp("th-i", 2_000, "active", None).await;
-    let p = f.recompute(&t).await;
-    assert!(p.working, "{p:?}");
-    assert_eq!(card_state(&p, &card), Some(CardState::Working));
-    assert_eq!(p.attention, Attention::None);
-    assert_eq!(p.activity_at_ms, None);
-}
-
-/// `last_thread_status IS NULL` (the mint value) is not a signal.
-#[tokio::test]
-async fn null_thread_status_is_quiet() {
-    let f = fx().await;
-    let t = f.track("chat").await;
-    let card = f.card(&t, "card-i", "codex", CardRole::Worker).await;
-    f.session(
-        &card,
-        "ws-i",
-        WorkerSessionKind::CodexCard,
-        WorkerSessionState::Running,
-        Some("th-i"),
-        None,
-        1_000,
-    )
-    .await;
-    let p = f.recompute(&t).await;
-    assert!(quiet(&p), "{p:?}");
-}
-
-/// The feeder's fail-closed `"unknown"` is outside every predicate.
-#[tokio::test]
-async fn unknown_thread_status_is_quiet() {
-    let f = fx().await;
-    let t = f.track("chat").await;
-    let card = f.card(&t, "card-i", "codex", CardRole::Worker).await;
-    f.session(
-        &card,
-        "ws-i",
-        WorkerSessionKind::CodexCard,
-        WorkerSessionState::Running,
-        Some("th-i"),
-        None,
-        1_000,
-    )
-    .await;
-    f.stamp("th-i", 2_000, "unknown", None).await;
-    let p = f.recompute(&t).await;
-    assert!(quiet(&p), "{p:?}");
-    // …and `idle` after a completed turn is quiet too, with E6 lighting the completion.
-    f.stamp("th-i", 3_000, "idle", Some(3_000)).await;
-    let p = f.recompute(&t).await;
-    assert!(!p.working);
-    assert_eq!(p.attention, Attention::None);
-    assert!(p.cards.is_empty());
-    assert_eq!(p.activity_at_ms, Some(3_000), "E6");
-}
-
-#[tokio::test]
-async fn waiting_on_approval_is_input() {
-    let f = fx().await;
-    let t = f.track("w").await;
-    let worker = f.card(&t, "card-w", "codex", CardRole::Worker).await;
-    let ws = f
-        .session(
-            &worker,
-            "ws-w",
-            WorkerSessionKind::CodexCard,
-            WorkerSessionState::Running,
-            Some("th-w"),
-            None,
-            1_000,
-        )
-        .await;
-    f.plan_tasks(&t, &[("build", "codex", TASK_IN_TRACK_ROUTE, None)])
-        .await;
-    f.claim(&t, "build", 2_000).await;
-    f.mark_running(&t, "build", &worker, 3_000).await;
-    f.stamp("th-w", 3_500, "waitingOnApproval", None).await;
-
-    let p = f.recompute(&t).await;
-    assert!(p.working, "W still holds: {p:?}");
-    assert_eq!(p.attention, Attention::Input);
-    assert_eq!(card_state(&p, &worker), Some(CardState::Input));
-    assert_eq!(p.items.len(), 1);
-    let item = &p.items[0];
-    assert_eq!(item.kind, ItemKind::Input);
-    assert_eq!(item.source, ItemSource::Session);
-    assert_eq!(item.id, ws);
-    assert_eq!(item.card_id.as_deref(), Some(worker.as_str()));
-    assert_eq!(
-        item.at_ms, 3_500,
-        "a status item carries the feeder stamp time"
-    );
-
-    f.stamp("th-w", 4_000, "active", None).await;
-    let p = f.recompute(&t).await;
-    assert!(p.working);
-    assert_eq!(p.attention, Attention::None);
-    assert_eq!(card_state(&p, &worker), Some(CardState::Working));
-
-    f.complete(&t, "build", &worker, 5_000).await;
-    let p = f.recompute(&t).await;
-    assert!(!p.working);
-    assert_eq!(p.attention, Attention::None);
-    assert_eq!(p.activity_at_ms, Some(5_000));
-}
-
-#[tokio::test]
-async fn interactive_codex_thread_status_input_and_system_error() {
-    let f = fx().await;
-    let t = f.track("chat").await;
-    let card = f.card(&t, "card-i", "codex", CardRole::Worker).await;
-    f.session(
-        &card,
-        "ws-i",
-        WorkerSessionKind::CodexCard,
-        WorkerSessionState::Running,
-        Some("th-i"),
-        None,
-        1_000,
-    )
-    .await;
-    f.stamp("th-i", 2_000, "waitingOnUserInput", None).await;
-    let p = f.recompute(&t).await;
-    assert_eq!(p.attention, Attention::Input);
-    assert_eq!(card_state(&p, &card), Some(CardState::Input));
-    assert!(!p.working);
-
-    f.stamp("th-i", 3_000, "systemError", None).await;
-    let p = f.recompute(&t).await;
-    assert_eq!(p.attention, Attention::Failed);
-    assert_eq!(card_state(&p, &card), Some(CardState::Failed));
-    assert_eq!(p.items[0].at_ms, 3_000);
-}
-
+/// An interactive card whose session died `failed` (signal-killed / spawn compensation) is red
+/// until the card is restarted or deleted.
 #[tokio::test]
 async fn interactive_card_failed_session_is_failed() {
     let f = fx().await;
@@ -1137,7 +967,7 @@ async fn interactive_card_failed_session_is_failed() {
 }
 
 /// The isolated marker is on the CARD (`operations.target_id`), not on `ws.spawn_op_id`: a
-/// re-minted isolated session (`spawn_op_id NULL`) judged by `spawn_op_id` would fall into (ii).
+/// re-minted isolated session (`spawn_op_id NULL`) is judged by W alone, whatever the feeder stamps.
 #[tokio::test]
 async fn reminted_isolated_session_is_not_shared_daemon() {
     let f = fx().await;
@@ -1243,101 +1073,6 @@ async fn wedged_harness_is_failed() {
     assert_eq!(p.items[0].id, ws);
 }
 
-async fn claude_interactive(f: &Fx) -> (String, String, String) {
-    let t = f.track("claude").await;
-    let card = f.card(&t, "card-c", "claude", CardRole::Worker).await;
-    let ws = f
-        .session(
-            &card,
-            "ws-c",
-            WorkerSessionKind::ClaudeCard,
-            WorkerSessionState::Running,
-            None,
-            None,
-            1_000,
-        )
-        .await;
-    (t, card, ws)
-}
-
-#[tokio::test]
-async fn awaiting_input_overlay_with_running_session_is_input() {
-    let f = fx().await;
-    f.spawn_fsm();
-    let (t, card, _ws) = claude_interactive(&f).await;
-    f.claude_hook(
-        &t,
-        &card,
-        ("PermissionRequest", "permission_request"),
-        json!({}),
-    )
-    .await;
-    let at = f.await_card_status(&card, "AwaitingInput").await;
-    let p = f.recompute(&t).await;
-    assert_eq!(p.attention, Attention::Input, "{p:?}");
-    assert_eq!(card_state(&p, &card), Some(CardState::Input));
-    assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].source, ItemSource::Card);
-    assert_eq!(p.items[0].id, card);
-    assert_eq!(p.items[0].card_id.as_deref(), Some(card.as_str()));
-    assert_eq!(
-        p.items[0].at_ms, at,
-        "a card item carries overlays.updated_at"
-    );
-    assert!(!p.working);
-}
-
-/// The session leaves silently (no event) ⇒ the next reconcile ignores the untouched FSM row.
-#[tokio::test]
-async fn awaiting_input_overlay_with_exited_session_is_quiet() {
-    let f = fx().await;
-    f.spawn_fsm();
-    let (t, card, ws) = claude_interactive(&f).await;
-    f.claude_hook(
-        &t,
-        &card,
-        ("PermissionRequest", "permission_request"),
-        json!({}),
-    )
-    .await;
-    f.await_card_status(&card, "AwaitingInput").await;
-    assert_eq!(f.recompute(&t).await.attention, Attention::Input);
-
-    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
-        .bind(&ws)
-        .execute(&f.pool)
-        .await
-        .unwrap();
-    f.projector.reconcile_all().await;
-    let p = f.stored(&t).await.unwrap();
-    assert_eq!(p.attention, Attention::None, "{p:?}");
-    assert!(p.cards.is_empty());
-    assert!(p.items.is_empty());
-    // The FSM row itself was not rewritten.
-    assert!(f.await_card_status(&card, "AwaitingInput").await > 0);
-}
-
-#[tokio::test]
-async fn interactive_claude_fsm_working_and_errored() {
-    let f = fx().await;
-    f.spawn_fsm();
-    let (t, card, _ws) = claude_interactive(&f).await;
-    f.claude_hook(&t, &card, ("PreToolUse", "pre_tool_use"), json!({}))
-        .await;
-    f.await_card_status(&card, "Working").await;
-    let p = f.recompute(&t).await;
-    assert!(p.working, "{p:?}");
-    assert_eq!(card_state(&p, &card), Some(CardState::Working));
-
-    f.claude_hook(&t, &card, ("StopFailure", "stop_failure"), json!({}))
-        .await;
-    f.await_card_status(&card, "Errored").await;
-    let p = f.recompute(&t).await;
-    assert!(!p.working);
-    assert_eq!(p.attention, Attention::Failed);
-    assert_eq!(card_state(&p, &card), Some(CardState::Failed));
-}
-
 /// Session minted at `t0 < t1 = done`, later signal-killed ⇒ quiet: the verdict belongs to finished work.
 #[tokio::test]
 async fn done_task_worker_signal_killed_is_quiet() {
@@ -1367,45 +1102,6 @@ async fn done_task_worker_signal_killed_is_quiet() {
     assert!(p.items.is_empty());
     assert!(!p.working);
     assert_eq!(p.activity_at_ms, Some(4_000));
-}
-
-/// Twin: session still running, a permission prompt from work the user added in the same PTY.
-#[tokio::test]
-async fn done_task_worker_permission_prompt_is_input() {
-    let f = fx().await;
-    f.spawn_fsm();
-    let t = f.track("w").await;
-    let worker = f.card(&t, "card-w", "claude", CardRole::Worker).await;
-    f.session(
-        &worker,
-        "ws-w",
-        WorkerSessionKind::ClaudeCard,
-        WorkerSessionState::Running,
-        None,
-        None,
-        1_000,
-    )
-    .await;
-    f.plan_tasks(&t, &[("build", "claude", TASK_IN_TRACK_ROUTE, None)])
-        .await;
-    f.claim(&t, "build", 2_000).await;
-    f.mark_running(&t, "build", &worker, 3_000).await;
-    f.complete(&t, "build", &worker, 4_000).await;
-    f.claude_hook(
-        &t,
-        &worker,
-        ("PermissionRequest", "permission_request"),
-        json!({}),
-    )
-    .await;
-    f.await_card_status(&worker, "AwaitingInput").await;
-    let p = f.recompute(&t).await;
-    assert_eq!(p.attention, Attention::Input, "{p:?}");
-    assert_eq!(card_state(&p, &worker), Some(CardState::Input));
-    assert!(
-        !p.working,
-        "the done task does not work; the prompt is input"
-    );
 }
 
 /// The task is `done@t1`; a restart AFTER that mints S2 (`created_at_ms = t2 > t1`) and the
@@ -1560,13 +1256,13 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
         card_id: card_a.clone(),
         provider: "codex".into(),
         state: "failed".into(),
-        last_thread_status: None,
-        last_activity_ms: None,
         updated_at_ms: 4_500,
         created_at_ms: 1_000,
         mode: None,
         isolated: false,
         task_bound: true,
+        terminal_run_id: None,
+        pty_open: false,
     });
     let folded = fold(&t, &admitted);
     assert_eq!(
@@ -1806,35 +1502,37 @@ async fn done_track_running_task_is_still_working() {
     );
 }
 
-/// The `input` form of the same-card corner: X's codex session `waitingOnApproval` out-ranked the working verdict; the filter drops the input, `cards == [X = working]`.
+/// The session-verdict form of the same-card corner: a done track, a task running on X, and X's
+/// session `failed` out-ranked the working verdict; the filter drops it, `cards == [X = working]`.
 #[tokio::test]
-async fn done_track_input_on_a_running_worker_is_still_working() {
+async fn done_track_failed_session_on_a_running_worker_is_still_working() {
     let f = fx().await;
     let t = f.track("w").await;
     f.set_lifecycle(&t, TrackLifecycle::Working).await;
     let worker = f.card(&t, "card-x", "codex", CardRole::Worker).await;
-    f.session(
-        &worker,
-        "ws-x",
-        WorkerSessionKind::CodexCard,
-        WorkerSessionState::Running,
-        Some("th-x"),
-        None,
-        1_000,
-    )
-    .await;
+    let ws = f
+        .session(
+            &worker,
+            "ws-x",
+            WorkerSessionKind::CodexCard,
+            WorkerSessionState::Running,
+            Some("th-x"),
+            None,
+            1_000,
+        )
+        .await;
     f.plan_tasks(&t, &[("build", "codex", TASK_IN_TRACK_ROUTE, None)])
         .await;
     f.claim(&t, "build", 2_000).await;
     f.mark_running(&t, "build", &worker, 3_000).await;
-    f.stamp("th-x", 4_000, "waitingOnApproval", None).await;
+    f.exit_session(&ws, WorkerSessionState::Failed, 4_000).await;
     let before = f.recompute(&t).await;
     assert!(before.working, "{before:?}");
-    assert_eq!(before.attention, Attention::Input);
+    assert_eq!(before.attention, Attention::Failed);
     assert_eq!(
         card_state(&before, &worker),
-        Some(CardState::Input),
-        "input > working on a live track: {before:?}"
+        Some(CardState::Failed),
+        "failed > working on a live track: {before:?}"
     );
 
     f.set_lifecycle(&t, TrackLifecycle::Done).await;
@@ -1848,7 +1546,7 @@ async fn done_track_input_on_a_running_worker_is_still_working() {
             card_id: worker.clone(),
             state: CardState::Working
         }],
-        "the working evidence outlives the filtered input verdict: {p:?}"
+        "the working evidence outlives the filtered failed verdict: {p:?}"
     );
 }
 
@@ -2071,7 +1769,8 @@ async fn aged_failure_drops_its_card_verdict() {
     );
 }
 
-/// E5/E6 carry the "never task-bound" predicate: a worker's later turn end and stop hook do NOT relight a result E3 already lit.
+/// A worker's later turn end and stop hook do NOT relight a result E3 already lit: neither column is
+/// evidence; a card's output needs the real PTY (`terminal_signals::task_bound_worker_output_is_ignored`).
 #[tokio::test]
 async fn worker_turn_end_after_task_done_does_not_relight() {
     let f = fx().await;
@@ -2100,52 +1799,6 @@ async fn worker_turn_end_after_task_done_does_not_relight() {
         .await;
     let p = f.recompute(&t).await;
     assert_eq!(p.activity_at_ms, Some(t1), "one result, one unread: {p:?}");
-}
-
-/// Twin: the same columns on a never-task-bound card DO light.
-#[tokio::test]
-async fn interactive_card_turn_end_lights_unread() {
-    let f = fx().await;
-    let t = f.track("chat").await;
-    let card = f.card(&t, "card-i", "codex", CardRole::Worker).await;
-    f.session(
-        &card,
-        "ws-i",
-        WorkerSessionKind::CodexCard,
-        WorkerSessionState::Running,
-        Some("th-i"),
-        None,
-        1_000,
-    )
-    .await;
-    let t2 = now_ms() - 5_000;
-    f.stamp("th-i", t2, "idle", Some(t2)).await;
-    let p = f.recompute(&t).await;
-    assert_eq!(p.activity_at_ms, Some(t2), "E6: {p:?}");
-
-    let claude = f.card(&t, "card-c", "claude", CardRole::Worker).await;
-    f.session(
-        &claude,
-        "ws-c",
-        WorkerSessionKind::ClaudeCard,
-        WorkerSessionState::Running,
-        None,
-        None,
-        1_000,
-    )
-    .await;
-    f.claude_hook(&t, &claude, ("Stop", "stop"), json!({}))
-        .await;
-    let at: i64 = sqlx::query_scalar(
-        "SELECT MAX(at) FROM events WHERE kind = 'claude.hook' AND scope_track = ?1",
-    )
-    .bind(&t)
-    .fetch_one(&f.pool)
-    .await
-    .unwrap();
-    let p = f.recompute(&t).await;
-    assert_eq!(p.activity_at_ms, Some(at), "E5: {p:?}");
-    assert!(at > t2);
 }
 
 /// A `failed` turn is an ending; only `interrupted` is excluded.
@@ -2445,37 +2098,6 @@ async fn quiet_track_short_task_completed_between_ticks_is_unread() {
 }
 
 #[tokio::test]
-async fn reconcile_clears_stale_working_after_session_exit() {
-    let f = fx().await;
-    let t = f.track("chat").await;
-    let card = f.card(&t, "card-i", "codex", CardRole::Worker).await;
-    let ws = f
-        .session(
-            &card,
-            "ws-i",
-            WorkerSessionKind::CodexCard,
-            WorkerSessionState::Running,
-            Some("th-i"),
-            None,
-            1_000,
-        )
-        .await;
-    f.stamp("th-i", 2_000, "active", None).await;
-    f.projector.reconcile_all().await;
-    assert!(f.stored(&t).await.unwrap().working);
-
-    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
-        .bind(&ws)
-        .execute(&f.pool)
-        .await
-        .unwrap();
-    f.projector.reconcile_all().await;
-    let p = f.stored(&t).await.unwrap();
-    assert!(!p.working, "{p:?}");
-    assert!(p.cards.is_empty());
-}
-
-#[tokio::test]
 async fn activity_at_is_monotone() {
     let f = fx().await;
     let t = f.track("w").await;
@@ -2665,10 +2287,24 @@ async fn activity_payload_passes_the_overlay_registry() {
     f.mark_running(&t, "build", &worker, 3_000).await;
     f.fail(&t, "build", &worker, 4_000).await;
     f.claim(&t, "test", 5_000).await;
-    f.stamp("th-w", 6_000, "waitingOnApproval", None).await;
     let _ = ws;
+    // A never-task-bound interactive card whose session died `failed`: the one `session` verdict.
+    let chat = f.card(&t, "card-chat", "codex", CardRole::Worker).await;
+    let chat_ws = f
+        .session(
+            &chat,
+            "ws-chat",
+            WorkerSessionKind::CodexCard,
+            WorkerSessionState::Running,
+            Some("th-chat"),
+            None,
+            1_000,
+        )
+        .await;
+    f.exit_session(&chat_ws, WorkerSessionState::Failed, 6_000)
+        .await;
     let p = f.recompute(&t).await;
-    // Every source is represented: task (failed), session (input),
+    // Every source is represented: task (failed), session (failed),
     // lifecycle (input); a card folded to `failed`; working from `test`.
     assert!(p.working);
     assert_eq!(p.attention, Attention::Failed);
@@ -2703,65 +2339,6 @@ async fn activity_payload_passes_the_overlay_registry() {
             "working"
         ]
     );
-}
-
-/// Which events resolve to which track.
-#[tokio::test]
-async fn wakeup_events_resolve_to_their_track() {
-    let f = fx().await;
-    let t = f.track("w").await;
-    let card = f.card(&t, "card-w", "codex", CardRole::Worker).await;
-    let mut rx = f.events.subscribe();
-    // A card-status overlay.set with a degraded (System) scope resolves via the card.
-    f.spawn_fsm();
-    f.claude_hook(&t, &card, ("PreToolUse", "pre_tool_use"), json!({}))
-        .await;
-    let mut seen_overlay = None;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    while seen_overlay.is_none() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "no overlay.set arrived"
-        );
-        let env = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        if let Event::OverlaySet(o) = &env.event
-            && o.entity_kind == "card"
-            && o.kind == "status"
-        {
-            seen_overlay = Some(env);
-        }
-    }
-    let mut env = seen_overlay.unwrap();
-    assert_eq!(
-        f.projector.track_for_event(&env).await.as_deref(),
-        Some(t.as_str())
-    );
-    env.scope = EventScope::System;
-    assert_eq!(
-        f.projector.track_for_event(&env).await.as_deref(),
-        Some(t.as_str()),
-        "System scope falls back to card_get"
-    );
-    // The projector's own activity row is not a wake-up (no loop).
-    let own = calm_server::event::BroadcastEnvelope {
-        id: 0,
-        event_version: 0,
-        actor: ActorId::Kernel,
-        scope: EventScope::System,
-        event: Event::OverlaySet(calm_server::model::Overlay {
-            id: "o".into(),
-            plugin_id: "kernel".into(),
-            entity_kind: "track".into(),
-            entity_id: t.clone(),
-            kind: "activity".into(),
-            payload: json!({}),
-            updated_at: 0,
-        }),
-    };
-    assert_eq!(f.projector.track_for_event(&own).await, None);
 }
 
 /// The wake-up table, every row, table-driven, including the events that must not wake anything.
@@ -2865,24 +2442,8 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
     ];
 
     let mut rows: Vec<(String, EventScope, Event, Option<&str>)> = vec![
-        (
-            "overlay.set kernel/card/status, track scope".into(),
-            f.track_scope(&t),
-            overlay("kernel", "card", &card, "status"),
-            Some(t.as_str()),
-        ),
-        (
-            "overlay.set kernel/card/status, System scope → card_get".into(),
-            EventScope::System,
-            overlay("kernel", "card", &card, "status"),
-            Some(t.as_str()),
-        ),
-        (
-            "overlay.set kernel/card/status of a card no row knows".into(),
-            EventScope::System,
-            overlay("kernel", "card", "no-such-card", "status"),
-            None,
-        ),
+        // No `overlay.set` wakes the projector: the projector's own row must not wake it, and a
+        // plugin's row never did.
         (
             "overlay.set kernel/track/activity — the projector's own row".into(),
             f.track_scope(&t),
@@ -2890,9 +2451,15 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
             None,
         ),
         (
-            "overlay.set of a plugin, card/status".into(),
+            "overlay.set of a kernel card row, track scope".into(),
             f.track_scope(&t),
-            overlay("plugin-x", "card", &card, "status"),
+            overlay("kernel", "card", &card, "eta"),
+            None,
+        ),
+        (
+            "overlay.set of a plugin, card/eta".into(),
+            f.track_scope(&t),
+            overlay("plugin-x", "card", &card, "eta"),
             None,
         ),
         (
@@ -3014,7 +2581,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
         ));
     }
     assert!(
-        rows.len() >= 27,
+        rows.len() >= 25,
         "every §4.3 row plus its negatives: {}",
         rows.len()
     );
@@ -3040,6 +2607,7 @@ async fn projector_loop_recomputes_on_task_dispatched() {
         f.events.clone(),
         f.write.clone(),
         f.harness.clone(),
+        TerminalRendererRegistry::new(),
     )
     .expect("sqlite-backed repo");
     let loop_task = tokio::spawn(looped.run());

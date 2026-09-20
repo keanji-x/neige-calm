@@ -294,7 +294,6 @@ jobs:
           paths=(
             crates/calm-server/src/routes/
             crates/calm-server/src/plugin_host/
-            crates/calm-server/src/card_fsm.rs
             crates/calm-server/src/terminal_sweeper.rs
             crates/calm-server/src/replay.rs
           )

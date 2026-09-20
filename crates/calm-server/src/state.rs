@@ -1024,8 +1024,6 @@ impl AppState {
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
 
-        crate::card_fsm::spawn(repo.clone(), events.clone(), write.clone());
-
         let daemon = Arc::new(DaemonClient::new(cfg));
         let codex = Arc::new(CodexClient::new(cfg));
         if let Err(e) = codex.shared_codex_home.seed() {
@@ -1110,7 +1108,13 @@ impl AppState {
             ))
             .map_err(|_| anyhow::anyhow!("terminal interaction already initialized"))?;
         let harness = HarnessRegistry::new();
-        crate::track_activity::spawn(repo.clone(), events.clone(), write.clone(), harness.clone());
+        crate::track_activity::spawn(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            harness.clone(),
+            terminal_renderer.clone(),
+        );
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
             events.clone(),

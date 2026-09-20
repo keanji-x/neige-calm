@@ -64,8 +64,8 @@ async fn seed_legacy_overlay(repo: &SqlxRepo, bus: &EventBus) -> i64 {
         plugin_id: "p-legacy".into(),
         entity_kind: "track".into(),
         entity_id: "w-legacy".into(),
-        kind: "status".into(),
-        payload: json!({ "state": "running" }),
+        kind: "eta".into(),
+        payload: json!({ "text": "5m" }),
     };
     let (_o, event_id) = write_with_event_typed(
         repo as &dyn Repo,
@@ -123,7 +123,7 @@ async fn live_broadcast_delivers_overlay_set_with_missing_schema_version() {
     let v = recv_json(&mut ws).await;
     assert_eq!(v["_id"], legacy_id);
     assert_eq!(v["ev"], "overlay.set");
-    assert_eq!(v["data"]["payload"]["state"], "running");
+    assert_eq!(v["data"]["payload"]["text"], "5m");
     assert!(v["data"]["payload"].get("schemaVersion").is_none());
 }
 
@@ -138,8 +138,8 @@ async fn replay_mixes_legacy_pass_through_with_future_drop() {
         plugin_id: "p-future".into(),
         entity_kind: "track".into(),
         entity_id: "w-future".into(),
-        kind: "status".into(),
-        payload: json!({ "schemaVersion": 999, "state": "from-future" }),
+        kind: "eta".into(),
+        payload: json!({ "schemaVersion": 999, "text": "from-future" }),
     };
     let (_o, future_id) = write_with_event_typed(
         repo.as_ref() as &dyn Repo,

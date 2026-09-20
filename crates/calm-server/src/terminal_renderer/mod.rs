@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -27,6 +28,8 @@ mod input_authority;
 mod model_view;
 pub use input_authority::{ClientInputScope, InputBarrier, WriteAuthority};
 pub use model_view::{ModelView, SharedModelView};
+#[cfg(feature = "fixtures")]
+pub mod attach_hold_for_test;
 #[cfg(test)]
 pub(crate) mod establishment_test_hook;
 mod output_capture;
@@ -42,6 +45,20 @@ pub use client_pump::{
 pub type SharedRenderPlane = Arc<StdMutex<RenderPlane>>;
 pub type SharedOwnerRegistry = Arc<StdMutex<OwnerRegistry>>;
 pub type SharedExitState = Arc<StdMutex<Option<TerminalExitInfo>>>;
+/// The activity projector's wake-up slot, read by every attach reader on its two PTY edges (leading
+/// edge of output after a quiet window, persisted exit); carries the terminal id. `None` until the
+/// projector installs a sender — a reader that finds none sends nothing (the tick still reads).
+pub type OutputWake = Arc<StdMutex<Option<mpsc::UnboundedSender<String>>>>;
+
+/// Send `terminal_id` on the wake slot, if a projector installed one.
+/// `mpsc::UnboundedSender::send` is synchronous and never blocks.
+fn wake_projector(slot: &OutputWake, terminal_id: &str) {
+    if let Ok(guard) = slot.lock()
+        && let Some(tx) = guard.as_ref()
+    {
+        let _ = tx.send(terminal_id.to_owned());
+    }
+}
 
 // Mirrors `scrollback` in xterm.js Terminal config at `web/src/XtermView.tsx`; must be kept
 // in lockstep so the client's local ring isn't smaller than the server cap.
@@ -135,6 +152,11 @@ pub struct RendererEntry {
     pub exit: SharedExitState,
     /// Hook signals for this terminal (untrusted advisory telemetry). A respawned terminal starts an empty ring.
     pub signals: SignalRing,
+    /// `now_ms()` of the last PTY output this entry received — an `Output` frame, or a fresh
+    /// launch's attach replay; `0` until then. Never persisted: it only means something while this
+    /// entry is alive, and after a restart the registry is empty until the card's WS reattaches it.
+    /// Shared with the reader task.
+    pub last_output_ms: Arc<AtomicI64>,
     initial_event_rx: StdMutex<Option<broadcast::Receiver<DaemonMsg>>>,
     exited_rx: StdMutex<Option<oneshot::Receiver<Option<i32>>>>,
     /// Held apart from `tasks` because teardown must let it finish its exit arm rather than abort
@@ -265,6 +287,9 @@ pub struct TerminalRendererRegistry {
     /// Server-owned directory of generated Planner terminal hook settings files. Teardown deletes
     /// only paths derived from this directory and the card id, never a path read from a terminal row's env.
     hook_settings_dir: StdMutex<Option<PathBuf>>,
+    /// Installed by [`Self::set_output_wake`] when the projector loop starts; cloned into every
+    /// attach reader at spawn.
+    output_wake: OutputWake,
 }
 
 impl TerminalRendererRegistry {
@@ -274,6 +299,7 @@ impl TerminalRendererRegistry {
             repo: None,
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
+            output_wake: Arc::new(StdMutex::new(None)),
         })
     }
 
@@ -283,7 +309,26 @@ impl TerminalRendererRegistry {
             repo: Some(repo),
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
+            output_wake: Arc::new(StdMutex::new(None)),
         })
+    }
+
+    /// Install the activity projector's wake-up sender; idempotent, last write wins. Readers
+    /// spawned before the install pick it up on their next edge: they hold the slot, not a copy.
+    pub fn set_output_wake(&self, tx: mpsc::UnboundedSender<String>) {
+        if let Ok(mut guard) = self.output_wake.lock() {
+            *guard = Some(tx);
+        }
+    }
+
+    /// `now_ms()` of the last PTY output of the CURRENT entry of `terminal_id`; `None` when there is
+    /// no live entry (none since the last restart included) or no output yet.
+    pub fn last_output_ms(&self, terminal_id: &str) -> Option<i64> {
+        let entry = self.get(terminal_id)?;
+        match entry.last_output_ms.load(Ordering::Relaxed) {
+            0 => None,
+            at => Some(at),
+        }
     }
 
     /// Install the terminal-exit completion bundle; idempotent, last write wins.
@@ -352,14 +397,20 @@ impl TerminalRendererRegistry {
             return Ok(existing);
         }
 
-        let EstablishedRenderer { entry, handoff } =
-            ensure_entry(cfg, self.repo.clone(), self.task_hook(), launch).await?;
+        let EstablishedRenderer { entry, handoff } = ensure_entry(
+            cfg,
+            self.repo.clone(),
+            self.task_hook(),
+            launch,
+            Arc::clone(&self.output_wake),
+        )
+        .await?;
         #[cfg(test)]
         if let Some((launch, _)) = handoff.as_ref() {
             establishment_test_hook::pause(launch.task_id(), &entry.terminal_id).await;
         }
         let entry = Arc::new(entry);
-        let entry = {
+        let (entry, stamp_became_readable) = {
             let mut entries = self
                 .entries
                 .lock()
@@ -375,13 +426,22 @@ impl TerminalRendererRegistry {
                 }
                 // A read-only caller has no handoff proof; a fresh caller still owns its observed PID and
                 // must finish the same durable handoff even when the UI installed this renderer first.
-                existing.clone()
+                // The registry reads one stamp per terminal: the newer of the two entries' stamps, so a
+                // fresh launch's replay stays evidence when an attach-shaped caller's entry is the one kept.
+                let stamp = entry.last_output_ms.load(Ordering::Relaxed);
+                let advanced = existing.last_output_ms.fetch_max(stamp, Ordering::Relaxed) < stamp;
+                (existing.clone(), advanced)
             } else {
                 tracing::info!(terminal_id=%entry.terminal_id, "terminal renderer registry inserted entry");
                 entries.insert(entry.terminal_id.clone(), entry.clone());
-                entry
+                (entry, true)
             }
         };
+        // A stamp written before it was readable through the registry (a fresh launch's replay, or a
+        // frame the reader saw first) earns its leading-edge wake only now that `last_output_ms` reads it.
+        if stamp_became_readable && entry.last_output_ms.load(Ordering::Relaxed) != 0 {
+            wake_projector(&self.output_wake, &entry.terminal_id);
+        }
         if let Some((launch, pid)) = handoff {
             let repo = self
                 .repo
@@ -449,6 +509,7 @@ impl TerminalRendererRegistry {
             config: cfg,
             exit,
             signals: SignalRing::new(),
+            last_output_ms: Arc::new(AtomicI64::new(0)),
             initial_event_rx: StdMutex::new(Some(initial_event_rx)),
             exited_rx: StdMutex::new(Some(exited_rx)),
             attach_task: StdMutex::new(None),
@@ -553,6 +614,7 @@ async fn ensure_entry(
     repo: Option<Arc<dyn RouteRepo>>,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
     launch: Option<crate::operation::task_launch::TaskLaunch>,
+    output_wake: OutputWake,
 ) -> anyhow::Result<EstablishedRenderer> {
     use crate::operation::terminal_launch::{self, TerminalStart};
     // Match the absolute endpoint persisted in the one-use launch record.
@@ -577,6 +639,8 @@ async fn ensure_entry(
     // A replay alone cannot reconstruct geometry changes from an earlier
     // server lifetime. Human reattachment remains available; model observation
     // refuses that unproven projection instead of inventing a fresh screen.
+    // The same fact (no pid persisted before this spawn) is what makes the
+    // replay this lifetime's output for the activity stamp below.
     let observation_replay_proven = !attach_only
         && match repo.as_deref() {
             Some(repo) => repo
@@ -682,6 +746,8 @@ async fn ensure_entry(
             other => anyhow::bail!("unexpected proc-supervisor ready reply: {other:?}"),
         }
     }
+    #[cfg(feature = "fixtures")]
+    attach_hold_for_test::hold(&cfg.terminal_id).await;
     let render_plane: SharedRenderPlane = Arc::new(StdMutex::new(RenderPlane::with_colors(
         cfg.cols,
         cfg.rows,
@@ -732,6 +798,9 @@ async fn ensure_entry(
         }),
     )
     .await?;
+    // Shared with the reader (its only writer after this function); read through the registry by
+    // the activity projector.
+    let last_output_ms = Arc::new(AtomicI64::new(0));
     let output_capture =
         match read_control_reply(&mut attach_conn, SPAWN_CONTROL_READ_TIMEOUT, "attach").await? {
             ControlReply::AttachOk(Attached {
@@ -753,6 +822,12 @@ async fn ensure_entry(
                         Err(_) => Vec::new(),
                     };
                     client_pump::apply_broadcaster_effects(&event_tx, &supervisor_tx, effects);
+                    // The supervisor sends no `Output` frame for replayed bytes. A fresh launch's
+                    // replay is output this lifetime printed before the attach and stamps like a
+                    // frame; a reattach replay is an earlier lifetime's screen and stamps nothing.
+                    if observation_replay_proven {
+                        last_output_ms.store(crate::model::now_ms(), Ordering::Relaxed);
+                    }
                 }
                 output_capture
             }
@@ -777,6 +852,8 @@ async fn ensure_entry(
         task_hook,
         exit_persisted_tx,
         output_capture,
+        Arc::clone(&last_output_ms),
+        output_wake,
     );
     let ready_task = child_ready::spawn_child_ready_poller(render_plane.clone(), event_tx.clone());
 
@@ -798,6 +875,7 @@ async fn ensure_entry(
             config: cfg,
             exit,
             signals: SignalRing::new(),
+            last_output_ms,
             initial_event_rx: StdMutex::new(Some(initial_event_rx)),
             exited_rx: StdMutex::new(Some(exited_rx)),
             attach_task: StdMutex::new(Some(attach_task)),

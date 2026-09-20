@@ -349,13 +349,13 @@ async fn client_at_cursor_too_old_gets_snapshot_required() {
 
 /// Seed two `Event::OverlaySet` rows directly through `write_with_event_typed`, bypassing route-layer validation so the future-version row lands; returns `[supported_event_id, future_event_id]`.
 async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> (i64, i64) {
-    // Supported: status overlay at the current schemaVersion.
+    // Supported: eta overlay at the current schemaVersion.
     let supported = NewOverlay {
         plugin_id: "p1".into(),
         entity_kind: "track".into(),
         entity_id: "w-1".into(),
-        kind: "status".into(),
-        payload: json!({ "schemaVersion": 1, "state": "running" }),
+        kind: "eta".into(),
+        payload: json!({ "schemaVersion": 1, "text": "5m" }),
     };
     let (_o, supported_id) = write_with_event_typed(
         repo as &dyn Repo,
@@ -382,8 +382,8 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
         plugin_id: "p1".into(),
         entity_kind: "track".into(),
         entity_id: "w-1".into(),
-        kind: "status".into(),
-        payload: json!({ "schemaVersion": 999, "state": "from-future" }),
+        kind: "eta".into(),
+        payload: json!({ "schemaVersion": 999, "text": "from-future" }),
     };
     let (_o, future_id) = write_with_event_typed(
         repo as &dyn Repo,
@@ -425,8 +425,8 @@ async fn replay_skips_future_schema_version_overlay_set() {
     let v = recv_json(&mut ws).await;
     assert_eq!(v["_id"], supported_id);
     assert_eq!(v["ev"], "overlay.set");
-    assert_eq!(v["data"]["kind"], "status");
-    assert_eq!(v["data"]["payload"]["state"], "running");
+    assert_eq!(v["data"]["kind"], "eta");
+    assert_eq!(v["data"]["payload"]["text"], "5m");
     assert_eq!(v["data"]["payload"]["schemaVersion"], 1);
 
     let done = recv_json(&mut ws).await;

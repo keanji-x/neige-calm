@@ -133,7 +133,7 @@ pub(crate) async fn ingest_provider_hook(
     let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
     let hook_idempotency_key = hook_idempotency_key(provider, &card_id_str, &payload);
 
-    // A hook for a Planner-opened terminal is advisory telemetry, never worker state: it is appended to the live renderer entry's ring and acknowledged BEFORE the worker dedupe cache and the persist / FSM path, so it can never move a card FSM or evict a worker key.
+    // A hook for a Planner-opened terminal is advisory telemetry, never worker state: it is appended to the live renderer entry's ring and acknowledged BEFORE the worker dedupe cache and the persist path, so it can never evict a worker key.
     // The discriminator is the creation-time `TERMINAL_SIGNALS_PAYLOAD_KEY` in the card payload (survives a `kind` PATCH and the terminal row's deletion), then `kind == "terminal"`; owning a terminal row is NOT it, since Worker cards own one too.
     let card = s.repo.card_get(&card_id_str).await?;
     if card.as_ref().is_some_and(is_planner_terminal_card)
@@ -360,6 +360,47 @@ pub(crate) fn to_snake_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CODEX_REQUIREMENTS_TOML: &str =
+        include_str!("../../../../docker/codex-requirements.toml");
+
+    /// One row of the codex CLI hook table; `docker/codex-requirements.toml` registers exactly these.
+    /// Event-name vocabulary only: no hook moves a card's state (a card's activity comes from its PTY output).
+    struct CodexWorkerHook {
+        /// PascalCase event name, used verbatim as the key in docker/codex-requirements.toml.
+        event_name: &'static str,
+    }
+
+    const CODEX_WORKER_HOOKS: &[CodexWorkerHook] = &[
+        CodexWorkerHook {
+            event_name: "SessionStart",
+        },
+        CodexWorkerHook {
+            event_name: "UserPromptSubmit",
+        },
+        CodexWorkerHook {
+            event_name: "PreToolUse",
+        },
+        CodexWorkerHook {
+            event_name: "PostToolUse",
+        },
+        CodexWorkerHook {
+            event_name: "PermissionRequest",
+        },
+        CodexWorkerHook { event_name: "Stop" },
+    ];
+
+    #[test]
+    fn every_codex_worker_hook_is_registered_in_requirements_toml() {
+        for hook in CODEX_WORKER_HOOKS {
+            let needle = format!("[[hooks.{}]]", hook.event_name);
+            assert!(
+                CODEX_REQUIREMENTS_TOML.contains(&needle),
+                "docker/codex-requirements.toml is missing registration for {needle}; \
+                 the kernel expects this hook but codex CLI never fires it.",
+            );
+        }
+    }
 
     #[test]
     fn snake_case_examples() {

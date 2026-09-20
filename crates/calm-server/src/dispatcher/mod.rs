@@ -1030,8 +1030,8 @@ impl Inner {
                 }
             }
             Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
-                // Only the precise Stop hooks end a worker turn; other hooks may project to the same FSM
-                // state but are mid-turn pauses. The Worker role gate prevents planner self-push loops.
+                // Only the precise Stop hooks end a worker turn; other hooks are mid-turn pauses. The
+                // Worker role gate prevents planner self-push loops.
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write)
                     && !is_stale_worker_stop_hook(self.repo.as_ref(), &envelope.event).await
                 {

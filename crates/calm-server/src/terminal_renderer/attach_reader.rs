@@ -5,12 +5,16 @@ use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use super::{SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitInfo};
+use super::{
+    OutputWake, SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitInfo,
+    wake_projector,
+};
 use crate::db::RouteRepo;
 use crate::session_projection_repo::WorkerSessionState;
 use crate::terminal_renderer::client_pump::apply_broadcaster_effects;
 use crate::terminal_renderer::output_capture::SharedTerminalOutputCapture;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 struct ObservationSource {
     plane: SharedRenderPlane,
@@ -42,7 +46,13 @@ pub fn spawn_supervisor_attach_reader(
     // on the task handle: the loop also ends on a read error, which persists nothing.
     exit_persisted_tx: watch::Sender<bool>,
     output_capture: SharedTerminalOutputCapture,
+    // Stamped `now_ms()` on every `Output` frame; a leading edge (a frame after a window of
+    // quiet — the first frame included unless a fresh launch's replay stamped just before it) and
+    // the persisted exit wake the activity projector.
+    last_output_ms: Arc<AtomicI64>,
+    output_wake: OutputWake,
 ) -> JoinHandle<()> {
+    let quiet_window_ms = crate::track_activity::INTERACTIVE_OUTPUT_WINDOW.as_millis() as i64;
     tokio::spawn(async move {
         let mut source = ObservationSource {
             plane: render_plane.clone(),
@@ -52,6 +62,14 @@ pub fn spawn_supervisor_attach_reader(
         loop {
             match read_frame::<ControlReply, _>(&mut attach_conn).await {
                 Ok(ControlReply::Output { bytes, .. }) => {
+                    // One atomic swap: the previous stamp decides whether
+                    // this frame is a leading edge (quiet → output); there
+                    // is no trailing edge — output → quiet is the tick's.
+                    let now = crate::model::now_ms();
+                    let previous = last_output_ms.swap(now, Ordering::Relaxed);
+                    if now - previous >= quiet_window_ms {
+                        wake_projector(&output_wake, &terminal_id);
+                    }
                     if let Ok(mut capture) = output_capture.lock() {
                         capture.push(&bytes);
                     }
@@ -155,6 +173,10 @@ pub fn spawn_supervisor_attach_reader(
                         )
                         .await;
                     }
+                    // Woken after the exit record is persisted so the recomputation reads `pty_open = 0`,
+                    // and before the persistence signal with no `.await` between, so a teardown that
+                    // observes "persisted" cannot abort this task before the wake.
+                    wake_projector(&output_wake, &terminal_id);
                     // Sent last, after every persistence step above, so the signal means "the exit was written".
                     let _ = exit_persisted_tx.send(true);
                     break;

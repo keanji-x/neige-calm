@@ -50,8 +50,6 @@ pub struct SessionRow {
     pub card_id: String,
     pub provider: String,
     pub state: String,
-    pub last_thread_status: Option<String>,
-    pub last_activity_ms: Option<i64>,
     pub updated_at_ms: i64,
     pub created_at_ms: i64,
     /// `json_extract(handle_state_json, '$.mode')` — `Some("harness")` for the planner / assistant harness rows.
@@ -60,23 +58,21 @@ pub struct SessionRow {
     pub isolated: bool,
     /// `EXISTS (tasks.worker_card_id = card)` over EVERY attempt — the "never bound to a task" arm negated.
     pub task_bound: bool,
+    /// The PTY the session observes through — the renderer registry's key. `NULL` for a harness
+    /// row (no PTY) and after the orphan arm deleted the terminal row (FK `ON DELETE SET NULL`).
+    pub terminal_run_id: Option<String>,
+    /// The exit gate: the terminal row exists and records no exit (`exit_code IS NULL AND
+    /// signal_killed = 0`). NO terminal row ⇒ `false`; a NULL of the `LEFT JOIN` never reads open.
+    pub pty_open: bool,
 }
 
-/// One `kernel/card/status` overlay row for a card of the track.
-#[derive(Debug, Clone)]
-pub struct CardStatusRow {
-    pub state: String,
-    pub updated_at: i64,
-}
-
-/// The persisted completion-class evidence, one `MAX` per source (E3 is folded from the W rows by the caller).
+/// The persisted completion-class evidence, one `MAX` per source (E3 is folded from the W rows by the
+/// caller; the interactive PTY card's last output comes from the renderer registry, not a row).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Evidence {
     pub e1_harness_turn_completed: Option<i64>,
     pub e2_user_notify: Option<i64>,
     pub e4_agent_lifecycle_edge: Option<i64>,
-    pub e5_interactive_stop_hook: Option<i64>,
-    pub e6_interactive_turn_completed: Option<i64>,
     pub e7_agent_report_edit: Option<i64>,
 }
 
@@ -86,8 +82,6 @@ impl Evidence {
             self.e1_harness_turn_completed,
             self.e2_user_notify,
             self.e4_agent_lifecycle_edge,
-            self.e5_interactive_stop_hook,
-            self.e6_interactive_turn_completed,
             self.e7_agent_report_edit,
         ]
         .into_iter()
@@ -148,7 +142,8 @@ pub(crate) async fn current_tasks(pool: &SqlitePool, track_id: &str) -> Result<V
         .collect())
 }
 
-/// Does ANY attempt row of the track name this card as its worker? Spliced into S0, E5 and E6 so the four stay one predicate.
+/// Does ANY attempt row of the track name this card as its worker? Spliced into S0 twice (the
+/// eligibility arm and the `task_bound` column) so the two stay one predicate.
 fn task_bound_exists_sql(card_expr: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM tasks t WHERE t.track_id = ?1 AND t.worker_card_id = {card_expr})"
@@ -158,17 +153,19 @@ fn task_bound_exists_sql(card_expr: &str) -> String {
 /// S0 — the eligible sessions: the card's CURRENT session where the card is a harness card, the
 /// current attempt's worker card, or an interactive card never bound to a task. A superseded
 /// attempt's worker card matches none, so its leftover `failed` session never reaches the fold.
-pub(crate) async fn eligible_sessions(
-    pool: &SqlitePool,
-    track_id: &str,
-) -> Result<Vec<SessionRow>> {
+/// `pty_open` is read through a `LEFT JOIN terminals`: NO terminal row ⇒ closed — `COALESCE(…, 0)`
+/// spells that contract out rather than relying on how a bare NULL decodes.
+pub async fn eligible_sessions(pool: &SqlitePool, track_id: &str) -> Result<Vec<SessionRow>> {
     let sql = format!(
-        "SELECT ws.id, c.id AS card_id, ws.provider, ws.state, ws.last_thread_status, \
-                ws.last_activity_ms, ws.updated_at_ms, ws.created_at_ms, \
+        "SELECT ws.id, c.id AS card_id, ws.provider, ws.state, \
+                ws.updated_at_ms, ws.created_at_ms, \
                 json_extract(ws.handle_state_json, '$.mode') AS mode, \
                 {isolated} AS isolated, \
-                {task_bound} AS task_bound \
+                {task_bound} AS task_bound, \
+                ws.terminal_run_id, \
+                COALESCE(te.exit_code IS NULL AND te.signal_killed = 0, 0) AS pty_open \
            FROM cards c JOIN worker_sessions ws ON ws.id = c.session_id \
+           LEFT JOIN terminals te ON te.id = ws.terminal_run_id \
           WHERE c.track_id = ?1 \
             AND ( json_extract(ws.handle_state_json, '$.mode') = 'harness' \
                OR EXISTS (SELECT 1 FROM current_tasks ct \
@@ -186,43 +183,13 @@ pub(crate) async fn eligible_sessions(
             card_id: r.get("card_id"),
             provider: r.get("provider"),
             state: r.get("state"),
-            last_thread_status: r.get("last_thread_status"),
-            last_activity_ms: r.get("last_activity_ms"),
             updated_at_ms: r.get("updated_at_ms"),
             created_at_ms: r.get("created_at_ms"),
             mode: r.get("mode"),
             isolated: r.get::<bool, _>("isolated"),
             task_bound: r.get::<bool, _>("task_bound"),
-        })
-        .collect())
-}
-
-/// The `kernel/card/status` rows of the track's cards, keyed by card id. Which of them count
-/// is decided by the fold against S0 (rows without an eligible LIVE session are ignored, never rewritten).
-pub(crate) async fn card_status_overlays(
-    pool: &SqlitePool,
-    track_id: &str,
-) -> Result<std::collections::HashMap<String, CardStatusRow>> {
-    let rows = sqlx::query(
-        "SELECT entity_id, json_extract(payload, '$.state') AS state, updated_at \
-           FROM overlays \
-          WHERE plugin_id = 'kernel' AND entity_kind = 'card' AND kind = 'status' \
-            AND entity_id IN (SELECT id FROM cards WHERE track_id = ?1)",
-    )
-    .bind(track_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .iter()
-        .filter_map(|r| {
-            let state: Option<String> = r.get("state");
-            Some((
-                r.get::<String, _>("entity_id"),
-                CardStatusRow {
-                    state: state?,
-                    updated_at: r.get("updated_at"),
-                },
-            ))
+            terminal_run_id: r.get("terminal_run_id"),
+            pty_open: r.get::<bool, _>("pty_open"),
         })
         .collect())
 }
@@ -252,31 +219,14 @@ async fn max_ms(pool: &SqlitePool, sql: &str, track_id: &str) -> Result<Option<i
     Ok(row.try_get::<Option<i64>, _>(0)?)
 }
 
-/// E1, E2, E4–E7 — six autocommit `MAX` statements. E3 is computed from the W rows by the caller.
+/// E1, E2, E4, E7 — four autocommit `MAX` statements. E3 is computed from the W rows by the caller;
+/// the interactive PTY card's last output is read from the renderer registry, not from a row.
 pub(crate) async fn evidence(pool: &SqlitePool, track_id: &str) -> Result<Evidence> {
     // E4 — a lifecycle edge NOT driven by the user (`track.*` is never pruned;
     // `events.actor` is the `ActorId` JSON).
     let e4 = "SELECT MAX(at) FROM events \
                WHERE scope_track = ?1 AND kind = 'track.lifecycle_changed' \
                  AND json_extract(actor, '$.kind') <> 'User'";
-    // E5 — the stop hook of an interactive claude/codex card never bound to a task. A
-    // task-bound worker lights once, through E3.
-    let e5 = format!(
-        "SELECT MAX(e.at) FROM events e \
-          WHERE e.scope_track = ?1 AND e.kind IN ('claude.hook', 'codex.hook') \
-            AND json_extract(e.payload, '$.kind') IN ('hook.claude.stop', 'hook.codex.stop') \
-            AND NOT {}",
-        task_bound_exists_sql("json_extract(e.payload, '$.card_id')")
-    );
-    // E6 — the feeder's monotone turn-completion column on a shared-daemon interactive card
-    // never bound to a task (any session state — an exited session keeps it).
-    let e6 = format!(
-        "SELECT MAX(ws.last_turn_completed_ms) FROM worker_sessions ws \
-          WHERE ws.track_id = ?1 AND ws.provider = 'codex' \
-            AND COALESCE(json_extract(ws.handle_state_json, '$.mode'), '') <> 'harness' \
-            AND NOT {}",
-        task_bound_exists_sql("ws.card_id")
-    );
     // E7 — a report rewrite by someone other than the user (`EditAuthor`
     // is bare-lowercase on the wire).
     let e7 = "SELECT MAX(at) FROM events \
@@ -286,8 +236,6 @@ pub(crate) async fn evidence(pool: &SqlitePool, track_id: &str) -> Result<Eviden
         e1_harness_turn_completed: max_ms(pool, E1_HARNESS_TURN_COMPLETED_SQL, track_id).await?,
         e2_user_notify: max_ms(pool, E2_USER_NOTIFY_SQL, track_id).await?,
         e4_agent_lifecycle_edge: max_ms(pool, e4, track_id).await?,
-        e5_interactive_stop_hook: max_ms(pool, &e5, track_id).await?,
-        e6_interactive_turn_completed: max_ms(pool, &e6, track_id).await?,
         e7_agent_report_edit: max_ms(pool, e7, track_id).await?,
     })
 }

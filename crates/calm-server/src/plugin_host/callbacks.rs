@@ -1046,7 +1046,6 @@ mod tests {
                 "entity_kind": "track",
                 "entity_id": h.track_id,
                 "kind": "status",
-                // `status` is a kernel-owned overlay kind, so its payload must include `state`.
                 "payload": { "state": "running" }
             }),
         )

@@ -666,7 +666,7 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     use axum::http::{Request, StatusCode};
     use calm_server::model::NewOverlay;
     use calm_server::validation::{
-        OVERLAY_STATUS_SCHEMA_VERSION, max_supported_overlay_schema_version, payload_schema_version,
+        OVERLAY_ETA_SCHEMA_VERSION, max_supported_overlay_schema_version, payload_schema_version,
     };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -686,9 +686,9 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
         "explicit schemaVersion=999 must round-trip through the helper"
     );
     assert_eq!(
-        max_supported_overlay_schema_version("status"),
-        Some(OVERLAY_STATUS_SCHEMA_VERSION),
-        "the kernel's status overlay support ceiling drives what the read guard accepts"
+        max_supported_overlay_schema_version("eta"),
+        Some(OVERLAY_ETA_SCHEMA_VERSION),
+        "the kernel's eta overlay support ceiling drives what the read guard accepts"
     );
 
     let (addr, repo, bus) = boot().await;
@@ -766,11 +766,11 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
         plugin_id: "core".into(),
         entity_kind: "track".into(),
         entity_id: "track-fwd".into(),
-        kind: "status".into(),
-        payload: serde_json::json!({"state": "ok"}),
+        kind: "eta".into(),
+        payload: serde_json::json!({"text": "ok"}),
     })
     .await
-    .expect("upsert v1 status overlay (no schemaVersion)");
+    .expect("upsert v1 eta overlay (no schemaVersion)");
     repo.overlay_upsert(NewOverlay {
         plugin_id: "core".into(),
         entity_kind: "track".into(),
@@ -821,8 +821,8 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
         listed,
     );
     assert_eq!(
-        listed[0]["kind"], "status",
-        "the surviving row is the v1-shaped status overlay (no schemaVersion field)"
+        listed[0]["kind"], "eta",
+        "the surviving row is the v1-shaped eta overlay (no schemaVersion field)"
     );
     assert!(
         listed[0]["payload"].get("schemaVersion").is_none(),
