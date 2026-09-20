@@ -424,6 +424,8 @@ fn proc_pid_is_zombie(pid: i32) -> bool {
 /// child reports `SZOMB` — exactly the "exited, still pinning" observation
 /// the `ExitWait::Child` arm of `terminate_group_with_grace` polls for
 /// (without it every owned-child stop on macOS waited the full stop grace).
+/// `arg = 1` asks XNU to search the zombie list (`findzomb`); with `arg = 0`
+/// an unreaped child answers `ESRCH` instead.
 /// A short or failed answer (`ESRCH` once reaped, `EPERM` for a foreign
 /// process) is `false`, like a missing `/proc` entry. The pre-/post-signal
 /// caveats above apply unchanged: post-reap zombie = dead; pre-signal it
@@ -442,7 +444,7 @@ fn proc_pid_is_zombie(pid: i32) -> bool {
         libc::proc_pidinfo(
             pid,
             libc::PROC_PIDTBSDINFO,
-            0,
+            1,
             &mut info as *mut libc::proc_bsdinfo as *mut c_void,
             size as libc::c_int,
         )
