@@ -3645,6 +3645,159 @@ async fn reattach_replay_does_not_stamp() {
     h.stop(&p.terminal).await;
 }
 
+/// The supervisor's replay ring of `term:<terminal>` contains `needle`: a read-only attach with its
+/// own reader id, dropped after the `AttachOk`.
+async fn await_ring_contains(h: &Harness, terminal: &str, needle: &str) {
+    use calm_session::control::{AttachRequest, ControlMsg, ControlReply};
+    use calm_session::{read_frame, write_frame};
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut stream = tokio::net::UnixStream::connect(h.supervisor_socket())
+            .await
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &ControlMsg::Attach(AttachRequest {
+                proc_id: format!("term:{terminal}"),
+                from_cursor: None,
+                reader_id: "test-ring-probe".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        match read_frame::<ControlReply, _>(&mut stream).await.unwrap() {
+            ControlReply::AttachOk(attached) => {
+                if String::from_utf8_lossy(&attached.replay).contains(needle) {
+                    return;
+                }
+            }
+            other => panic!("unexpected attach reply: {other:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the replay ring of {terminal} never carried {needle:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// A lazy WS attach that races a fresh launch: it runs after the launch persisted the pid (its own
+/// replay is not evidence) and wins the registry insert while the launch is held before its attach.
+/// The launch's stamped entry loses the insert; the survivor still carries that stamp, so the card
+/// reads `working` inside the window from the wake that follows the launch.
+#[tokio::test]
+async fn concurrent_attach_keeps_the_fresh_launch_stamp() {
+    use calm_server::terminal_renderer::attach_hold_for_test;
+    use calm_server::ws::terminal::{
+        TestLiveRenderer, resolve_live_renderer_from_terminal_for_test,
+    };
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let (entered, release) = attach_hold_for_test::arm();
+    let spawned_at = calm_server::model::now_ms();
+    // The FE's own creation route: `CardAdded` is broadcast before the spawn, and a mounted grid
+    // attaches the new card's terminal on that event.
+    let create = async {
+        use tower::ServiceExt;
+        let response = h
+            .app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/tracks/{}/terminal-cards", h.track))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        json!({"program": SLEEPER, "cwd": "", "env": {},
+                            "theme": {"fg": [216,219,226], "bg": [15,20,24]}})
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let card: Value = serde_json::from_slice(&bytes).unwrap();
+        card["id"].as_str().unwrap().to_owned()
+    };
+    let (card, attach_entry) = tokio::join!(create, async {
+        let terminal = entered.await.expect("the create reached the attach hold");
+        let term = h.state.repo.terminal_get(&terminal).await.unwrap().unwrap();
+        assert!(
+            term.pid.is_some(),
+            "the hold sits after the pid persistence: the concurrent ensure is attach-shaped"
+        );
+        await_ring_contains(&h, &terminal, "READY").await;
+        assert!(
+            h.state.terminal_renderer.get(&terminal).is_none(),
+            "the held launch has not inserted its entry"
+        );
+        let entry = match resolve_live_renderer_from_terminal_for_test(&h.state, term)
+            .await
+            .unwrap()
+        {
+            TestLiveRenderer::Alive(entry) => entry,
+            TestLiveRenderer::ChildExited { exit_code } => {
+                panic!("the lazy attach did not find the live PTY: {exit_code:?}")
+            }
+        };
+        assert!(
+            h.state.terminal_renderer.get(&terminal).is_some(),
+            "the attach won the insert"
+        );
+        assert_eq!(
+            last_output_ms(&h, &terminal),
+            None,
+            "the attach's replay is an unproven lifetime's bytes and stamps nothing"
+        );
+        release.notify_one();
+        entry
+    });
+    let terminal = h
+        .state
+        .repo
+        .terminal_get_by_card(&card)
+        .await
+        .unwrap()
+        .expect("the created card has a terminal row")
+        .id;
+    let survivor = h
+        .state
+        .terminal_renderer
+        .get(&terminal)
+        .expect("the registry keeps one entry");
+    assert!(
+        Arc::ptr_eq(&survivor, &attach_entry),
+        "the launch's entry lost the insert to the attach's"
+    );
+    let stamp = last_output_ms(&h, &terminal)
+        .expect("the survivor carries the fresh launch's replay stamp");
+    assert!(
+        spawned_at <= stamp && stamp <= calm_server::model::now_ms(),
+        "the stamp is the launch's replay instant"
+    );
+    let a = await_activity(
+        &h,
+        "working from the stamp the launch handed over",
+        Duration::from_secs(5),
+        |a| a.working,
+    )
+    .await;
+    assert_eq!(card_state(&a, &card), Some(CardState::Working), "{a:?}");
+    assert_eq!(
+        a.activity_at_ms,
+        Some(stamp),
+        "E8: the mark IS the handed-over stamp"
+    );
+    loop_task.abort();
+    h.stop(&terminal).await;
+}
+
 /// Rows with NO terminal row — an idle harness session (`terminal_run_id` NULL) and an interactive
 /// session whose terminal row the orphan arm deleted (FK `ON DELETE SET NULL`) — decode
 /// `pty_open = false` through the `COALESCE`, and the recomputation runs on them without error.

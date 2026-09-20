@@ -410,7 +410,7 @@ impl TerminalRendererRegistry {
             establishment_test_hook::pause(launch.task_id(), &entry.terminal_id).await;
         }
         let entry = Arc::new(entry);
-        let (entry, inserted) = {
+        let (entry, stamp_became_readable) = {
             let mut entries = self
                 .entries
                 .lock()
@@ -426,16 +426,20 @@ impl TerminalRendererRegistry {
                 }
                 // A read-only caller has no handoff proof; a fresh caller still owns its observed PID and
                 // must finish the same durable handoff even when the UI installed this renderer first.
-                (existing.clone(), false)
+                // The registry reads one stamp per terminal: the newer of the two entries' stamps, so a
+                // fresh launch's replay stays evidence when an attach-shaped caller's entry is the one kept.
+                let stamp = entry.last_output_ms.load(Ordering::Relaxed);
+                let advanced = existing.last_output_ms.fetch_max(stamp, Ordering::Relaxed) < stamp;
+                (existing.clone(), advanced)
             } else {
                 tracing::info!(terminal_id=%entry.terminal_id, "terminal renderer registry inserted entry");
                 entries.insert(entry.terminal_id.clone(), entry.clone());
                 (entry, true)
             }
         };
-        // A stamp written before the entry was reachable (a fresh launch's replay, or a frame the
-        // reader saw first) earns its leading-edge wake only now that `last_output_ms` can read it.
-        if inserted && entry.last_output_ms.load(Ordering::Relaxed) != 0 {
+        // A stamp written before it was readable through the registry (a fresh launch's replay, or a
+        // frame the reader saw first) earns its leading-edge wake only now that `last_output_ms` reads it.
+        if stamp_became_readable && entry.last_output_ms.load(Ordering::Relaxed) != 0 {
             wake_projector(&self.output_wake, &entry.terminal_id);
         }
         if let Some((launch, pid)) = handoff {
