@@ -40,11 +40,13 @@ pub const E2_USER_NOTIFY_SQL: &str = "SELECT MAX(h.created_at_ms) FROM harness_i
        AND json_extract(h.params, '$.item.error') IS NULL \
        AND COALESCE(json_extract(h.params, '$.item.status'), '') <> 'failed'";
 
-/// `tracks` row slice the fold needs (design §4.2, lifecycle line).
+/// `tracks` row slice the fold needs (design §4.2, lifecycle line;
+/// #1743 §4.1 rule 1 reads `archived_at` as the second terminal predicate).
 #[derive(Debug, Clone)]
 pub struct TrackRow {
     pub lifecycle: String,
     pub updated_at: i64,
+    pub archived_at: Option<i64>,
 }
 
 /// One `current_tasks` row — the W clause input (design §4.2 W, F2.22).
@@ -125,14 +127,30 @@ pub(crate) async fn unarchived_track_ids(pool: &SqlitePool) -> Result<Vec<String
 }
 
 pub(crate) async fn track_row(pool: &SqlitePool, track_id: &str) -> Result<Option<TrackRow>> {
-    let row = sqlx::query("SELECT lifecycle, updated_at FROM tracks WHERE id = ?1")
+    let row = sqlx::query("SELECT lifecycle, updated_at, archived_at FROM tracks WHERE id = ?1")
         .bind(track_id)
         .fetch_optional(pool)
         .await?;
     Ok(row.map(|r| TrackRow {
         lifecycle: r.get("lifecycle"),
         updated_at: r.get("updated_at"),
+        archived_at: r.get("archived_at"),
     }))
+}
+
+/// P — the planner's last completed turn (#1743 §4.1): the max of the
+/// feeder's monotone `last_turn_completed_ms` over EVERY session of a
+/// `cards.role = 'planner'` card of the track, superseded ones included,
+/// so a planner restart does not reset it. `NULL` when no planner turn has
+/// ever completed. Not E1: E1 is the max over every card (assistant
+/// included), while task observations are pushed to the planner card only
+/// (K21).
+pub const PLANNER_LAST_TURN_SQL: &str = "SELECT MAX(ws.last_turn_completed_ms) \
+     FROM worker_sessions ws JOIN cards c ON c.id = ws.card_id \
+    WHERE ws.track_id = ?1 AND c.role = 'planner'";
+
+pub(crate) async fn planner_last_turn(pool: &SqlitePool, track_id: &str) -> Result<Option<i64>> {
+    max_ms(pool, PLANNER_LAST_TURN_SQL, track_id).await
 }
 
 /// W — the current attempt of every task of the track (F2.22: one row per
