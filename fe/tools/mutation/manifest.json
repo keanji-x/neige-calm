@@ -1447,7 +1447,7 @@
       "web/src/app/router/today-activity.test.tsx",
       "web/src/features/today/public.test.tsx"
     ],
-    "why_more_than_one": "Grouping Open by isWorking instead of the lifecycle phase empties the section for the phase-only fixtures: the Today unit case and the router-level Today row case both lose their idle running-phase rows. Since #1743 S4 the header's second number is the working count, not the group's size, so the degraded-read cases no longer move."
+    "why_more_than_one": "Grouping Open by isWorking instead of the lifecycle phase empties the section for the phase-only fixtures: the Today unit case and the router-level Today row case both lose their idle running-phase rows. The header's second number is the working count, not the group's size, so the degraded-read cases no longer move."
   },
   {
     "mutation_id": "s2b-conversation-row-from-session-state",

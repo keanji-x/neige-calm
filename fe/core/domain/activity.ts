@@ -71,7 +71,7 @@ export function attentionKindOf(items: readonly Readonly<{ kind: 'input' | 'fail
  * One row per card for the Notifications aside: a card's items fold into the one with the largest
  * `atMs` (a tie goes to the `task` item over the `session` one), so the row's `origin` / `id` name
  * that item; items with no card (`cardId === null`) stay one row each. No `failed > input` precedence:
- * since #1743 S3 the kernel emits no card-level `input` item, so a card's items are all `failed`.
+ * the kernel emits no card-level `input` item, so a card's items are all `failed`.
  * Rows keep first-appearance order.
  */
 export function foldAttentionByCard(items: readonly ActivityItem[]): ActivityItem[] {

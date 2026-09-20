@@ -210,10 +210,12 @@ describe('activity predicates read only the kernel activity overlay (INV-APP-118
 });
 
 describe('cardGoalTitle', () => {
-  it('takes the first non-blank line of a string goal and nothing from any other payload', () => {
+  it('takes the first line of a string goal and nothing from any other payload', () => {
     expect(cardGoalTitle({ goal: 'Review the parser split\nThen post the verdict.' })).toBe('Review the parser split');
     expect(cardGoalTitle({ goal: '  Ship it  ' })).toBe('Ship it');
     expect(cardGoalTitle({ goal: '   ' })).toBeNull();
+    /* The first line, not the first non-blank one: a goal whose first line is empty has no title. */
+    expect(cardGoalTitle({ goal: '\nShip it' })).toBeNull();
     expect(cardGoalTitle({ goal: 42 })).toBeNull();
     expect(cardGoalTitle({ command: 'zsh' })).toBeNull();
     expect(cardGoalTitle({ planner_harness: true, prompt: 'Plan it' })).toBeNull();
@@ -227,6 +229,12 @@ describe('cardGoalTitle', () => {
     expect(cardGoalTitle({ goal: `${sixty}y` })).toBe(`${'x'.repeat(59)}…`);
     const cjk = '审'.repeat(61);
     expect([...cardGoalTitle({ goal: cjk })!]).toHaveLength(60);
+    /* Astral characters are two UTF-16 units each; a `slice(0, 60)` on units would keep 30 of them
+     * and cut the last one in half. The cap counts code points and never leaves a lone surrogate. */
+    const astral = cardGoalTitle({ goal: '😀'.repeat(61) })!;
+    expect([...astral]).toHaveLength(60);
+    expect(astral).toBe(`${'😀'.repeat(59)}…`);
+    expect(() => encodeURIComponent(astral)).not.toThrow();
   });
 });
 
