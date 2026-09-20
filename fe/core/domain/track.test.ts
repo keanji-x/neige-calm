@@ -229,8 +229,9 @@ describe('cardGoalTitle', () => {
     expect(cardGoalTitle({ goal: `${sixty}y` })).toBe(`${'x'.repeat(59)}…`);
     const cjk = '审'.repeat(61);
     expect([...cardGoalTitle({ goal: cjk })!]).toHaveLength(60);
-    /* Astral characters are two UTF-16 units each; a `slice(0, 60)` on units would keep 30 of them
-     * and cut the last one in half. The cap counts code points and never leaves a lone surrogate. */
+    /* Astral characters are two UTF-16 units each: a `slice(0, 60)` on units keeps 30 whole characters,
+     * but the impl-shaped `slice(0, 59) + '…'` stub keeps 29 plus a lone surrogate, so the cap counts
+     * code points and never leaves a lone surrogate. */
     const astral = cardGoalTitle({ goal: '😀'.repeat(61) })!;
     expect([...astral]).toHaveLength(60);
     expect(astral).toBe(`${'😀'.repeat(59)}…`);
