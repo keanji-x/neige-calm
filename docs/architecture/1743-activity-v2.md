@@ -142,9 +142,9 @@ SELECT ws.id, ws.provider, ws.card_id, te.id AS terminal_id
 
 **每条会话的动作**（复用 K13 的 DELETE-card 底半部，顺序固定）：
 
-1. 与 `cleanup_terminal` 同一个 `operation_runtime.lock_for_track_delete()` 守卫 + `terminal_disposal::require_safe(Scope::Terminal)`（`terminal_sweeper.rs:187-194` 同一调用）；不安全则跳过、下 tick 再来。
+1. 与 `cleanup_terminal` 同一个 `operation_runtime.lock_for_track_delete()` 守卫 + `terminal_disposal::require_safe(Scope::Terminal)`（`terminal_sweeper.rs:187-194` 同一调用）；不安全则跳过、下 tick 再来。锁下**按 id 重跑集合谓词**（上面的 SELECT 加 `AND ws.id = ?`，同一段文本）：候选是锁前读的，可能隔了几次收尾，其间 track 重开/取消归档、或卡被派了任务，行就不在集合里 ⇒ 跳过、不写（实现评审 r1，codex P1）。这次重查保护的是第 2 步的 interrupt——写由第 3 步自己保护。
 2. codex：`interrupt_shared_card_active_turn`（`routes/cards.rs:156-193`，best-effort，不 seal——seal 是删除 saga 的东西）。
-3. **先写后杀**：一个 IMMEDIATE tx `session_complete_tx(ws.id, Exited)`（K22；写 `state='exited', completed_at_ms, updated_at_ms`；不发事件——与 attach reader 的退出路径一致（isolated 例外：K24 发 `WorkerSessionStatusChanged`）；投影器 ≤30 s tick 读到，第 4 步的杀经 reader `Exited` 臂的唤醒（§4.3）通常秒级就到）。
+3. **先写后杀**：一个 IMMEDIATE tx 先**认领**——同一条按 id 谓词在事务上再跑一次，无行则跳过、不写——再 `session_complete_tx(ws.id, Exited)`（K22；写 `state='exited', completed_at_ms, updated_at_ms`；不发事件——与 attach reader 的退出路径一致（isolated 例外：K24 发 `WorkerSessionStatusChanged`）；投影器 ≤30 s tick 读到，第 4 步的杀经 reader `Exited` 臂的唤醒（§4.3）通常秒级就到）。重开路由（`track_update_tx`）不拿 operation 锁，重开可以落在第 1 步与这个 BEGIN 之间；它也是写，IMMEDIATE 把两个写串行化：先提交的重开把行移出集合 ⇒ 认领空 ⇒ 不写不杀；后到的重开等在这个事务后面（实现评审 r2，codex P2 = A MINOR-B，两通道各自找到）。
 4. 有 renderer entry 则直接 `reap_terminal_artifacts_with_renderer`；没有（内核重启后，K17）先走 `ws/terminal.rs:124-220` 的惰性重挂（把 `resolve_live_renderer_from_terminal` 提为 `pub(crate)`），`Alive` 再 reap；`ChildExited` 只说明**此次未取得 renderer**（重挂失败 `ws/terminal.rs:200`、probe 无活 PTY `:209`、probe 出错 `:217` 三处都返回它），不是进程已死的证明：本 tick 不再动，交给既有孤儿臂（下段）；终端行的退出记录由 K19 的下一次 boot 对账补 `-1`。
 
 **每提供者的效果**：claude PTY worker / 终端 PTY：进程 TERM→KILL，attach reader 写 `terminals.exit_code=NULL, signal_killed=1, pty_output`（K15），它的 ephemeral 补写找不到活会话（第 3 步已 `exited`）→ 无操作；task hook 见任务已终态 → 返回。codex 共享线程 worker：`codex resume` 观察窗被杀，线程留在 daemon 上空闲（与 DELETE 后一样，K14 只丢归属不卸线程），会话行由第 3 步写成 `exited`——不再依赖 reaper 仲裁（K15 说它永远判 `Alive`）。isolated：不涉及。**写的行**：`worker_sessions.state/completed_at_ms/updated_at_ms`（第 3 步）、`terminals.exit_code/signal_killed/pty_output(_truncated)`（reader）；`exit_interpretation` 不写（`session_complete_tx` 不写它，K22）；`terminals` 行不删——Terminal 卡的行有退出记录后由 #1701 规则跟卡走；worker 卡的终端行交给既有孤儿臂：它的 60 s 是**创建**宽限（`read.rs:966,980`：`t.created_at < now − 60 s`），不是退出宽限，4140 的行早已超过 ⇒ 第 3 步写完 `exited` 后的**下一次孤儿扫描**就删行、并经同一个 helper 再发一次 SIGTERM（今天 worker 正常退出后就是这样，K18）。
@@ -311,3 +311,5 @@ S5 `calm.task.ask`（砍掉：该状态在 4140 从未发生）；屏幕判定�
 两通道 APPROVE（A: 0B/0M/2m，B: 0B/0M/1m）；三条 MINOR 折入 v5，不再开一轮。
 
 实现评审 r1（S1+S2，通道 A）另登记 §8 G-14：S2 的杀半截没跑时由孤儿臂收敛、终端行被删（Terminal 卡即 #1701 形状）——设计接受，不是代码缺陷。
+
+实现评审 r2（S1+S2）：两通道各自找到第 1 步重查与第 3 步 IMMEDIATE 写之间的重开窗（codex P2 = A MINOR-B；重开路由不拿 operation 锁）——§4.2 第 3 步改为事务内按 id 认领后再写，测试 `reopen_committed_during_the_claim_is_honoured` 经 fixtures 缝（`before_write`）把重开提交进这个窗（sweeper 自己的 `require_safe` 在重查之前就是一个 IMMEDIATE 事务，「跨调用握住重开」的计时写法会停在那里、重查看到重开，改前改后都绿，不能用）。A MINOR-A：`terminal_sweeper.rs` 模块开头悬空的 `sync-engine-design.md §10` 指针删掉，改为一句点名两臂。
