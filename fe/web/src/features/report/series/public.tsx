@@ -76,17 +76,22 @@ function SeriesFigure({ payload, resolved }: { payload: ChartSeriesPayload; reso
   return (
     <figure className={styles.figure}>
       <figcaption className={styles.head}>
-        <span className={styles.assets}>{resolved.series.map((entry) => entry.asset).join(' · ')}</span>
-        <span className={styles.meta}>{resolved.range} {resolved.period} {resolved.view}</span>
-        <span className={styles.meta}>{resolved.field}</span>
+        <span className={styles.meta}>Data through {through}</span>
         {currencies.length > 0 && <span className={styles.meta}>{currencies.join(' / ')}</span>}
-        {/* Frozen: the status line carries `as_of`, so it is not printed twice. */}
-        {!frozen && <span className={styles.meta}>as of {resolved.as_of}</span>}
-        {frozen
-          ? (resolved.pinned === true
+        {frozen && (resolved.pinned === true
             ? <span className={styles.frozen}>{SERIES_STATUS_COPY.pinned(resolved.as_of)}</span>
-            : <span className={styles.pending}>{SERIES_STATUS_COPY.pending(resolved.as_of, through)}</span>)
-          : <span className={styles.meta}>{SERIES_STATUS_COPY.live(through, resolved.resolved_at)}</span>}
+            : <span className={styles.pending}>{SERIES_STATUS_COPY.pending(resolved.as_of, through)}</span>)}
+        <details className={styles.details}>
+          <summary>Data details</summary>
+          <div className={styles.detailBody}>
+            <span className={styles.meta}>{resolved.range} {resolved.period} {resolved.view} {resolved.field}</span>
+            {!frozen && <span className={styles.meta}>as of {resolved.as_of}</span>}
+            {!frozen && <span className={styles.meta}>{SERIES_STATUS_COPY.live(through, resolved.resolved_at)}</span>}
+            {resolved.series.filter(isOkSeriesEntry).map((entry) => (
+              <span key={entry.asset}>{entry.asset}: {entry.first[0]} – {entry.last[0]}</span>
+            ))}
+          </div>
+        </details>
       </figcaption>
 
       {resolved.view === 'candles'
@@ -139,6 +144,17 @@ function extent(values: readonly number[], fallback: readonly [number, number]):
   return high > low ? [low, high] : [low - 1, high + 1];
 }
 
+function axisValue(value: number, step: number): string {
+  if (value === 0) return '0';
+  const magnitude = Math.abs(value);
+  const stepOrder = Math.floor(Math.log10(Math.abs(step)));
+  if (magnitude < 0.01 || magnitude >= 10_000) {
+    const digits = Math.min(16, Math.max(1, Math.floor(Math.log10(magnitude)) - stepOrder + 1));
+    return value.toExponential(digits);
+  }
+  return value.toFixed(Math.min(16, Math.max(2, 1 - stepOrder)));
+}
+
 function LinesFigure({ series, normalized, overlays }: {
   series: readonly SeriesEntry[];
   normalized: boolean;
@@ -157,9 +173,16 @@ function LinesFigure({ series, normalized, overlays }: {
     ? 'No series could be drawn.'
     : `${lines.length} series from ${formatDate(tsMin)} to ${formatDate(tsMax)}`
       + (normalized ? ', each rebased to 100 at its first point.' : `, ${valueMin.toFixed(2)} to ${valueMax.toFixed(2)}.`);
+  const step = (valueMax - valueMin) / 4;
+  const ticks = Array.from({ length: 5 }, (_, index) => valueMax - step * index)
+    .filter((value, index, values) => index === 0 || value !== values[index - 1]);
 
   return (
     <>
+      <div className={styles.plot}>
+        <div className={styles.yAxis} aria-hidden="true">
+          {ticks.map((value, index) => <span key={index}>{axisValue(value, step)}</span>)}
+        </div>
       <svg
         className={styles.svg}
         viewBox={`0 0 ${VIEW_W} ${LINE_H}`}
@@ -168,6 +191,14 @@ function LinesFigure({ series, normalized, overlays }: {
         aria-label={description}
       >
         <g aria-hidden="true">
+          {ticks.map((value, index) => (
+            <line key={index} className={styles.gridline} x1={PAD_X} x2={VIEW_W - PAD_X}
+              y1={y(value)} y2={y(value)} vectorEffect="non-scaling-stroke" />
+          ))}
+          {!normalized && valueMin < 0 && valueMax > 0 && (
+            <line className={styles.baseline} x1={PAD_X} x2={VIEW_W - PAD_X}
+              y1={y(0)} y2={y(0)} vectorEffect="non-scaling-stroke" />
+          )}
           {normalized && lines.length > 0 && (
             <line className={styles.baseline} x1={PAD_X} x2={VIEW_W - PAD_X} y1={y(100)} y2={y(100)}
               vectorEffect="non-scaling-stroke" />
@@ -201,6 +232,10 @@ function LinesFigure({ series, normalized, overlays }: {
           }))}
         </g>
       </svg>
+      {lines.length > 0 && <div className={styles.xAxis} aria-hidden="true">
+        <span>{formatDate(tsMin)}</span><span>{formatDate(tsMax)}</span>
+      </div>}
+      </div>
       <Legend rows={rows} overlays={overlays} />
     </>
   );
@@ -313,16 +348,23 @@ function Legend({ rows, overlays }: { rows: readonly LegendRow[]; overlays: read
         switch (row.kind) {
           case 'drawn': {
             const { entry, lastRebased } = row.line;
+            const priced = entry.currency != null && entry.currency !== '';
+            const short = asset.slice(asset.indexOf(':') + 1);
+            const sameShortName = rows.filter((candidate) => {
+              const name = candidate.kind === 'drawn' ? candidate.line.entry.asset : candidate.entry.asset;
+              return name.slice(name.indexOf(':') + 1) === short;
+            }).length;
+            const label = !priced && sameShortName === 1 ? short : asset;
             return (
               <li key={asset} className={styles.legendItem}>
                 {swatch}
-                <span className={styles.legendAsset}>{asset}</span>
+                <span className={styles.legendAsset} aria-label={asset}>{label}</span>
                 {entry.currency != null && entry.currency !== '' && <span className={styles.legendMeta}>{entry.currency}</span>}
-                <span className={styles.legendMeta}>{signed(entry.change_pct)}</span>
+                <span className={styles.legendValue}>{lastRebased !== null || priced
+                  ? signed(entry.change_pct) : axisValue(entry.last[1], (entry.high - entry.low) / 4 || 1)}</span>
                 {lastRebased !== null && (
                   <span className={styles.legendMeta}>{`100 → ${lastRebased.toFixed(2)}`}</span>
                 )}
-                <span className={styles.legendMeta}>{`${entry.first[0]} – ${entry.last[0]}`}</span>
               </li>
             );
           }

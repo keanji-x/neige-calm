@@ -1,0 +1,39 @@
+name: Barra plugin
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/barra/**'
+      - '.github/workflows/barra.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/barra/**'
+      - '.github/workflows/barra.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: barra-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: barra-plugin (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: plugins/barra/requirements.txt
+      - name: Install plugin and test dependencies
+        run: python -m pip install -r plugins/barra/requirements.txt 'pytest>=8,<10'
+      - name: Test calculation, runtime, transport, and chart contracts
+        run: python -m pytest plugins/barra/tests -q
