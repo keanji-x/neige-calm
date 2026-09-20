@@ -3798,6 +3798,211 @@ async fn concurrent_attach_keeps_the_fresh_launch_stamp() {
     h.stop(&terminal).await;
 }
 
+/// The production mint of a Terminal card (card + terminal row with no pid + a `Starting` session)
+/// on the harness track, plus the `RendererConfig` the create route would derive for it — and no
+/// operation, so nothing on the bus follows the spawn.
+async fn minted_terminal_card(
+    h: &Harness,
+) -> (
+    calm_server::model::Card,
+    calm_server::model::Terminal,
+    calm_server::terminal_renderer::RendererConfig,
+) {
+    use calm_server::db::sqlite::card_with_terminal_create_tx;
+    use calm_server::db::write_in_tx_typed;
+    use calm_server::terminal_renderer::RendererConfig;
+    let cwd = h.root.path().to_str().unwrap().to_owned();
+    let (card, term) = {
+        let track_id = h.track.clone();
+        let cache = h.state.card_role_cache.clone();
+        let cwd = cwd.clone();
+        write_in_tx_typed(h.sql.as_ref(), move |tx| {
+            Box::pin(async move {
+                card_with_terminal_create_tx(
+                    tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    track_id.into(),
+                    None,
+                    None,
+                    SLEEPER.into(),
+                    cwd,
+                    json!({}),
+                    CardRole::Worker,
+                    true,
+                    &cache,
+                    RequestTheme::default_dark(),
+                    false,
+                )
+                .await
+            })
+        })
+        .await
+        .unwrap()
+    };
+    assert!(
+        term.pid.is_none(),
+        "no pid before the first ensure: a fresh launch"
+    );
+    let cfg = RendererConfig {
+        terminal_id: term.id.clone(),
+        cols: 80,
+        rows: 24,
+        buffer_bytes: 1 << 20,
+        terminal_fg: (216, 219, 226),
+        terminal_bg: (15, 20, 24),
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), SLEEPER.into()],
+        envs: vec![],
+        cwd,
+        supervisor_sock: h.supervisor_socket(),
+    };
+    (card, term, cfg)
+}
+
+/// Every envelope `bus` carried wakes no track: the registry's wake was the only carrier.
+async fn assert_no_bus_wake(
+    h: &Harness,
+    bus: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+) {
+    let classifier = projector(h);
+    while let Ok(envelope) = bus.try_recv() {
+        assert_eq!(
+            classifier.track_for_event(&envelope).await,
+            None,
+            "nothing on the bus woke the track: {envelope:?}"
+        );
+    }
+}
+
+/// The registry's post-insert wake is the only carrier of a fresh launch's replay stamp when nothing
+/// on the bus follows the insert: the registry is driven directly (no operation, so no session
+/// status write), the attach is held until the child's banner is in the ring while the child is
+/// alive, and the card reads `working` inside the window from that replay alone.
+#[tokio::test]
+async fn fresh_launch_replay_stamp_wakes_without_a_bus_event() {
+    use calm_server::terminal_renderer::attach_hold_for_test;
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let (card, term, cfg) = minted_terminal_card(&h).await;
+    let mut bus = h.state.events.subscribe();
+    let (entered, release) = attach_hold_for_test::arm();
+    let spawned_at = calm_server::model::now_ms();
+    let (ensured, ()) = tokio::join!(h.state.terminal_renderer.ensure(cfg), async {
+        let terminal = entered.await.expect("the ensure reached the attach hold");
+        assert_eq!(terminal, term.id);
+        await_ring_contains(&h, &terminal, "READY").await;
+        release.notify_one();
+    });
+    let entry = ensured.expect("the registry spawned the child");
+    let stamp = last_output_ms(&h, &term.id).expect("the fresh launch stamped its replay");
+    assert!(
+        spawned_at <= stamp && stamp <= calm_server::model::now_ms(),
+        "the stamp is the replay instant"
+    );
+    let a = await_activity(
+        &h,
+        "working from the replay stamp's own wake",
+        Duration::from_secs(5),
+        |a| a.working,
+    )
+    .await;
+    assert_eq!(
+        card_state(&a, card.id.as_str()),
+        Some(CardState::Working),
+        "{a:?}"
+    );
+    assert_eq!(
+        a.activity_at_ms,
+        Some(stamp),
+        "E8: the mark IS the replay stamp"
+    );
+    assert_no_bus_wake(&h, &mut bus).await;
+    loop_task.abort();
+    drop(entry);
+    h.stop(&term.id).await;
+}
+
+/// The same fresh launch losing the registry insert to a concurrent attach, with nothing on the bus
+/// following: the stamp handed to the survivor earns the registry's wake itself, and the card reads
+/// `working` inside the window.
+#[tokio::test]
+async fn handed_over_stamp_wakes_without_a_bus_event() {
+    use calm_server::terminal_renderer::attach_hold_for_test;
+    use calm_server::ws::terminal::{
+        TestLiveRenderer, resolve_live_renderer_from_terminal_for_test,
+    };
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let (card, term, cfg) = minted_terminal_card(&h).await;
+    let mut bus = h.state.events.subscribe();
+    let (entered, release) = attach_hold_for_test::arm();
+    let spawned_at = calm_server::model::now_ms();
+    let (ensured, attach_entry) = tokio::join!(h.state.terminal_renderer.ensure(cfg), async {
+        let terminal = entered.await.expect("the ensure reached the attach hold");
+        assert_eq!(terminal, term.id);
+        await_ring_contains(&h, &terminal, "READY").await;
+        let persisted = h.state.repo.terminal_get(&terminal).await.unwrap().unwrap();
+        assert!(
+            persisted.pid.is_some(),
+            "the concurrent ensure is attach-shaped"
+        );
+        let entry = match resolve_live_renderer_from_terminal_for_test(&h.state, persisted)
+            .await
+            .unwrap()
+        {
+            TestLiveRenderer::Alive(entry) => entry,
+            TestLiveRenderer::ChildExited { exit_code } => {
+                panic!("the lazy attach did not find the live PTY: {exit_code:?}")
+            }
+        };
+        assert_eq!(
+            last_output_ms(&h, &terminal),
+            None,
+            "the attach won the insert and its replay stamps nothing"
+        );
+        release.notify_one();
+        entry
+    });
+    let loser = ensured.expect("the losing launch still returns the survivor");
+    assert!(
+        Arc::ptr_eq(&loser, &attach_entry),
+        "the launch's entry lost the insert to the attach's"
+    );
+    let stamp = last_output_ms(&h, &term.id).expect("the survivor carries the handed-over stamp");
+    assert!(
+        spawned_at <= stamp && stamp <= calm_server::model::now_ms(),
+        "the stamp is the launch's replay instant"
+    );
+    let a = await_activity(
+        &h,
+        "working from the handed-over stamp's wake",
+        Duration::from_secs(5),
+        |a| a.working,
+    )
+    .await;
+    assert_eq!(
+        card_state(&a, card.id.as_str()),
+        Some(CardState::Working),
+        "{a:?}"
+    );
+    assert_eq!(
+        a.activity_at_ms,
+        Some(stamp),
+        "E8: the mark IS the handed-over stamp"
+    );
+    assert_no_bus_wake(&h, &mut bus).await;
+    loop_task.abort();
+    drop(loser);
+    drop(attach_entry);
+    h.stop(&term.id).await;
+}
+
 /// Rows with NO terminal row — an idle harness session (`terminal_run_id` NULL) and an interactive
 /// session whose terminal row the orphan arm deleted (FK `ON DELETE SET NULL`) — decode
 /// `pty_open = false` through the `COALESCE`, and the recomputation runs on them without error.
