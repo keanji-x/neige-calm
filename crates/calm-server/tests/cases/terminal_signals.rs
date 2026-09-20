@@ -3467,6 +3467,169 @@ async fn registry_empty_after_restart_reads_quiet() {
     h.stop(&p.terminal).await;
 }
 
+/// The supervisor's own verdict on `term:<terminal>`: `proc_running` turns `false` only once the exit
+/// is recorded, which is after its pty reader drained the child's last bytes into the replay ring.
+async fn await_supervisor_exit(h: &Harness, terminal: &str) {
+    use calm_session::control::{ControlMsg, ControlReply, ProbeRequest};
+    use calm_session::{read_frame, write_frame};
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut stream = tokio::net::UnixStream::connect(h.supervisor_socket())
+            .await
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &ControlMsg::Probe(ProbeRequest {
+                proc_id: format!("term:{terminal}"),
+            }),
+        )
+        .await
+        .unwrap();
+        match read_frame::<ControlReply, _>(&mut stream).await.unwrap() {
+            ControlReply::ProbeOk {
+                proc_running: false,
+                ..
+            } => return,
+            ControlReply::ProbeOk { .. } => {}
+            other => panic!("unexpected probe reply: {other:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the supervisor never recorded the exit of {terminal}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// A program whose whole output lands in the attach replay: the attach is held until the supervisor
+/// has recorded the exit, so the reader sees `Exited` and never an `Output` frame. The fresh launch
+/// stamps the replay, and the exit wake reads `working = false` with the mark advanced to that output.
+#[tokio::test]
+async fn one_shot_output_before_attach_is_unread() {
+    use calm_server::terminal_renderer::attach_hold_for_test;
+    let h = Harness::start().await;
+    let loop_task = tokio::spawn(projector(&h).run());
+    let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
+    assert!(!seeded.working, "{seeded:?}");
+    let (entered, release) = attach_hold_for_test::arm();
+    let spawned_at = calm_server::model::now_ms();
+    let (opened, ()) = tokio::join!(
+        h.ok(
+            "calm.terminal.open",
+            json!({"program":"printf 'done\\n'; exit 0","request_id":"one-shot"}),
+        ),
+        async {
+            let terminal = entered.await.expect("the open reached the attach hold");
+            await_supervisor_exit(&h, &terminal).await;
+            release.notify_one();
+        }
+    );
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    let card = opened["card_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        await_terminal_exit(&h, &terminal).await,
+        (Some(0), false),
+        "the sticky exit followed the replay"
+    );
+    let a = await_activity(
+        &h,
+        "the mark advanced to the replayed output",
+        Duration::from_secs(5),
+        |a| a.activity_at_ms.is_some_and(|at| at >= spawned_at),
+    )
+    .await;
+    assert!(!a.working, "an exited PTY is not working: {a:?}");
+    assert_eq!(card_state(&a, &card), None, "{a:?}");
+    assert_eq!(a.attention, Attention::None);
+    let stamp = last_output_ms(&h, &terminal).expect("the fresh launch stamped its replay");
+    assert!(
+        spawned_at <= stamp && stamp <= calm_server::model::now_ms(),
+        "the stamp is the replay instant"
+    );
+    assert_eq!(
+        a.activity_at_ms,
+        Some(stamp),
+        "E8: the mark IS the replay stamp"
+    );
+    loop_task.abort();
+    h.stop(&terminal).await;
+}
+
+/// The post-restart lazy reattach replays the old screen; that replay is an earlier lifetime's output
+/// and stamps nothing: through the fresh registry the card reads `working = false` and the mark does
+/// not move.
+#[tokio::test]
+async fn reattach_replay_does_not_stamp() {
+    use calm_server::ws::terminal::{
+        TestLiveRenderer, resolve_live_renderer_from_terminal_for_test,
+    };
+    let h = Harness::start().await;
+    // READY then quiet: the reattach replay carries READY and no frame ever follows it.
+    let p = open_sleeper(&h, "reattach-replay").await;
+    await_output(&h, &p.terminal).await;
+    let live = projector(&h);
+    let before = recompute(&h, &live).await;
+    assert!(before.working, "the live registry: {before:?}");
+    let mark = before.activity_at_ms.expect("E8 from the live stamp");
+
+    let repo: Arc<dyn calm_server::db::Repo> = h.sql.clone();
+    let fresh = calm_server::state::AppState::from_parts(
+        repo.clone(),
+        h.state.events.clone(),
+        h.state.daemon.clone(),
+        h.state.plugin.clone(),
+        h.state.codex.clone(),
+        Some(h.state.card_role_cache.clone()),
+        Some(h.state.track_area_cache.clone()),
+    );
+    assert!(fresh.terminal_renderer.get(&p.terminal).is_none());
+    let term = h
+        .state
+        .repo
+        .terminal_get(&p.terminal)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(term.pid.is_some(), "the earlier lifetime persisted the pid");
+    let entry = match resolve_live_renderer_from_terminal_for_test(&fresh, term)
+        .await
+        .unwrap()
+    {
+        TestLiveRenderer::Alive(entry) => entry,
+        TestLiveRenderer::ChildExited { exit_code } => {
+            panic!("the lazy reattach did not find the live PTY: {exit_code:?}")
+        }
+    };
+    assert!(
+        fresh.terminal_renderer.get(&p.terminal).is_some(),
+        "the reattach installed the entry"
+    );
+    assert!(
+        entry.handle.render_plane.lock().unwrap().pty_seq() >= 1,
+        "the reattach replay carried the old screen"
+    );
+    assert_eq!(
+        fresh.terminal_renderer.last_output_ms(&p.terminal),
+        None,
+        "a reattach replay stamps nothing"
+    );
+    let reattached = TrackActivityProjector::new(
+        repo,
+        h.state.events.clone(),
+        h.state.write().clone(),
+        h.state.harness.clone(),
+        fresh.terminal_renderer.clone(),
+    )
+    .expect("sqlite-backed repo");
+    let a = recompute(&h, &reattached).await;
+    assert!(!a.working, "historical bytes do not light working: {a:?}");
+    assert!(a.cards.is_empty(), "{a:?}");
+    assert_eq!(a.activity_at_ms, Some(mark), "the mark did not move");
+    drop(entry);
+    fresh.terminal_renderer.drop_entry(&p.terminal).await;
+    h.stop(&p.terminal).await;
+}
+
 /// Rows with NO terminal row — an idle harness session (`terminal_run_id` NULL) and an interactive
 /// session whose terminal row the orphan arm deleted (FK `ON DELETE SET NULL`) — decode
 /// `pty_open = false` through the `COALESCE`, and the recomputation runs on them without error.

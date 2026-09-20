@@ -28,6 +28,8 @@ mod input_authority;
 mod model_view;
 pub use input_authority::{ClientInputScope, InputBarrier, WriteAuthority};
 pub use model_view::{ModelView, SharedModelView};
+#[cfg(feature = "fixtures")]
+pub mod attach_hold_for_test;
 #[cfg(test)]
 pub(crate) mod establishment_test_hook;
 mod output_capture;
@@ -150,9 +152,10 @@ pub struct RendererEntry {
     pub exit: SharedExitState,
     /// Hook signals for this terminal (untrusted advisory telemetry). A respawned terminal starts an empty ring.
     pub signals: SignalRing,
-    /// `now_ms()` of the last `Output` frame the attach reader received; `0` until the first frame.
-    /// Never persisted: it only means something while this entry is alive, and after a restart the
-    /// registry is empty until the card's WS reattaches it. Shared with the reader task.
+    /// `now_ms()` of the last PTY output this entry received — an `Output` frame, or a fresh
+    /// launch's attach replay; `0` until then. Never persisted: it only means something while this
+    /// entry is alive, and after a restart the registry is empty until the card's WS reattaches it.
+    /// Shared with the reader task.
     pub last_output_ms: Arc<AtomicI64>,
     initial_event_rx: StdMutex<Option<broadcast::Receiver<DaemonMsg>>>,
     exited_rx: StdMutex<Option<oneshot::Receiver<Option<i32>>>>,
@@ -318,8 +321,8 @@ impl TerminalRendererRegistry {
         }
     }
 
-    /// `now_ms()` of the last PTY `Output` frame of the CURRENT entry of `terminal_id`; `None`
-    /// when there is no live entry (none since the last restart included) or no frame yet.
+    /// `now_ms()` of the last PTY output of the CURRENT entry of `terminal_id`; `None` when there is
+    /// no live entry (none since the last restart included) or no output yet.
     pub fn last_output_ms(&self, terminal_id: &str) -> Option<i64> {
         let entry = self.get(terminal_id)?;
         match entry.last_output_ms.load(Ordering::Relaxed) {
@@ -407,7 +410,7 @@ impl TerminalRendererRegistry {
             establishment_test_hook::pause(launch.task_id(), &entry.terminal_id).await;
         }
         let entry = Arc::new(entry);
-        let entry = {
+        let (entry, inserted) = {
             let mut entries = self
                 .entries
                 .lock()
@@ -423,13 +426,18 @@ impl TerminalRendererRegistry {
                 }
                 // A read-only caller has no handoff proof; a fresh caller still owns its observed PID and
                 // must finish the same durable handoff even when the UI installed this renderer first.
-                existing.clone()
+                (existing.clone(), false)
             } else {
                 tracing::info!(terminal_id=%entry.terminal_id, "terminal renderer registry inserted entry");
                 entries.insert(entry.terminal_id.clone(), entry.clone());
-                entry
+                (entry, true)
             }
         };
+        // A stamp written before the entry was reachable (a fresh launch's replay, or a frame the
+        // reader saw first) earns its leading-edge wake only now that `last_output_ms` can read it.
+        if inserted && entry.last_output_ms.load(Ordering::Relaxed) != 0 {
+            wake_projector(&self.output_wake, &entry.terminal_id);
+        }
         if let Some((launch, pid)) = handoff {
             let repo = self
                 .repo
@@ -627,6 +635,8 @@ async fn ensure_entry(
     // A replay alone cannot reconstruct geometry changes from an earlier
     // server lifetime. Human reattachment remains available; model observation
     // refuses that unproven projection instead of inventing a fresh screen.
+    // The same fact (no pid persisted before this spawn) is what makes the
+    // replay this lifetime's output for the activity stamp below.
     let observation_replay_proven = !attach_only
         && match repo.as_deref() {
             Some(repo) => repo
@@ -732,6 +742,8 @@ async fn ensure_entry(
             other => anyhow::bail!("unexpected proc-supervisor ready reply: {other:?}"),
         }
     }
+    #[cfg(feature = "fixtures")]
+    attach_hold_for_test::hold(&cfg.terminal_id).await;
     let render_plane: SharedRenderPlane = Arc::new(StdMutex::new(RenderPlane::with_colors(
         cfg.cols,
         cfg.rows,
@@ -782,6 +794,9 @@ async fn ensure_entry(
         }),
     )
     .await?;
+    // Shared with the reader (its only writer after this function); read through the registry by
+    // the activity projector.
+    let last_output_ms = Arc::new(AtomicI64::new(0));
     let output_capture =
         match read_control_reply(&mut attach_conn, SPAWN_CONTROL_READ_TIMEOUT, "attach").await? {
             ControlReply::AttachOk(Attached {
@@ -803,6 +818,12 @@ async fn ensure_entry(
                         Err(_) => Vec::new(),
                     };
                     client_pump::apply_broadcaster_effects(&event_tx, &supervisor_tx, effects);
+                    // The supervisor sends no `Output` frame for replayed bytes. A fresh launch's
+                    // replay is output this lifetime printed before the attach and stamps like a
+                    // frame; a reattach replay is an earlier lifetime's screen and stamps nothing.
+                    if observation_replay_proven {
+                        last_output_ms.store(crate::model::now_ms(), Ordering::Relaxed);
+                    }
                 }
                 output_capture
             }
@@ -814,8 +835,6 @@ async fn ensure_entry(
     // The sender lives inside the attach reader task, so it is dropped the moment that task ends —
     // which is how `await_exit_persisted` tells "ended without persisting" apart from "still working".
     let (exit_persisted_tx, exit_persisted) = watch::channel(false);
-    // Shared with the reader (the only writer); read through the registry by the activity projector.
-    let last_output_ms = Arc::new(AtomicI64::new(0));
     let attach_task = attach_reader::spawn_supervisor_attach_reader(
         attach_conn,
         proc_id.clone(),

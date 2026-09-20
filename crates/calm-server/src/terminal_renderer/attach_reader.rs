@@ -47,7 +47,8 @@ pub fn spawn_supervisor_attach_reader(
     exit_persisted_tx: watch::Sender<bool>,
     output_capture: SharedTerminalOutputCapture,
     // Stamped `now_ms()` on every `Output` frame; a leading edge (a frame after a window of
-    // quiet, the first frame included) and the persisted exit wake the activity projector.
+    // quiet — the first frame included unless a fresh launch's replay stamped just before it) and
+    // the persisted exit wake the activity projector.
     last_output_ms: Arc<AtomicI64>,
     output_wake: OutputWake,
 ) -> JoinHandle<()> {
