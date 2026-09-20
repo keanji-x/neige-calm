@@ -120,7 +120,7 @@
   # (`fe/core/domain/conversation.test.ts`, `describe('kernelQueuesInput')`), which is not cited
   # here because a row declares one `test_tier` and that suite is not jsdom.
   authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:1004-1055;
-    fe/web/src/app/router/track-conversation.test.tsx:572-631,747-766
+    fe/web/src/app/router/track-conversation.test.tsx:749-829,1015-1057
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
