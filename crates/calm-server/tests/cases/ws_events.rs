@@ -205,8 +205,8 @@ async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
         plugin_id: "p1".into(),
         entity_kind: "track".into(),
         entity_id: "w-1".into(),
-        kind: "status".into(),
-        payload: json!({ "schemaVersion": 999, "state": "from-future" }),
+        kind: "eta".into(),
+        payload: json!({ "schemaVersion": 999, "text": "from-future" }),
         updated_at: 0,
     };
     let supported = Overlay {
@@ -214,8 +214,8 @@ async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
         plugin_id: "p1".into(),
         entity_kind: "track".into(),
         entity_id: "w-1".into(),
-        kind: "status".into(),
-        payload: json!({ "schemaVersion": 1, "state": "running" }),
+        kind: "eta".into(),
+        payload: json!({ "schemaVersion": 1, "text": "5m" }),
         updated_at: 0,
     };
 

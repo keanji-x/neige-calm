@@ -51,7 +51,7 @@ impl EventBus {
         let _ = self.tx.send(env);
     }
 
-    /// Synthetic broadcast for test scaffolding and FSM injection — `id` is `0`
+    /// Synthetic broadcast for test scaffolding — `id` is `0`
     /// (no persisted row). **Production code must not call this.** Not
     /// `#[cfg(test)]` because integration tests link the library normally.
     pub fn emit(&self, actor: ActorId, ev: Event) {

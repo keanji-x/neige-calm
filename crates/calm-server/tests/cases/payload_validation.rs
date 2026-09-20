@@ -457,7 +457,7 @@ async fn patch_ui_card_with_junk_payload_is_accepted() {
 }
 
 #[tokio::test]
-async fn post_status_overlay_with_bad_payload_returns_400() {
+async fn post_eta_overlay_with_bad_payload_returns_400() {
     let (state, track_id) = boot().await;
     let resp = post_overlay(
         app(state),
@@ -465,8 +465,8 @@ async fn post_status_overlay_with_bad_payload_returns_400() {
             "plugin_id": "p1",
             "entity_kind": "track",
             "entity_id": track_id,
-            "kind": "status",
-            "payload": {} // missing required `state` field
+            "kind": "eta",
+            "payload": {} // missing required `text` field
         }),
     )
     .await;
@@ -476,7 +476,7 @@ async fn post_status_overlay_with_bad_payload_returns_400() {
 }
 
 #[tokio::test]
-async fn post_status_overlay_with_valid_payload_returns_200() {
+async fn post_eta_overlay_with_valid_payload_returns_200() {
     let (state, track_id) = boot().await;
     let resp = post_overlay(
         app(state),
@@ -484,8 +484,8 @@ async fn post_status_overlay_with_valid_payload_returns_200() {
             "plugin_id": "p1",
             "entity_kind": "track",
             "entity_id": track_id,
-            "kind": "status",
-            "payload": { "state": "running" }
+            "kind": "eta",
+            "payload": { "text": "5m" }
         }),
     )
     .await;
@@ -739,8 +739,8 @@ async fn list_overlays_filters_kernel_owned_future_schema_version() {
         "kernel",
         "track",
         &track_id,
-        "status",
-        json!({ "schemaVersion": 999, "state": "running" }),
+        "eta",
+        json!({ "schemaVersion": 999, "text": "5m" }),
     )
     .await;
 
@@ -762,8 +762,8 @@ async fn list_overlays_keeps_kernel_owned_supported_schema_version() {
         "kernel",
         "track",
         &track_id,
-        "status",
-        json!({ "schemaVersion": 1, "state": "running" }),
+        "eta",
+        json!({ "schemaVersion": 1, "text": "5m" }),
     )
     .await;
 
@@ -772,7 +772,7 @@ async fn list_overlays_keeps_kernel_owned_supported_schema_version() {
     let body = body_to_json(resp).await;
     let arr = body.as_array().expect("array body");
     assert_eq!(arr.len(), 1, "supported-version overlay must pass through");
-    assert_eq!(arr[0]["kind"], "status");
+    assert_eq!(arr[0]["kind"], "eta");
 }
 
 #[tokio::test]
@@ -784,8 +784,8 @@ async fn list_overlays_keeps_kernel_owned_missing_schema_version() {
         "kernel",
         "track",
         &track_id,
-        "status",
-        json!({ "state": "idle" }),
+        "eta",
+        json!({ "text": "5m" }),
     )
     .await;
 
@@ -879,17 +879,17 @@ async fn list_overlays_by_kind_also_filters_future_versions() {
         "kernel",
         "track",
         &track_id,
-        "status",
-        json!({ "schemaVersion": 100, "state": "running" }),
+        "eta",
+        json!({ "schemaVersion": 100, "text": "5m" }),
     )
     .await;
 
     let resp = get_overlays(app(state), "track", None).await;
     let body = body_to_json(resp).await;
     let arr = body.as_array().unwrap();
-    let has_status = arr.iter().any(|o| o["kind"] == "status");
+    let has_eta = arr.iter().any(|o| o["kind"] == "eta");
     assert!(
-        !has_status,
+        !has_eta,
         "future-version row must be filtered on the no-entity_id read path too, got {arr:?}"
     );
 }
@@ -914,8 +914,8 @@ async fn track_detail_filters_kernel_owned_future_schema_version() {
         "kernel",
         "track",
         &track_id,
-        "status",
-        json!({ "schemaVersion": 999, "state": "running" }),
+        "eta",
+        json!({ "schemaVersion": 999, "text": "5m" }),
     )
     .await;
 
@@ -937,8 +937,8 @@ async fn track_detail_keeps_kernel_owned_supported_schema_version() {
         "kernel",
         "track",
         &track_id,
-        "status",
-        json!({ "schemaVersion": 1, "state": "running" }),
+        "eta",
+        json!({ "schemaVersion": 1, "text": "5m" }),
     )
     .await;
 
@@ -951,7 +951,7 @@ async fn track_detail_keeps_kernel_owned_supported_schema_version() {
         1,
         "supported-version overlay must pass through track detail"
     );
-    assert_eq!(overlays[0]["kind"], "status");
+    assert_eq!(overlays[0]["kind"], "eta");
 }
 
 #[tokio::test]

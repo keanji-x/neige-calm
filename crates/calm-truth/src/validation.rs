@@ -66,8 +66,6 @@ pub const CLAUDE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "track-report"`; mirrors
 /// `TrackReportPayload::SCHEMA_VERSION`. No SQL migration: older rows are upgraded on their next write.
 pub const TRACK_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 4;
-/// `schemaVersion` for `Overlay.payload` when `kind == "status"`.
-pub const OVERLAY_STATUS_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "progress"`.
 pub const OVERLAY_PROGRESS_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "eta"`.
@@ -81,8 +79,6 @@ pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
 pub const KERNEL_OVERLAY_PLUGIN_ID: &str = "kernel";
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
 pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
-/// `schemaVersion` for `Overlay.payload` when `kind == "any_card_needs_input"`.
-pub const OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "activity"`.
 pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 1;
 
@@ -144,13 +140,6 @@ macro_rules! simple_overlay {
 }
 
 simple_overlay!(
-    validate_status_overlay_payload,
-    StatusPayload,
-    "status",
-    OVERLAY_STATUS_SCHEMA_VERSION,
-    { state: String }
-);
-simple_overlay!(
     validate_progress_overlay_payload,
     ProgressPayload,
     "progress",
@@ -201,24 +190,6 @@ fn validate_file_viewer_nav_overlay_payload(payload: &Value) -> Result<()> {
     validate_as::<FileViewerNavPayload>(
         "file-viewer-nav",
         OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION,
-        payload,
-    )
-}
-
-fn validate_any_card_needs_input_overlay_payload(payload: &Value) -> Result<()> {
-    #[derive(Deserialize)]
-    #[allow(dead_code)]
-    #[serde(deny_unknown_fields)]
-    struct AnyCardNeedsInputPayload {
-        #[serde(default)]
-        #[serde(rename = "schemaVersion")]
-        schema_version: Option<u32>,
-        value: bool,
-    }
-
-    validate_as::<AnyCardNeedsInputPayload>(
-        "any_card_needs_input",
-        OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
         payload,
     )
 }
@@ -309,12 +280,10 @@ fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
     validate_as::<ActivityPayload>("activity", OVERLAY_ACTIVITY_SCHEMA_VERSION, payload)
 }
 
+/// The kernel-owned overlay kinds. The two FSM-era kinds (the per-card state row, the track-scoped
+/// needs-input boolean) are deliberately absent: rows an older kernel left behind pass the read-side
+/// version filter untouched, like any plugin kind.
 pub static OVERLAY_KIND_REGISTRY: OverlayKindRegistry = OverlayKindRegistry::new(&[
-    OverlayKindEntry {
-        kind: "status",
-        validate: validate_status_overlay_payload,
-        max_schema_version: OVERLAY_STATUS_SCHEMA_VERSION,
-    },
     OverlayKindEntry {
         kind: "progress",
         validate: validate_progress_overlay_payload,
@@ -339,11 +308,6 @@ pub static OVERLAY_KIND_REGISTRY: OverlayKindRegistry = OverlayKindRegistry::new
         kind: "file-viewer-nav",
         validate: validate_file_viewer_nav_overlay_payload,
         max_schema_version: OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION,
-    },
-    OverlayKindEntry {
-        kind: "any_card_needs_input",
-        validate: validate_any_card_needs_input_overlay_payload,
-        max_schema_version: OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
     },
     OverlayKindEntry {
         kind: "activity",
@@ -735,16 +699,11 @@ mod tests {
     #[test]
     fn overlay_kind_registry_lookup_known_kinds() {
         let expected = [
-            ("status", OVERLAY_STATUS_SCHEMA_VERSION),
             ("progress", OVERLAY_PROGRESS_SCHEMA_VERSION),
             ("eta", OVERLAY_ETA_SCHEMA_VERSION),
             ("now", OVERLAY_NOW_SCHEMA_VERSION),
             ("layout", OVERLAY_LAYOUT_SCHEMA_VERSION),
             ("file-viewer-nav", OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION),
-            (
-                "any_card_needs_input",
-                OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
-            ),
             ("activity", OVERLAY_ACTIVITY_SCHEMA_VERSION),
         ];
 
@@ -767,6 +726,26 @@ mod tests {
         assert!(OVERLAY_KIND_REGISTRY.lookup("").is_none());
     }
 
+    /// Pins the registry only (no lookup, no version ceiling, opaque at the external write gates),
+    /// not the absence of readers.
+    #[test]
+    fn status_and_any_card_needs_input_are_not_registered() {
+        for kind in ["status", "any_card_needs_input"] {
+            assert!(
+                OVERLAY_KIND_REGISTRY.lookup(kind).is_none(),
+                "{kind} is retired"
+            );
+            assert_eq!(
+                max_supported_overlay_schema_version(kind),
+                None,
+                "{kind} has no version ceiling"
+            );
+            OVERLAY_KIND_REGISTRY
+                .validate(kind, &json!({ "schemaVersion": 999, "anything": true }))
+                .unwrap();
+        }
+    }
+
     #[test]
     fn overlay_kind_registry_validate_plugin_kind_opaque() {
         OVERLAY_KIND_REGISTRY
@@ -780,11 +759,6 @@ mod tests {
     #[test]
     fn overlay_kind_registry_validate_known_kinds_accept_and_reject() {
         let cases = [
-            (
-                "status",
-                json!({ "state": "running" }),
-                json!({ "state": 42 }),
-            ),
             (
                 "progress",
                 json!({ "value": 0.5 }),
@@ -813,11 +787,6 @@ mod tests {
                 }),
             ),
             (
-                "any_card_needs_input",
-                json!({ "value": true }),
-                json!({ "value": "yes" }),
-            ),
-            (
                 "activity",
                 activity_payload_fixture(),
                 json!({
@@ -842,7 +811,6 @@ mod tests {
     #[test]
     fn overlay_kind_registry_rejects_unknown_schema_version_per_kind() {
         let cases = [
-            ("status", json!({ "schemaVersion": 99, "state": "running" })),
             ("progress", json!({ "schemaVersion": 99, "value": 0.5 })),
             ("eta", json!({ "schemaVersion": 99, "text": "5m" })),
             ("now", json!({ "schemaVersion": 99, "text": "writing" })),
@@ -859,10 +827,6 @@ mod tests {
                     "selectedPath": null,
                     "diffSelected": null
                 }),
-            ),
-            (
-                "any_card_needs_input",
-                json!({ "schemaVersion": 99, "value": true }),
             ),
             ("activity", {
                 let mut payload = activity_payload_fixture();
@@ -983,23 +947,6 @@ mod tests {
     }
 
     #[test]
-    fn status_happy() {
-        validate_overlay_payload("status", &json!({ "state": "running" })).unwrap();
-    }
-
-    #[test]
-    fn status_rejects_missing_state() {
-        let err = validate_overlay_payload("status", &json!({})).unwrap_err();
-        assert!(is_bad_request(&err));
-    }
-
-    #[test]
-    fn status_rejects_wrong_type() {
-        let err = validate_overlay_payload("status", &json!({ "state": 42 })).unwrap_err();
-        assert!(is_bad_request(&err));
-    }
-
-    #[test]
     fn progress_happy() {
         validate_overlay_payload("progress", &json!({ "value": 0.42 })).unwrap();
     }
@@ -1052,38 +999,6 @@ mod tests {
     #[test]
     fn now_rejects_wrong_type() {
         let err = validate_overlay_payload("now", &json!({ "text": null })).unwrap_err();
-        assert!(is_bad_request(&err));
-    }
-
-    #[test]
-    fn any_card_needs_input_happy_true() {
-        validate_overlay_payload("any_card_needs_input", &json!({ "value": true })).unwrap();
-    }
-
-    #[test]
-    fn any_card_needs_input_happy_false() {
-        validate_overlay_payload("any_card_needs_input", &json!({ "value": false })).unwrap();
-    }
-
-    #[test]
-    fn any_card_needs_input_with_schema_version() {
-        validate_overlay_payload(
-            "any_card_needs_input",
-            &json!({ "schemaVersion": 1, "value": true }),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn any_card_needs_input_rejects_missing_value() {
-        let err = validate_overlay_payload("any_card_needs_input", &json!({})).unwrap_err();
-        assert!(is_bad_request(&err));
-    }
-
-    #[test]
-    fn any_card_needs_input_rejects_wrong_type() {
-        let err = validate_overlay_payload("any_card_needs_input", &json!({ "value": "yes" }))
-            .unwrap_err();
         assert!(is_bad_request(&err));
     }
 
@@ -1491,22 +1406,6 @@ mod tests {
     }
 
     #[test]
-    fn status_accepts_matching_schema_version() {
-        validate_overlay_payload("status", &json!({ "schemaVersion": 1, "state": "running" }))
-            .unwrap();
-    }
-
-    #[test]
-    fn status_rejects_unknown_schema_version() {
-        let err = validate_overlay_payload(
-            "status",
-            &json!({ "schemaVersion": 99, "state": "running" }),
-        )
-        .unwrap_err();
-        assert!(bad_request_message(&err).is_some_and(|m| m.contains("status")));
-    }
-
-    #[test]
     fn progress_accepts_matching_schema_version() {
         validate_overlay_payload("progress", &json!({ "schemaVersion": 1, "value": 0.5 })).unwrap();
     }
@@ -1581,20 +1480,13 @@ mod tests {
 
     #[test]
     fn rejects_non_integer_schema_version_on_kernel_kinds() {
-        let err = validate_overlay_payload(
-            "status",
-            &json!({ "schemaVersion": "1", "state": "running" }),
-        )
-        .unwrap_err();
+        let err = validate_overlay_payload("eta", &json!({ "schemaVersion": "1", "text": "5m" }))
+            .unwrap_err();
         assert!(bad_request_message(&err).is_some_and(|m| m.contains("schemaVersion")));
     }
 
     #[test]
     fn max_supported_overlay_schema_version_kernel_kinds() {
-        assert_eq!(
-            max_supported_overlay_schema_version("status"),
-            Some(OVERLAY_STATUS_SCHEMA_VERSION)
-        );
         assert_eq!(
             max_supported_overlay_schema_version("progress"),
             Some(OVERLAY_PROGRESS_SCHEMA_VERSION)

@@ -339,6 +339,32 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// One row of the codex CLI hook table; `docker/codex-requirements.toml` registers exactly these.
+/// Event-name vocabulary only: no hook moves a card's state (a card's activity comes from its PTY output).
+pub struct CodexWorkerHook {
+    /// PascalCase event name, used verbatim as the key in docker/codex-requirements.toml.
+    pub event_name: &'static str,
+}
+
+pub const CODEX_WORKER_HOOKS: &[CodexWorkerHook] = &[
+    CodexWorkerHook {
+        event_name: "SessionStart",
+    },
+    CodexWorkerHook {
+        event_name: "UserPromptSubmit",
+    },
+    CodexWorkerHook {
+        event_name: "PreToolUse",
+    },
+    CodexWorkerHook {
+        event_name: "PostToolUse",
+    },
+    CodexWorkerHook {
+        event_name: "PermissionRequest",
+    },
+    CodexWorkerHook { event_name: "Stop" },
+];
+
 /// Convert codex's `PascalCase` event names (`PreToolUse`) to snake, matching the Claude hook discriminators on the wire.
 pub(crate) fn to_snake_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
@@ -360,6 +386,21 @@ pub(crate) fn to_snake_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CODEX_REQUIREMENTS_TOML: &str =
+        include_str!("../../../../docker/codex-requirements.toml");
+
+    #[test]
+    fn every_codex_worker_hook_is_registered_in_requirements_toml() {
+        for hook in CODEX_WORKER_HOOKS {
+            let needle = format!("[[hooks.{}]]", hook.event_name);
+            assert!(
+                CODEX_REQUIREMENTS_TOML.contains(&needle),
+                "docker/codex-requirements.toml is missing registration for {needle}; \
+                 the kernel expects this hook but codex CLI never fires it. See #372.",
+            );
+        }
+    }
 
     #[test]
     fn snake_case_examples() {

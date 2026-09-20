@@ -1,5 +1,6 @@
 //! The `kernel/track/activity` projector: one overlay row per track (`working`, `attention`,
-//! `activity_at_ms`), recomputed from durable rows on every wake-up; bus events are only wake-ups.
+//! `activity_at_ms`), recomputed on every wake-up from durable rows plus one in-process value — the
+//! renderer registry's last-output instant of each interactive PTY card; bus events are only wake-ups.
 
 pub mod sql;
 
@@ -20,15 +21,22 @@ use crate::harness::HarnessRegistry;
 use crate::ids::{ActorId, TrackId};
 use crate::model::NewOverlay;
 use crate::state::WriteContext;
+use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::track_lifecycle::track_get_tx;
 use calm_truth::validation::{KERNEL_OVERLAY_PLUGIN_ID, OVERLAY_ACTIVITY_SCHEMA_VERSION};
-use sql::{CardStatusRow, SessionRow, TaskRow, TrackRow};
+use sql::{SessionRow, TaskRow, TrackRow};
+use tokio::sync::mpsc;
 
 /// The overlay `kind` this projector owns.
 pub const ACTIVITY_OVERLAY_KIND: &str = "activity";
 
 /// Reconcile period: the convergence bound for every change that emits no event is this plus one sweep.
 pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// An interactive PTY card is `working` while its PTY is open and its last `Output` frame is younger
+/// than this; the attach reader wakes the projector on a frame after at least this much quiet.
+/// Output → quiet has no edge and is the tick's.
+pub const INTERACTIVE_OUTPUT_WINDOW: Duration = Duration::from_secs(5);
 
 /// `attention` — the fold of `items[]` (`failed > input > none`), kept redundantly so the rail need not scan the items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -109,9 +117,13 @@ pub struct TrackRows {
     pub track: TrackRow,
     pub tasks: Vec<TaskRow>,
     pub sessions: Vec<SessionRow>,
-    pub card_status: HashMap<String, CardStatusRow>,
     /// Worker session ids the in-process harness registry holds LIVE for this track.
     pub live_harness_sessions: Vec<String>,
+    /// The renderer registry's last-output instant by card id, for every interactive PTY card whose
+    /// PTY has a live renderer entry that received at least one frame; an in-process witness, never a row.
+    pub output: HashMap<String, i64>,
+    /// The instant the rows were read, for the output window.
+    pub now_ms: i64,
     /// P — the planner's last completed turn; `None` when no planner turn of the track has ever completed.
     pub planner_last_turn: Option<i64>,
 }
@@ -124,6 +136,10 @@ pub struct Fold {
     pub cards: Vec<CardActivity>,
     /// `MAX(finished_at_ms)` over the current attempts in `done` / `failed` (`canceled` is not evidence).
     pub e3_task_settled: Option<i64>,
+    /// The newest last-output instant over the track's interactive PTY cards; folded into the
+    /// high-water mark whether or not the card is still `working`, so the quiet after a burst (or the
+    /// exit after it) reads as one unread.
+    pub e8_interactive_output: Option<i64>,
 }
 
 impl Fold {
@@ -139,10 +155,14 @@ impl Fold {
     }
 }
 
-const LIVE_STATES: [&str; 3] = ["starting", "running", "turn_pending"];
-
-fn is_live(state: &str) -> bool {
-    LIVE_STATES.contains(&state)
+/// A `claude` / `codex` / `terminal` session that is not a harness row, not the isolated executor,
+/// and was never bound to a task. Its `working` comes from PTY output alone; a task-bound card's
+/// comes from the task clause alone.
+pub fn interactive_pty_card(ws: &SessionRow) -> bool {
+    ws.mode.as_deref() != Some(calm_types::harness::HARNESS_MODE)
+        && !ws.isolated
+        && !ws.task_bound
+        && matches!(ws.provider.as_str(), "claude" | "codex" | "terminal")
 }
 
 /// A task-bound worker card whose current attempts are AT LEAST ONE row and ALL `done`, and whose
@@ -170,6 +190,8 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
     // verdict out-ranks `working` in the slot, and the terminal-phase filter needs the working evidence back once those go.
     let mut working_cards: BTreeSet<String> = BTreeSet::new();
     let mut e3: Option<i64> = None;
+    let mut e8: Option<i64> = None;
+    let output_window_ms = INTERACTIVE_OUTPUT_WINDOW.as_millis() as i64;
 
     fn raise(cards: &mut BTreeMap<String, CardState>, card_id: &str, state: CardState) {
         let slot = cards.entry(card_id.to_string()).or_insert(state);
@@ -236,111 +258,43 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
 
     // S — the per-backend session rules.
     for ws in &rows.sessions {
-        let live = is_live(&ws.state);
-        let thread_status = ws.last_thread_status.as_deref();
         let harness = ws.mode.as_deref() == Some(calm_types::harness::HARNESS_MODE);
-        let session_failed =
-            ws.state == "failed" && !failed_session_is_finished_work(ws, &rows.tasks);
-        let session_item = |kind: ItemKind, at_ms: i64| ActivityItem {
-            kind,
-            source: ItemSource::Session,
-            id: ws.id.clone(),
-            card_id: Some(ws.card_id.clone()),
-            at_ms,
-        };
-        // A `last_thread_status` item carries the feeder's stamp time; a `state='failed'`
-        // item carries the exit writer's `updated_at_ms`.
-        let stamp_at = ws.last_activity_ms.unwrap_or(ws.updated_at_ms);
-        // Every `session` failure goes through the aging rule; `items` / `cards` are parameters so the
-        // `input` pushes below can keep borrowing them directly.
-        let failed_session =
-            |items: &mut Vec<ActivityItem>, cards: &mut BTreeMap<String, CardState>, at_ms| {
-                if failure_counts(at_ms) {
-                    items.push(session_item(ItemKind::Failed, at_ms));
-                    raise(cards, &ws.card_id, CardState::Failed);
-                }
-            };
-
+        let pty_backed = matches!(ws.provider.as_str(), "codex" | "claude" | "terminal");
         if harness {
             // (i) harness codex — planner + assistant.
             if ws.state == "turn_pending" && rows.live_harness_sessions.contains(&ws.id) {
                 working = true;
                 raise_working(&mut cards, &mut working_cards, &ws.card_id);
             }
-            if session_failed {
-                failed_session(&mut items, &mut cards, ws.updated_at_ms);
+        } else if ws.provider == "codex" && ws.isolated {
+            // (iii) isolated executor — `working` only through W.
+        } else if pty_backed && interactive_pty_card(ws) {
+            // (ii) any PTY-backed card: working iff its PTY is open (the registry keeps the last
+            // stamp after the reader's `Exited` arm, so the exit gate is the row) and it printed
+            // within the window. No thread status, no hook, no `input` state.
+            let last_output = rows.output.get(&ws.card_id).copied();
+            e8 = e8.max(last_output);
+            if ws.pty_open && last_output.is_some_and(|at| rows.now_ms - at < output_window_ms) {
+                working = true;
+                raise_working(&mut cards, &mut working_cards, &ws.card_id);
             }
-            continue;
         }
-
-        match ws.provider.as_str() {
-            "codex" if ws.isolated => {
-                // (iii) isolated executor — `working` only through W.
-                if session_failed {
-                    failed_session(&mut items, &mut cards, ws.updated_at_ms);
-                }
-            }
-            "codex" => {
-                // (ii) shared-daemon thread — interactive `codex-create`
-                // card or `codex-worker`.
-                if !ws.task_bound
-                    && matches!(ws.state.as_str(), "running" | "turn_pending")
-                    && thread_status == Some("active")
-                {
-                    working = true;
-                    raise_working(&mut cards, &mut working_cards, &ws.card_id);
-                }
-                if live
-                    && matches!(
-                        thread_status,
-                        Some("waitingOnApproval" | "waitingOnUserInput")
-                    )
-                {
-                    items.push(session_item(ItemKind::Input, stamp_at));
-                    raise(&mut cards, &ws.card_id, CardState::Input);
-                }
-                if live && thread_status == Some("systemError") {
-                    failed_session(&mut items, &mut cards, stamp_at);
-                }
-                if session_failed {
-                    failed_session(&mut items, &mut cards, ws.updated_at_ms);
-                }
-            }
-            "claude" => {
-                // (iv) claude PTY — the FSM row counts only behind THIS live
-                // session (the live-session gate).
-                let fsm = rows.card_status.get(&ws.card_id);
-                let fsm_state = fsm.map(|r| r.state.as_str());
-                if !ws.task_bound && live && fsm_state == Some("Working") {
-                    working = true;
-                    raise_working(&mut cards, &mut working_cards, &ws.card_id);
-                }
-                if let Some(row) = fsm.filter(|_| live) {
-                    let card_item = |kind: ItemKind| ActivityItem {
-                        kind,
-                        source: ItemSource::Card,
-                        id: ws.card_id.clone(),
-                        card_id: Some(ws.card_id.clone()),
-                        at_ms: row.updated_at,
-                    };
-                    match row.state.as_str() {
-                        "AwaitingInput" => {
-                            items.push(card_item(ItemKind::Input));
-                            raise(&mut cards, &ws.card_id, CardState::Input);
-                        }
-                        "Errored" => {
-                            items.push(card_item(ItemKind::Failed));
-                            raise(&mut cards, &ws.card_id, CardState::Failed);
-                        }
-                        _ => {}
-                    }
-                }
-                if session_failed {
-                    failed_session(&mut items, &mut cards, ws.updated_at_ms);
-                }
-            }
-            // (v) terminal — never from session signals (no turn concept, hooks do not enter the FSM). Unknown providers: nothing.
-            _ => {}
+        // `failed` ⇔ `ws.state = 'failed'` (the exit writer's verdict on an ephemeral session, the
+        // reaper's on a harness / isolated one). A signal-killed codex TUI leaves its resumable row
+        // `running` and is NOT failed. Unknown providers: nothing.
+        if (harness || pty_backed)
+            && ws.state == "failed"
+            && !failed_session_is_finished_work(ws, &rows.tasks)
+            && failure_counts(ws.updated_at_ms)
+        {
+            items.push(ActivityItem {
+                kind: ItemKind::Failed,
+                source: ItemSource::Session,
+                id: ws.id.clone(),
+                card_id: Some(ws.card_id.clone()),
+                at_ms: ws.updated_at_ms,
+            });
+            raise(&mut cards, &ws.card_id, CardState::Failed);
         }
     }
 
@@ -382,6 +336,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
         items,
         cards,
         e3_task_settled: e3,
+        e8_interactive_output: e8,
     }
 }
 
@@ -391,6 +346,9 @@ pub struct TrackActivityProjector {
     bus: EventBus,
     write: WriteContext,
     harness: HarnessRegistry,
+    /// The in-process carrier of every interactive PTY card's last output; built before the
+    /// projector is spawned.
+    renderer: Arc<TerminalRendererRegistry>,
 }
 
 /// What one recomputation did.
@@ -427,6 +385,7 @@ impl TrackActivityProjector {
         bus: EventBus,
         write: WriteContext,
         harness: HarnessRegistry,
+        renderer: Arc<TerminalRendererRegistry>,
     ) -> Option<Self> {
         let pool = repo.sqlite_pool()?;
         Some(Self {
@@ -435,17 +394,18 @@ impl TrackActivityProjector {
             bus,
             write,
             harness,
+            renderer,
         })
     }
 
-    /// Read every durable input of one track. `None` when the track row is gone.
+    /// Read every input of one track: the durable rows plus the two in-process witnesses (live harness
+    /// handles, interactive PTY cards' last output). `None` when the track row is gone.
     pub async fn read_rows(&self, track_id: &str) -> crate::error::Result<Option<TrackRows>> {
         let Some(track) = sql::track_row(&self.pool, track_id).await? else {
             return Ok(None);
         };
         let tasks = sql::current_tasks(&self.pool, track_id).await?;
         let sessions = sql::eligible_sessions(&self.pool, track_id).await?;
-        let card_status = sql::card_status_overlays(&self.pool, track_id).await?;
         let planner_last_turn = sql::planner_last_turn(&self.pool, track_id).await?;
         let live_harness_sessions = self
             .harness
@@ -453,12 +413,22 @@ impl TrackActivityProjector {
             .into_iter()
             .map(|(worker_session_id, _)| worker_session_id)
             .collect();
+        let output = sessions
+            .iter()
+            .filter(|ws| interactive_pty_card(ws))
+            .filter_map(|ws| {
+                let terminal_id = ws.terminal_run_id.as_deref()?;
+                let at = self.renderer.last_output_ms(terminal_id)?;
+                Some((ws.card_id.clone(), at))
+            })
+            .collect();
         Ok(Some(TrackRows {
             track,
             tasks,
             sessions,
-            card_status,
             live_harness_sessions,
+            output,
+            now_ms: crate::model::now_ms(),
             planner_last_turn,
         }))
     }
@@ -493,12 +463,18 @@ impl TrackActivityProjector {
             },
         };
 
-        // `activity_at_ms` is a monotone high-water mark: max of the stored value and every
-        // persisted completion-class witness; never lowered by a reconcile.
-        let activity_at_ms = [stored_mark, evidence.max(), folded.e3_task_settled]
-            .into_iter()
-            .flatten()
-            .max();
+        // `activity_at_ms` is a monotone high-water mark: max of the stored value, every persisted
+        // completion-class witness and the in-process last-output instant (what a crash loses is the
+        // part not yet folded); never lowered by a reconcile.
+        let activity_at_ms = [
+            stored_mark,
+            evidence.max(),
+            folded.e3_task_settled,
+            folded.e8_interactive_output,
+        ]
+        .into_iter()
+        .flatten()
+        .max();
 
         let next = ActivityPayload {
             schema_version: OVERLAY_ACTIVITY_SCHEMA_VERSION,
@@ -595,20 +571,10 @@ impl TrackActivityProjector {
         }
     }
 
-    /// Which track a bus event wakes; `None` for everything else. Only `overlay.set` needs a
-    /// lookup, and only when the FSM's commit degraded its scope to `System`.
+    /// Which track a bus event wakes; `None` for everything else. The projector's own `overlay.set`
+    /// row must not wake it; the two PTY edges arrive on the registry's wake channel, not on the bus.
     pub async fn track_for_event(&self, env: &BroadcastEnvelope) -> Option<String> {
         match &env.event {
-            Event::OverlaySet(o)
-                if o.plugin_id == KERNEL_OVERLAY_PLUGIN_ID
-                    && o.entity_kind == "card"
-                    && o.kind == "status" =>
-            {
-                if let Some(track) = env.scope.track_id() {
-                    return Some(track.as_str().to_string());
-                }
-                self.card_track(&o.entity_id).await
-            }
             Event::HarnessPhaseChanged { track_id, .. } => Some(track_id.as_str().to_string()),
             // The COMPLETED tool-call row only; the `item/started` twin would be a second recompute that finds nothing new.
             Event::HarnessItemAdded {
@@ -641,9 +607,24 @@ impl TrackActivityProjector {
         }
     }
 
-    /// The projector loop: a boot sweep, then bus wake-ups and the tick in one `select!` (serial).
+    /// Which track a PTY edge wakes: the terminal's card's track, `None` when the terminal row (or
+    /// its card) is gone.
+    async fn track_for_terminal(&self, terminal_id: &str) -> Option<String> {
+        match self.repo.terminal_get(terminal_id).await {
+            Ok(Some(terminal)) => self.card_track(terminal.card_id.as_str()).await,
+            _ => None,
+        }
+    }
+
+    /// The projector loop: a boot sweep, then bus wake-ups, the two PTY edges and the tick in one
+    /// `select!` (serial; the wake channel is an unbounded FIFO, so an edge that lands during a
+    /// recomputation queues instead of being lost).
     pub async fn run(self) {
         let mut rx = self.bus.subscribe();
+        // This clone stays alive for the loop's lifetime so the receive arm can never observe a
+        // closed channel.
+        let (wake_tx, mut wake_rx) = mpsc::unbounded_channel::<String>();
+        self.renderer.set_output_wake(wake_tx.clone());
         let mut tick = tokio::time::interval(RECONCILE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -669,15 +650,34 @@ impl TrackActivityProjector {
                     }
                     Err(RecvError::Closed) => break,
                 },
+                Some(terminal_id) = wake_rx.recv() => {
+                    if let Some(track_id) = self.track_for_terminal(&terminal_id).await
+                        && let Err(e) = self.recompute_track(&track_id).await
+                    {
+                        tracing::warn!(
+                            track_id = %track_id,
+                            terminal_id = %terminal_id,
+                            error = %e,
+                            "track_activity: PTY-edge recompute failed"
+                        );
+                    }
+                }
             }
         }
     }
 }
 
 /// Spawn the projector task. At the boot sweep the harness registry is still empty (run loops are
-/// installed by `boot_harnesses` later), so harness rows read `working=false` on the first pass.
-pub fn spawn(repo: Arc<dyn Repo>, bus: EventBus, write: WriteContext, harness: HarnessRegistry) {
-    let Some(projector) = TrackActivityProjector::new(repo, bus, write, harness) else {
+/// installed by `boot_harnesses` later), so harness rows read `working=false` on the first pass, and
+/// the renderer registry is empty until a card's WS reattaches its PTY.
+pub fn spawn(
+    repo: Arc<dyn Repo>,
+    bus: EventBus,
+    write: WriteContext,
+    harness: HarnessRegistry,
+    renderer: Arc<TerminalRendererRegistry>,
+) {
+    let Some(projector) = TrackActivityProjector::new(repo, bus, write, harness, renderer) else {
         tracing::warn!("track_activity: repo is not sqlite-backed; projector not started");
         return;
     };

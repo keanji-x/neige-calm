@@ -16,7 +16,7 @@ use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
-use serde_json::{Value, json};
+use serde_json::json;
 use tower::ServiceExt;
 
 pub(super) async fn fresh_state() -> AppState {
@@ -174,36 +174,11 @@ async fn hook_boot() -> HookBoot {
         Some(track_area_cache.clone()),
     );
 
-    calm_server::card_fsm::spawn(
-        repo_dyn.clone(),
-        events,
-        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
-    );
-    tokio::task::yield_now().await;
-
     HookBoot {
         app: app(state, live_auth_state("alice", "hunter2")),
         repo: repo_dyn,
         claude_card_id: claude_card.id.to_string(),
         codex_card_id: codex_card.id.to_string(),
-    }
-}
-
-async fn await_card_state(repo: &Arc<dyn Repo>, card_id: &str, expected_state: &str) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let overlays = repo.overlays_for("card", card_id).await.unwrap();
-        if overlays.iter().any(|o| {
-            o.kind == "status"
-                && o.payload.get("state").and_then(Value::as_str) == Some(expected_state)
-        }) {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {card_id} status {expected_state}; overlays: {overlays:?}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -435,7 +410,6 @@ async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not()
         "Claude hook should be accepted without a session cookie"
     );
     assert_hook_event(&boot.repo, &boot.claude_card_id, "hook.claude.stop").await;
-    await_card_state(&boot.repo, &boot.claude_card_id, "Idle").await;
 
     let codex_resp = boot
         .app
@@ -461,7 +435,6 @@ async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not()
         "Codex hook should keep its existing 204 success semantics without a session cookie"
     );
     assert_hook_event(&boot.repo, &boot.codex_card_id, "hook.codex.stop").await;
-    await_card_state(&boot.repo, &boot.codex_card_id, "Idle").await;
 }
 
 #[tokio::test]

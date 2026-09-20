@@ -235,17 +235,93 @@ pub(crate) fn claude_hook_command(bridge_bin: &str, card_id: &str, base_url: &st
     )
 }
 
+/// Single source of truth for the Claude Code worker hooks: `build_claude_settings_json` emits the settings `hooks`
+/// map from it and `terminal_hooks` filters it down to the Planner terminal subset, so the two cannot drift.
+/// Event-name vocabulary only — no hook moves a card's state (a card's activity comes from its PTY output).
+/// Event names + matcher applicability verified against https://code.claude.com/docs/en/hooks.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClaudeWorkerHook {
+    /// PascalCase event name, used verbatim as the key in the settings `hooks` map.
+    pub event_name: &'static str,
+    /// Whether we register a `"matcher": "*"` for this hook. Omission is equivalent to match-all, so this only keeps the generated settings faithful to convention; it never filters anything out.
+    pub matcher: bool,
+}
+
+pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
+    ClaudeWorkerHook {
+        event_name: "SessionStart",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "UserPromptSubmit",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "PreToolUse",
+        matcher: true,
+    },
+    ClaudeWorkerHook {
+        event_name: "PostToolUse",
+        matcher: true,
+    },
+    ClaudeWorkerHook {
+        event_name: "PostToolUseFailure",
+        matcher: true,
+    },
+    ClaudeWorkerHook {
+        event_name: "SubagentStart",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "SubagentStop",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "TaskCreated",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "TaskCompleted",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "PermissionRequest",
+        matcher: true,
+    },
+    ClaudeWorkerHook {
+        event_name: "PermissionDenied",
+        matcher: true,
+    },
+    ClaudeWorkerHook {
+        event_name: "Notification",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "Elicitation",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "Stop",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "StopFailure",
+        matcher: false,
+    },
+    ClaudeWorkerHook {
+        event_name: "SessionEnd",
+        matcher: false,
+    },
+];
+
 pub(crate) fn build_claude_settings_json(hook_command: &str) -> String {
-    build_claude_settings_json_for(
-        hook_command,
-        crate::card_fsm::CLAUDE_WORKER_HOOKS.iter().copied(),
-    )
+    build_claude_settings_json_for(hook_command, CLAUDE_WORKER_HOOKS.iter().copied())
 }
 
 /// Hooks-only settings JSON registering exactly `hooks`.
 pub(crate) fn build_claude_settings_json_for(
     hook_command: &str,
-    hooks_to_register: impl IntoIterator<Item = crate::card_fsm::ClaudeWorkerHook>,
+    hooks_to_register: impl IntoIterator<Item = ClaudeWorkerHook>,
 ) -> String {
     let hook = json!({ "type": "command", "command": hook_command });
     let mut hooks = serde_json::Map::new();
@@ -290,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_registers_exactly_the_fsm_projected_hooks() {
+    fn settings_registers_exactly_the_hook_table() {
         use std::collections::BTreeSet;
 
         let s = build_claude_settings_json("bridge --provider claude");
@@ -301,14 +377,14 @@ mod tests {
             .keys()
             .cloned()
             .collect();
-        let expected: BTreeSet<String> = crate::card_fsm::CLAUDE_WORKER_HOOKS
+        let expected: BTreeSet<String> = CLAUDE_WORKER_HOOKS
             .iter()
             .map(|h| h.event_name.to_string())
             .collect();
         // Settings must register exactly the worker hook table — every row, nothing else.
         assert_eq!(registered, expected);
         // Matcher presence per hook must match the table flag.
-        for h in crate::card_fsm::CLAUDE_WORKER_HOOKS {
+        for h in CLAUDE_WORKER_HOOKS {
             let has_matcher = v["hooks"][h.event_name][0].get("matcher").is_some();
             assert_eq!(
                 has_matcher, h.matcher,
