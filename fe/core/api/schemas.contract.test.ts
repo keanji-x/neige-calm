@@ -1031,3 +1031,67 @@ describe('candidate verification settlement', () => {
     }
   });
 });
+
+// #1727 S4: the settlement result is a discriminated union on `kind`; both shapes are exact.
+describe('git delivery settlement', () => {
+  const base = {
+    task_id: 'attempt', idempotency_key: 'attempt', track_id: 'track-1', card_id: 'worker',
+    delivery_id: 'delivery-1', ordinal: 1,
+  };
+  const candidate = {
+    ev: 'task.git_delivery_settled',
+    data: {
+      ...base,
+      result: { kind: 'candidate', candidate_id: 'delivery-1', commit_sha: 'c'.repeat(40), base_sha: 'b'.repeat(40), base_is_ancestor: true },
+      wake_reason: 'ungated_candidate',
+    },
+  };
+  const failed = {
+    ev: 'task.git_delivery_settled',
+    data: {
+      ...base,
+      result: { kind: 'failed', code: 'commit_failed', reason: 'index.lock exists', retry_allowed: true },
+      wake_reason: 'failed',
+    },
+  };
+
+  it('decodes the candidate shape and every wake reason', () => {
+    expect(wireEventSchema.parse(candidate)).toEqual(candidate);
+    for (const wake_reason of ['failed', 'ungated_candidate', 'gate_already_terminal', 'deferred_to_gate']) {
+      const event = { ...candidate, data: { ...candidate.data, wake_reason } };
+      expect(wireEventSchema.parse(event)).toEqual(event);
+    }
+    expect(wireEventSchema.safeParse({ ...candidate, data: { ...candidate.data, wake_reason: 'silent' } }).success).toBe(false);
+    const partial: Record<string, unknown> = { ...candidate.data.result };
+    delete partial.base_is_ancestor;
+    expect(wireEventSchema.safeParse({ ...candidate, data: { ...candidate.data, result: partial } }).success).toBe(false);
+  });
+
+  it('decodes the failed shape and every failure code', () => {
+    expect(wireEventSchema.parse(failed)).toEqual(failed);
+    for (const code of ['workspace_missing', 'provenance_mismatch', 'commit_failed', 'unresolved']) {
+      const event = { ...failed, data: { ...failed.data, result: { ...failed.data.result, code } } };
+      expect(wireEventSchema.parse(event)).toEqual(event);
+    }
+    expect(wireEventSchema.safeParse({ ...failed, data: { ...failed.data, result: { ...failed.data.result, code: 'hook_failed' } } }).success).toBe(false);
+    expect(wireEventSchema.safeParse({ ...failed, data: { ...failed.data, result: { kind: 'pending' } } }).success).toBe(false);
+    for (const field of ['task_id', 'idempotency_key', 'track_id', 'card_id', 'delivery_id', 'ordinal', 'result', 'wake_reason']) {
+      const data: Record<string, unknown> = { ...failed.data };
+      delete data[field];
+      expect(wireEventSchema.safeParse({ ...failed, data }).success).toBe(false);
+    }
+  });
+});
+
+describe('worktree.committed delivery fields', () => {
+  const legacy = {
+    ev: 'worktree.committed',
+    data: { track_id: 'track-1', card_id: 'worker', commit_sha: 'c'.repeat(40), branch: 'neige/track-1/worker' },
+  };
+  it('accepts legacy auto-commits without the #1727 fields and kernel deliveries with them', () => {
+    expect(wireEventSchema.parse(legacy)).toEqual(legacy);
+    const delivered = { ...legacy, data: { ...legacy.data, delivery_id: 'delivery-1', base_is_ancestor: false } };
+    expect(wireEventSchema.parse(delivered)).toEqual(delivered);
+    expect(wireEventSchema.safeParse({ ...legacy, data: { ...legacy.data, base_is_ancestor: 'yes' } }).success).toBe(false);
+  });
+});

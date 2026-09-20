@@ -16,6 +16,7 @@ use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::event::{
     ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject, TaskContextRef,
 };
+use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1076,6 +1077,60 @@ golden_test!(
         card_id: CardId::from("card-01"),
         commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
         branch: "neige/track-01/card-01".into(),
+        delivery_id: None,
+        base_is_ancestor: None,
+    }
+);
+
+golden_test!(
+    worktree_committed_full,
+    "worktree_committed.full.json",
+    Event::WorktreeCommitted {
+        track_id: TrackId::from("track-01"),
+        card_id: CardId::from("card-01"),
+        commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+        branch: "neige/track-01/card-01".into(),
+        delivery_id: Some("delivery-01".into()),
+        base_is_ancestor: Some(true),
+    }
+);
+
+golden_test!(
+    task_git_delivery_settled_candidate,
+    "task_git_delivery_settled.candidate.json",
+    Event::TaskGitDeliverySettled {
+        task_id: "attempt-1".into(),
+        idempotency_key: "attempt-1".into(),
+        track_id: TrackId::from("track-01"),
+        card_id: CardId::from("card-01"),
+        delivery_id: "delivery-01".into(),
+        ordinal: 1,
+        result: DeliverySettlement::Candidate {
+            candidate_id: "delivery-01".into(),
+            commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            base_sha: "89abcdef0123456789abcdef0123456789abcdef".into(),
+            base_is_ancestor: true,
+        },
+        wake_reason: DeliveryWakeReason::UngatedCandidate,
+    }
+);
+
+golden_test!(
+    task_git_delivery_settled_failed,
+    "task_git_delivery_settled.failed.json",
+    Event::TaskGitDeliverySettled {
+        task_id: "attempt-1".into(),
+        idempotency_key: "attempt-1".into(),
+        track_id: TrackId::from("track-01"),
+        card_id: CardId::from("card-01"),
+        delivery_id: "delivery-02".into(),
+        ordinal: 2,
+        result: DeliverySettlement::Failed {
+            code: DeliveryFailureCode::CommitFailed,
+            reason: "git commit exited 128: index.lock exists".into(),
+            retry_allowed: true,
+        },
+        wake_reason: DeliveryWakeReason::Failed,
     }
 );
 
@@ -1143,7 +1198,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 53] = [
+const ALL_KIND_TAGS: [&str; 54] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1179,6 +1234,7 @@ const ALL_KIND_TAGS: [&str; 53] = [
     "task.execution_settled",
     "task.file_publication_settled",
     "task.candidate_verification_settled",
+    "task.git_delivery_settled",
     "workspace.leased",
     "workspace.released",
     "forge.pr.merged",
@@ -1228,7 +1284,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 79,
+        files, 82,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1280,6 +1336,7 @@ fn kind_tag_list_matches_enum() {
             Event::TaskExecutionSettled { .. } => "task.execution_settled",
             Event::TaskFilePublicationSettled { .. } => "task.file_publication_settled",
             Event::TaskCandidateVerificationSettled { .. } => "task.candidate_verification_settled",
+            Event::TaskGitDeliverySettled { .. } => "task.git_delivery_settled",
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
@@ -1306,7 +1363,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        53,
+        54,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }
@@ -1354,4 +1411,58 @@ fn task_candidate_verification_settled_requires_exact_identities() {
         value["data"].as_object_mut().unwrap().remove(field);
         assert!(serde_json::from_value::<Event>(value).is_err());
     }
+}
+
+/// Both result shapes are exact: no extra field, no missing field, and `wake_reason` / `code`
+/// accept only their four spellings.
+#[test]
+fn task_git_delivery_settled_requires_exact_settlement_shape() {
+    for file in [
+        "task_git_delivery_settled.candidate.json",
+        "task_git_delivery_settled.failed.json",
+    ] {
+        let golden = load(file);
+        let event: Event = serde_json::from_value(golden.wire.clone()).unwrap();
+        assert!(
+            matches!(&event, Event::TaskGitDeliverySettled { task_id, idempotency_key, .. }
+                if task_id == "attempt-1" && idempotency_key == "attempt-1")
+        );
+        assert_eq!(serde_json::to_value(event).unwrap(), golden.wire);
+        for field in [
+            "task_id",
+            "idempotency_key",
+            "track_id",
+            "card_id",
+            "delivery_id",
+            "ordinal",
+            "result",
+            "wake_reason",
+        ] {
+            let mut missing = golden.wire.clone();
+            missing["data"].as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<Event>(missing).is_err(),
+                "{file}: {field} must be required"
+            );
+        }
+        let mut extra = golden.wire.clone();
+        extra["data"]["result"]["extra"] = json!(1);
+        assert!(
+            serde_json::from_value::<Event>(extra).is_err(),
+            "{file}: result denies unknown fields"
+        );
+        let mut silent = golden.wire.clone();
+        silent["data"]["wake_reason"] = json!("silent");
+        assert!(serde_json::from_value::<Event>(silent).is_err());
+    }
+    let failed = load("task_git_delivery_settled.failed.json");
+    let mut unknown_code = failed.wire.clone();
+    unknown_code["data"]["result"]["code"] = json!("hook_failed");
+    assert!(serde_json::from_value::<Event>(unknown_code).is_err());
+    let mut crossed = failed.wire.clone();
+    crossed["data"]["result"]["candidate_id"] = json!("delivery-02");
+    assert!(
+        serde_json::from_value::<Event>(crossed).is_err(),
+        "a candidate field on the failed shape is an unknown field"
+    );
 }

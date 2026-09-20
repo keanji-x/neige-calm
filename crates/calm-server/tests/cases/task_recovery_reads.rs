@@ -498,6 +498,8 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
         card_id: boot.worker_card_id.clone(),
         commit_sha: sha.clone(),
         branch: event_branch.clone(),
+        delivery_id: None,
+        base_is_ancestor: None,
     };
     let scope = calm_server::event::EventScope::Card {
         card: boot.worker_card_id.clone(),
@@ -736,6 +738,8 @@ async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retain
             card_id: boot.worker_card_id.clone(),
             commit_sha: sha.clone(),
             branch: naming_branch.clone(),
+            delivery_id: None,
+            base_is_ancestor: None,
         },
     )
     .await;

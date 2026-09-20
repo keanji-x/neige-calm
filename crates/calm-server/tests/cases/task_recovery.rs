@@ -1028,6 +1028,8 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
             card_id: boot.worker_card_id.clone(),
             commit_sha: "abc123def".into(),
             branch: "neige/recorded-branch".into(),
+            delivery_id: None,
+            base_is_ancestor: None,
         },
     )
     .await;
@@ -1151,6 +1153,8 @@ async fn task_recovery_guidance_retained_follows_worktree_removal_and_reprovisio
             card_id: boot.worker_card_id.clone(),
             commit_sha: "abc123def".into(),
             branch: "neige/recorded-branch".into(),
+            delivery_id: None,
+            base_is_ancestor: None,
         },
     )
     .await;

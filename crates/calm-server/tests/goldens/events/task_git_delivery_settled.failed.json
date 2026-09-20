@@ -1,0 +1,21 @@
+{
+  "description": "task.git_delivery_settled (#1727 S4) failed shape: no candidate, the kernel's failure code + evidence line + retry admissibility copied from the delivery row; every failed settlement wakes (wake_reason failed).",
+  "wire": {
+    "ev": "task.git_delivery_settled",
+    "data": {
+      "task_id": "attempt-1",
+      "idempotency_key": "attempt-1",
+      "track_id": "track-01",
+      "card_id": "card-01",
+      "delivery_id": "delivery-02",
+      "ordinal": 2,
+      "result": {
+        "kind": "failed",
+        "code": "commit_failed",
+        "reason": "git commit exited 128: index.lock exists",
+        "retry_allowed": true
+      },
+      "wake_reason": "failed"
+    }
+  }
+}

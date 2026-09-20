@@ -246,6 +246,8 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
         card_id: CardId::from("card-1"),
         commit_sha: "1111111111111111111111111111111111111111".into(),
         branch: "neige/track/card-1".into(),
+        delivery_id: None,
+        base_is_ancestor: None,
     };
     let mut tx = begin_immediate_tx(repo.pool())
         .await

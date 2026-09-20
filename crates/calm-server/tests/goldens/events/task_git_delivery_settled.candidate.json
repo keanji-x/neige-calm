@@ -1,0 +1,22 @@
+{
+  "description": "task.git_delivery_settled (#1727 S4) candidate shape: the settlement transaction pinned a candidate ref and decided the wake once (ungated_candidate); result is an internally tagged union on kind.",
+  "wire": {
+    "ev": "task.git_delivery_settled",
+    "data": {
+      "task_id": "attempt-1",
+      "idempotency_key": "attempt-1",
+      "track_id": "track-01",
+      "card_id": "card-01",
+      "delivery_id": "delivery-01",
+      "ordinal": 1,
+      "result": {
+        "kind": "candidate",
+        "candidate_id": "delivery-01",
+        "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        "base_sha": "89abcdef0123456789abcdef0123456789abcdef",
+        "base_is_ancestor": true
+      },
+      "wake_reason": "ungated_candidate"
+    }
+  }
+}

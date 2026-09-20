@@ -28,6 +28,20 @@ describe('invalidation plan behavior', () => {
       invalidate: [['track-files'], ['track-report']], remove: [], writeThrough: [],
     });
   });
+  it('refreshes the settled track\'s files and report after a git delivery settles', () => {
+    const settled = wireEventSchema.parse({
+      ev: 'task.git_delivery_settled',
+      data: {
+        task_id: 'opaque-attempt', idempotency_key: 'opaque-attempt', track_id: 'track-7', card_id: 'worker',
+        delivery_id: 'delivery-1', ordinal: 1,
+        result: { kind: 'failed', code: 'unresolved', reason: 'probe unknown', retry_allowed: true },
+        wake_reason: 'failed',
+      },
+    });
+    expect(invalidationPlanFor(settled)).toEqual({
+      invalidate: [['track-files', 'track-7'], ['track-report', 'track-7']], remove: [], writeThrough: [],
+    });
+  });
 
   it('refreshes task evidence after execution settlement without guessing an opaque attempt ID', () => {
     const settled = wireEventSchema.parse({

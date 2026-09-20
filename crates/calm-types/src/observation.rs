@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::{EditAuthor, RatifyDecision};
+use crate::git_candidate::{DeliveryFailureCode, DeliverySettlement};
 use crate::ids::{CardId, TrackId};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 use crate::report_edit_diff::{self, ReportBlockRef};
@@ -74,6 +75,15 @@ pub enum Observation {
         exit_code: Option<i32>,
         log_tail: String,
         attempt: i64,
+    },
+    /// One Git delivery settled (#1727 S4). Hard-fired: it is the wake the suppressed worker
+    /// self-report would have been. `retained_path` is the lease worktree while it still exists.
+    TaskGitDeliverySettled {
+        key: String,
+        attempt_id: String,
+        result: DeliverySettlement,
+        #[serde(default)]
+        retained_path: Option<String>,
     },
     WorkspaceLeased {
         track_id: TrackId,
@@ -179,6 +189,7 @@ impl Observation {
             }
             Observation::SystemContext { .. }
             | Observation::TaskGateResult { .. }
+            | Observation::TaskGitDeliverySettled { .. }
             | Observation::WorkspaceLeased { .. }
             | Observation::WorkspaceReleased { .. }
             | Observation::ForgePrMerged { .. }
@@ -202,6 +213,7 @@ impl Observation {
             | Observation::SystemContext { .. }
             | Observation::UserMessage { .. }
             | Observation::TaskGateResult { .. }
+            | Observation::TaskGitDeliverySettled { .. }
             | Observation::ForgePrMerged { .. }
             | Observation::ForgeScanCompleted { .. }
             | Observation::ForgePrOpened { .. }
@@ -316,6 +328,49 @@ impl Observation {
                 let log_tail = collapse_repeated_lines(log_tail);
                 format!(
                     "Task {key} gate {verdict} (attempt {attempt}). Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
+                )
+            }
+            // Slice 2 wording: no delivery tool and no `base:{attempt}` yet (slices 3 and 5 append them).
+            Observation::TaskGitDeliverySettled {
+                key,
+                attempt_id,
+                result:
+                    DeliverySettlement::Candidate {
+                        candidate_id,
+                        commit_sha,
+                        base_sha,
+                        ..
+                    },
+                ..
+            } => {
+                let no_change = if commit_sha == base_sha {
+                    ", no change"
+                } else {
+                    ""
+                };
+                format!(
+                    "Task {key} delivered candidate {candidate_id} ({commit_sha}, base {base_sha}{no_change}). \
+                     Accept with calm.task.verdict; read the worker output at runs/{attempt_id}.md."
+                )
+            }
+            Observation::TaskGitDeliverySettled {
+                key,
+                attempt_id,
+                result: DeliverySettlement::Failed { code, reason, .. },
+                retained_path,
+            } => {
+                // `workspace_missing` is the kernel's proof the lease directory is gone; the lease
+                // row can still carry a path, so that code never names one.
+                let read = match retained_path.as_deref() {
+                    Some(path) if *code != DeliveryFailureCode::WorkspaceMissing => {
+                        format!("Files retained at {path}; read")
+                    }
+                    _ => "Read".to_string(),
+                };
+                format!(
+                    "Task {key} Git delivery FAILED ({}): {reason}. \
+                     {read} the worker output at runs/{attempt_id}.md.",
+                    code.wire_str()
                 )
             }
             Observation::WorkspaceLeased { path, .. } => {

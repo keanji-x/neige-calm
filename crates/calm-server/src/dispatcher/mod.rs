@@ -38,6 +38,7 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::task_context::TaskContextMonitor;
 use crate::terminal_renderer::TerminalRendererRegistry;
+use calm_types::git_candidate::DeliveryWakeReason;
 use sha2::{Digest, Sha256};
 
 pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
@@ -64,6 +65,7 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "task.execution_settled",
     "task.file_publication_settled",
     "task.candidate_verification_settled",
+    "task.git_delivery_settled",
     "task.gate_result",
     "track.report_edited",
     "forge.scan.completed",
@@ -120,6 +122,12 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::TaskCandidateVerificationSettled { .. }
         | Event::TaskFilePublicationSettled { .. } => {
             matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
+        }
+        // #1727 S4: pure on the event — the wake disposition was decided once in the settlement
+        // tx; reading the tasks row here would let live push and boot replay disagree.
+        Event::TaskGitDeliverySettled { wake_reason, .. } => {
+            matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
+                && *wake_reason != DeliveryWakeReason::DeferredToGate
         }
         // User/Plugin/Assistant edits were not authored by the planner, so no self-push loop;
         // Planner/Kernel authors would loop.
@@ -945,6 +953,7 @@ impl Inner {
             Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. }
+            | Event::TaskGitDeliverySettled { .. }
             | Event::TaskExecutionSettled { .. } | Event::TaskCandidateVerificationSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write)
                     && !is_gated_self_report(self.repo.as_ref(), &envelope.event).await
@@ -1208,6 +1217,7 @@ impl Inner {
             event,
             Event::TaskExecutionSettled { .. }
                 | Event::TaskCandidateVerificationSettled { .. }
+                | Event::TaskGitDeliverySettled { .. }
                 | Event::TaskFilePublicationSettled { .. }
         ) {
             let preceding = match crate::harness::catch_up::observations_since(
@@ -1341,6 +1351,9 @@ pub(crate) async fn resolve_harness_observation(
         )
         .await;
     }
+    if matches!(event, Event::TaskGitDeliverySettled { .. }) {
+        return git_delivery_settled::observation(repo, track_id, event).await;
+    }
     if let Event::TaskExecutionSettled {
         task_id,
         operation_id,
@@ -1458,7 +1471,8 @@ pub(crate) fn harness_observation_from_event(
 ) -> Option<HarnessObservation> {
     match event {
         Event::TaskCandidateVerificationSettled { .. }
-        | Event::TaskFilePublicationSettled { .. } => None, // requires the retained Operation read above
+        | Event::TaskGitDeliverySettled { .. }
+        | Event::TaskFilePublicationSettled { .. } => None, // requires the retained Operation / tasks row read above
         Event::TaskCompleted {
             idempotency_key,
             result,
@@ -1666,6 +1680,8 @@ fn sha256_hex(text: &str) -> String {
     hasher.update(text.as_bytes());
     hex::encode(hasher.finalize())
 }
+
+mod git_delivery_settled;
 
 #[cfg(test)]
 mod tests;

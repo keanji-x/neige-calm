@@ -55,6 +55,36 @@ use crate::card_role_cache::CardRoleCache;
 use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
 use crate::ids::AreaId;
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
+use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
+
+/// A candidate-shape settlement for `task_id` on track `w`; `wake_reason` is the only field the
+/// push predicate reads.
+fn git_delivery_settled_event(task_id: &str, wake_reason: DeliveryWakeReason) -> Event {
+    git_delivery_settled_event_on(&TrackId::from("w"), task_id, wake_reason)
+}
+
+/// Same settlement shape on an explicit track.
+fn git_delivery_settled_event_on(
+    track_id: &TrackId,
+    task_id: &str,
+    wake_reason: DeliveryWakeReason,
+) -> Event {
+    Event::TaskGitDeliverySettled {
+        task_id: task_id.into(),
+        idempotency_key: task_id.into(),
+        track_id: track_id.clone(),
+        card_id: CardId::from("worker"),
+        delivery_id: "delivery-1".into(),
+        ordinal: 1,
+        result: DeliverySettlement::Candidate {
+            candidate_id: "delivery-1".into(),
+            commit_sha: "c".repeat(40),
+            base_sha: "b".repeat(40),
+            base_is_ancestor: true,
+        },
+        wake_reason,
+    }
+}
 
 fn track_scope(track: &TrackId, area: &AreaId) -> EventScope {
     EventScope::Track {
@@ -122,6 +152,10 @@ fn dispatcher_filter_matches_push_kinds() {
             operation_id: "op-cand".into(),
         }))
     );
+    assert!(filter.matches(&env(git_delivery_settled_event(
+        "w:k",
+        DeliveryWakeReason::DeferredToGate
+    ))));
     assert!(filter.matches(&env(Event::TaskGateResult {
         task_id: "w:k".into(),
         idempotency_key: "w:k".into(),
@@ -184,6 +218,8 @@ fn dispatcher_filter_matches_push_kinds() {
         card_id: CardId::from("worker"),
         commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
         branch: "neige/w/card".into(),
+        delivery_id: None,
+        base_is_ancestor: None,
     })));
     assert!(filter.matches(&env(Event::ForgePrMerged {
         track_id: track.clone(),
@@ -980,6 +1016,8 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             card_id: worker.clone(),
             commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
             branch: "neige/w/card".into(),
+            delivery_id: None,
+            base_is_ancestor: None,
         },
     ] {
         for actor in [
@@ -1482,6 +1520,8 @@ fn harness_observation_from_event_mapping_pin() {
                 card_id: worker.clone(),
                 commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
                 branch: "neige/w/card".into(),
+                delivery_id: None,
+                base_is_ancestor: None,
             },
             Some("impl-parser")
         ),
@@ -1699,6 +1739,48 @@ async fn planner_push_candidate_fixture() -> (crate::db::sqlite::SqlxRepo, Event
     )
 }
 
+/// A tasks row for the settled attempt whose worker card holds a lease, so the mapping can name
+/// both the plan key and the retained worktree path.
+async fn planner_push_delivery_fixture() -> (crate::db::sqlite::SqlxRepo, Event) {
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('c','Area','red',0,1,1);
+        INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('w','c','Track',0,1,1);")
+        .execute(repo.pool()).await.unwrap();
+    let task_id = "delivery-source-attempt";
+    sqlx::query(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+         worker_card_id,created_at_ms,updated_at_ms) \
+         VALUES(?1,'w','deliver','codex','Deliver','{}','[]',0,'done','worker',1,1)",
+    )
+    .bind(task_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let lease_dir = tempfile::tempdir().unwrap();
+    let lease_path = lease_dir.path().join("w").join("worker");
+    let mut tx = crate::db::sqlite::begin_immediate_tx(repo.pool())
+        .await
+        .unwrap();
+    crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
+        &mut tx,
+        "worker",
+        "w",
+        "delivery-wiring",
+        &lease_path,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    // The mapping reads the row's path, not the directory, so the tempdir may go away here.
+    drop(lease_dir);
+    (
+        repo,
+        git_delivery_settled_event(task_id, DeliveryWakeReason::UngatedCandidate),
+    )
+}
+
 /// Census of every `Event` kind tag, derived from serde's unknown-variant diagnostic so it
 /// cannot drift from the enum.
 fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
@@ -1739,6 +1821,7 @@ struct PlannerPushWiringTable {
     rows: Vec<PlannerPushWiringRow>,
     publication_repo: crate::db::sqlite::SqlxRepo,
     candidate_repo: crate::db::sqlite::SqlxRepo,
+    delivery_repo: crate::db::sqlite::SqlxRepo,
 }
 
 async fn planner_push_wiring_table() -> PlannerPushWiringTable {
@@ -1974,6 +2057,8 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 card_id: worker.clone(),
                 commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
                 branch: "neige/w/card".into(),
+                delivery_id: None,
+                base_is_ancestor: None,
             },
             ActorId::KernelDispatcher,
             false,
@@ -2462,12 +2547,33 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
     ] {
         rows.push(row(candidate_event.clone(), actor, expect_push, true));
     }
+    // #1727 S4: pure arm — actor ∈ {Kernel, KernelDispatcher} ∧ wake_reason != deferred_to_gate.
+    // The mapping is row-backed (tasks row + lease), so every row expects an observation.
+    let (delivery_repo, delivery_event) = planner_push_delivery_fixture().await;
+    let Event::TaskGitDeliverySettled { task_id, .. } = &delivery_event else {
+        unreachable!()
+    };
+    for (actor, expect_push) in [
+        (ActorId::Kernel, true),
+        (ActorId::KernelDispatcher, true),
+        (ActorId::User, false),
+        (ActorId::AiPlanner(planner.clone()), false),
+    ] {
+        rows.push(row(delivery_event.clone(), actor, expect_push, true));
+    }
+    rows.push(row(
+        git_delivery_settled_event(task_id, DeliveryWakeReason::DeferredToGate),
+        ActorId::KernelDispatcher,
+        false,
+        true,
+    ));
     PlannerPushWiringTable {
         write,
         track,
         rows,
         publication_repo,
         candidate_repo,
+        delivery_repo,
     }
 }
 
@@ -2481,6 +2587,7 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
         rows,
         publication_repo,
         candidate_repo,
+        delivery_repo,
     } = planner_push_wiring_table().await;
     let mut covered = std::collections::BTreeSet::new();
     for row in &rows {
@@ -2521,6 +2628,16 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
                 .expect("retained candidate resolves");
             assert!(
                 matches!(&resolved,Some(HarnessObservation::SystemContext { text }) if text.contains("failed") && text.contains("candidate authority withdrawn"))
+            );
+            resolved
+        } else if let Event::TaskGitDeliverySettled { task_id, .. } = &row.event {
+            assert!(harness_observation_from_event(&track, &row.event, Some("deliver")).is_none());
+            let resolved = resolve_harness_observation(&delivery_repo, &track, &row.event)
+                .await
+                .expect("tasks row + lease resolve");
+            assert!(
+                matches!(&resolved, Some(HarnessObservation::TaskGitDeliverySettled { key, attempt_id, retained_path: Some(_), .. })
+                    if key == "deliver" && attempt_id == task_id)
             );
             resolved
         } else {
@@ -2585,6 +2702,647 @@ async fn planner_catch_up_kinds_equal_the_push_capable_kinds() {
         "PLANNER_CATCH_UP_KINDS names kinds outside the serde census: {unknown:?}"
     );
     assert_eq!(catch_up, push_capable);
+}
+
+/// #1727 S4 D2: the settlement arm reads the actor and the event's `wake_reason` only — never a
+/// row — so live push and boot replay give the same answer for the same envelope.
+#[test]
+fn settlement_push_arm_is_pure_on_wake_reason() {
+    let planner = CardId::from("planner");
+    let worker = CardId::from("worker");
+    let actors = [
+        (ActorId::Kernel, true),
+        (ActorId::KernelDispatcher, true),
+        (ActorId::AiPlanner(planner.clone()), false),
+        (ActorId::AiCodex(worker.clone()), false),
+        (ActorId::AiClaude(worker.clone()), false),
+        (ActorId::User, false),
+    ];
+    let reasons = [
+        (DeliveryWakeReason::Failed, true),
+        (DeliveryWakeReason::UngatedCandidate, true),
+        (DeliveryWakeReason::GateAlreadyTerminal, true),
+        (DeliveryWakeReason::DeferredToGate, false),
+    ];
+    let mut role_lookups = 0usize;
+    for (actor, kernel_actor) in &actors {
+        for (reason, wakes) in reasons {
+            let event = git_delivery_settled_event("w:k", reason);
+            let pushed = event_warrants_planner_push_with_role(&event, actor, |_| {
+                role_lookups += 1;
+                Some(CardRole::Planner)
+            });
+            assert_eq!(
+                pushed,
+                *kernel_actor && wakes,
+                "actor {actor} wake_reason {reason:?}: only a kernel actor and a non-deferred \
+                 disposition push"
+            );
+        }
+    }
+    assert_eq!(
+        role_lookups, 0,
+        "the settlement arm consults neither the role cache nor any row"
+    );
+    // The failed shape carries the same arm: `result` is not read.
+    let failed = Event::TaskGitDeliverySettled {
+        task_id: "w:k".into(),
+        idempotency_key: "w:k".into(),
+        track_id: TrackId::from("w"),
+        card_id: worker,
+        delivery_id: "delivery-1".into(),
+        ordinal: 1,
+        result: DeliverySettlement::Failed {
+            code: DeliveryFailureCode::CommitFailed,
+            reason: "index.lock".into(),
+            retry_allowed: true,
+        },
+        wake_reason: DeliveryWakeReason::Failed,
+    };
+    assert!(event_warrants_planner_push_with_role(
+        &failed,
+        &ActorId::KernelDispatcher,
+        |_| None
+    ));
+    assert!(!event_warrants_planner_push_with_role(
+        &failed,
+        &ActorId::AiPlanner(planner),
+        |_| None
+    ));
+}
+
+/// The slice-2 wake sentences: the plan key comes from the tasks row, the retained path from the
+/// lease, and neither sentence names a tool that does not exist yet.
+#[tokio::test]
+async fn settled_event_maps_to_observation_with_turn_text() {
+    let (repo, candidate) = planner_push_delivery_fixture().await;
+    let track = TrackId::from("w");
+    let Event::TaskGitDeliverySettled { task_id, .. } = &candidate else {
+        unreachable!()
+    };
+    let task_id = task_id.clone();
+
+    let observation = resolve_harness_observation(&repo, &track, &candidate)
+        .await
+        .unwrap()
+        .expect("a candidate settlement maps to an observation");
+    assert!(observation.is_hard_fire());
+    let text = observation.to_turn_text();
+    assert!(
+        text.starts_with(&format!(
+            "Task deliver delivered candidate delivery-1 ({}, base {}). Accept with calm.task.verdict;",
+            "c".repeat(40),
+            "b".repeat(40)
+        )),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(&format!("read the worker output at runs/{task_id}.md.")),
+        "{text}"
+    );
+    assert!(!text.contains("no change"), "{text}");
+    assert!(
+        !text.contains("calm.task.delivery") && !text.contains("base:{"),
+        "{text}"
+    );
+
+    // `commit_sha == base_sha` renders the no-change marker.
+    let unchanged = Event::TaskGitDeliverySettled {
+        task_id: task_id.clone(),
+        idempotency_key: task_id.clone(),
+        track_id: track.clone(),
+        card_id: CardId::from("worker"),
+        delivery_id: "delivery-1".into(),
+        ordinal: 1,
+        result: DeliverySettlement::Candidate {
+            candidate_id: "delivery-1".into(),
+            commit_sha: "b".repeat(40),
+            base_sha: "b".repeat(40),
+            base_is_ancestor: true,
+        },
+        wake_reason: DeliveryWakeReason::GateAlreadyTerminal,
+    };
+    let text = resolve_harness_observation(&repo, &track, &unchanged)
+        .await
+        .unwrap()
+        .unwrap()
+        .to_turn_text();
+    assert!(
+        text.contains(&format!(
+            "({}, base {}, no change).",
+            "b".repeat(40),
+            "b".repeat(40)
+        )),
+        "{text}"
+    );
+
+    let failed = Event::TaskGitDeliverySettled {
+        task_id: task_id.clone(),
+        idempotency_key: task_id.clone(),
+        track_id: track.clone(),
+        card_id: CardId::from("worker"),
+        delivery_id: "delivery-2".into(),
+        ordinal: 2,
+        result: DeliverySettlement::Failed {
+            code: DeliveryFailureCode::CommitFailed,
+            reason: "git commit exited 128: index.lock exists".into(),
+            retry_allowed: true,
+        },
+        wake_reason: DeliveryWakeReason::Failed,
+    };
+    let observation = resolve_harness_observation(&repo, &track, &failed)
+        .await
+        .unwrap()
+        .expect("a failed settlement maps to an observation");
+    let HarnessObservation::TaskGitDeliverySettled {
+        retained_path: Some(retained_path),
+        ..
+    } = &observation
+    else {
+        panic!("the lease path is the retained path: {observation:?}");
+    };
+    assert!(retained_path.ends_with("/w/worker"), "{retained_path}");
+    let text = observation.to_turn_text();
+    assert!(
+        text.starts_with(
+            "Task deliver Git delivery FAILED (commit_failed): git commit exited 128: index.lock exists. "
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("Files retained at {retained_path}; ")),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(&format!("read the worker output at runs/{task_id}.md.")),
+        "{text}"
+    );
+    assert!(!text.contains("calm.task.delivery"), "{text}");
+
+    // D2: `workspace_missing` is the kernel's proof the lease directory is absent. The lease row
+    // still names a path here (the mapping copies it), and the sentence must not.
+    let missing = Event::TaskGitDeliverySettled {
+        task_id: task_id.clone(),
+        idempotency_key: task_id.clone(),
+        track_id: track.clone(),
+        card_id: CardId::from("worker"),
+        delivery_id: "delivery-3".into(),
+        ordinal: 3,
+        result: DeliverySettlement::Failed {
+            code: DeliveryFailureCode::WorkspaceMissing,
+            reason: "lease directory absent at settlement".into(),
+            retry_allowed: false,
+        },
+        wake_reason: DeliveryWakeReason::Failed,
+    };
+    let observation = resolve_harness_observation(&repo, &track, &missing)
+        .await
+        .unwrap()
+        .expect("a workspace_missing settlement maps to an observation");
+    assert!(
+        matches!(
+            &observation,
+            HarnessObservation::TaskGitDeliverySettled {
+                retained_path: Some(_),
+                ..
+            }
+        ),
+        "the lease row still carries the path: {observation:?}"
+    );
+    let text = observation.to_turn_text();
+    assert!(
+        text.starts_with(
+            "Task deliver Git delivery FAILED (workspace_missing): lease directory absent at settlement. "
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("Files retained at"), "{text}");
+    assert!(
+        text.ends_with(&format!(
+            "absent at settlement. Read the worker output at runs/{task_id}.md."
+        )),
+        "{text}"
+    );
+
+    // Once the worktree is removed the sentence drops the retained clause.
+    let removed = crate::event::EventScope::Card {
+        card: CardId::from("worker"),
+        track: track.clone(),
+        area: AreaId::from("c"),
+    };
+    crate::db::write_in_tx_typed(&repo, move |tx| {
+        Box::pin(async move {
+            crate::db::sqlite::append_decision_event_in_tx(
+                tx,
+                &ActorId::KernelDispatcher,
+                &removed,
+                None,
+                &Event::WorktreeRemoved {
+                    track_id: TrackId::from("w"),
+                    card_id: CardId::from("worker"),
+                    path: "/gone".into(),
+                },
+            )
+            .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    let text = resolve_harness_observation(&repo, &track, &failed)
+        .await
+        .unwrap()
+        .unwrap()
+        .to_turn_text();
+    assert!(!text.contains("Files retained at"), "{text}");
+    assert!(
+        text.contains("index.lock exists. Read the worker output at runs/"),
+        "{text}"
+    );
+
+    // No tasks row → no observation (the same outcome as the other row-backed settlements).
+    let orphan = git_delivery_settled_event("no-such-attempt", DeliveryWakeReason::Failed);
+    assert!(
+        resolve_harness_observation(&repo, &track, &orphan)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // A foreign envelope track → no observation.
+    assert!(
+        resolve_harness_observation(&repo, &TrackId::from("foreign"), &candidate)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// The row-level guard in `git_delivery_settled::observation`: the envelope track and the event's
+/// `track_id` are both `w` (so the envelope guard passes) and the tasks row exists (so the missing
+/// row arm does not fire), but that row lives on track `x` → no observation.
+#[tokio::test]
+async fn settled_event_for_a_row_on_another_track_maps_to_nothing() {
+    let (repo, _) = planner_push_delivery_fixture().await;
+    sqlx::raw_sql(
+        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('x','c','Other',0,1,1);
+         INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+          worker_card_id,created_at_ms,updated_at_ms) \
+          VALUES('row-on-x','x','other','codex','Deliver','{}','[]',0,'done','worker',1,1);",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let track = TrackId::from("w");
+    let event = git_delivery_settled_event("row-on-x", DeliveryWakeReason::Failed);
+    let Event::TaskGitDeliverySettled {
+        track_id: event_track,
+        ..
+    } = &event
+    else {
+        unreachable!()
+    };
+    assert_eq!(event_track, &track, "the envelope guard passes");
+    let row = crate::db::ServerRepoReadExt::task_get(&repo, "row-on-x")
+        .await
+        .unwrap()
+        .expect("the tasks row exists");
+    assert_eq!(row.track_id, "x");
+
+    assert_eq!(
+        git_delivery_settled::observation(&repo, &track, &event)
+            .await
+            .unwrap(),
+        None,
+        "a tasks row on another track maps to nothing"
+    );
+}
+
+/// #1727 S4 D2 on both delivery paths: a Kernel-actor `deferred_to_gate` settlement for a
+/// `verifying` row is silent through the live `handle_envelope` arm, and stays silent on boot
+/// catch-up after the gate flipped the row to `done`; an `ungated_candidate` settlement wakes the
+/// Planner exactly once live and exactly once on replay.
+#[tokio::test]
+async fn deferred_settlement_is_silent_live_and_on_replay() {
+    use crate::db::prelude::*;
+    use crate::db::sqlite::{
+        SqlxRepo, append_decision_event_in_tx, card_create_with_id_tx, session_start_runtime_tx,
+    };
+    use crate::harness::queue::{MutationRefused, QueueEntryId, QueueMutation};
+    use crate::harness::{
+        HarnessConfig, HarnessPhaseTag, HarnessSnapshot, PlannerHarness, PlannerHarnessParams,
+    };
+    use crate::model::{NewArea, NewCard, NewTrack, new_id, now_ms};
+    use crate::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    use crate::track_area_cache::TrackAreaCache;
+
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let role_cache = CardRoleCache::new();
+    let track_area_cache = TrackAreaCache::new();
+    let area = repo
+        .area_create(NewArea {
+            name: "delivery wake".into(),
+            color: "#222222".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let track = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: area.id.clone(),
+            title: "delivery wake".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: crate::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    track_area_cache.insert(track.id.clone(), area.id.clone());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let planner_card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        NewCard {
+            track_id: track.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: serde_json::json!({"schemaVersion": 1, "planner_harness": true}),
+        },
+        CardRole::Planner,
+        false,
+        &role_cache,
+    )
+    .await
+    .unwrap();
+    let worker_card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        NewCard {
+            track_id: track.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: serde_json::json!({"schemaVersion": 1}),
+        },
+        CardRole::Worker,
+        true,
+        &role_cache,
+    )
+    .await
+    .unwrap();
+    // The gated row is still `verifying` when its candidate settles (the gate verdict is the
+    // wake); the ungated row is already `done` (nothing else will wake the Planner for it).
+    let mk_task = |key: &str, gate_json: Option<String>, status: crate::model::TaskStatus| {
+        crate::model::Task {
+            id: format!("{}:{key}", track.id),
+            track_id: track.id.to_string(),
+            key: key.into(),
+            kind: crate::model::TaskKind::Codex,
+            goal: "g".into(),
+            context_json: "null".into(),
+            acceptance_criteria: None,
+            cwd: None,
+            depends_on_json: "[]".into(),
+            priority: 0,
+            gate_json,
+            status,
+            status_detail: None,
+            worker_card_id: Some(worker_card.id.to_string()),
+            gate_result_json: None,
+            gate_attempt: 1,
+            gate_pid: None,
+            gate_pid_starttime: None,
+            gate_pid_boot_id: None,
+            running_deadline_ms: None,
+            context_stale_at_ms: None,
+            declared_by: calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR.into(),
+            spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            finished_at_ms: None,
+        }
+    };
+    let deferred = mk_task(
+        "gated",
+        Some("{\"steps\":[{\"name\":\"t\",\"cmd\":\"true\"}]}".into()),
+        crate::model::TaskStatus::Verifying,
+    );
+    let ungated = mk_task("ungated", None, crate::model::TaskStatus::Done);
+    crate::test_support::insert_task_tx(&mut tx, &deferred)
+        .await
+        .unwrap();
+    crate::test_support::insert_task_tx(&mut tx, &ungated)
+        .await
+        .unwrap();
+    let worker_session_id = new_id();
+    let thread_id = "thread-delivery-wake".to_string();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: worker_session_id.clone(),
+            card_id: planner_card.id.to_string(),
+            kind: WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // A live Planner harness in the registry the dispatcher consults; the forced `TurnRunning`
+    // phase keeps every delivered observation queued instead of issuing a turn on the stub.
+    let events = EventBus::new();
+    let registry = HarnessRegistry::new();
+    let handle = PlannerHarness::run(PlannerHarnessParams {
+        worker_session_id: worker_session_id.clone(),
+        track_id: track.id.clone(),
+        card_id: planner_card.id.clone(),
+        thread_id: Some(thread_id),
+        repo: repo.clone(),
+        events: events.clone(),
+        card_role_cache: role_cache.clone(),
+        track_area_cache: track_area_cache.clone(),
+        daemon: SharedCodexAppServer::new_stub(repo.clone()),
+        config: HarnessConfig::default(),
+        snapshot,
+    });
+    handle
+        .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
+        .await
+        .unwrap();
+    let reservation = registry
+        .try_reserve(worker_session_id.clone())
+        .expect("vacant slot");
+    assert!(reservation.install(handle.clone()));
+
+    // The production `Inner` behind `handle_envelope`, minus the bus listener and the periodic
+    // loops. The scheduler's operation runtime is dropped, so its poke drives no gate.
+    let write = WriteContext::new(role_cache, track_area_cache);
+    let semaphore = Arc::new(Semaphore::new(1));
+    let scheduler = Scheduler::new_with_task_budget_default(
+        repo.clone(),
+        events.clone(),
+        write.clone(),
+        std::sync::Weak::new(),
+        Arc::clone(&semaphore),
+        crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+    );
+    let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
+        repo.clone(),
+        events,
+        write.clone(),
+        scheduler.context_metrics(),
+    ));
+    let inner = Arc::new(Inner {
+        repo: repo.clone(),
+        write,
+        harness: registry,
+        scheduler,
+        context_monitor,
+        push_cursor: EventCursorCache::new(),
+        push_locks: DashMap::new(),
+        failure_push_hook: std::sync::Mutex::new(None),
+        semaphore,
+    });
+
+    let scope = track_scope(&track.id, &area.id);
+    let persist = |event: Event| {
+        let repo = repo.clone();
+        let scope = scope.clone();
+        async move {
+            let mut tx = repo.pool().begin().await.unwrap();
+            let id = append_decision_event_in_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            BroadcastEnvelope {
+                id,
+                event_version: 1,
+                actor: ActorId::Kernel,
+                scope,
+                event,
+            }
+        }
+    };
+    let settled_observations = |handle: PlannerHarness| async move {
+        // A refused no-op queue command acknowledges every prior delivery; `snapshot()` alone
+        // does not drain the asynchronous observation ingress.
+        assert_eq!(
+            handle
+                .mutate_pending_entry(
+                    QueueMutation::Delete {
+                        entry_id: QueueEntryId::from_wire("absent-observation-barrier".into()),
+                        if_entry_rev: 1,
+                    },
+                    ActorId::User,
+                )
+                .await
+                .unwrap(),
+            Err(MutationRefused::NotFound)
+        );
+        handle
+            .snapshot()
+            .await
+            .pending_observations()
+            .into_iter()
+            .filter(|observation| {
+                matches!(
+                    observation,
+                    HarnessObservation::TaskGitDeliverySettled { .. }
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // Live: the deferred settlement is silent, and the cursor does not move.
+    let deferred_envelope = persist(git_delivery_settled_event_on(
+        &track.id,
+        &deferred.id,
+        DeliveryWakeReason::DeferredToGate,
+    ))
+    .await;
+    let deferred_event_id = deferred_envelope.id;
+    Arc::clone(&inner).handle_envelope(deferred_envelope).await;
+    assert_eq!(
+        settled_observations(handle.clone()).await,
+        Vec::<HarnessObservation>::new(),
+        "a deferred_to_gate settlement must not wake the Planner live"
+    );
+    assert_eq!(inner.push_cursor.get(&planner_card.id), 0);
+
+    // Live sibling: the ungated candidate wakes exactly once (its settlement prefix replays the
+    // deferred row's event again and still yields nothing).
+    let ungated_envelope = persist(git_delivery_settled_event_on(
+        &track.id,
+        &ungated.id,
+        DeliveryWakeReason::UngatedCandidate,
+    ))
+    .await;
+    let ungated_event_id = ungated_envelope.id;
+    assert!(ungated_event_id > deferred_event_id);
+    Arc::clone(&inner).handle_envelope(ungated_envelope).await;
+    let live = settled_observations(handle.clone()).await;
+    assert!(
+        matches!(
+            live.as_slice(),
+            [HarnessObservation::TaskGitDeliverySettled { attempt_id, .. }] if attempt_id == &ungated.id
+        ),
+        "exactly one live wake, for the ungated row: {live:?}"
+    );
+    assert_eq!(inner.push_cursor.get(&planner_card.id), ungated_event_id);
+
+    // Boot replay from before both events, after the gate flipped the deferred row to `done`:
+    // the event's wake_reason, not the row, decides — still exactly one, for the ungated row.
+    sqlx::query("UPDATE tasks SET status = 'done' WHERE id = ?1")
+        .bind(&deferred.id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let replayed = crate::harness::catch_up::observations_since(
+        repo.as_ref(),
+        &track.id,
+        deferred_event_id - 1,
+        None,
+    )
+    .await
+    .unwrap();
+    let replayed_settlements = replayed
+        .iter()
+        .filter(|(_, observation)| {
+            matches!(
+                observation,
+                HarnessObservation::TaskGitDeliverySettled { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(
+            replayed_settlements.as_slice(),
+            [(id, HarnessObservation::TaskGitDeliverySettled { attempt_id, .. })]
+                if *id == ungated_event_id && attempt_id == &ungated.id
+        ),
+        "exactly one replayed wake, for the ungated row: {replayed:?}"
+    );
+
+    handle.shutdown().await.unwrap();
 }
 
 /// Same-track acquisitions must serialize (a concurrent dedup-check-and-deliver would lose

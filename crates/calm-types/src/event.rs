@@ -1,5 +1,6 @@
 //! Persisted event shapes, scopes, metadata, and subscription topics.
 
+use crate::git_candidate::{DeliverySettlement, DeliveryWakeReason};
 use crate::harness::HarnessPhaseTag;
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{Area, Card, Overlay, Track, TrackLifecycle};
@@ -222,7 +223,7 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 20;
+pub const SYNC_EVENT_VERSION: u32 = 21;
 
 /// What happened to one entry in the harness pending queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -552,6 +553,20 @@ pub enum Event {
         task_id: String,
         operation_id: String,
     },
+    /// One Git delivery settled (#1727 S4): the candidate the script pinned or why none was minted,
+    /// plus the wake disposition the settlement transaction decided once from the tasks row.
+    /// `idempotency_key == task_id`; both are carried so the pairing query has `task.completed`'s shape.
+    #[serde(rename = "task.git_delivery_settled")]
+    TaskGitDeliverySettled {
+        task_id: String,
+        idempotency_key: String,
+        track_id: TrackId,
+        card_id: CardId,
+        delivery_id: String,
+        ordinal: u32,
+        result: DeliverySettlement,
+        wake_reason: DeliveryWakeReason,
+    },
     /// Persisted after confirmed stop with a failed execution or a terminal Done Reviewer Operation.
     #[serde(rename = "task.execution_settled")]
     TaskExecutionSettled {
@@ -734,6 +749,14 @@ pub enum Event {
         card_id: CardId,
         commit_sha: String,
         branch: String,
+        /// #1727 S4: set by the kernel delivery path only; absent on legacy auto-commits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        delivery_id: Option<String>,
+        /// #1727 S4: the delivery script's ancestry observation of `commit_sha` against the lease base.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        base_is_ancestor: Option<bool>,
     },
     #[serde(rename = "worktree.removed")]
     WorktreeRemoved {
@@ -991,6 +1014,7 @@ impl Event {
             Event::TaskDispatched { .. }
             | Event::TaskExecutionSettled { .. }
             | Event::TaskCandidateVerificationSettled { .. }
+            | Event::TaskGitDeliverySettled { .. }
             | Event::TaskFilePublicationSettled { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1094,6 +1118,7 @@ impl Event {
             Event::TaskExecutionSettled { .. } => "task.execution_settled",
             Event::TaskFilePublicationSettled { .. } => "task.file_publication_settled",
             Event::TaskCandidateVerificationSettled { .. } => "task.candidate_verification_settled",
+            Event::TaskGitDeliverySettled { .. } => "task.git_delivery_settled",
             Event::TaskContextFrozen { .. } => "task.context_frozen",
             Event::TaskContextAdvanced { .. } => "task.context_advanced",
             Event::WorkspaceLeased { .. } => "workspace.leased",
@@ -1247,6 +1272,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskDispatched { .. }
         | Event::TaskExecutionSettled { .. }
         | Event::TaskCandidateVerificationSettled { .. }
+        | Event::TaskGitDeliverySettled { .. }
         | Event::TaskFilePublicationSettled { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }
@@ -1646,6 +1672,8 @@ mod scope_tests {
             card_id: CardId::from("card-1"),
             commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
             branch: "neige/track-1/card-1".into(),
+            delivery_id: None,
+            base_is_ancestor: None,
         };
         assert_eq!(worktree_committed.kind_tag(), "worktree.committed");
 
@@ -2693,6 +2721,8 @@ mod scope_tests {
                 card_id: CardId::from("card-worktree"),
                 commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
                 branch: "neige/track-1/card-worktree".into(),
+                delivery_id: None,
+                base_is_ancestor: None,
             },
             Event::WorktreeRemoved {
                 track_id: TrackId::from("track-1"),
