@@ -444,7 +444,11 @@ pub fn materialize_cli_tools(plugin_id: &str, block: &CliQueryBlock) -> Vec<Expo
             // passthrough, which is exactly what `cli-query` must never get.
             kind: None,
             input_schema: Some(tool.input_schema.clone()),
-            annotations: None,
+            // cli-query is read-only by contract (#1164 §2.3). With `annotations: None`
+            // Codex under `approval_policy: never` refused every call (#1744); the general
+            // waiver rule lives at `mcp_server::registry::role_gated_write_annotations`, and
+            // `report_series::resolver` reads the same `readOnlyHint` to admit a series source.
+            annotations: Some(crate::mcp_server::registry::read_only_annotations()),
         });
     }
     out
@@ -557,6 +561,39 @@ mod tests {
             "the declared schema must be carried: {:?}",
             tools[0].input_schema
         );
+    }
+
+    /// #1744: `materialize_cli_tools` built every cli-query tool with
+    /// `annotations: None`, and Codex under `approval_policy: never` refused
+    /// every call to a tool without annotations, so no agent could call any
+    /// cli-query tool. The kind is read-only by contract (#1164 §2.3), so every
+    /// materialized tool carries `readOnlyHint: true`. The general waiver rule
+    /// lives at `mcp_server::registry::role_gated_write_annotations`, and
+    /// `report_series::resolver` reads the same hint to admit a plugin tool as
+    /// a series source.
+    #[test]
+    fn cli_query_tools_publish_read_only_hint_so_codex_never_asks_for_approval() {
+        let block: crate::plugin_host::manifest::CliQueryBlock = serde_json::from_value(json!({
+            "command": "/usr/bin/longbridge",
+            "tools": [
+                { "name": "quote", "description": "Get a quote",
+                  "input_schema": { "type": "object" }, "args": ["quote", "{{symbol}}"] },
+                { "name": "candles", "description": "Get candles",
+                  "input_schema": { "type": "object" }, "args": ["candles"] },
+            ],
+        }))
+        .unwrap();
+        let tools = materialize_cli_tools("c", &block);
+        assert_eq!(tools.len(), 2, "{tools:?}");
+        for tool in &tools {
+            assert_eq!(
+                tool.annotations,
+                Some(json!({ "readOnlyHint": true })),
+                "cli-query tool `{}` must publish readOnlyHint: true; without it \
+                 (annotations: None) Codex under approval_policy: never refuses the call (#1744)",
+                tool.name
+            );
+        }
     }
 
     #[test]
