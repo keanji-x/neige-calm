@@ -42,7 +42,7 @@
 
 pub mod sql;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -230,6 +230,10 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
     let mut working = false;
     let mut items: Vec<ActivityItem> = Vec::new();
     let mut cards: BTreeMap<String, CardState> = BTreeMap::new();
+    // The cards with `working` evidence, kept apart from the max-collapsed
+    // `cards` slots: a `failed` / `input` verdict out-ranks `working` in the
+    // slot, and rule 1 needs the working evidence back once those go.
+    let mut working_cards: BTreeSet<String> = BTreeSet::new();
     let mut e3: Option<i64> = None;
 
     fn raise(cards: &mut BTreeMap<String, CardState>, card_id: &str, state: CardState) {
@@ -237,6 +241,14 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
         if state > *slot {
             *slot = state;
         }
+    }
+    fn raise_working(
+        cards: &mut BTreeMap<String, CardState>,
+        working_cards: &mut BTreeSet<String>,
+        card_id: &str,
+    ) {
+        working_cards.insert(card_id.to_string());
+        raise(cards, card_id, CardState::Working);
     }
 
     // #1743 §4.1 rule 2 — failure aging: a `task` / `session` failure
@@ -254,7 +266,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             "dispatched" | "running" if !is_child_track => {
                 working = true;
                 if let Some(wc) = &t.worker_card_id {
-                    raise(&mut cards, wc, CardState::Working);
+                    raise_working(&mut cards, &mut working_cards, wc);
                 }
             }
             // A sub-track row in flight: the worker is another track, whose
@@ -264,7 +276,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             "verifying" => {
                 working = true;
                 if let Some(wc) = &t.worker_card_id {
-                    raise(&mut cards, wc, CardState::Working);
+                    raise_working(&mut cards, &mut working_cards, wc);
                 }
             }
             "failed" => {
@@ -325,7 +337,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             // (i) harness codex — planner + assistant.
             if ws.state == "turn_pending" && rows.live_harness_sessions.contains(&ws.id) {
                 working = true;
-                raise(&mut cards, &ws.card_id, CardState::Working);
+                raise_working(&mut cards, &mut working_cards, &ws.card_id);
             }
             if session_failed {
                 failed_session(&mut items, &mut cards, ws.updated_at_ms);
@@ -348,7 +360,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                     && thread_status == Some("active")
                 {
                     working = true;
-                    raise(&mut cards, &ws.card_id, CardState::Working);
+                    raise_working(&mut cards, &mut working_cards, &ws.card_id);
                 }
                 if live
                     && matches!(
@@ -373,7 +385,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                 let fsm_state = fsm.map(|r| r.state.as_str());
                 if !ws.task_bound && live && fsm_state == Some("Working") {
                     working = true;
-                    raise(&mut cards, &ws.card_id, CardState::Working);
+                    raise_working(&mut cards, &mut working_cards, &ws.card_id);
                 }
                 if let Some(row) = fsm.filter(|_| live) {
                     let card_item = |kind: ItemKind| ActivityItem {
@@ -424,10 +436,16 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
     // `none`) and with them the per-card `input` / `failed` verdicts, which
     // are the items' per-card form. `working` is NOT filtered, nor are the
     // `working` verdicts: a task still running on a done track is not
-    // hidden — S2 (the terminal sweeper) is what ends it.
+    // hidden — S2 (the terminal sweeper) is what ends it. `cards` is
+    // rebuilt from the working evidence, not filtered by slot: a card whose
+    // `failed` / `input` verdict had out-ranked its `working` one keeps the
+    // working verdict (review r1, A MINOR-1 / codex P2).
     if rows.track.lifecycle == "done" || rows.track.archived_at.is_some() {
         items.clear();
-        cards.retain(|_, state| *state == CardState::Working);
+        cards = working_cards
+            .iter()
+            .map(|card_id| (card_id.clone(), CardState::Working))
+            .collect();
     }
 
     // Deterministic order so the stored payload compares byte-stable:

@@ -1855,6 +1855,10 @@ async fn reopened_track_failed_attempt_is_red_again() {
 /// Rule 1 filters `items` / `attention` / the `input`+`failed` card
 /// verdicts ONLY: a task still `running` on a done track keeps `working`
 /// and its `cards[] = working` entry (S2 is what ends it, not the fold).
+/// The same-card variant (review r1, A MINOR-1 / codex P2): a card whose
+/// `failed` verdict out-ranked its `working` one (`build` failed and `test`
+/// running on the SAME worker) keeps the working verdict too — the filter
+/// removes the attention verdict, not the card.
 #[tokio::test]
 async fn done_track_running_task_is_still_working() {
     let f = fx().await;
@@ -1862,9 +1866,11 @@ async fn done_track_running_task_is_still_working() {
     f.set_lifecycle(&t, TrackLifecycle::Working).await;
     let failed_worker = f.card(&t, "card-a", "codex", CardRole::Worker).await;
     let running_worker = f.card(&t, "card-b", "codex", CardRole::Worker).await;
+    let both_worker = f.card(&t, "card-x", "codex", CardRole::Worker).await;
     for (card, ws, th) in [
         (&failed_worker, "ws-a", "th-a"),
         (&running_worker, "ws-b", "th-b"),
+        (&both_worker, "ws-x", "th-x"),
     ] {
         f.session(
             card,
@@ -1882,6 +1888,8 @@ async fn done_track_running_task_is_still_working() {
         &[
             ("build", "codex", TASK_IN_TRACK_ROUTE, None),
             ("test", "codex", TASK_IN_TRACK_ROUTE, None),
+            ("lint", "codex", TASK_IN_TRACK_ROUTE, None),
+            ("pack", "codex", TASK_IN_TRACK_ROUTE, None),
         ],
     )
     .await;
@@ -1890,6 +1898,12 @@ async fn done_track_running_task_is_still_working() {
     f.fail(&t, "build", &failed_worker, 4_000).await;
     f.claim(&t, "test", 5_000).await;
     f.mark_running(&t, "test", &running_worker, 6_000).await;
+    // The same-card pair: `lint` failed (X, 4000) and `pack` running (X, 6000).
+    f.claim(&t, "lint", 2_000).await;
+    f.mark_running(&t, "lint", &both_worker, 3_000).await;
+    f.fail(&t, "lint", &both_worker, 4_000).await;
+    f.claim(&t, "pack", 5_000).await;
+    f.mark_running(&t, "pack", &both_worker, 6_000).await;
     let before = f.recompute(&t).await;
     assert!(before.working, "{before:?}");
     assert_eq!(before.attention, Attention::Failed);
@@ -1897,6 +1911,11 @@ async fn done_track_running_task_is_still_working() {
     assert_eq!(
         card_state(&before, &running_worker),
         Some(CardState::Working)
+    );
+    assert_eq!(
+        card_state(&before, &both_worker),
+        Some(CardState::Failed),
+        "failed > working while the failure counts: {before:?}"
     );
 
     f.set_lifecycle(&t, TrackLifecycle::Done).await;
@@ -1909,11 +1928,66 @@ async fn done_track_running_task_is_still_working() {
     assert!(p.items.is_empty());
     assert_eq!(
         p.cards,
+        vec![
+            CardActivity {
+                card_id: running_worker.clone(),
+                state: CardState::Working
+            },
+            CardActivity {
+                card_id: both_worker.clone(),
+                state: CardState::Working
+            },
+        ],
+        "every card with working evidence keeps it, the failed-only card goes: {p:?}"
+    );
+}
+
+/// Rule 1, the `input` form of the same-card corner (codex P2's
+/// construction): a done track, a task running on X, and X's codex session
+/// `waitingOnApproval` — the input verdict out-ranked the working one; the
+/// filter drops the input, `cards == [X = working]`, `attention = none`.
+#[tokio::test]
+async fn done_track_input_on_a_running_worker_is_still_working() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Working).await;
+    let worker = f.card(&t, "card-x", "codex", CardRole::Worker).await;
+    f.session(
+        &worker,
+        "ws-x",
+        WorkerSessionKind::CodexCard,
+        WorkerSessionState::Running,
+        Some("th-x"),
+        None,
+        1_000,
+    )
+    .await;
+    f.plan_tasks(&t, &[("build", "codex", TASK_IN_TRACK_ROUTE, None)])
+        .await;
+    f.claim(&t, "build", 2_000).await;
+    f.mark_running(&t, "build", &worker, 3_000).await;
+    f.stamp("th-x", 4_000, "waitingOnApproval", None).await;
+    let before = f.recompute(&t).await;
+    assert!(before.working, "{before:?}");
+    assert_eq!(before.attention, Attention::Input);
+    assert_eq!(
+        card_state(&before, &worker),
+        Some(CardState::Input),
+        "input > working on a live track: {before:?}"
+    );
+
+    f.set_lifecycle(&t, TrackLifecycle::Done).await;
+    let p = f.recompute(&t).await;
+    assert!(p.working, "{p:?}");
+    assert_eq!(p.attention, Attention::None);
+    assert!(p.items.is_empty());
+    assert_eq!(
+        p.cards,
         vec![CardActivity {
-            card_id: running_worker.clone(),
+            card_id: worker.clone(),
             state: CardState::Working
         }],
-        "only the working verdict survives the filter: {p:?}"
+        "the working evidence outlives the filtered input verdict: {p:?}"
     );
 }
 
