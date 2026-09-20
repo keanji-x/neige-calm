@@ -1,5 +1,5 @@
-//! #1727 S4 slice 1 — the base a workspace lease's worktree starts from, and
-//! the check that the provisioned worktree really is that base at that path.
+//! The base a workspace lease's worktree starts from, and the check that the
+//! provisioned worktree really is that base at that path.
 //!
 //! A lease row used to say only *where* a worker's worktree is; the worktree
 //! itself was created with `git worktree add -b <branch> <path>` — no
@@ -162,7 +162,7 @@ impl LeaseBase {
 /// `Err` naming it: nothing downstream may see a lossy rewrite (the row would
 /// then name a path that does not exist) or a `json!` panic. Applied to every
 /// path a reader hands the prepare tx: the canonical parent, the common dir,
-/// and the toplevel (`repo_root`, review 5 — a UTF-8 track cwd can be a
+/// and the toplevel (`repo_root` — a UTF-8 track cwd can be a
 /// symlink into a directory that is not, and `--show-toplevel` prints the
 /// physical path, so `repo_root` is UTF-8 only if the toplevel reader says so).
 pub(super) fn utf8_path<'a>(path: &'a Path, what: &str) -> Result<&'a str> {
@@ -284,7 +284,7 @@ pub(crate) fn registration_path(path: &Path) -> PathBuf {
 /// is a record that does not match, not a reason to fail every lease of the
 /// repository.
 ///
-/// A realpath match alone is not ownership (review 4, B4-M2): lease A's
+/// A realpath match alone is not ownership: lease A's
 /// worktree moved to lease B's path and linked back from A's reads, under
 /// the realpath match, as a registration at B's path — with B's base as its
 /// HEAD and B's `canonical_path` as its realpath, so both post-add checks
@@ -567,7 +567,7 @@ impl WorktreeBase {
     }
 }
 
-/// Identity before any destructive step (review 3, B3-M1). A lease names its
+/// Identity before any destructive step. A lease names its
 /// worktree twice: the lexical path the row stores and the realpath that
 /// path resolved to when the row was written (`canonical_path`). Between the
 /// two moments the path's parent — `.claude/worktrees` may be a symlink —
@@ -614,7 +614,7 @@ pub(crate) fn verify_lease_path_identity_before_provision(
     Ok(())
 }
 
-/// The sweep half of the identity rule (review 4, B4-M1). A track teardown
+/// The sweep half of the identity rule. A track teardown
 /// enumerates `<repo_root>/.claude/worktrees/<track>` and removes every
 /// lease-shaped entry, including entries no row names — those have no
 /// per-entry identity to check, so the check the removal half makes per row
@@ -713,8 +713,8 @@ pub(crate) fn verify_lease_path_identity_before_removal(
 /// The check every registration state of provisioning ends in: the worktree's
 /// HEAD is `base_sha`, its realpath is `canonical_path`, and its HEAD is the
 /// lease's slice branch (`symbolic-ref HEAD`; a worktree someone checked out
-/// onto another branch, or detached, at the base commit is not the lease's —
-/// review 4, B4-M2). Any mismatch is an `Internal` error naming expected and
+/// onto another branch, or detached, at the base commit is not the
+/// lease's). Any mismatch is an `Internal` error naming expected and
 /// found, which fails the spawn (the op ends `spawn-failed`, the task
 /// `failed`); nothing is repaired here.
 pub(crate) fn verify_worktree_base(

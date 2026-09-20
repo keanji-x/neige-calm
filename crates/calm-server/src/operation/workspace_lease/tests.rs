@@ -623,7 +623,7 @@ async fn track_release_sweeps_worktrees_plain_dirs_and_branches_post_commit() {
         "track teardown sweeps branch-only slice branches"
     );
     assert_eq!(event_kind_count(&repo, "worktree.removed").await, 2);
-    // Review 5 (A5-m3): the second sweep runs with the track root gone (the
+    // The second sweep runs with the track root gone (the
     // first sweep `remove_dir`ed it once empty; removed by hand otherwise) —
     // the `NotFound` arm of the root identity check, which must not read as
     // a mismatch: a branch minted after the first sweep is still swept, where
@@ -831,8 +831,8 @@ fn git_stdout_bytes<const N: usize>(repo: &Path, args: [&str; N]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// #1727 S4 slice 1 — lease base: recorded in the prepare tx, pinned at
-// provisioning, read back by every reader (design §6 A1 / A1b / A2 / A2b, 3n).
+// Lease base: recorded in the prepare tx, pinned at provisioning, read back
+// by every reader (design §6 A1 / A1b / A2 / A2b, 3n).
 // ---------------------------------------------------------------------------
 
 /// A1b — one lease row with `base_sha / canonical_path / git_common_dir` set,
@@ -1138,11 +1138,11 @@ fn existing_registration_with_moved_tip_refuses_launch() {
     assert!(target.path.is_dir(), "refusal repairs nothing");
 }
 
-/// Review 1 F1 — `.claude/worktrees` is a symlink (design `r6/symlinkwt`).
+/// `.claude/worktrees` is a symlink (design `r6/symlinkwt`).
 /// Git registers the worktree at its realpath; a second provisioning (crash
 /// recovery re-spawn) must find that registration and keep the worker's
 /// uncommitted files, not read it as absent and rebuild the directory.
-/// Review 2 (B2-M1): the realpath may contain a newline — `worktree list
+/// The realpath may contain a newline — `worktree list
 /// --porcelain` then prints it over two lines and a line parser never
 /// matches it; the `-z` listing is parsed by NUL-terminated records.
 #[test]
@@ -1196,7 +1196,7 @@ fn symlinked_parent_second_provision_keeps_existing_worktree() {
     }
 }
 
-/// Review 2 (B2-M2) — the server process inherits `GIT_DIR=<repo>/.git`
+/// The server process inherits `GIT_DIR=<repo>/.git`
 /// (a hook, a CI step, a shell that exported it). Every git the lease module
 /// spawns must scrub it: `git -C <worktree> rev-parse HEAD` would otherwise
 /// answer with the main repository's HEAD and a worktree sitting on a foreign
@@ -1301,7 +1301,7 @@ fn hostile_git_env_does_not_leak_into_lease_git() {
     }
 }
 
-/// Review 1 F2 — a repository whose absolute path contains whitespace: the
+/// A repository whose absolute path contains whitespace: the
 /// common-dir reader must hand the path through as git printed it (only the
 /// line terminator removed), so prepare resolves and provisioning pins.
 #[test]
@@ -1348,7 +1348,7 @@ enum LeafLinkTarget {
     Dangling,
 }
 
-/// Review 2 (B2-M3 / A2-m1) — before the first provisioning the lease leaf is
+/// Before the first provisioning the lease leaf is
 /// a symlink and nothing is registered there. Whatever it points at — a
 /// non-empty directory, an empty one (the shape `worktree add` used to follow,
 /// writing `.git` and the checkout into the external directory), a file, or
@@ -1449,9 +1449,9 @@ fn unregistered_leaf_symlink_is_unlinked_never_followed() {
     }
 }
 
-/// Review 2 (A2-m2) — a leaf symlink that resolves to a registered worktree
+/// A leaf symlink that resolves to a registered worktree
 /// of the repository (here: the main checkout) reads as that registration
-/// under the realpath match (`Foreign` since review 4: recorded under the
+/// under the realpath match (`Foreign`: recorded under the
 /// main checkout's path, not the lease's). It is refused in both arms —
 /// `Pinned` and the pre-slice `LegacyUnpinned` recovery shape, which would
 /// otherwise launch the worker inside the main checkout — and nothing is
@@ -1521,7 +1521,7 @@ fn leaf_symlink_to_registered_worktree_refuses_both_arms() {
     }
 }
 
-/// Review 2 (A2-m1) — `remove_workspace_worktree` called directly on a leaf
+/// `remove_workspace_worktree` called directly on a leaf
 /// symlink unlinks the link and nothing else. Two shapes of the external
 /// directory: unregistered (git's `worktree remove --force <leaf>` would
 /// refuse it as "not a working tree", so the link alone is what there is to
@@ -1534,7 +1534,7 @@ fn leaf_symlink_to_registered_worktree_refuses_both_arms() {
 /// checked out there — reported as the error it is, not repaired by deleting
 /// someone else's directory.
 ///
-/// Since review 3 no production lease-aware entry reaches this path for a
+/// No production lease-aware entry reaches this path for a
 /// link that resolves: the identity check runs first and refuses (the row
 /// stays held, the link stays — `moved_worktree_behind_symlink_refuses_launch`
 /// drives the compensation entry). The unlink is what a legacy row (no base),
@@ -1622,7 +1622,7 @@ fn removal_of_symlink_leaf_unlinks_only() {
     }
 }
 
-/// Review 1 F4, re-pinned under review 2's rule — a provisioned worktree is
+/// A provisioned worktree is
 /// moved away and a symlink left at the lease path. The link resolves to the
 /// registration's realpath (git lists the old path, which is now the link),
 /// so the leaf is a symlink to a registered worktree: refused before any
@@ -1630,7 +1630,7 @@ fn removal_of_symlink_leaf_unlinks_only() {
 /// directory is not touched. The production compensation entry
 /// (`remove_workspace_artifact_for_lease_by_id`) refuses too: the row's
 /// `canonical_path` is not where the link resolves, so the identity check
-/// (review 3) returns `Err` before anything is unlinked — the link and the
+/// returns `Err` before anything is unlinked — the link and the
 /// moved directory stay, the row stays held. Only `remove_workspace_worktree`
 /// called directly (the legacy-row / no-row path) unlinks the leaf, prunes
 /// the registration git kept at the now-missing path and deletes the branch
@@ -1811,7 +1811,7 @@ fn retargeted_parent_symlink_refuses_launch() {
     );
 }
 
-/// Review 3 (B3-M1) — identity before any destructive step. A lease is
+/// Identity before any destructive step. A lease is
 /// frozen under symlinked parent A (its `canonical_path` resolves through
 /// A); before the spawn the parent symlink is retargeted at B, where the
 /// same `<track>/<card>` belongs to someone else: a registered worktree of
@@ -1960,7 +1960,7 @@ async fn retargeted_parent_refuses_before_any_destruction() {
     }
 }
 
-/// Review 4 (B4-M1 / A4-m1) — track deletion under a retargeted parent. A
+/// Track deletion under a retargeted parent. A
 /// lease is frozen and provisioned under symlinked parent A, the track is
 /// released (the sweep captures the rows), then `.claude/worktrees` is
 /// retargeted at B, where the same track directory holds someone else's
@@ -2113,7 +2113,7 @@ async fn retargeted_parent_refuses_track_sweep() {
     assert_eq!(event_kind_count(&db, "worktree.removed").await, 0);
 }
 
-/// Review 4 (B4-M2) — lease A's worktree is moved to lease B's path and A's
+/// Lease A's worktree is moved to lease B's path and A's
 /// path linked to it. Under the realpath match A's registration reads as one
 /// at B's path, with B's base as its HEAD and B's `canonical_path` as its
 /// realpath, so both post-add checks would pass and B would start its
@@ -2216,7 +2216,7 @@ fn alias_of_another_lease_worktree_refuses_launch() {
     untouched("removal");
 }
 
-/// Review 4 (B4-M2), the direct shape — a worktree registered at the lease
+/// The direct shape — a worktree registered at the lease
 /// path, at the base commit and the recorded realpath, that someone checked
 /// out onto another branch or detached before the worker ever ran in it.
 /// `verify_worktree_base` refuses on its third check (`symbolic-ref HEAD`),
@@ -2290,7 +2290,7 @@ fn present_worktree_on_foreign_branch_refuses_launch() {
     }
 }
 
-/// Review 4, the case that rules out "registration identity = branch": a
+/// The case that rules out "registration identity = branch": a
 /// worker delivers on a branch of its own — `git checkout -b slice-…`,
 /// commit, push — inside the worktree the kernel provisioned for it (the
 /// forge e2e `fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op`
@@ -2347,7 +2347,7 @@ fn worker_switched_branch_is_still_removed() {
     );
 }
 
-/// Review 4 (B4-M3) — the repository's common dir path holds a byte that is
+/// The repository's common dir path holds a byte that is
 /// not UTF-8 (`wt-\xff`), and a sibling directory carrying the U+FFFD that a
 /// lossy decode would turn it into exists at the same relative path. The
 /// path reader keeps git's bytes, so `canonicalize` resolves the real common
@@ -2384,7 +2384,7 @@ fn common_dir_bytes_are_not_decoded_before_canonicalize() {
     );
 }
 
-/// Review 4 (B4-M3) — names that end in `\r`. Git prints a path raw and
+/// Names that end in `\r`. Git prints a path raw and
 /// appends one `\n`; stripping `\r\n` would cut the name's last byte off.
 /// Two readers, two shapes: the common dir itself ends in CR — a linked
 /// worktree of a bare repository named `bare\r` is the track cwd, the one
@@ -2446,7 +2446,7 @@ fn common_dir_ending_in_cr_resolves() {
     );
 }
 
-/// Review 3 (B3-M2) — an attached repository whose path contains a newline
+/// An attached repository whose path contains a newline
 /// passes admission and `worktree add`, but `rev-parse --git-common-dir`
 /// prints the newline literally, so its output spans two lines. The path
 /// reader strips exactly the one terminator: the lease is prepared and
@@ -2483,7 +2483,7 @@ fn lease_base_resolves_in_repo_path_with_newline() {
     );
 }
 
-/// Review 3 (A3-m2) — the repository has a user worktree at a path that is
+/// The repository has a user worktree at a path that is
 /// not UTF-8 (`wt-\xff`; git prints the byte raw in `-z` output). It is
 /// someone else's record: the registration parser compares bytes and only a
 /// record without a `worktree ` line is a parse failure, so the lease is
@@ -2549,7 +2549,7 @@ fn foreign_non_utf8_worktree_record_does_not_fail_the_lease() {
     );
 }
 
-/// Review 3 (A3-m3) — the repository is UTF-8 but `.claude/worktrees` is a
+/// The repository is UTF-8 but `.claude/worktrees` is a
 /// symlink into a directory that is not, so the canonical parent is not
 /// UTF-8. `resolve_head_lease_base` refuses with an `Err` naming the path:
 /// the prepare tx fails the op instead of panicking in `json!` (which would
@@ -2585,7 +2585,7 @@ fn non_utf8_canonical_parent_is_refused_not_a_panic() {
     );
 }
 
-/// Review 5 (B5-M2 = A5-m1) — the layout where every reader except the
+/// The layout where every reader except the
 /// toplevel one is happy: the physical repository root is under a directory
 /// that is not UTF-8 (`\xff-disk/proj`), its git dir is separate and UTF-8,
 /// `.claude/worktrees` is a symlink to a UTF-8 directory, and the track cwd

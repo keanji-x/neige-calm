@@ -78,7 +78,7 @@ pub async fn acquire_workspace_lease_for_test(
     Ok(())
 }
 
-/// #1727 S4 slice 1 (review 3, A3-m4) — take a lease that RECORDS ITS BASE
+/// Take a lease that RECORDS ITS BASE
 /// through the production `acquire_workspace_lease_tx` (the five base
 /// columns in the one INSERT), the sibling of `acquire_workspace_lease_for_test`
 /// whose plain lease writes the legacy all-NULL tuple. `plan.list.worktree.base_sha`

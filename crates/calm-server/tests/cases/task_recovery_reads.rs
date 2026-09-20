@@ -539,7 +539,7 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
     );
 }
 
-/// #1727 S4 slice 1 (review 3, A3-m4) — `worktree.base_sha` and
+/// `worktree.base_sha` and
 /// `recovery.guidance.retained.base_sha` come from the lease row's
 /// `base_sha`, which only a lease taken through the production
 /// `acquire_workspace_lease_tx` carries (the plain lease every other fixture

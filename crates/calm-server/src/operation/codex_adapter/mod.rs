@@ -781,8 +781,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &self.workspace_root,
         )
         .await?;
-        // #1727 S4 slice 1 — the base is decided here, in the prepare tx, and
-        // frozen below; the spawn pins the worktree to it (design D4).
+        // The base is decided here, in the prepare tx, and frozen below; the
+        // spawn pins the worktree to it (design D4).
         let lease_base = resolve_head_lease_base(&lease_target)?;
         let cwd = lease_target.path_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
@@ -1610,8 +1610,8 @@ async fn provision_codex_worker_workspace(
         path: PathBuf::from(cwd.clone()),
         branch,
     };
-    // #1727 S4 slice 1 — pinned to the frozen `base_sha` / `canonical_path`;
-    // an op frozen before slice 1 has neither and provisions unpinned (D12 (d)).
+    // Pinned to the frozen `base_sha` / `canonical_path`; an op frozen before
+    // the base was recorded has neither and provisions unpinned (D12 (d)).
     let base = WorktreeBase::from_tx_output(output, "codex-worker")?;
     provision_workspace_worktree(&target, &base)?;
 

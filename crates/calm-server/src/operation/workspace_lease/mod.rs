@@ -24,7 +24,7 @@ pub(crate) mod facts;
 
 pub(crate) use base::{LeaseBase, WorktreeBase};
 
-/// #1727 S4 slice 1 — the one SELECT list every reader of a lease row uses
+/// The one SELECT list every reader of a lease row uses
 /// (`row_to_workspace_lease` takes columns by name at run time, so a column
 /// missing from any one SELECT is a `ColumnNotFound` no compiler sees). The
 /// calm-truth read `db/sqlite/read.rs` `workspace_lease_for_card` builds its
@@ -209,8 +209,8 @@ async fn acquire_workspace_lease_at_path_tx(
     let path_string = path.to_string_lossy().to_string();
     let now = now_ms();
     let boot_id = read_boot_id();
-    // #1727 S4 slice 1 — the parent directory exists before the row does: the
-    // row's `canonical_path` was resolved through it (`base::resolve_head_lease_base`).
+    // The parent directory exists before the row does: the row's
+    // `canonical_path` was resolved through it (`base::resolve_head_lease_base`).
     create_workspace_lease_directory(path, directory_mode)?;
     let query = sqlx::query(
         r#"INSERT INTO workspace_leases (
@@ -655,7 +655,7 @@ pub(crate) async fn sweep_workspace_worktrees_for_track_repo(
     if repo_roots.is_empty() {
         return Ok(0);
     }
-    // Identity before enumeration (review 4): a track root that no longer
+    // Identity before enumeration: a track root that no longer
     // resolves to the recorded worktrees refuses the whole sweep — no entry
     // removal, no `branch -D`, no `worktree.removed`.
     for repo_root in &repo_roots {
@@ -1130,7 +1130,7 @@ fn remove_workspace_dir_if_exists(path: &str) -> Result<bool> {
     }
 }
 
-/// #1727 S4 slice 1 — `base` pins `git worktree add` to the lease's recorded
+/// `base` pins `git worktree add` to the lease's recorded
 /// commit and every registration state (absent, branch already present,
 /// worktree already registered) ends in `base::verify_worktree_base`.
 pub(crate) fn provision_workspace_worktree(
@@ -1272,7 +1272,7 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
         git_worktree_registration(target)?
     };
     // Someone else's worktree at our realpath: `worktree remove --force`
-    // would delete it through the alias (review 4, B4-M2).
+    // would delete it through the alias.
     if let GitWorktreeRegistration::Foreign {
         registered_as,
         branch,
@@ -1515,7 +1515,7 @@ pub(crate) fn git_repo_root_for_track_cwd(track_id: &str, cwd: &str) -> Result<P
             repo_root.display()
         )));
     }
-    // Refused where it is read (review 5): `repo_root` is stored and frozen
+    // Refused where it is read: `repo_root` is stored and frozen
     // through `json!` by both adapters, so it is UTF-8 by construction.
     base::utf8_path(&repo_root, "track git repository root")?;
     Ok(repo_root)

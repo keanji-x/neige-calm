@@ -24,7 +24,7 @@ pub(crate) struct WorkerWorktreeFacts {
     /// A FAILED auto-commit changes nothing here (the previous sha, or the absence, stays).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
-    /// #1727 S4 slice 1 — the commit the worktree started from: the lease
+    /// The commit the worktree started from: the lease
     /// row's `base_sha` (the attached repository's HEAD when the attempt was
     /// prepared). A failed attempt has one too — it never delivers, so this
     /// is the fact that can be given where `last_commit` cannot. Absent for

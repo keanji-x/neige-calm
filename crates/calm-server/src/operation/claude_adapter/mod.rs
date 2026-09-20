@@ -770,8 +770,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &self.workspace_root,
         )
         .await?;
-        // #1727 S4 slice 1 — the base is decided here, in the prepare tx, and
-        // frozen below; the spawn pins the worktree to it (design D4).
+        // The base is decided here, in the prepare tx, and frozen below; the
+        // spawn pins the worktree to it (design D4).
         let lease_base = resolve_head_lease_base(&lease_target)?;
         let cwd = lease_target.path_string();
         let settings_path = self

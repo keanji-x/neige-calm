@@ -393,7 +393,7 @@ async fn claude_worker_compensation_cleans_rows_lease_and_settings_dir() {
     assert!(!settings_dir.exists());
 }
 
-/// #1727 S4 slice 1 — a worker op frozen before slice 1 recovers unpinned.
+/// A worker op frozen before the base was recorded recovers unpinned.
 /// Its `tx_output` has `repo_root` / `slice_branch` / `cwd` but no `base_sha`
 /// or `canonical_path` (design D12 (d)): provisioning must succeed and take
 /// today's shape — the repository's HEAD at spawn time, no check against a
@@ -480,8 +480,8 @@ async fn pre_slice1_frozen_worker_op_provisions_unpinned() {
         .unwrap();
 }
 
-/// Review 2 (B2-m1) — the production spawn path (`workspace::provision`,
-/// which reads the frozen `tx_output`) provisions at the base the prepare tx
+/// The production spawn path (`workspace::provision`, which reads the frozen
+/// `tx_output`) provisions at the base the prepare tx
 /// recorded, not at the HEAD the attached repository has moved on to.
 #[tokio::test]
 async fn claude_spawn_provisions_at_frozen_base_not_moving_head() {

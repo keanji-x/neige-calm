@@ -498,7 +498,7 @@ async fn task_key_for_card_title_swallows_a_failing_select() {
     tx.rollback().await.unwrap();
 }
 
-/// Review 2 (B2-m1) — the production provisioning entry
+/// The production provisioning entry
 /// (`provision_codex_worker_workspace`, reached from `app_server_interact`)
 /// reads the frozen `tx_output` and provisions at the base the prepare tx
 /// recorded, not at the HEAD the attached repository has moved on to. The op

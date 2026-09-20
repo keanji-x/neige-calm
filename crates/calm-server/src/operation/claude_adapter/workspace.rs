@@ -23,9 +23,9 @@ pub(super) async fn provision(
         }
     };
     let path = output.output_string("cwd", "claude-worker")?;
-    // #1727 S4 slice 1 — pinned to the frozen `base_sha` / `canonical_path`;
-    // an op frozen before slice 1 has neither and provisions unpinned, as it
-    // always did (design D12 (d)).
+    // Pinned to the frozen `base_sha` / `canonical_path`; an op frozen before
+    // the base was recorded has neither and provisions unpinned, as it always
+    // did (design D12 (d)).
     let base = WorktreeBase::from_tx_output(output, "claude-worker")?;
     provision_workspace_worktree(
         &WorkspaceLeaseTarget {
