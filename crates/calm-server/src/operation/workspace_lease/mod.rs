@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     io::{self, Write},
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Output,
 };
 
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
@@ -14,11 +14,23 @@ use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VE
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{TrackWorkspaceKind, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
+use crate::workspace_materialize::neige_git_command;
 
 use super::forge_action_adapter::FORGE_ACTION_KIND;
 use super::{PhaseTag, TimestampMs, Tx};
 
+pub(crate) mod base;
 pub(crate) mod facts;
+
+pub(crate) use base::{LeaseBase, WorktreeBase};
+
+/// #1727 S4 slice 1 — the one SELECT list every reader of a lease row uses
+/// (`row_to_workspace_lease` takes columns by name at run time, so a column
+/// missing from any one SELECT is a `ColumnNotFound` no compiler sees). The
+/// calm-truth read `db/sqlite/read.rs` `workspace_lease_for_card` builds its
+/// own five-field struct and is deliberately not on this list.
+pub(crate) const WORKSPACE_LEASE_COLUMNS: &str = "lease_id, card_id, track_id, path, state, boot_id, \
+     base_sha, base_source, base_attempt_id, canonical_path, git_common_dir";
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceLease {
@@ -28,6 +40,10 @@ pub(crate) struct WorkspaceLease {
     pub path: String,
     pub state: String,
     pub boot_id: Option<String>,
+    /// `None` for a row written before migration 0111 or by the fixtures-only
+    /// plain lease (the all-NULL tuple); every lease a worker op takes since
+    /// slice 1 has one.
+    pub base: Option<LeaseBase>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,6 +155,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
     track_id: &str,
     lease_owner: &str,
     target: &WorkspaceLeaseTarget,
+    base: &LeaseBase,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
     acquire_workspace_lease_at_path_tx(
         tx,
@@ -147,6 +164,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
         lease_owner,
         &target.path,
         WorkspaceLeaseDirectoryMode::ParentOnly,
+        Some(base),
     )
     .await
 }
@@ -166,6 +184,7 @@ pub(crate) async fn acquire_plain_workspace_lease_tx(
         lease_owner,
         path,
         WorkspaceLeaseDirectoryMode::Leaf,
+        None,
     )
     .await
 }
@@ -184,17 +203,22 @@ async fn acquire_workspace_lease_at_path_tx(
     lease_owner: &str,
     path: &Path,
     directory_mode: WorkspaceLeaseDirectoryMode,
+    base: Option<&LeaseBase>,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
     let lease_id = new_id();
     let path_string = path.to_string_lossy().to_string();
     let now = now_ms();
     let boot_id = read_boot_id();
-    sqlx::query(
+    // #1727 S4 slice 1 — the parent directory exists before the row does: the
+    // row's `canonical_path` was resolved through it (`base::resolve_head_lease_base`).
+    create_workspace_lease_directory(path, directory_mode)?;
+    let query = sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
-               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms,
+               base_sha, base_source, base_attempt_id, canonical_path, git_common_dir
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
@@ -203,14 +227,13 @@ async fn acquire_workspace_lease_at_path_tx(
     .bind(lease_owner)
     .bind(now + WORKSPACE_LEASE_MS)
     .bind(&boot_id)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
+    .bind(now);
+    LeaseBase::bind_columns(query, base)?
+        .execute(&mut **tx)
+        .await?;
 
     // Freeze the workspace before the first lease row exists: the lease path and the worktree's two absolute git pointers would dangle after a rename and nothing re-anchors them. The system area is excluded inside the freeze itself.
     crate::db::sqlite::track_workspace_freeze_tx(tx, track_id, now).await?;
-
-    create_workspace_lease_directory(path, directory_mode)?;
 
     let scope = workspace_scope_tx(tx, card_id, track_id).await?;
     let event = Event::WorkspaceLeased {
@@ -229,6 +252,7 @@ async fn acquire_workspace_lease_at_path_tx(
         path: path_string,
         state: "held".into(),
         boot_id,
+        base: base.cloned(),
     };
     Ok((
         lease,
@@ -307,17 +331,15 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
     let envelopes = write_in_tx_typed(repo, move |tx| {
         let card_id = card_id.clone();
         Box::pin(async move {
-            let row = sqlx::query(
-                r#"SELECT lease_id, card_id, track_id, path, state, boot_id
-                   FROM workspace_leases
-                   WHERE card_id = ?1
-                     AND state IN ('held','releasing')
-                   ORDER BY created_at_ms DESC, lease_id DESC
-                   LIMIT 1"#,
-            )
-            .bind(&card_id)
-            .fetch_optional(&mut **tx)
-            .await?;
+            let sql = format!(
+                "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+                 WHERE card_id = ?1 AND state IN ('held','releasing') \
+                 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
+            );
+            let row = sqlx::query(&sql)
+                .bind(&card_id)
+                .fetch_optional(&mut **tx)
+                .await?;
             let Some(row) = row else {
                 return Ok(Vec::new());
             };
@@ -340,17 +362,15 @@ pub(crate) async fn release_workspace_lease_for_card_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
-    let row = sqlx::query(
-        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
-           FROM workspace_leases
-           WHERE card_id = ?1
-             AND state IN ('held','releasing')
-           ORDER BY created_at_ms DESC, lease_id DESC
-           LIMIT 1"#,
-    )
-    .bind(card_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let sql = format!(
+        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+         WHERE card_id = ?1 AND state IN ('held','releasing') \
+         ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
+    );
+    let row = sqlx::query(&sql)
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
     let Some(row) = row else {
         return Ok(Vec::new());
     };
@@ -467,16 +487,15 @@ pub(crate) async fn release_workspace_leases_for_track_tx(
     track_id: &str,
 ) -> Result<WorkspaceTrackRelease> {
     let sweep = workspace_track_sweep_for_track_tx(tx, track_id).await;
-    let rows = sqlx::query(
-        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
-           FROM workspace_leases
-           WHERE track_id = ?1
-             AND state IN ('held','releasing')
-           ORDER BY created_at_ms ASC, lease_id ASC"#,
-    )
-    .bind(track_id)
-    .fetch_all(&mut **tx)
-    .await?;
+    let sql = format!(
+        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+         WHERE track_id = ?1 AND state IN ('held','releasing') \
+         ORDER BY created_at_ms ASC, lease_id ASC"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(track_id)
+        .fetch_all(&mut **tx)
+        .await?;
     let leases: Vec<WorkspaceLease> = rows
         .into_iter()
         .map(row_to_workspace_lease)
@@ -585,16 +604,11 @@ async fn workspace_track_sweep_for_track_tx(
             return None;
         }
     };
-    let leases = match sqlx::query(
-        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
-           FROM workspace_leases
-           WHERE track_id = ?1
-           ORDER BY created_at_ms ASC, lease_id ASC"#,
-    )
-    .bind(track_id)
-    .fetch_all(&mut **tx)
-    .await
-    {
+    let sql = format!(
+        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+         WHERE track_id = ?1 ORDER BY created_at_ms ASC, lease_id ASC"
+    );
+    let leases = match sqlx::query(&sql).bind(track_id).fetch_all(&mut **tx).await {
         Ok(rows) => rows
             .into_iter()
             .filter_map(|row| match row_to_workspace_lease(row) {
@@ -641,11 +655,28 @@ pub(crate) async fn sweep_workspace_worktrees_for_track_repo(
     if repo_roots.is_empty() {
         return Ok(0);
     }
+    // Identity before enumeration (review 4): a track root that no longer
+    // resolves to the recorded worktrees refuses the whole sweep — no entry
+    // removal, no `branch -D`, no `worktree.removed`.
+    for repo_root in &repo_roots {
+        if let Err(error) =
+            base::verify_track_root_identity_before_sweep(repo_root, &sweep.track_id, &sweep.leases)
+        {
+            tracing::warn!(
+                repo_root = %repo_root.display(),
+                track_id = %sweep.track_id,
+                error = %error,
+                "workspace track teardown refused preserved worktree sweep"
+            );
+            return Ok(0);
+        }
+    }
     let mut removed = Vec::new();
     for repo_root in repo_roots {
         removed.extend(sweep_workspace_worktree_root_for_track(
             &repo_root,
             &sweep.track_id,
+            &sweep.leases,
         ));
         sweep_workspace_slice_branches_for_track(&repo_root, &sweep.track_id);
     }
@@ -711,6 +742,7 @@ pub(crate) async fn sweep_workspace_worktrees_for_tracks_repo(
 fn sweep_workspace_worktree_root_for_track(
     repo_root: &Path,
     track_id: &str,
+    leases: &[WorkspaceLease],
 ) -> Vec<RemovedWorkspaceWorktree> {
     let mut removed = Vec::new();
     let track_root = repo_root.join(".claude").join("worktrees").join(track_id);
@@ -788,7 +820,18 @@ fn sweep_workspace_worktree_root_for_track(
                 }
             },
         };
-        match remove_workspace_worktree(&target) {
+        // The latest row naming this entry carries the identity the entry
+        // must still resolve to; an entry no row names has none recorded.
+        let named_by = leases
+            .iter()
+            .rev()
+            .find(|lease| Path::new(&lease.path) == target.path);
+        let removal = base::verify_lease_path_identity_before_removal(
+            &target.path,
+            named_by.and_then(|lease| lease.base.as_ref()),
+        )
+        .and_then(|()| remove_workspace_worktree(&target));
+        match removal {
             Ok(true) => removed.push(RemovedWorkspaceWorktree {
                 card_id: parts.card_id,
                 path: target.path_string(),
@@ -829,7 +872,7 @@ fn sweep_workspace_worktree_root_for_track(
 fn sweep_workspace_slice_branches_for_track(repo_root: &Path, track_id: &str) {
     let branch_prefix = format!("neige/{track_id}/");
     let ref_prefix = format!("refs/heads/neige/{track_id}");
-    let output = match Command::new("git")
+    let output = match neige_git_command()
         .arg("-C")
         .arg(repo_root)
         .args(["for-each-ref", "--format=%(refname:short)", &ref_prefix])
@@ -863,7 +906,7 @@ fn sweep_workspace_slice_branches_for_track(repo_root: &Path, track_id: &str) {
             continue;
         }
         let branch_ref = format!("refs/heads/{branch}");
-        let delete = Command::new("git")
+        let delete = neige_git_command()
             .arg("-C")
             .arg(repo_root)
             .args(["branch", "-D", branch])
@@ -1001,27 +1044,23 @@ async fn workspace_lease_by_id(
     pool: &SqlitePool,
     lease_id: &str,
 ) -> Result<Option<WorkspaceLease>> {
-    let row = sqlx::query(
-        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
-           FROM workspace_leases
-           WHERE lease_id = ?1
-             AND state IN ('held','releasing')"#,
-    )
-    .bind(lease_id)
-    .fetch_optional(pool)
-    .await?;
+    let sql = format!(
+        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+         WHERE lease_id = ?1 AND state IN ('held','releasing')"
+    );
+    let row = sqlx::query(&sql)
+        .bind(lease_id)
+        .fetch_optional(pool)
+        .await?;
     row.map(row_to_workspace_lease).transpose()
 }
 
 async fn active_workspace_leases(pool: &SqlitePool) -> Result<Vec<WorkspaceLease>> {
-    let rows = sqlx::query(
-        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
-           FROM workspace_leases
-           WHERE state IN ('held','releasing')
-           ORDER BY created_at_ms ASC, lease_id ASC"#,
-    )
-    .fetch_all(pool)
-    .await?;
+    let sql = format!(
+        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+         WHERE state IN ('held','releasing') ORDER BY created_at_ms ASC, lease_id ASC"
+    );
+    let rows = sqlx::query(&sql).fetch_all(pool).await?;
     rows.into_iter().map(row_to_workspace_lease).collect()
 }
 
@@ -1033,6 +1072,7 @@ fn row_to_workspace_lease(row: sqlx::sqlite::SqliteRow) -> Result<WorkspaceLease
         path: row.try_get("path")?,
         state: row.try_get("state")?,
         boot_id: row.try_get("boot_id")?,
+        base: LeaseBase::from_row(&row)?,
     })
 }
 
@@ -1075,6 +1115,10 @@ fn operation_phase_is_recoverable(phase: &str) -> bool {
 
 fn remove_workspace_dir_if_exists(path: &str) -> Result<bool> {
     let path = Path::new(path);
+    // A symlink leaf is unlinked, never followed.
+    if base::unlink_symlink_leaf(path)? {
+        return Ok(true);
+    }
     let existed = path.exists();
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(existed),
@@ -1086,7 +1130,13 @@ fn remove_workspace_dir_if_exists(path: &str) -> Result<bool> {
     }
 }
 
-pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result<()> {
+/// #1727 S4 slice 1 — `base` pins `git worktree add` to the lease's recorded
+/// commit and every registration state (absent, branch already present,
+/// worktree already registered) ends in `base::verify_worktree_base`.
+pub(crate) fn provision_workspace_worktree(
+    target: &WorkspaceLeaseTarget,
+    base: &WorktreeBase,
+) -> Result<()> {
     ensure_workspace_worktree_root_excluded(&target.repo_root)?;
 
     let parent = target.path.parent().ok_or_else(|| {
@@ -1101,11 +1151,28 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
             parent.display()
         ))
     })?;
+    // Identity first: nothing below (leaf unlink, stale-directory cleanup,
+    // registration prune, `worktree add`) runs on a path that no longer
+    // resolves to the recorded worktree.
+    base::verify_lease_path_identity_before_provision(target, base)?;
+    base::clear_symlink_leaf_before_provision(target)?;
 
-    match git_worktree_registration(&target.repo_root, &target.path)? {
-        GitWorktreeRegistration::Present if target.path.is_dir() => return Ok(()),
+    match git_worktree_registration(target)? {
+        GitWorktreeRegistration::Present if target.path.is_dir() => {
+            return base::verify_worktree_base(target, base);
+        }
         GitWorktreeRegistration::Present | GitWorktreeRegistration::Prunable => {
             prune_stale_workspace_worktree_registration(target)?;
+        }
+        GitWorktreeRegistration::Foreign {
+            registered_as,
+            branch,
+        } => {
+            return Err(base::foreign_registration_refusal(
+                target,
+                &registered_as,
+                branch.as_deref(),
+            ));
         }
         GitWorktreeRegistration::Absent => {}
     }
@@ -1114,7 +1181,7 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
 
     let branch_ref = format!("refs/heads/{}", target.branch);
     let branch_exists = git_ref_exists(&target.repo_root, &branch_ref)?;
-    let mut command = Command::new("git");
+    let mut command = neige_git_command();
     command
         .arg("-C")
         .arg(&target.repo_root)
@@ -1123,6 +1190,7 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
         command.arg(&target.path).arg(&target.branch);
     } else {
         command.args(["-b", &target.branch]).arg(&target.path);
+        base.push_commit_ish(&mut command);
     }
     let output = command.output().map_err(|e| {
         CalmError::Internal(format!(
@@ -1132,15 +1200,15 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
     })?;
     if output.status.success() {
         if target.path.is_dir() {
-            return Ok(());
+            return base::verify_worktree_base(target, base);
         }
         return Err(CalmError::Internal(format!(
             "git worktree add for {} succeeded but the worktree directory is missing",
             target.path.display()
         )));
     }
-    if git_worktree_ready(&target.repo_root, &target.path)? {
-        return Ok(());
+    if git_worktree_ready(target)? {
+        return base::verify_worktree_base(target, base);
     }
     Err(git_failed("git worktree add", &target.repo_root, &output))
 }
@@ -1176,6 +1244,7 @@ fn workspace_dir_is_non_empty(path: &Path) -> Result<bool> {
 }
 
 fn remove_workspace_worktree_for_lease(lease: &WorkspaceLease) -> Result<bool> {
+    base::verify_lease_path_identity_before_removal(Path::new(&lease.path), lease.base.as_ref())?;
     let Some(target) = workspace_lease_target_from_lease(lease)? else {
         // Relative leases were never registered as git worktrees.
         return remove_workspace_dir_if_exists(&lease.path);
@@ -1188,10 +1257,37 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
         return remove_workspace_dir_if_exists(&target.path_string());
     }
 
-    let registered = git_worktree_registered(&target.repo_root, &target.path)?;
-    let path_existed = target.path.exists();
+    // A symlink leaf is never a registration of ours: unlink it and prune
+    // what git registered at the now-missing path (a worktree moved away and
+    // linked back would otherwise keep its branch checked out and fail the
+    // `branch -D` below). `worktree remove --force` through the link would
+    // delete the link's target — an external directory, the main checkout.
+    let link_removed = base::unlink_symlink_leaf(&target.path)?;
+    if link_removed {
+        git_worktree_prune(&target.repo_root)?;
+    }
+    let registration = if link_removed {
+        GitWorktreeRegistration::Absent
+    } else {
+        git_worktree_registration(target)?
+    };
+    // Someone else's worktree at our realpath: `worktree remove --force`
+    // would delete it through the alias (review 4, B4-M2).
+    if let GitWorktreeRegistration::Foreign {
+        registered_as,
+        branch,
+    } = registration
+    {
+        return Err(base::foreign_registration_refusal(
+            target,
+            &registered_as,
+            branch.as_deref(),
+        ));
+    }
+    let registered = registration != GitWorktreeRegistration::Absent;
+    let path_existed = !link_removed && target.path.exists();
     if registered || path_existed {
-        let output = Command::new("git")
+        let output = neige_git_command()
             .arg("-C")
             .arg(&target.repo_root)
             .args(["worktree", "remove", "--force"])
@@ -1203,10 +1299,7 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
                     target.path.display()
                 ))
             })?;
-        if !output.status.success()
-            && registered
-            && git_worktree_registered(&target.repo_root, &target.path)?
-        {
+        if !output.status.success() && registered && git_worktree_registered(target)? {
             return Err(git_failed(
                 "git worktree remove --force",
                 &target.repo_root,
@@ -1218,7 +1311,7 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
     let branch_ref = format!("refs/heads/{}", target.branch);
     let branch_existed = git_ref_exists(&target.repo_root, &branch_ref)?;
     if branch_existed {
-        let output = Command::new("git")
+        let output = neige_git_command()
             .arg("-C")
             .arg(&target.repo_root)
             .args(["branch", "-D", &target.branch])
@@ -1236,7 +1329,7 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
     }
 
     let dir_removed = remove_workspace_dir_if_exists(&target.path_string())?;
-    Ok(registered || path_existed || branch_existed || dir_removed)
+    Ok(link_removed || registered || path_existed || branch_existed || dir_removed)
 }
 
 const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
@@ -1391,7 +1484,7 @@ pub(crate) fn git_repo_root_for_track_cwd(track_id: &str, cwd: &str) -> Result<P
             "track {track_id} cwd must be an absolute git repository path for workspace leasing"
         )));
     }
-    let output = Command::new("git")
+    let output = neige_git_command()
         .arg("-C")
         .arg(cwd_path)
         .args(["rev-parse", "--show-toplevel"])
@@ -1409,21 +1502,22 @@ pub(crate) fn git_repo_root_for_track_cwd(track_id: &str, cwd: &str) -> Result<P
             output_summary(&output)
         )));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let repo_root = stdout.trim_end_matches(&['\r', '\n'][..]);
-    if repo_root.is_empty() {
+    let repo_root = base::printed_path(&output.stdout);
+    if repo_root.as_os_str().is_empty() {
         return Err(CalmError::BadRequest(format!(
             "track {track_id} cwd {} did not resolve to a git repository root",
             cwd_path.display()
         )));
     }
-    let repo_root = PathBuf::from(repo_root);
     if !repo_root.is_absolute() {
         return Err(CalmError::BadRequest(format!(
             "track {track_id} git repository root must be absolute: {}",
             repo_root.display()
         )));
     }
+    // Refused where it is read (review 5): `repo_root` is stored and frozen
+    // through `json!` by both adapters, so it is UTF-8 by construction.
+    base::utf8_path(&repo_root, "track git repository root")?;
     Ok(repo_root)
 }
 
@@ -1503,7 +1597,7 @@ fn ensure_lease_owned_worktree_target(target: &WorkspaceLeaseTarget) -> Result<(
 }
 
 fn git_repo_available(repo_root: &Path) -> bool {
-    Command::new("git")
+    neige_git_command()
         .arg("-C")
         .arg(repo_root)
         .args(["rev-parse", "--git-dir"])
@@ -1513,7 +1607,7 @@ fn git_repo_available(repo_root: &Path) -> bool {
 }
 
 fn git_ref_exists(repo_root: &Path, full_ref: &str) -> Result<bool> {
-    let status = Command::new("git")
+    let status = neige_git_command()
         .arg("-C")
         .arg(repo_root)
         .args(["show-ref", "--verify", "--quiet", full_ref])
@@ -1527,84 +1621,85 @@ fn git_ref_exists(repo_root: &Path, full_ref: &str) -> Result<bool> {
     Ok(status.success())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GitWorktreeRegistration {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GitWorktreeRegistration {
     Absent,
     Present,
     Prunable,
+    /// A registration at the lease path's realpath recorded under another
+    /// path (`registered_as`; `branch` is its `refs/heads/..`, `None` when
+    /// detached): an alias of someone else's worktree, never reused, pruned
+    /// or removed.
+    Foreign {
+        registered_as: PathBuf,
+        branch: Option<String>,
+    },
 }
 
-fn git_worktree_registered(repo_root: &Path, path: &Path) -> Result<bool> {
-    Ok(git_worktree_registration(repo_root, path)? != GitWorktreeRegistration::Absent)
+fn git_worktree_registered(target: &WorkspaceLeaseTarget) -> Result<bool> {
+    Ok(git_worktree_registration(target)? != GitWorktreeRegistration::Absent)
 }
 
-fn git_worktree_ready(repo_root: &Path, path: &Path) -> Result<bool> {
+fn git_worktree_ready(target: &WorkspaceLeaseTarget) -> Result<bool> {
     Ok(
-        git_worktree_registration(repo_root, path)? == GitWorktreeRegistration::Present
-            && path.is_dir(),
+        git_worktree_registration(target)? == GitWorktreeRegistration::Present
+            && target.path.is_dir(),
     )
 }
 
-fn git_worktree_registration(repo_root: &Path, path: &Path) -> Result<GitWorktreeRegistration> {
-    let output = Command::new("git")
+fn git_worktree_registration(target: &WorkspaceLeaseTarget) -> Result<GitWorktreeRegistration> {
+    let output = neige_git_command()
         .arg("-C")
-        .arg(repo_root)
-        .args(["worktree", "list", "--porcelain"])
+        .arg(&target.repo_root)
+        .args(["worktree", "list", "--porcelain", "-z"])
         .output()
         .map_err(|e| {
             CalmError::Internal(format!(
                 "spawn git worktree list in {}: {e}",
-                repo_root.display()
+                target.repo_root.display()
             ))
         })?;
     if !output.status.success() {
-        return Err(git_failed("git worktree list", repo_root, &output));
+        return Err(git_failed("git worktree list", &target.repo_root, &output));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut current_matches = false;
-    let mut current_prunable = false;
-    for line in stdout.lines() {
-        if let Some(listed) = line.strip_prefix("worktree ") {
-            if current_matches {
-                return Ok(if current_prunable {
-                    GitWorktreeRegistration::Prunable
-                } else {
-                    GitWorktreeRegistration::Present
-                });
-            }
-            current_matches = Path::new(listed) == path;
-            current_prunable = false;
-        } else if current_matches && (line == "prunable" || line.starts_with("prunable ")) {
-            current_prunable = true;
-        }
-    }
-    if current_matches {
-        return Ok(if current_prunable {
-            GitWorktreeRegistration::Prunable
-        } else {
-            GitWorktreeRegistration::Present
-        });
-    }
-    Ok(GitWorktreeRegistration::Absent)
+    base::worktree_registration_in(&output.stdout, target)
 }
 
-fn prune_stale_workspace_worktree_registration(target: &WorkspaceLeaseTarget) -> Result<()> {
-    let output = Command::new("git")
+/// Drop registrations whose directory is gone; touches no files.
+fn git_worktree_prune(repo_root: &Path) -> Result<()> {
+    let output = neige_git_command()
         .arg("-C")
-        .arg(&target.repo_root)
+        .arg(repo_root)
         .args(["worktree", "prune", "--expire", "now"])
         .output()
         .map_err(|e| {
             CalmError::Internal(format!(
                 "spawn git worktree prune in {}: {e}",
-                target.repo_root.display()
+                repo_root.display()
             ))
         })?;
     if !output.status.success() {
-        return Err(git_failed("git worktree prune", &target.repo_root, &output));
+        return Err(git_failed("git worktree prune", repo_root, &output));
     }
-    if git_worktree_registered(&target.repo_root, &target.path)? {
-        let output = Command::new("git")
+    Ok(())
+}
+
+fn prune_stale_workspace_worktree_registration(target: &WorkspaceLeaseTarget) -> Result<()> {
+    git_worktree_prune(&target.repo_root)?;
+    let registration = git_worktree_registration(target)?;
+    if let GitWorktreeRegistration::Foreign {
+        registered_as,
+        branch,
+    } = registration
+    {
+        return Err(base::foreign_registration_refusal(
+            target,
+            &registered_as,
+            branch.as_deref(),
+        ));
+    }
+    if registration != GitWorktreeRegistration::Absent {
+        let output = neige_git_command()
             .arg("-C")
             .arg(&target.repo_root)
             .args(["worktree", "remove", "--force"])
@@ -1616,7 +1711,7 @@ fn prune_stale_workspace_worktree_registration(target: &WorkspaceLeaseTarget) ->
                     target.path.display()
                 ))
             })?;
-        if !output.status.success() && git_worktree_registered(&target.repo_root, &target.path)? {
+        if !output.status.success() && git_worktree_registered(target)? {
             return Err(git_failed(
                 "git worktree remove --force",
                 &target.repo_root,

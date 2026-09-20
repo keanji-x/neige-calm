@@ -660,7 +660,8 @@ mod tests {
     };
     use crate::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
     use crate::operation::workspace_lease::{
-        acquire_workspace_lease_tx, prepare_workspace_lease_target_tx, provision_workspace_worktree,
+        WorktreeBase, acquire_workspace_lease_tx, base::resolve_head_lease_base,
+        prepare_workspace_lease_target_tx, provision_workspace_worktree,
     };
     use crate::recorder_shadow::divergence_count_for_test;
     use crate::track_area_cache::TrackAreaCache;
@@ -838,17 +839,20 @@ mod tests {
         )
         .await
         .expect("prepare lease target");
+        let base = resolve_head_lease_base(&target).expect("resolve lease base");
         let (lease, _event) = acquire_workspace_lease_tx(
             &mut tx,
             worker_card.id.as_str(),
             track.id.as_str(),
             "op-worker-report-preserve",
             &target,
+            &base,
         )
         .await
         .expect("acquire lease");
         tx.commit().await.expect("commit lease");
-        provision_workspace_worktree(&target).expect("provision worktree");
+        provision_workspace_worktree(&target, &WorktreeBase::from_lease_base(&base))
+            .expect("provision worktree");
         std::fs::write(target.path.join("worker-output.txt"), "worker commit\n")
             .expect("write worker output");
         run_git(&target.path, ["add", "worker-output.txt"]);

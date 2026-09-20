@@ -2,7 +2,9 @@
 
 use serde::Serialize;
 
-use super::{Tx, row_to_workspace_lease, workspace_lease_target_from_lease};
+use super::{
+    Tx, WORKSPACE_LEASE_COLUMNS, row_to_workspace_lease, workspace_lease_target_from_lease,
+};
 use crate::error::Result;
 
 /// What `calm.plan.list` shows as `worktree` for the current attempt.
@@ -22,6 +24,14 @@ pub(crate) struct WorkerWorktreeFacts {
     /// A FAILED auto-commit changes nothing here (the previous sha, or the absence, stays).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
+    /// #1727 S4 slice 1 — the commit the worktree started from: the lease
+    /// row's `base_sha` (the attached repository's HEAD when the attempt was
+    /// prepared). A failed attempt has one too — it never delivers, so this
+    /// is the fact that can be given where `last_commit` cannot. Absent for
+    /// a lease taken before the kernel recorded it. Survives removal like
+    /// `last_commit` (the commit object is not the worktree's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
     /// `true` when the kernel removed the worktree after its last provisioning, whatever the lease `state`.
     pub removed: bool,
 }
@@ -32,16 +42,14 @@ pub(crate) async fn worker_worktree_facts_tx(
     tx: &mut Tx<'_>,
     worker_card_id: &str,
 ) -> Result<Option<WorkerWorktreeFacts>> {
-    let row = sqlx::query(
-        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
-           FROM workspace_leases
-           WHERE card_id = ?1
-           ORDER BY created_at_ms DESC, lease_id DESC
-           LIMIT 1"#,
-    )
-    .bind(worker_card_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let sql = format!(
+        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+         WHERE card_id = ?1 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
+    );
+    let row = sqlx::query(&sql)
+        .bind(worker_card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -66,6 +74,7 @@ pub(crate) async fn worker_worktree_facts_tx(
             .map(str::to_string)
     };
     let last_commit = payload_string("commit_sha");
+    let base_sha = lease.base.as_ref().map(|base| base.base_sha.clone());
     let removed = worktree_removed_after_last_provision_tx(tx, worker_card_id).await?;
     if removed {
         return Ok(Some(WorkerWorktreeFacts {
@@ -73,6 +82,7 @@ pub(crate) async fn worker_worktree_facts_tx(
             state: lease.state,
             branch: None,
             last_commit,
+            base_sha,
             removed: true,
         }));
     }
@@ -85,6 +95,7 @@ pub(crate) async fn worker_worktree_facts_tx(
         state: lease.state,
         branch,
         last_commit,
+        base_sha,
         removed: false,
     }))
 }

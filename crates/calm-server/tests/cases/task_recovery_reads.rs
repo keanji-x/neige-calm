@@ -1,6 +1,9 @@
 //! Public recovery reads retain logical identity and current blockers.
 use crate::mcp_track_report::{boot, call_tool, planner_identity};
-use crate::task_recovery::{current, declaration, declare, finish, recovery_args};
+use crate::task_recovery::{
+    current, declaration, declare, finish, ordinary_codex_declaration, recovery_args,
+    time_out_claimed_worker_holding_lease,
+};
 use calm_server::ids::ActorId;
 use calm_server::model::{NewCard, NewTrack};
 use calm_server::task_recovery::task_recovery_view;
@@ -534,6 +537,88 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
             .any(|path| path.as_str().unwrap().starts_with("/worktree")),
         "{compact}"
     );
+}
+
+/// #1727 S4 slice 1 (review 3, A3-m4) — `worktree.base_sha` and
+/// `recovery.guidance.retained.base_sha` come from the lease row's
+/// `base_sha`, which only a lease taken through the production
+/// `acquire_workspace_lease_tx` carries (the plain lease every other fixture
+/// takes writes the legacy all-NULL tuple, so those fixtures never see the
+/// key — and the assertions on them stay as they are). One base-recording
+/// lease: `plan.list` names the sha under `worktree` in full and summary
+/// detail; once the attempt has timed out, `retained` names the same sha.
+#[tokio::test]
+async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
+    let boot = boot().await;
+    declare(&boot, ordinary_codex_declaration("b")).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let track = boot.track_id.as_str().to_string();
+    let card = boot.worker_card_id.as_str().to_string();
+    sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE track_id=?2 AND key='b'")
+        .bind(&card)
+        .bind(&track)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let base_sha = "89abcdef0123456789abcdef0123456789abcdef";
+    let repo_root = tempfile::tempdir().expect("tempdir");
+    let lease_path = calm_server::test_seams::acquire_based_workspace_lease_for_test(
+        &pool,
+        &card,
+        &track,
+        "test-owner",
+        repo_root.path(),
+        base_sha,
+    )
+    .await
+    .unwrap();
+    let lease_id: String =
+        sqlx::query_scalar("SELECT lease_id FROM workspace_leases WHERE card_id = ?1")
+            .bind(&card)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let entry = list_entry(&boot, json!({})).await;
+    assert_eq!(
+        entry["worktree"],
+        json!({
+            "path": lease_path.to_string_lossy(),
+            "state": "held",
+            "branch": format!("neige/{track}/{card}"),
+            "base_sha": base_sha,
+            "removed": false,
+        }),
+        "full detail names the recorded base: {entry}"
+    );
+    let compact = list_entry(&boot, json!({"detail":"summary","key":"b"})).await;
+    assert_eq!(
+        compact["worktree"]["base_sha"], base_sha,
+        "summary detail keeps worktree/base_sha: {compact}"
+    );
+    assert_eq!(compact["worktree"], entry["worktree"], "{compact}");
+
+    // The attempt times out (the liveness timeout releases the row, the
+    // directory stays): a refused recovery now carries `retained`, and the
+    // base is one of the facts it retains.
+    time_out_claimed_worker_holding_lease(&boot, "b", &lease_id).await;
+    for args in [json!({}), json!({"detail":"summary","key":"b"})] {
+        let entry = list_entry(&boot, args.clone()).await;
+        assert_eq!(entry["recovery"]["allowed"], false, "{args}: {entry}");
+        let retained = &entry["recovery"]["guidance"]["retained"];
+        assert_eq!(
+            retained["base_sha"], base_sha,
+            "{args}: retained names the recorded base: {retained}"
+        );
+        assert_eq!(
+            retained["workspace_path"],
+            json!(lease_path.to_string_lossy())
+        );
+        assert_eq!(
+            entry["worktree"]["base_sha"], base_sha,
+            "{args}: the released lease still names its base: {entry}"
+        );
+    }
 }
 
 /// Append one card-scoped kernel event for the worker card and return its event id.

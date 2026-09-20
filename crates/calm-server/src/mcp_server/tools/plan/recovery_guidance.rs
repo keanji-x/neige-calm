@@ -58,6 +58,7 @@ fn retained_from_facts(facts: WorkerWorktreeFacts) -> Value {
         state: _,
         branch,
         last_commit,
+        base_sha,
         removed,
     } = facts;
     let mut retained = json!({});
@@ -72,6 +73,9 @@ fn retained_from_facts(facts: WorkerWorktreeFacts) -> Value {
     }
     if let Some(last_commit) = last_commit {
         retained["last_commit"] = json!(last_commit);
+    }
+    if let Some(base_sha) = base_sha {
+        retained["base_sha"] = json!(base_sha);
     }
     retained
 }
