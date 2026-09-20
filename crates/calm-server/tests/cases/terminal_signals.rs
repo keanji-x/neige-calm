@@ -2957,6 +2957,61 @@ async fn sweep_is_idempotent() {
     h.stop(&p.terminal).await;
 }
 
+/// A candidate collected by one pass is STALE once the track is reopened
+/// (`done → planning` clears `terminal_at`, K20) before its turn comes: the
+/// per-session action re-runs the set predicate for that session under the
+/// lock and leaves a row the predicate no longer returns alone (review r1,
+/// codex P1) — still `running`, no exit record, pid alive.
+#[tokio::test]
+async fn reopened_track_session_survives_a_stale_candidate() {
+    use calm_server::model::{TrackLifecycle, TrackPatch};
+    use calm_server::terminal_sweeper::{
+        COMPLETED_TRACK_LIVE_SESSIONS_SQL, CompletedTrackSession, end_completed_track_session,
+    };
+    let h = Harness::start().await;
+    let p = open_sleeper(&h, "stale-candidate").await;
+    complete_track(&h, &h.track).await;
+    // The candidate, read the way the sweep reads it.
+    let (id, provider, card_id, terminal_id): (String, String, String, String) =
+        sqlx::query_as(COMPLETED_TRACK_LIVE_SESSIONS_SQL)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    let stale = CompletedTrackSession {
+        id,
+        provider,
+        card_id,
+        terminal_id,
+    };
+    assert_eq!(stale.id, p.session);
+    assert_eq!(stale.terminal_id, p.terminal);
+
+    // Reopened before the candidate is acted on.
+    let reopened = h
+        .sql
+        .track_update(
+            &h.track,
+            TrackPatch {
+                lifecycle: Some(TrackLifecycle::Planning),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(reopened.terminal_at, None, "reopening clears terminal_at");
+    assert!(sweep_set(&h).await.is_empty(), "no longer in the set");
+
+    end_completed_track_session(&h.state, &stale).await.unwrap();
+
+    let (state, completed_at, _) = session_row(&h, &p.session).await;
+    assert_eq!(state, "running", "a stale candidate is not ended");
+    assert_eq!(completed_at, None);
+    assert_eq!(terminal_exit(&h, &p.terminal).await, (None, false));
+    assert!(pid_alive(p.pid), "the process is still there");
+    assert!(h.state.terminal_renderer.get(&p.terminal).is_some());
+    h.stop(&p.terminal).await;
+}
+
 /// After a kernel restart the renderer registry is empty while the PTY
 /// lives on in the supervisor (K17). The sweep reattaches lazily (probe →
 /// `spawn_terminal_for`'s idempotent `EnsureProc`) and then reaps through

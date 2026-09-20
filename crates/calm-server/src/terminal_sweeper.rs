@@ -240,12 +240,14 @@ pub async fn sweep(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-/// One row of [`COMPLETED_TRACK_LIVE_SESSIONS_SQL`].
-struct CompletedTrackSession {
-    id: String,
-    provider: String,
-    card_id: String,
-    terminal_id: String,
+/// One row of [`COMPLETED_TRACK_LIVE_SESSIONS_SQL`]. `pub` (fields too) so
+/// the test suite can hand [`end_completed_track_session`] a candidate that
+/// went stale between the set read and the action.
+pub struct CompletedTrackSession {
+    pub id: String,
+    pub provider: String,
+    pub card_id: String,
+    pub terminal_id: String,
 }
 
 async fn completed_track_live_sessions(state: &AppState) -> Result<Vec<CompletedTrackSession>> {
@@ -270,7 +272,13 @@ async fn completed_track_live_sessions(state: &AppState) -> Result<Vec<Completed
 /// in order — the DELETE-card bottom half, K13, reused):
 ///
 /// 1. the same guard as [`cleanup_terminal`] (`lock_for_track_delete` +
-///    `terminal_disposal::require_safe`); unsafe ⇒ `Err`, next tick;
+///    `terminal_disposal::require_safe`); unsafe ⇒ `Err`, next tick. Under
+///    the lock the set predicate is re-run for THIS session
+///    ([`COMPLETED_TRACK_LIVE_SESSIONS_SQL`] narrowed by `ws.id`): the
+///    candidates were read before the lock, possibly several teardowns
+///    earlier, and a track reopened / unarchived or a task dispatched to
+///    the card since then takes the row out of the set — such a stale
+///    candidate is skipped, nothing written (review r1, codex P1);
 /// 2. codex: interrupt the shared thread's active turn (best-effort, no
 ///    seal — sealing belongs to the delete saga);
 /// 3. WRITE first: one IMMEDIATE transaction, `session_complete_tx(Exited)`
@@ -282,8 +290,9 @@ async fn completed_track_live_sessions(state: &AppState) -> Result<Vec<Completed
 ///    already spent) and the boot reconcile own what is left.
 ///
 /// Every transaction here is short and the signals are outside all of them
-/// (§4.4).
-async fn end_completed_track_session(
+/// (§4.4). Public, like [`sweep`], so integration tests can drive it with
+/// a candidate of their own.
+pub async fn end_completed_track_session(
     state: &AppState,
     session: &CompletedTrackSession,
 ) -> Result<()> {
@@ -294,6 +303,14 @@ async fn end_completed_track_session(
         state.daemon.proc_supervisor_sock.as_deref(),
     )
     .await?;
+    if !still_in_completed_track_set(state, &session.id).await? {
+        tracing::debug!(
+            worker_session_id = %session.id,
+            terminal_id = %session.terminal_id,
+            "terminal_sweeper: completed-track candidate went stale before its turn; skipped"
+        );
+        return Ok(());
+    }
 
     if session.provider == "codex"
         && let Some(card) = state.repo.card_get(&session.card_id).await?
@@ -337,6 +354,21 @@ async fn end_completed_track_session(
         }
     }
     Ok(())
+}
+
+/// Step 1's recheck: the set predicate, narrowed to one session — the text
+/// is [`COMPLETED_TRACK_LIVE_SESSIONS_SQL`] itself plus `AND ws.id = ?1`, so
+/// the two cannot drift. No pool (no sqlite) ⇒ `false`: nothing to end.
+async fn still_in_completed_track_set(state: &AppState, session_id: &str) -> Result<bool> {
+    let Some(pool) = state.sqlite_pool() else {
+        return Ok(false);
+    };
+    let sql = format!("{COMPLETED_TRACK_LIVE_SESSIONS_SQL} AND ws.id = ?1");
+    let row = sqlx::query(&sql)
+        .bind(session_id)
+        .fetch_optional(&pool)
+        .await?;
+    Ok(row.is_some())
 }
 
 /// Reap a single orphan using the existing cleanup behavior only after its
