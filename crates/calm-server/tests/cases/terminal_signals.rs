@@ -3180,6 +3180,8 @@ fn term(pid: i64) {
 }
 
 /// The projector loop is running: the output's leading edge (quiet → output) wakes it, far inside the 30 s tick.
+/// The program is quiet for its first two seconds, so the open's bus wakes (`WorkerSessionStarted`, the
+/// status write) recompute on an empty replay and no frame; only the edge can light `working` inside the window.
 #[tokio::test]
 async fn interactive_terminal_output_is_working() {
     let h = Harness::start().await;
@@ -3187,7 +3189,20 @@ async fn interactive_terminal_output_is_working() {
     let seeded = await_activity(&h, "the boot sweep's row", Duration::from_secs(3), |_| true).await;
     assert!(!seeded.working, "{seeded:?}");
     let stop = h.root.path().join("stop-output");
-    let p = open_program(&h, "output-working", &ticker_program(&stop), true).await;
+    let p = open_program(
+        &h,
+        "output-working",
+        &format!("sleep 2; {}", ticker_program(&stop)),
+        false,
+    )
+    .await;
+    assert_eq!(
+        last_output_ms(&h, &p.terminal),
+        None,
+        "an empty replay and no frame yet: the bus wakes of the open read no output"
+    );
+    let quiet = stored_activity(&h).await.expect("the boot row");
+    assert!(!quiet.working, "before the first frame: {quiet:?}");
     let a = await_activity(
         &h,
         "working after PTY output",
