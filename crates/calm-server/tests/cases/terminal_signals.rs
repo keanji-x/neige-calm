@@ -3012,6 +3012,83 @@ async fn reopened_track_session_survives_a_stale_candidate() {
     h.stop(&p.terminal).await;
 }
 
+/// A reopen that lands AFTER step 1's recheck and BEFORE step 3's write —
+/// the window both r2 channels named (codex P2, A MINOR-B): the reopen
+/// route (`track_update`) takes no operation lock, so nothing outside the
+/// write serializes it. The write claims the session inside its IMMEDIATE
+/// transaction with the same by-id predicate, so a reopen committed in that
+/// window is honoured: still `running`, no exit record, pid alive,
+/// `terminal_at` NULL. The reopen is committed in the window through the
+/// fixtures seam (`before_write`), not by timing: the sweeper's own
+/// `require_safe` is an IMMEDIATE transaction BEFORE the recheck, so a
+/// reopen held open across the call parks the sweeper there, and the
+/// recheck then sees it — that shape is green with or without the claim.
+#[tokio::test]
+async fn reopen_committed_during_the_claim_is_honoured() {
+    use calm_server::model::{TrackLifecycle, TrackPatch};
+    use calm_server::terminal_sweeper::{
+        COMPLETED_TRACK_LIVE_SESSIONS_SQL, CompletedTrackSession,
+        end_completed_track_session_before_write_for_test,
+    };
+    let h = Harness::start().await;
+    let p = open_sleeper(&h, "reopen-in-window").await;
+    complete_track(&h, &h.track).await;
+    let (id, provider, card_id, terminal_id): (String, String, String, String) =
+        sqlx::query_as(COMPLETED_TRACK_LIVE_SESSIONS_SQL)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    let candidate = CompletedTrackSession {
+        id,
+        provider,
+        card_id,
+        terminal_id,
+    };
+    assert_eq!(candidate.id, p.session);
+    assert_eq!(
+        sweep_set(&h).await,
+        vec![p.session.clone()],
+        "in the set at the recheck"
+    );
+
+    end_completed_track_session_before_write_for_test(&h.state, &candidate, || async {
+        // The recheck has passed (the row was in the set); the reopen
+        // commits now, before the IMMEDIATE write begins.
+        let reopened = h
+            .sql
+            .track_update(
+                &h.track,
+                TrackPatch {
+                    lifecycle: Some(TrackLifecycle::Planning),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(reopened.terminal_at, None, "reopening clears terminal_at");
+    })
+    .await
+    .unwrap();
+
+    let (state, completed_at, _) = session_row(&h, &p.session).await;
+    assert_eq!(
+        state, "running",
+        "a reopen committed before the write is honoured"
+    );
+    assert_eq!(completed_at, None);
+    assert_eq!(terminal_exit(&h, &p.terminal).await, (None, false));
+    assert!(pid_alive(p.pid), "the process is still there");
+    assert!(h.state.terminal_renderer.get(&p.terminal).is_some());
+    let terminal_at: Option<i64> =
+        sqlx::query_scalar("SELECT terminal_at FROM tracks WHERE id = ?1")
+            .bind(&h.track)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    assert_eq!(terminal_at, None, "the track stays reopened");
+    h.stop(&p.terminal).await;
+}
+
 /// After a kernel restart the renderer registry is empty while the PTY
 /// lives on in the supervisor (K17). The sweep reattaches lazily (probe →
 /// `spawn_terminal_for`'s idempotent `EnsureProc`) and then reaps through
