@@ -19,10 +19,10 @@ import {
 } from '../../features/planner/attachments.tsx';
 import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  liveTableOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
+  cardGoalTitle, liveTableOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
-import { cardActivityOf, type CardActivity } from '../../../../core/domain/activity.ts';
+import { cardActivityOf, foldAttentionByCard, type CardActivity } from '../../../../core/domain/activity.ts';
 import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
 } from '../../systems/cards/public.js';
@@ -1847,7 +1847,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
   );
 }
 
-/** How a card is named in the Notifications aside: the planner by role, the rest by title, then kind. */
+/** How a card without a goal is named in the Notifications aside: the planner by role, the rest by title, then kind. */
 function notificationCardLabel(card: TrackDetailWire['cards'][number]): string {
   return card.kind === 'codex' && isPlannerHarnessPayload(card.payload)
     ? 'Planner'
@@ -1857,17 +1857,18 @@ function notificationCardLabel(card: TrackDetailWire['cards'][number]): string {
 }
 
 /**
- * The Notifications aside from `activity.items`: one item per overlay entry, keyed
- * by `(origin, id)`, newest first; the same card may carry a `task` and a `session` item.
+ * The Notifications aside from `activity.items`, one row per card (`foldAttentionByCard`),
+ * newest first. A card's row is named by the first line of its `payload.goal` (a worker card's
+ * task, in words); a card with no goal (a terminal card, the planner) by `notificationCardLabel`.
  */
 function attentionNotifications(
   items: TrackActivity['attentionItems'], cards: TrackDetailWire['cards'],
 ): readonly TrackInputNotification[] {
-  return items.map((item): TrackInputNotification => {
+  return foldAttentionByCard(items).map((item): TrackInputNotification => {
     const card = item.cardId === null ? undefined : cards.find((candidate) => candidate.id === item.cardId);
     /* An item whose `card_id` names a card absent from `detail.cards` (deleted between
            ticks) is listed as `Card`; the next tick drops it. */
-    const source = card !== undefined ? notificationCardLabel(card)
+    const source = card !== undefined ? cardGoalTitle(card.payload) ?? notificationCardLabel(card)
       : item.origin === 'task' ? `Task ${item.id}`
         : item.origin === 'lifecycle' ? 'Track' : 'Card';
     const message = item.origin === 'card'

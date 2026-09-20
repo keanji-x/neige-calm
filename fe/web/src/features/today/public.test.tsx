@@ -41,7 +41,9 @@ function track(overrides: Partial<Track> = {}): Track {
 }
 
 describe('Today clock', () => {
-  it('counts waiting on you by the kernel verdict and In progress by lifecycle phase', () => {
+  /* Both numbers are the kernel's verdicts (`needsUserAttention ∨ hasFailed`, `isWorking`); the
+   * "Open" group is the lifecycle phase. A planning track with an idle planner is open but not working. */
+  it('counts waiting on you and working by the kernel verdict, and groups Open by lifecycle phase', () => {
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} nowMs={NOW} areas={[area()]} tracks={[
       track({ id: 'a', title: 'Working phase, idle', lifecycle: 'working', working: false }),
       track({ id: 'b', title: 'Planning phase, idle planner', lifecycle: 'planning', working: false }),
@@ -51,8 +53,9 @@ describe('Today clock', () => {
       track({ id: 'f', title: 'Blocked phase, nothing from the kernel', lifecycle: 'blocked' }),
     ]} />);
     expect(screen.getByRole('banner').textContent).toContain('2waiting on you');
-    expect(screen.getByRole('banner').textContent).toContain('2in progress');
-    const section = screen.getByRole('heading', { name: 'In progress' }).closest('section')!;
+    expect(screen.getByRole('banner').textContent).toContain('1working');
+    expect(screen.getByRole('banner').textContent).not.toContain('in progress');
+    const section = screen.getByRole('heading', { name: 'Open' }).closest('section')!;
     expect(section.textContent).toContain('Planning phase, idle planner');
     expect(section.textContent).toContain('Working phase, idle');
     expect(section.textContent).not.toContain('Done phase, still in flight');

@@ -174,7 +174,7 @@ describe('TrackPage header', () => {
           <button type="button" onClick={() => setNotifications([worker, planner])}>Add notification</button>
           <TrackPage
             mobilePanelObscured={false}
-            track={track({ anyCardNeedsInput: true })}
+            track={track()}
             cards={[]}
             tasks={[]}
             openableCards={new Set()}

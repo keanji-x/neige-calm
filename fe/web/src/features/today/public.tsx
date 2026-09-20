@@ -3,8 +3,9 @@
 import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
+import { activityNameBit } from '../../../../core/domain/activity.ts';
 import {
-  activeTracksOn, hasFailed, isRunning, needsUserAttention, visibleTracks, type Track,
+  activeTracksOn, hasFailed, isRunning, isWorking, needsUserAttention, visibleTracks, type Track,
 } from '../../../../core/domain/track.ts';
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
@@ -130,10 +131,11 @@ function TodayDesktop({
   const { now, today } = useNow(nowMs);
 
   const shownTracks = visibleTracks(tracks);
-  /* Grouped by lifecycle phase, indicated by activity: `waiting` is the kernel's verdict (input or failed); "In progress" is the phase, not `isWorking`. */
+  /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the "Open" group is the lifecycle phase. A group and a number never share a word. */
   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);
   const waiting = shownTracks.filter(needsPerson);
-  const inProgress = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));
+  const working = shownTracks.filter(isWorking);
+  const open = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));
   const panel = (
     <aside className={styles.panelColumn} data-nc-panel="">
       <PanelCard>
@@ -148,7 +150,7 @@ function TodayDesktop({
             nowMs={now.getTime()}
           />
         </PanelModule>
-        <PanelRows title="In progress" tracks={inProgress} render={renderTrackRow} />
+        <PanelRows title="Open" tracks={open} render={renderTrackRow} />
         <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
       </PanelCard>
     </aside>
@@ -157,7 +159,7 @@ function TodayDesktop({
     <div className={styles.page}>
       <TodayHeader
         activityAvailable={activityAvailable}
-        today={today} waiting={waiting.length} inProgress={inProgress.length}
+        today={today} waiting={waiting.length} working={working.length}
         now={now}
       />
       <div className={styles.content}>
@@ -232,10 +234,10 @@ function PanelRows({ title, tracks, render }: {
   );
 }
 
-function TodayHeader({ today, waiting, inProgress, now, activityAvailable }: {
+function TodayHeader({ today, waiting, working, now, activityAvailable }: {
   today: Date;
   waiting: number;
-  inProgress: number;
+  working: number;
   now: Date;
   activityAvailable: boolean;
 }) {
@@ -251,8 +253,8 @@ function TodayHeader({ today, waiting, inProgress, now, activityAvailable }: {
           <span className={styles.countValue}>{waiting}</span>
           <span className={styles.countWord}>waiting on you</span>
           <span className={styles.countSep} aria-hidden="true">·</span>
-          <span className={styles.countValue}>{inProgress}</span>
-          <span className={styles.countWord}>in progress</span>
+          <span className={styles.countValue}>{working}</span>
+          <span className={styles.countWord}>{activityNameBit('working')}</span>
         </span>
       ) : undefined}
       actions={<Clock now={now} />}

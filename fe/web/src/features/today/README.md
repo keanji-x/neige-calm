@@ -1,7 +1,7 @@
 # `features/today`
 
 The landing route: a status bar and **the day's document**, beside a panel
-holding the week calendar's activity agenda, the Running list, and the
+holding the week calendar's activity agenda, the Open list (tracks in a running phase), and the
 launchpad track's conversations.
 
 Two things were removed on 2026-09-03 (owner call) and must not drift back in
@@ -126,7 +126,7 @@ or DST.
 ## The document region (#1253)
 
 The main column is **the document**. The header retains the compact
-`N waiting · N running` summary, but the former `Waiting on you` row list is
+`N waiting on you · N working` summary, but the former `Waiting on you` row list is
 gone by owner call: it duplicated operational detail above the durable result
 and delayed the document. "The document is the protagonist" is expressed by
 area and visual weight — and, since 2026-09-03, by type: the document region
@@ -345,6 +345,3 @@ Consequences worth knowing before "fixing" one of them:
   that is a *seam*, not dead code. Scheduled events and live track activity must
   co-exist in one agenda; a scheduling plugin fills the prop later. Deleting the
   branch deletes the seam.
-- Attention counting is lifecycle-only for now. The kernel's card-FSM signal
-  (`anyCardNeedsInput`) is OR'd in once overlays are read; the sidebar and this
-  clock must keep using the same predicate.

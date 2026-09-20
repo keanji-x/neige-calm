@@ -40,8 +40,6 @@ export type TrackActivity = Readonly<{
   progress: number;
   eta: string;
   now: string;
-  /** Still decoded, but no predicate reads it: the kernel `activity` overlay is the one source of attention. */
-  anyCardNeedsInput: boolean;
   /** From the kernel `activity` overlay: something dispatched is still running. */
   working: boolean;
   /** Same overlay: the fold of `attentionItems` — any failed → failed, else any input → input. */
@@ -57,7 +55,7 @@ export type TrackActivity = Readonly<{
 /* Nested containers are frozen too: `no-module-runtime-state` only credits a fully frozen literal,
  * and a `new Map()` here would be rejected — hence `cards` is a `Record`. */
 export const NEUTRAL_ACTIVITY: TrackActivity = Object.freeze({
-  progress: 0, eta: '', now: '', anyCardNeedsInput: false,
+  progress: 0, eta: '', now: '',
   working: false, attention: 'none', activityAt: null,
   attentionItems: Object.freeze([]), cards: Object.freeze({}),
 });
@@ -203,14 +201,31 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir
     if (overlay.kind === 'progress' && typeof value === 'number') activity = { ...activity, progress: value };
     else if (overlay.kind === 'eta' && typeof text === 'string') activity = { ...activity, eta: text };
     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };
-    else if (overlay.kind === 'any_card_needs_input' && typeof value === 'boolean') {
-      activity = { ...activity, anyCardNeedsInput: value };
-    } else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {
+    else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {
       const fields = activityOverlayFields(overlay.payload);
       if (fields !== null) activity = { ...activity, ...fields };
     }
   }
   return activity;
+}
+
+/** The longest title the Notifications aside takes from a card's goal. */
+export const CARD_GOAL_TITLE_MAX = 60;
+
+/**
+ * The first line of a card's `payload.goal`, capped at `CARD_GOAL_TITLE_MAX` characters — how the
+ * Notifications aside names a worker card. `Card.payload` is `z.unknown()`, so this is a narrow
+ * runtime guard (an object with a string `goal`), not a schema; `null` when there is no such goal.
+ */
+export function cardGoalTitle(payload: unknown): string | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const goal = (payload as { goal?: unknown }).goal;
+  if (typeof goal !== 'string') return null;
+  const newline = goal.indexOf('\n');
+  const line = (newline === -1 ? goal : goal.slice(0, newline)).trim();
+  if (line === '') return null;
+  const chars = [...line];
+  return chars.length > CARD_GOAL_TITLE_MAX ? `${chars.slice(0, CARD_GOAL_TITLE_MAX - 1).join('')}…` : line;
 }
 
 export const cardWireSchema = z.object({
@@ -499,8 +514,7 @@ export function isWaitingForUser(lifecycle: TrackLifecycle): boolean {
   return lifecycle === 'blocked' || lifecycle === 'reviewing' || lifecycle === 'failed';
 }
 
-/* The three activity predicates read only the kernel's `activity` overlay — no lifecycle OR, no
- * `anyCardNeedsInput` OR — so they cannot disagree with it. */
+/* The three activity predicates read only the kernel's `activity` overlay — no lifecycle OR — so they cannot disagree with it. */
 
 /** The kernel says something dispatched is still running. */
 export function isWorking(track: Track): boolean {

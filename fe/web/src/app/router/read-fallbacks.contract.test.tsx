@@ -57,12 +57,13 @@ describe('degraded workspace reads stay usable', () => {
     });
     const main = await screen.findByRole('main');
     await within(main).findByRole('alert');
-    expect(within(main).getByRole('banner').textContent).not.toMatch(/\d(?:waiting|in progress)/);
+    expect(within(main).getByRole('banner').textContent).not.toMatch(/\d(?:waiting|working)/);
     expect(within(main).queryByText('Nothing scheduled.')).toBeNull();
     if (resource === 'activity') expect(within(main).getAllByText('Reliable').length).toBeGreaterThan(0);
     broken = false;
     await userEvent.click(within(main).getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(within(main).getByRole('banner').textContent).toContain('1in progress'));
+    /* A `working`-phase track with no overlay is open but not working: the second number is the kernel's verdict. */
+    await waitFor(() => expect(within(main).getByRole('banner').textContent).toContain('0working'));
   });
 
   it('mounts navigation while an offline startup Areas query is paused', async () => {
@@ -359,8 +360,10 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path.startsWith('/api/overlays?')) return ok([{
-        id: 'workspace-needs-input', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
-        kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
+        id: 'workspace-activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity', updated_at: 1,
+        payload: { schemaVersion: 1, working: false, attention: 'input', activity_at_ms: 1,
+          items: [{ kind: 'input', source: 'card', id: plannerCard.id, card_id: plannerCard.id, at_ms: 1 }],
+          cards: [{ card_id: plannerCard.id, state: 'input' }] },
       }]);
       if (request.path === '/api/tracks/w1') return ok({
         track, can_resume: false, cards: [], overlays: [],

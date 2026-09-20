@@ -1248,9 +1248,7 @@
     "expected_red": [
       "Today rows carry the track read receipt",
       "navigation activity markers derives the marker and the name from the activity overlay, not the lifecycle",
-      "navigation activity markers ignores the retired any_card_needs_input flag",
       "TrackPage header paints one activity indicator beside the title, from the overlay rather than the lifecycle",
-      "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention from the retired any_card_needs_input flag",
       "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive working from a running lifecycle phase"
     ],
     "selection_paths": [
@@ -1267,7 +1265,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex 2b1118c..265255e 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -205,7 +205,7 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir\n     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };\n     else if (overlay.kind === 'any_card_needs_input' && typeof value === 'boolean') {\n       activity = { ...activity, anyCardNeedsInput: value };\n-    } else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {\n+    } else if (overlay.kind === 'activity') {\n       const fields = activityOverlayFields(overlay.payload);\n       if (fields !== null) activity = { ...activity, ...fields };\n     }\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex da0550d75..7049fe803 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -201,7 +201,7 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir\n     if (overlay.kind === 'progress' && typeof value === 'number') activity = { ...activity, progress: value };\n     else if (overlay.kind === 'eta' && typeof text === 'string') activity = { ...activity, eta: text };\n     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };\n-    else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {\n+    else if (overlay.kind === 'activity') {\n       const fields = activityOverlayFields(overlay.payload);\n       if (fields !== null) activity = { ...activity, ...fields };\n     }\n",
     "expected_red": [
       "trackActivityFrom: the kernel activity overlay applies only the kernel-owned activity row; a plugin-owned one leaves the track quiet"
     ],
@@ -1301,7 +1299,7 @@
     "target": "core/domain/track.ts",
     "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex 2b1118c..40d9646 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -509,7 +509,7 @@ export function isWorking(track: Track): boolean {\n \n /** The kernel says a person has to give input somewhere on this track. */\n export function needsUserAttention(track: Track): boolean {\n-  return track.attention === 'input';\n+  return isWaitingForUser(track.lifecycle) || track.attention === 'input';\n }\n \n /** The kernel says something on this track is broken and needs repair. */\n",
     "expected_red": [
-      "Today clock counts waiting on you by the kernel verdict and In progress by lifecycle phase",
+      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by lifecycle phase",
       "collapse toggle shows the waiting count as the strip's only figure, with no dot beside it",
       "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention from the lifecycle phase",
       "activity predicates read only the kernel activity overlay (INV-APP-118) ranks a failed track with the waiting ones, and a running phase in the middle"
@@ -1440,20 +1438,16 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/today/public.tsx",
-    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\nindex 4402f56..4eeb71d 100644\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -4,7 +4,7 @@ import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/co\n import { useEffect, useMemo, useRef, type ReactNode } from 'react';\n \n import {\n-  activeTracksOn, hasFailed, isRunning, needsUserAttention, visibleTracks, type Track,\n+  activeTracksOn, hasFailed, isRunning, isWorking, needsUserAttention, visibleTracks, type Track,\n } from '../../../../core/domain/track.ts';\n import { areaOf, type Area } from '../../../../core/domain/area.ts';\n import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';\n@@ -133,7 +133,7 @@ function TodayDesktop({\n   /* Grouped by lifecycle phase, indicated by activity: `waiting` is the kernel's verdict (input or failed); \"In progress\" is the phase, not `isWorking`. */\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = shownTracks.filter(needsPerson);\n-  const inProgress = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));\n+  const inProgress = shownTracks.filter((track) => isWorking(track) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n       <PanelCard>\n",
+    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\nindex be30cc81a..f993559f4 100644\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -135,7 +135,7 @@ function TodayDesktop({\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = shownTracks.filter(needsPerson);\n   const working = shownTracks.filter(isWorking);\n-  const open = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));\n+  const open = shownTracks.filter((track) => isWorking(track) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n       <PanelCard>\n",
     "expected_red": [
-      "degraded workspace reads stay usable does not claim empty activity while the areas read is unavailable",
-      "degraded workspace reads stay usable does not claim empty activity while the tracks read is unavailable",
-      "degraded workspace reads stay usable does not claim empty activity while the activity read is unavailable",
       "Today rows carry the track read receipt",
-      "Today clock counts waiting on you by the kernel verdict and In progress by lifecycle phase"
+      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by lifecycle phase"
     ],
     "selection_paths": [
-      "web/src/app/router/read-fallbacks.contract.test.tsx",
       "web/src/app/router/today-activity.test.tsx",
       "web/src/features/today/public.test.tsx"
     ],
-    "why_more_than_one": "Grouping In progress by isWorking instead of the lifecycle phase empties the section for the phase-only fixtures: the Today unit case, the router-level Today row case and the degraded-read cases that count a working-phase track all move."
+    "why_more_than_one": "Grouping Open by isWorking instead of the lifecycle phase empties the section for the phase-only fixtures: the Today unit case and the router-level Today row case both lose their idle running-phase rows. The header's second number is the working count, not the group's size, so the degraded-read cases no longer move."
   },
   {
     "mutation_id": "s2b-conversation-row-from-session-state",
@@ -1668,7 +1662,9 @@
       "degraded workspace reads stay usable prefers track-detail overlays to the neutral workspace fallback",
       "track conversations ignores a retired kernel/card/status row and a plugin-authored activity row",
       "track conversations lists simultaneous Planner and Worker requests with a truthful count",
-      "track conversations notifications sidebar lists activity items from every source",
+      "track conversations notifications sidebar folds a card's items into one row and keeps every card-less item",
+      "track conversations notifications sidebar keeps one row per failed card",
+      "track conversations notifications sidebar names a worker card by the first line of its goal and a terminal card by its title",
       "track conversations opens an Assistant input notification in its conversation instead of treating it as a worker card",
       "track conversations opens the planner conversation from the track input request",
       "track conversations opens the requesting worker card instead of the Planner conversation"
@@ -1677,7 +1673,7 @@
       "web/src/app/router/read-fallbacks.contract.test.tsx",
       "web/src/app/router/track-conversation.test.tsx"
     ],
-    "why_more_than_one": "Reading the retired per-card status rows again empties the aside for every fixture that carries its items in the activity overlay and fills it for the fixture that carries a retired status row: the four router Review cases, the every-source case, the retired-row case and the read-fallbacks detail case all move."
+    "why_more_than_one": "Reading the retired per-card status rows again empties the aside for every fixture that carries its items in the activity overlay and fills it for the fixture that carries a retired status row: the four router Review cases, the fold case and its twin, the goal-title case, the retired-row case and the read-fallbacks detail case all move."
   },
   {
     "mutation_id": "s2b-today-launchpad-cards-empty",
@@ -1732,5 +1728,59 @@
       "web/src/app/shell/unified-mobile-header.browser.test.tsx"
     ],
     "why_more_than_one": "The phone row's dot and its name bit come from one value, so a lifecycle-driven state changes both: the row case sees a spinner on an idle `working` phase and no spinner on a `done` track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds a running-phase row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount a `lifecycle: 'working'` track with no overlay — misses it because the name now ends in `, working`."
+  },
+  {
+    "mutation_id": "s4-aside-not-folded-per-card",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "core/domain/activity.ts",
+    "patch": "diff --git a/core/domain/activity.ts b/core/domain/activity.ts\nindex 99386157b..2ad2acd89 100644\n--- a/core/domain/activity.ts\n+++ b/core/domain/activity.ts\n@@ -75,6 +75,8 @@ export function attentionKindOf(items: readonly Readonly<{ kind: 'input' | 'fail\n  * Rows keep first-appearance order.\n  */\n export function foldAttentionByCard(items: readonly ActivityItem[]): ActivityItem[] {\n+  // MUT-1743-S4-1: one row per item again\n+  if (items.length >= 0) return [...items];\n   const rows: ActivityItem[] = [];\n   const rowByCard = new Map<string, number>();\n   for (const item of items) {\n",
+    "expected_red": [
+      "foldAttentionByCard folds a card's task and session items into one row carrying the later item's identity",
+      "foldAttentionByCard breaks an at_ms tie between a card's items in favour of the task item",
+      "track conversations notifications sidebar folds a card's items into one row and keeps every card-less item"
+    ],
+    "selection_paths": [
+      "core/domain/activity.test.ts",
+      "web/src/app/router/track-conversation.test.tsx"
+    ],
+    "why_more_than_one": "Returning the items unfolded gives the same card two rows again: the two core fold cases (the later item's identity, the task-over-session tie) and the router case that counts the aside's rows for a card carrying a task and a session item all move; the per-card twin and the card-less rows are unchanged and stay green."
+  },
+  {
+    "mutation_id": "s4-today-second-count-from-phase",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/features/today/public.tsx",
+    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\nindex be30cc81a..2ade6e528 100644\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -134,7 +134,8 @@ function TodayDesktop({\n   /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the \"Open\" group is the lifecycle phase. A group and a number never share a word. */\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = shownTracks.filter(needsPerson);\n-  const working = shownTracks.filter(isWorking);\n+  // MUT-1743-S4-2: the second number counts the running phase again\n+  const working = shownTracks.filter((track) => isRunning(track.lifecycle));\n   const open = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n",
+    "expected_red": [
+      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by lifecycle phase",
+      "Today's second number counts the kernel's working verdict, not the running phase",
+      "degraded workspace reads stay usable does not claim empty activity while the areas read is unavailable",
+      "degraded workspace reads stay usable does not claim empty activity while the tracks read is unavailable",
+      "degraded workspace reads stay usable does not claim empty activity while the activity read is unavailable"
+    ],
+    "selection_paths": [
+      "web/src/app/router/read-fallbacks.contract.test.tsx",
+      "web/src/app/router/today-activity.test.tsx",
+      "web/src/features/today/public.test.tsx"
+    ],
+    "why_more_than_one": "Counting the running phase instead of the kernel's working verdict moves every fixture whose phase and verdict disagree: the Today unit case (three running-phase tracks, one working), the router-level count case (three working-phase tracks, one working) and the three degraded-read cases (one working-phase track with no overlay, so 0 becomes 1)."
+  },
+  {
+    "mutation_id": "s4-aside-title-falls-back-to-key",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/router/public.tsx",
+    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\nindex e97ce026c..aae4724da 100644\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -1868,7 +1868,8 @@ function attentionNotifications(\n     const card = item.cardId === null ? undefined : cards.find((candidate) => candidate.id === item.cardId);\n     /* An item whose `card_id` names a card absent from `detail.cards` (deleted between\n            ticks) is listed as `Card`; the next tick drops it. */\n-    const source = card !== undefined ? cardGoalTitle(card.payload) ?? notificationCardLabel(card)\n+    // MUT-1743-S4-3: the card's label again, never its goal\n+    const source = card !== undefined ? notificationCardLabel(card)\n       : item.origin === 'task' ? `Task ${item.id}`\n         : item.origin === 'lifecycle' ? 'Track' : 'Card';\n     const message = item.origin === 'card'\n",
+    "expected_red": [
+      "track conversations notifications sidebar names a worker card by the first line of its goal and a terminal card by its title"
+    ],
+    "selection_paths": [
+      "web/src/app/router/track-conversation.test.tsx"
+    ],
+    "why_more_than_one": "Only the goal-title case carries a card with a payload.goal; every other aside fixture's cards have no goal and are named by notificationCardLabel with or without the goal read, so exactly that case reddens."
   }
 ]

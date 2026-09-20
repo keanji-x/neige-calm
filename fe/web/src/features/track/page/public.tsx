@@ -40,15 +40,15 @@ import styles from './page.module.css';
 /** The mobile drill-down pages: two that are not row modules, plus one per row module the view model names. The renderer special-cases exactly those two and sends every other member through `paintMobileModule`. */
 type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
 
-/** One item of the Notifications aside — the route's projection of one `TrackActivity.attentionItems` entry. */
+/** One row of the Notifications aside — the route's projection of one card's `TrackActivity.attentionItems` (folded per card), or of one card-less item. */
 export type TrackInputNotification = Readonly<{
-  /** Which kind of thing this is about — the overlay item's `source`. */
+  /** Which kind of thing this is about — the overlay item's `source` (a card's row: its latest item's). */
   origin: ActivityOrigin;
-  /** Card id, task key, session id or track id — whichever `origin` names. With `origin` it is the row's key. */
+  /** Card id, task key, session id or track id — whichever `origin` names. */
   id: string;
-  /** The card Review opens, or `null` — in which case Review lands on the track itself. */
+  /** The card Review opens — and the row's key; `null` when Review lands on the track itself, and then `origin:id` is the key. */
   cardId: string | null;
-  /** The human-read label: `Planner`, the card's title, the task key, … */
+  /** The human-read label: the card's goal, `Planner`, the card's title, the task key, … */
   source: string;
   message: string;
   state: 'awaiting-input' | 'errored';
@@ -545,7 +545,7 @@ export function TrackPage({
               <ul className={styles.needsInputNoticeList}>
                 {inputNotifications.map((notification) => (
                   <li
-                    key={`${notification.origin}:${notification.id}`}
+                    key={notification.cardId ?? `${notification.origin}:${notification.id}`}
                     className={styles.needsInputNoticeItem}
                     data-nc-notification-state={notification.state}
                   >
@@ -557,7 +557,7 @@ export function TrackPage({
                       <button
                         type="button"
                         className={styles.needsInputAction}
-                        /* The message is part of the name: one card can carry two items, and two buttons named alike are one button to a reader who cannot see the row. */
+                        /* The message is part of the name: two rows can share a label (two cards titled alike), and two buttons named alike are one button to a reader who cannot see the row. */
                         aria-label={`Review ${notification.source} notification: ${notification.message}`}
                         onClick={() => onOpenInputNotification(notification.cardId)}
                       >Review</button>

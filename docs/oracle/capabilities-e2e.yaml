@@ -120,7 +120,7 @@
   # (`fe/core/domain/conversation.test.ts`, `describe('kernelQueuesInput')`), which is not cited
   # here because a row declares one `test_tier` and that suite is not jsdom.
   authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:1004-1055;
-    fe/web/src/app/router/track-conversation.test.tsx:572-631,747-766
+    fe/web/src/app/router/track-conversation.test.tsx:749-829,1015-1057
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
@@ -391,7 +391,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:22,33-38,78-92,112-134;
-    fe/web/src/app/router/public.tsx:1077-1082,1553-1557,1866-1890;
+    fe/web/src/app/router/new-track-route.tsx:60; fe/web/src/app/router/public.tsx:1387,1974-1980;
     fe/web/src/features/chat/thread/public.tsx:502-506,517,539,544-563,601-603
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
+  activeTracksOn, cardGoalTitle, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
   createTrackOperation, deleteCardOperation, hasFailed, isBlankForKernel, isRunning, isWaitingForUser,
   isWorking, lifecycleLabel, lifecycleRank, needsUserAttention, toTrack, trackActivityFrom,
   trackActivityState, trackDetailSchema, updateTrackOperation,
@@ -183,12 +183,6 @@ describe('activity predicates read only the kernel activity overlay (INV-APP-118
     expect(hasFailed(failedPhase)).toBe(false);
   });
 
-  it('does not derive attention from the retired any_card_needs_input flag', () => {
-    const flagged = track({ lifecycle: 'working', anyCardNeedsInput: true, attention: 'none' });
-    expect(needsUserAttention(flagged)).toBe(false);
-    expect(trackActivityState(flagged, false)).toBe('quiet');
-  });
-
   it('does not derive working from a running lifecycle phase', () => {
     expect(isWorking(track({ lifecycle: 'planning', working: false }))).toBe(false);
     expect(trackActivityState(track({ lifecycle: 'planning', working: false }), false)).toBe('quiet');
@@ -212,6 +206,36 @@ describe('activity predicates read only the kernel activity overlay (INV-APP-118
     expect(lifecycleRank(track({ lifecycle: 'planning', working: false }))).toBe(1);
     expect(lifecycleRank(track({ lifecycle: 'done', working: true }))).toBe(2);
     expect(lifecycleRank(track({ lifecycle: 'reviewing', attention: 'none' }))).toBe(2);
+  });
+});
+
+describe('cardGoalTitle', () => {
+  it('takes the first line of a string goal and nothing from any other payload', () => {
+    expect(cardGoalTitle({ goal: 'Review the parser split\nThen post the verdict.' })).toBe('Review the parser split');
+    expect(cardGoalTitle({ goal: '  Ship it  ' })).toBe('Ship it');
+    expect(cardGoalTitle({ goal: '   ' })).toBeNull();
+    /* The first line, not the first non-blank one: a goal whose first line is empty has no title. */
+    expect(cardGoalTitle({ goal: '\nShip it' })).toBeNull();
+    expect(cardGoalTitle({ goal: 42 })).toBeNull();
+    expect(cardGoalTitle({ command: 'zsh' })).toBeNull();
+    expect(cardGoalTitle({ planner_harness: true, prompt: 'Plan it' })).toBeNull();
+    expect(cardGoalTitle(null)).toBeNull();
+    expect(cardGoalTitle('goal')).toBeNull();
+  });
+
+  it('caps the title at 60 characters, counting code points', () => {
+    const sixty = 'x'.repeat(60);
+    expect(cardGoalTitle({ goal: sixty })).toBe(sixty);
+    expect(cardGoalTitle({ goal: `${sixty}y` })).toBe(`${'x'.repeat(59)}…`);
+    const cjk = '审'.repeat(61);
+    expect([...cardGoalTitle({ goal: cjk })!]).toHaveLength(60);
+    /* Astral characters are two UTF-16 units each: a `slice(0, 60)` on units keeps 30 whole characters,
+     * but the impl-shaped `slice(0, 59) + '…'` stub keeps 29 plus a lone surrogate, so the cap counts
+     * code points and never leaves a lone surrogate. */
+    const astral = cardGoalTitle({ goal: '😀'.repeat(61) })!;
+    expect([...astral]).toHaveLength(60);
+    expect(astral).toBe(`${'😀'.repeat(59)}…`);
+    expect(() => encodeURIComponent(astral)).not.toThrow();
   });
 });
 
@@ -242,7 +266,6 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     ]);
     expect(activity.cards).toEqual({ 'worker-1': 'failed', planner: 'input', w2: 'working' });
     expect(activity.progress).toBe(0);
-    expect(activity.anyCardNeedsInput).toBe(false);
   });
 
   it('keeps the neutral values for a track the kernel has not written yet', () => {

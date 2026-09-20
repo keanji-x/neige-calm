@@ -19,7 +19,7 @@ test('keeps Today usable without claiming zero activity when Areas is unavailabl
   const header = main.locator('header[data-nc-header-rows]').first();
   // Existence first: `not.toContainText` alone passes for a header that never rendered.
   await expect(header).toBeVisible();
-  await expect(header).not.toContainText(/\d\s*(waiting|in progress)/);
+  await expect(header).not.toContainText(/\d\s*(waiting|working)/);
   await expect(main.getByText('Nothing scheduled.')).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Workspace' })).toBeVisible();
   await page.screenshot({ path: 'test-results/today-unavailable-desktop.png' });
@@ -27,7 +27,7 @@ test('keeps Today usable without claiming zero activity when Areas is unavailabl
   recovered = true;
   await retry.click();
   await expect(failure).toHaveCount(0);
-  await expect(header).toContainText(/\d\s*in progress/);
+  await expect(header).toContainText(/\d\s*working/);
 });
 
 test('retains the original Track request after a lost acknowledgement and navigation', async ({ page, request, context }) => {
