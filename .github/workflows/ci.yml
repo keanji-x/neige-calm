@@ -791,13 +791,17 @@ jobs:
           fi
 
       # #903 — per-test timing (junit.xml, written by the ci nextest profile),
-      # the input for the Slice C timing analysis.
+      # the input for the Slice C timing analysis. nextest's store dir is
+      # target/nextest under the workspace root, not under CARGO_TARGET_DIR;
+      # the two only coincide on hosted shards. The self-hosted main job
+      # (CARGO_TARGET_DIR=/home/runner/target-neige-calm-main) logged
+      # "No files were found" and never uploaded this artifact.
       - name: upload nextest junit timing
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nextest-junit-${{ matrix.shard }}-of-${{ github.event_name == 'pull_request' && '4' || '1' }}
-          path: ${{ env.CARGO_TARGET_DIR }}/nextest/ci/junit.xml
+          path: target/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
 
