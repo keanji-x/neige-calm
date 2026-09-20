@@ -184,6 +184,12 @@ class Runtime:
                 self.publish(candidate, kind, payload)
             with self.lock:
                 state = self.states[candidate]
+                completed_view = state | {"result": result, "error": None,
+                                          "phase": "succeeded" if state["enabled"] else "stopped"}
+            # The primary reader-facing result must be acknowledged before success.
+            self.publish(candidate, "barra.overview", overview_table(completed_view))
+            with self.lock:
+                state = self.states[candidate]
                 self.update(candidate, result=result, last_success=self.clock().isoformat(),
                             phase="succeeded" if state["enabled"] else "stopped", error=None)
         except Exception as error:

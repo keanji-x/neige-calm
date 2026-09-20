@@ -111,6 +111,37 @@ def test_publication_failure_is_not_success(tmp_path, prices, config):
     assert runtime.status("track-a")["last_success"] is None
 
 
+@pytest.mark.parametrize("prior_success", [False, True])
+def test_completed_overview_requires_ack_before_success(tmp_path, prices, config, prior_success):
+    runtime = make_runtime(tmp_path, prices, [])
+    runtime.start("track-a", config.json())
+    if prior_success:
+        runtime.process_once()
+        changed = prices.copy()
+        changed.iloc[-1, 0] *= 1.01
+        runtime.loader = lambda *args: (changed, "fixture")
+        runtime.refresh("track-a")
+    previous = deepcopy(runtime.states["track-a"]["result"])
+    previous_success = runtime.states["track-a"]["last_success"]
+    calls = []
+
+    def reject_completed_overview(track, kind, payload):
+        if kind == "barra.overview" and payload["rows"][0]["forecast"] != "—" and "更新" not in payload["caption"]:
+            raise ValueError("completed overview rejected")
+        calls.append((track, kind, payload))
+
+    runtime.publish = reject_completed_overview
+    runtime.process_once()
+    assert runtime.status("track-a")["phase"] == "failed"
+    assert runtime.status("track-a")["error"] == "completed overview rejected"
+    assert runtime.states["track-a"]["result"] == previous
+    assert runtime.states["track-a"]["last_success"] == previous_success
+    runtime.publish = lambda *args: calls.append(args)
+    runtime.refresh("track-a")
+    runtime.process_once()
+    assert runtime.status("track-a")["phase"] == "succeeded"
+
+
 def test_restart_does_not_repeat_same_day_or_resume_interrupted_job(tmp_path, prices, config):
     runtime = make_runtime(tmp_path, prices, [])
     runtime.start("track-a", config.json())
