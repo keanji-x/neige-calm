@@ -2643,6 +2643,52 @@ async fn sweep_set(h: &Harness) -> Vec<String> {
         .unwrap()
 }
 
+/// The single candidate of the set, read the way the sweep reads it (all
+/// five columns, `thread_id` included), for driving
+/// `end_completed_track_session` with a candidate of the test's own.
+async fn sole_candidate(h: &Harness) -> calm_server::terminal_sweeper::CompletedTrackSession {
+    let (id, provider, card_id, terminal_id, thread_id): (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+    ) = sqlx::query_as(calm_server::terminal_sweeper::COMPLETED_TRACK_LIVE_SESSIONS_SQL)
+        .fetch_one(h.sql.pool())
+        .await
+        .unwrap();
+    calm_server::terminal_sweeper::CompletedTrackSession {
+        id,
+        provider,
+        card_id,
+        terminal_id,
+        thread_id,
+    }
+}
+
+/// Turn a sleeper's session row into the shape of a shared-daemon codex
+/// worker (`provider = 'codex'`, `thread_id = 't-1'` — on 4140 every
+/// `running` codex row carries its thread id) and register `turn-1` as the
+/// thread's active turn on the fake app-server, so an interrupt addressed
+/// to `t-1` is recorded by `interrupted_turns_for_test()`.
+async fn make_codex_with_active_turn(h: &Harness, p: &PtySession) {
+    sqlx::query("UPDATE worker_sessions SET provider = 'codex', thread_id = 't-1' WHERE id = ?1")
+        .bind(&p.session)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    h.state
+        .shared_codex_appserver
+        .set_active_turn_for_test("t-1", "turn-1");
+    assert!(
+        h.state
+            .shared_codex_appserver
+            .interrupted_turns_for_test()
+            .is_empty(),
+        "nothing interrupted before the call"
+    );
+}
+
 /// A PTY session minted BEFORE the track was completed is ended by one
 /// sweep: the row is written `exited` first, then the process is killed
 /// and the attach reader records `signal_killed = 1`; the pid is gone and
@@ -2959,30 +3005,18 @@ async fn sweep_is_idempotent() {
 
 /// A candidate collected by one pass is STALE once the track is reopened
 /// (`done → planning` clears `terminal_at`, K20) before its turn comes: the
-/// per-session action re-runs the set predicate for that session under the
-/// lock and leaves a row the predicate no longer returns alone (review r1,
-/// codex P1) — still `running`, no exit record, pid alive.
+/// claim inside the IMMEDIATE write re-runs the set predicate for that
+/// session by id and leaves a row the predicate no longer returns alone
+/// (review r1, codex P1) — still `running`, no exit record, pid alive.
 #[tokio::test]
 async fn reopened_track_session_survives_a_stale_candidate() {
     use calm_server::model::{TrackLifecycle, TrackPatch};
-    use calm_server::terminal_sweeper::{
-        COMPLETED_TRACK_LIVE_SESSIONS_SQL, CompletedTrackSession, end_completed_track_session,
-    };
+    use calm_server::terminal_sweeper::end_completed_track_session;
     let h = Harness::start().await;
     let p = open_sleeper(&h, "stale-candidate").await;
     complete_track(&h, &h.track).await;
     // The candidate, read the way the sweep reads it.
-    let (id, provider, card_id, terminal_id): (String, String, String, String) =
-        sqlx::query_as(COMPLETED_TRACK_LIVE_SESSIONS_SQL)
-            .fetch_one(h.sql.pool())
-            .await
-            .unwrap();
-    let stale = CompletedTrackSession {
-        id,
-        provider,
-        card_id,
-        terminal_id,
-    };
+    let stale = sole_candidate(&h).await;
     assert_eq!(stale.id, p.session);
     assert_eq!(stale.terminal_id, p.terminal);
 
@@ -3012,48 +3046,41 @@ async fn reopened_track_session_survives_a_stale_candidate() {
     h.stop(&p.terminal).await;
 }
 
-/// A reopen that lands AFTER step 1's recheck and BEFORE step 3's write —
+/// A reopen that lands AFTER step 1's guard and BEFORE step 2's write —
 /// the window both r2 channels named (codex P2, A MINOR-B): the reopen
 /// route (`track_update`) takes no operation lock, so nothing outside the
 /// write serializes it. The write claims the session inside its IMMEDIATE
 /// transaction with the same by-id predicate, so a reopen committed in that
 /// window is honoured: still `running`, no exit record, pid alive,
-/// `terminal_at` NULL. The reopen is committed in the window through the
-/// fixtures seam (`before_write`), not by timing: the sweeper's own
-/// `require_safe` is an IMMEDIATE transaction BEFORE the recheck, so a
-/// reopen held open across the call parks the sweeper there, and the
-/// recheck then sees it — that shape is green with or without the claim.
+/// `terminal_at` NULL — and, the session being a codex worker with an
+/// active turn, NOT interrupted either: the interrupt (step 3) runs only
+/// after a successful claim (review r3, codex P2 / A MINOR-1). The reopen
+/// is committed in the window through the fixtures seam (`before_write`),
+/// not by timing: the sweeper's own `require_safe` is an IMMEDIATE
+/// transaction BEFORE the seam, so a reopen held open across the call
+/// parks the sweeper there, and the claim then sees it — that shape is
+/// green with or without the claim.
 #[tokio::test]
 async fn reopen_committed_during_the_claim_is_honoured() {
     use calm_server::model::{TrackLifecycle, TrackPatch};
-    use calm_server::terminal_sweeper::{
-        COMPLETED_TRACK_LIVE_SESSIONS_SQL, CompletedTrackSession,
-        end_completed_track_session_before_write_for_test,
-    };
-    let h = Harness::start().await;
+    use calm_server::terminal_sweeper::end_completed_track_session_before_write_for_test;
+    let h = Harness::start_with_fake_codex().await;
     let p = open_sleeper(&h, "reopen-in-window").await;
+    make_codex_with_active_turn(&h, &p).await;
     complete_track(&h, &h.track).await;
-    let (id, provider, card_id, terminal_id): (String, String, String, String) =
-        sqlx::query_as(COMPLETED_TRACK_LIVE_SESSIONS_SQL)
-            .fetch_one(h.sql.pool())
-            .await
-            .unwrap();
-    let candidate = CompletedTrackSession {
-        id,
-        provider,
-        card_id,
-        terminal_id,
-    };
+    let candidate = sole_candidate(&h).await;
     assert_eq!(candidate.id, p.session);
+    assert_eq!(candidate.thread_id.as_deref(), Some("t-1"));
     assert_eq!(
         sweep_set(&h).await,
         vec![p.session.clone()],
-        "in the set at the recheck"
+        "in the set before the call"
     );
+    let interrupted_before = h.state.shared_codex_appserver.interrupted_turns_for_test();
 
     end_completed_track_session_before_write_for_test(&h.state, &candidate, || async {
-        // The recheck has passed (the row was in the set); the reopen
-        // commits now, before the IMMEDIATE write begins.
+        // The guard has passed; the reopen commits now, before the
+        // IMMEDIATE write begins.
         let reopened = h
             .sql
             .track_update(
@@ -3086,6 +3113,67 @@ async fn reopen_committed_during_the_claim_is_honoured() {
             .await
             .unwrap();
     assert_eq!(terminal_at, None, "the track stays reopened");
+    assert_eq!(
+        h.state.shared_codex_appserver.interrupted_turns_for_test(),
+        interrupted_before,
+        "a reopen that defeats the claim must not interrupt the turn"
+    );
+    assert_eq!(
+        h.state.shared_codex_appserver.active_turn_for_test("t-1"),
+        Some("turn-1".to_string()),
+        "the turn is still active"
+    );
+    h.stop(&p.terminal).await;
+}
+
+/// A codex candidate (a shared-daemon worker: `provider = 'codex'`, the
+/// row carries its `thread_id`) has its active turn interrupted by the
+/// captured thread id AFTER the claim wrote the row `exited`: the row is
+/// `exited`, the fake records `(t-1, turn-1)`, and at the seam before the
+/// write (the same instant as the reopen above) nothing has been
+/// interrupted yet. The interrupt is addressed by the captured id, not
+/// resolved through the session row — that row is no longer live once
+/// the claim has written it.
+#[tokio::test]
+async fn codex_candidate_is_interrupted_after_the_claim() {
+    use calm_server::terminal_sweeper::end_completed_track_session_before_write_for_test;
+    let h = Harness::start_with_fake_codex().await;
+    let p = open_sleeper(&h, "codex-interrupt").await;
+    make_codex_with_active_turn(&h, &p).await;
+    complete_track(&h, &h.track).await;
+    let candidate = sole_candidate(&h).await;
+    assert_eq!(candidate.id, p.session);
+    assert_eq!(candidate.provider, "codex");
+    assert_eq!(candidate.thread_id.as_deref(), Some("t-1"));
+
+    end_completed_track_session_before_write_for_test(&h.state, &candidate, || async {
+        assert!(
+            h.state
+                .shared_codex_appserver
+                .interrupted_turns_for_test()
+                .is_empty(),
+            "the interrupt comes after the claim, never before the write"
+        );
+    })
+    .await
+    .unwrap();
+
+    let (state, completed_at, _) = session_row(&h, &p.session).await;
+    assert_eq!(state, "exited");
+    assert!(completed_at.is_some());
+    assert_eq!(
+        h.state.shared_codex_appserver.interrupted_turns_for_test(),
+        vec![("t-1".to_string(), "turn-1".to_string())],
+        "the active turn of the captured thread is interrupted once"
+    );
+    assert_eq!(
+        h.state.shared_codex_appserver.active_turn_for_test("t-1"),
+        None,
+        "the interrupt cleared the active turn"
+    );
+    assert_eq!(await_terminal_exit(&h, &p.terminal).await, (None, true));
+    await_pid_gone(p.pid).await;
+    assert!(h.state.terminal_renderer.get(&p.terminal).is_none());
     h.stop(&p.terminal).await;
 }
 
