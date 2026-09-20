@@ -67,6 +67,28 @@ export function attentionKindOf(items: readonly Readonly<{ kind: 'input' | 'fail
   return kind;
 }
 
+/**
+ * One row per card for the Notifications aside: a card's items fold into the one with the largest
+ * `atMs` (a tie goes to the `task` item over the `session` one), so the row's `origin` / `id` name
+ * that item; items with no card (`cardId === null`) stay one row each. No `failed > input` precedence:
+ * since #1743 S3 the kernel emits no card-level `input` item, so a card's items are all `failed`.
+ * Rows keep first-appearance order.
+ */
+export function foldAttentionByCard(items: readonly ActivityItem[]): ActivityItem[] {
+  const rows: ActivityItem[] = [];
+  const rowByCard = new Map<string, number>();
+  for (const item of items) {
+    if (item.cardId === null) { rows.push(item); continue; }
+    const index = rowByCard.get(item.cardId);
+    if (index === undefined) { rowByCard.set(item.cardId, rows.length); rows.push(item); continue; }
+    const current = rows[index];
+    const later = item.atMs > current.atMs
+      || (item.atMs === current.atMs && item.origin === 'task' && current.origin !== 'task');
+    if (later) rows[index] = item;
+  }
+  return rows;
+}
+
 /** The one read of a track's per-card verdicts; `null` is "the kernel said nothing about this card". */
 export function cardActivityOf(
   activity: Readonly<{ cards: Readonly<Record<string, CardActivity>> }>,

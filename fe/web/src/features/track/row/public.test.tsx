@@ -152,11 +152,6 @@ describe('navigation activity markers', () => {
     expect(view.container.querySelector('[data-nc-activity="attention"]')).toBeNull();
   });
 
-  it('ignores the retired any_card_needs_input flag', () => {
-    const view = render(<TrackRow track={track({ anyCardNeedsInput: true })} variant="rail" onOpen={vi.fn()} />);
-    expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
-  });
-
   it.each(['default', 'compact', 'panel', 'rail'] as const)('paints the same state on the %s variant', (variant) => {
     const view = render(<TrackRow track={track({ attention: 'failed' })} variant={variant} onOpen={vi.fn()} />);
     expect(view.container.querySelectorAll('[data-nc-activity="failed"]')).toHaveLength(1);

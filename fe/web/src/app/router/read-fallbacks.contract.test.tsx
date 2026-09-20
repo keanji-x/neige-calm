@@ -360,8 +360,10 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path.startsWith('/api/overlays?')) return ok([{
-        id: 'workspace-needs-input', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
-        kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
+        id: 'workspace-activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity', updated_at: 1,
+        payload: { schemaVersion: 1, working: false, attention: 'input', activity_at_ms: 1,
+          items: [{ kind: 'input', source: 'card', id: plannerCard.id, card_id: plannerCard.id, at_ms: 1 }],
+          cards: [{ card_id: plannerCard.id, state: 'input' }] },
       }]);
       if (request.path === '/api/tracks/w1') return ok({
         track, can_resume: false, cards: [], overlays: [],
