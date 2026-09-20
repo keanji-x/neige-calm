@@ -405,6 +405,7 @@ fn heal_jitter(delay: Duration) -> Duration {
 /// the zombie leader's group, so absence must never be claimed from it.
 /// See [`survivor_alive_after_group_reap`] (post-signal, zombie = dead) vs
 /// [`proc_pid_present`] / `verify_owned_pid` (pre-signal, zombie = present).
+#[cfg(not(target_os = "macos"))]
 fn proc_pid_is_zombie(pid: i32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
@@ -415,6 +416,74 @@ fn proc_pid_is_zombie(pid: i32) -> bool {
         .and_then(|rest| rest.chars().next())
         .map(|state| state == 'Z')
         .unwrap_or(false)
+}
+
+/// macOS twin of the Linux `/proc/<pid>/stat` reader: `proc_pidinfo`
+/// `PROC_PIDTBSDINFO` with `pbi_status == SZOMB`. XNU answers that flavor
+/// for zombies out of its zombie list, so an exited-but-unreaped direct
+/// child reports `SZOMB` — exactly the "exited, still pinning" observation
+/// the `ExitWait::Child` arm of `terminate_group_with_grace` polls for
+/// (without it every owned-child stop on macOS waited the full stop grace).
+/// A short or failed answer (`ESRCH` once reaped, `EPERM` for a foreign
+/// process) is `false`, like a missing `/proc` entry. The pre-/post-signal
+/// caveats above apply unchanged: post-reap zombie = dead; pre-signal it
+/// proves nothing about the group. `proc_pid_present` / `verify_owned_pid`
+/// stay `/proc`-only (README: `/proc`-based recovery is not ported).
+#[cfg(target_os = "macos")]
+fn proc_pid_is_zombie(pid: i32) -> bool {
+    use std::ffi::c_void;
+    if pid <= 0 {
+        return false;
+    }
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: the buffer is a zeroed `proc_bsdinfo` of exactly the size passed.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut libc::proc_bsdinfo as *mut c_void,
+            size as libc::c_int,
+        )
+    };
+    if written != size as libc::c_int {
+        return false;
+    }
+    info.pbi_status == libc::SZOMB
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_zombie_tests {
+    use super::proc_pid_is_zombie;
+    use std::process::Command;
+
+    #[test]
+    fn exited_unreaped_child_is_a_zombie_until_waited() {
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(proc_pid_is_zombie(pid));
+        child.wait().unwrap();
+        assert!(!proc_pid_is_zombie(pid));
+    }
+
+    #[test]
+    fn live_child_is_not_a_zombie() {
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        assert!(!proc_pid_is_zombie(pid));
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
 }
 
 /// `/proc/<pid>` presence — the ONLY probe allowed for the pid-partial

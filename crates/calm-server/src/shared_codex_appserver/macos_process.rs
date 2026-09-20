@@ -163,7 +163,7 @@ fn signal_target(pid: i32, pgid: Option<i32>) -> io::Result<i32> {
 
 /// SIGTERM, grace, SIGKILL, 500 ms. The ONLY way this returns `Ok(())` is a
 /// `NOTE_EXIT` retrieved from the kqueue that `ExitWatcher::new` registered
-/// while the listener was alive; both signals go through
+/// for the socket-identified pid; both signals go through
 /// `poll_exit_then_signal`, so an exit that is already reported is never
 /// followed by a `kill` at a possibly recycled identifier, and `EINTR` inside
 /// the waits is retried against the original deadline.

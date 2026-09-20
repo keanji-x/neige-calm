@@ -116,14 +116,16 @@ permissions or grant access to the user's home directory.
 Shared Codex daemon supervision on macOS is socket-driven only. A persisted
 daemon record always resolves as absent (the `/proc` identity probes return
 `false` without `/proc`), so reaping the live listener behind a stale socket
-before a respawn is the only protection against a still-running daemon. That
-reap observes the listener's exit through a kqueue `NOTE_EXIT` watch: it
-signals the listener's process group while the leader is alive, but there is
-no per-member straggler sweep afterwards (macOS has no `/proc` identity to
-sweep by). A group member that ignores SIGTERM and outlives a leader that
-exited on SIGTERM is left running; if it inherited the listening socket, the
-next daemon start can fail closed (the reap finds no live owner it can verify)
-until that process and the socket are removed by hand.
+before a respawn is the only protection against a still-running daemon. Stops
+of a child this process spawned (a settings-triggered replacement, failed-launch
+cleanup) observe the exit through `proc_pidinfo` zombie state and do not wait
+the full stop grace. The stale-socket reap observes the listener's exit through
+a kqueue `NOTE_EXIT` watch: it signals the listener's process group while the
+leader is alive, but there is no per-member straggler sweep afterwards (macOS
+has no `/proc` identity to sweep by). A group member that ignores SIGTERM and
+outlives a leader that exited on SIGTERM is left running; if it inherited the
+listening socket, the next daemon start can fail closed (the reap finds no live
+owner it can verify) until that process and the socket are removed by hand.
 
 `cargo test -p calm-server --lib` as a whole is not expected to pass on macOS:
 some Linux-only fixtures are not `cfg`-gated (for example the
