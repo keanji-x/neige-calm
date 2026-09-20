@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::{EditAuthor, RatifyDecision};
-use crate::git_candidate::DeliverySettlement;
+use crate::git_candidate::{DeliveryFailureCode, DeliverySettlement};
 use crate::ids::{CardId, TrackId};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 use crate::report_edit_diff::{self, ReportBlockRef};
@@ -359,13 +359,17 @@ impl Observation {
                 result: DeliverySettlement::Failed { code, reason, .. },
                 retained_path,
             } => {
-                let retained = retained_path
-                    .as_deref()
-                    .map(|path| format!("Files retained at {path}; "))
-                    .unwrap_or_default();
+                // `workspace_missing` is the kernel's proof the lease directory is gone; the lease
+                // row can still carry a path, so that code never names one.
+                let read = match retained_path.as_deref() {
+                    Some(path) if *code != DeliveryFailureCode::WorkspaceMissing => {
+                        format!("Files retained at {path}; read")
+                    }
+                    _ => "Read".to_string(),
+                };
                 format!(
                     "Task {key} Git delivery FAILED ({}): {reason}. \
-                     {retained}read the worker output at runs/{attempt_id}.md.",
+                     {read} the worker output at runs/{attempt_id}.md.",
                     code.wire_str()
                 )
             }
