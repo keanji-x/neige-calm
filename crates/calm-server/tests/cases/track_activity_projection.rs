@@ -41,9 +41,9 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, begin_immediate_tx, card_create_with_id_tx, overlay_upsert_tx,
-    session_start_runtime_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_from_worker_tx, task_mark_running_tx, task_mark_sub_track_running_tx,
-    task_recovery_allocate_tx,
+    session_start_runtime_tx, session_supersede_and_start_tx, task_claim_pending_tx,
+    task_complete_from_worker_tx, task_fail_from_worker_tx, task_mark_running_tx,
+    task_mark_sub_track_running_tx, task_recovery_allocate_tx,
 };
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{
@@ -189,6 +189,37 @@ impl Fx {
                     ..Default::default()
                 },
             )
+            .await
+            .unwrap();
+    }
+
+    /// #1743 S1 — archive through the same `track_update_tx` UPDATE the
+    /// lifecycle rides on (K20: `lifecycle, terminal_at, archived_at,
+    /// updated_at` are one statement).
+    async fn archive(&self, track_id: &str, at_ms: i64) {
+        self.repo_dyn
+            .track_update(
+                track_id,
+                TrackPatch {
+                    archived_at: Some(Some(at_ms)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// #1743 S1 — the planner's last completed turn (P, design §4.1) as a
+    /// direct column write. The feeder's own writer
+    /// (`session_record_activity_by_thread`) refuses a superseded row, and
+    /// `superseded_planner_turn_still_ages` needs the value on exactly such
+    /// a row (written while it was live, then superseded), so the fixture
+    /// writes the column the feeder writes.
+    async fn planner_turn_completed(&self, session_id: &str, at_ms: Option<i64>) {
+        sqlx::query("UPDATE worker_sessions SET last_turn_completed_ms = ?1 WHERE id = ?2")
+            .bind(at_ms)
+            .bind(session_id)
+            .execute(&self.pool)
             .await
             .unwrap();
     }
@@ -1672,6 +1703,434 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
             .items
             .iter()
             .any(|i| i.source == ItemSource::Session && i.id == ws_a)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1743 S1 — terminal-phase filter and failure aging (design §4.1)
+// ---------------------------------------------------------------------------
+
+/// A worker card with a `failed` current attempt (`calm.task.fail` at
+/// `at_ms`) whose session is still `running`. Returns `(card, session)`.
+async fn failed_attempt(
+    f: &Fx,
+    t: &str,
+    card: &str,
+    ws: &str,
+    key: &str,
+    at_ms: i64,
+) -> (String, String) {
+    let worker = f.card(t, card, "codex", CardRole::Worker).await;
+    let session = f
+        .session(
+            &worker,
+            ws,
+            WorkerSessionKind::CodexCard,
+            WorkerSessionState::Running,
+            Some(&format!("th-{ws}")),
+            None,
+            1_000,
+        )
+        .await;
+    f.plan_tasks(t, &[(key, "codex", TASK_IN_TRACK_ROUTE, None)])
+        .await;
+    f.claim(t, key, 2_000).await;
+    f.mark_running(t, key, &worker, 3_000).await;
+    f.fail(t, key, &worker, at_ms).await;
+    (worker, session)
+}
+
+/// A planner card on `t` with an `idle` harness session (`cards.role =
+/// 'planner'`, `last_turn_completed_ms` NULL — the mint value).
+async fn planner_on(f: &Fx, t: &str, card: &str, ws: &str) -> (String, String) {
+    let planner = f.card(t, card, "planner", CardRole::Planner).await;
+    let session = f
+        .session(
+            &planner,
+            ws,
+            WorkerSessionKind::SharedPlanner,
+            WorkerSessionState::Idle,
+            Some(&format!("th-{ws}")),
+            Some(Fx::harness_snapshot()),
+            1_000,
+        )
+        .await;
+    (planner, session)
+}
+
+/// Rule 1: a `done` track has nothing waiting on a person — the failed
+/// attempt (task item + the same failure's `session` item) and the card
+/// verdict all go; the E3 high-water mark stays (rule 3).
+#[tokio::test]
+async fn done_track_failed_attempt_is_quiet() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Working).await;
+    let (worker, ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
+    f.exit_session(&ws, WorkerSessionState::Failed, 4_500).await;
+    let before = f.recompute(&t).await;
+    assert_eq!(before.attention, Attention::Failed, "{before:?}");
+    assert_eq!(before.items.len(), 2, "task + session items: {before:?}");
+    assert_eq!(card_state(&before, &worker), Some(CardState::Failed));
+
+    f.set_lifecycle(&t, TrackLifecycle::Done).await;
+    let p = f.recompute(&t).await;
+    assert_eq!(p.attention, Attention::None, "done ⇒ none: {p:?}");
+    assert!(p.items.is_empty(), "{p:?}");
+    assert!(
+        p.cards.is_empty(),
+        "the failed verdict goes with its item: {p:?}"
+    );
+    assert!(!p.working);
+    assert_eq!(p.activity_at_ms, Some(4_000), "E3 is not filtered");
+    let stored = f.stored(&t).await.unwrap();
+    assert_eq!(stored.attention, Attention::None);
+}
+
+/// Rule 1, the archived half: `archived_at IS NOT NULL` filters the same
+/// way whatever the lifecycle says (the tick no longer enumerates the
+/// track, but an event-driven recompute still reaches it).
+#[tokio::test]
+async fn archived_track_failed_attempt_is_quiet() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Working).await;
+    let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
+    let before = f.recompute(&t).await;
+    assert_eq!(before.attention, Attention::Failed, "{before:?}");
+    assert_eq!(card_state(&before, &worker), Some(CardState::Failed));
+
+    f.archive(&t, 5_000).await;
+    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
+        .bind(&t)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        lifecycle, "working",
+        "archiving does not touch the lifecycle"
+    );
+    let p = f.recompute(&t).await;
+    assert_eq!(p.attention, Attention::None, "archived ⇒ none: {p:?}");
+    assert!(p.items.is_empty(), "{p:?}");
+    assert!(p.cards.is_empty(), "{p:?}");
+    assert!(!p.working);
+}
+
+/// The twin of rule 1: `done → planning` through `track_update_tx` (the
+/// user reopening) brings the failed attempt back — the filter is a
+/// function of the row, not a one-way write.
+#[tokio::test]
+async fn reopened_track_failed_attempt_is_red_again() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Working).await;
+    let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
+    f.set_lifecycle(&t, TrackLifecycle::Done).await;
+    let quiet_now = f.recompute(&t).await;
+    assert_eq!(quiet_now.attention, Attention::None, "{quiet_now:?}");
+    assert!(quiet_now.items.is_empty());
+
+    f.set_lifecycle(&t, TrackLifecycle::Planning).await;
+    let terminal_at: Option<i64> =
+        sqlx::query_scalar("SELECT terminal_at FROM tracks WHERE id = ?1")
+            .bind(&t)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(terminal_at, None, "reopening clears terminal_at (K20)");
+    let p = f.recompute(&t).await;
+    assert_eq!(
+        p.attention,
+        Attention::Failed,
+        "reopened ⇒ red again: {p:?}"
+    );
+    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.items[0].source, ItemSource::Task);
+    assert_eq!(p.items[0].id, "build");
+    assert_eq!(p.items[0].at_ms, 4_000);
+    assert_eq!(card_state(&p, &worker), Some(CardState::Failed));
+}
+
+/// Rule 1 filters `items` / `attention` / the `input`+`failed` card
+/// verdicts ONLY: a task still `running` on a done track keeps `working`
+/// and its `cards[] = working` entry (S2 is what ends it, not the fold).
+#[tokio::test]
+async fn done_track_running_task_is_still_working() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Working).await;
+    let failed_worker = f.card(&t, "card-a", "codex", CardRole::Worker).await;
+    let running_worker = f.card(&t, "card-b", "codex", CardRole::Worker).await;
+    for (card, ws, th) in [
+        (&failed_worker, "ws-a", "th-a"),
+        (&running_worker, "ws-b", "th-b"),
+    ] {
+        f.session(
+            card,
+            ws,
+            WorkerSessionKind::CodexCard,
+            WorkerSessionState::Running,
+            Some(th),
+            None,
+            1_000,
+        )
+        .await;
+    }
+    f.plan_tasks(
+        &t,
+        &[
+            ("build", "codex", TASK_IN_TRACK_ROUTE, None),
+            ("test", "codex", TASK_IN_TRACK_ROUTE, None),
+        ],
+    )
+    .await;
+    f.claim(&t, "build", 2_000).await;
+    f.mark_running(&t, "build", &failed_worker, 3_000).await;
+    f.fail(&t, "build", &failed_worker, 4_000).await;
+    f.claim(&t, "test", 5_000).await;
+    f.mark_running(&t, "test", &running_worker, 6_000).await;
+    let before = f.recompute(&t).await;
+    assert!(before.working, "{before:?}");
+    assert_eq!(before.attention, Attention::Failed);
+    assert_eq!(card_state(&before, &failed_worker), Some(CardState::Failed));
+    assert_eq!(
+        card_state(&before, &running_worker),
+        Some(CardState::Working)
+    );
+
+    f.set_lifecycle(&t, TrackLifecycle::Done).await;
+    let p = f.recompute(&t).await;
+    assert!(
+        p.working,
+        "a running task on a done track is not hidden: {p:?}"
+    );
+    assert_eq!(p.attention, Attention::None);
+    assert!(p.items.is_empty());
+    assert_eq!(
+        p.cards,
+        vec![CardActivity {
+            card_id: running_worker.clone(),
+            state: CardState::Working
+        }],
+        "only the working verdict survives the filter: {p:?}"
+    );
+}
+
+/// Rule 2, the counted side: a failure newer than the planner's last
+/// completed turn (`at_ms > P`) is still red.
+#[tokio::test]
+async fn failed_after_planner_turn_is_red() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Planning).await;
+    let (_planner, planner_ws) = planner_on(&f, &t, "card-planner", "ws-planner").await;
+    let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
+    f.planner_turn_completed(&planner_ws, Some(3_000)).await;
+    let p = f.recompute(&t).await;
+    assert_eq!(p.attention, Attention::Failed, "4000 > P=3000 ⇒ red: {p:?}");
+    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.items[0].source, ItemSource::Task);
+    assert_eq!(p.items[0].at_ms, 4_000);
+    assert_eq!(card_state(&p, &worker), Some(CardState::Failed));
+    assert!(!p.working);
+}
+
+/// Rule 2, the aged side: a failure at or before the planner's last
+/// completed turn (`at_ms <= P`) has been handled — no item, no card
+/// verdict, `attention = none`; its `finished_at_ms` still feeds E3.
+#[tokio::test]
+async fn failed_before_planner_turn_is_quiet() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Planning).await;
+    let (_planner, planner_ws) = planner_on(&f, &t, "card-planner", "ws-planner").await;
+    let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
+    let red = f.recompute(&t).await;
+    assert_eq!(red.attention, Attention::Failed, "no turn yet: {red:?}");
+
+    f.planner_turn_completed(&planner_ws, Some(5_000)).await;
+    let p = f.recompute(&t).await;
+    assert_eq!(p.attention, Attention::None, "4000 <= P=5000 ⇒ aged: {p:?}");
+    assert!(p.items.is_empty(), "{p:?}");
+    assert!(
+        p.cards.is_empty(),
+        "the aged failure's card verdict goes too: {p:?}"
+    );
+    assert!(!p.working);
+    assert_eq!(
+        p.activity_at_ms,
+        Some(4_000),
+        "E3 still counts the aged failure"
+    );
+    assert_eq!(card_state(&p, &worker), None);
+
+    // The boundary is `>`: a turn completed AT the failure instant ages it.
+    f.planner_turn_completed(&planner_ws, Some(4_000)).await;
+    let p = f.recompute(&t).await;
+    assert_eq!(p.attention, Attention::None, "4000 <= P=4000 ⇒ aged: {p:?}");
+    assert!(p.items.is_empty());
+}
+
+/// Rule 2 with P NULL: a planner that has never completed a turn has
+/// handled nothing — the failure stays red (the `map_or(true, …)` arm).
+#[tokio::test]
+async fn null_planner_turn_keeps_failed_red() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Planning).await;
+    let (_planner, planner_ws) = planner_on(&f, &t, "card-planner", "ws-planner").await;
+    let p_column: Option<i64> =
+        sqlx::query_scalar("SELECT last_turn_completed_ms FROM worker_sessions WHERE id = ?1")
+            .bind(&planner_ws)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(p_column, None, "the mint value is NULL");
+    let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
+    let p = f.recompute(&t).await;
+    assert_eq!(p.attention, Attention::Failed, "P NULL ⇒ counted: {p:?}");
+    assert_eq!(p.items.len(), 1);
+    assert_eq!(card_state(&p, &worker), Some(CardState::Failed));
+}
+
+/// P is the max over EVERY planner-role session of the track, superseded
+/// ones included: a planner restart (new session, column NULL) does not
+/// bring an already-handled failure back.
+#[tokio::test]
+async fn superseded_planner_turn_still_ages() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Planning).await;
+    let (planner, old_ws) = planner_on(&f, &t, "card-planner", "ws-planner-1").await;
+    // The old session completed a turn at 5000 while live…
+    f.planner_turn_completed(&old_ws, Some(5_000)).await;
+    // …then the planner restarted: the production supersede-and-start
+    // writer parks it as `superseded` and mints the current session
+    // (column NULL, `cards.session_id` repointed).
+    let mut tx = begin_immediate_tx(&f.pool).await.unwrap();
+    session_supersede_and_start_tx(
+        &mut tx,
+        &old_ws,
+        WorkerSessionInit {
+            id: "ws-planner-2".into(),
+            card_id: planner.clone(),
+            kind: WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some("th-planner-2".into()),
+            session_id: Some("native-ws-planner-2".into()),
+            active_turn_id: None,
+            handle_state_json: Some(Fx::harness_snapshot()),
+            spawn_op_id: None,
+            now_ms: 6_000,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let (old_state, current): (String, Option<String>) = sqlx::query_as(
+        "SELECT ws.state, c.session_id FROM worker_sessions ws JOIN cards c ON c.id = ws.card_id \
+          WHERE ws.id = ?1",
+    )
+    .bind(&old_ws)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(old_state, "superseded");
+    assert_eq!(current.as_deref(), Some("ws-planner-2"));
+
+    let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
+    let p = f.recompute(&t).await;
+    assert_eq!(
+        p.attention,
+        Attention::None,
+        "the superseded planner's P=5000 ages the 4000 failure: {p:?}"
+    );
+    assert!(p.items.is_empty(), "{p:?}");
+    assert_eq!(card_state(&p, &worker), None);
+}
+
+/// Rule 2 ages `task` / `session` failures only: the track's own
+/// `lifecycle = failed` item is a phase, and a later planner turn does not
+/// age it.
+#[tokio::test]
+async fn lifecycle_failed_item_is_not_aged() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    let (_planner, planner_ws) = planner_on(&f, &t, "card-planner", "ws-planner").await;
+    f.set_lifecycle(&t, TrackLifecycle::Failed).await;
+    let updated_at: i64 = sqlx::query_scalar("SELECT updated_at FROM tracks WHERE id = ?1")
+        .bind(&t)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    f.planner_turn_completed(&planner_ws, Some(updated_at + 1_000))
+        .await;
+    let p = f.recompute(&t).await;
+    assert_eq!(p.attention, Attention::Failed, "a phase is not aged: {p:?}");
+    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.items[0].source, ItemSource::Lifecycle);
+    assert_eq!(p.items[0].kind, ItemKind::Failed);
+    assert_eq!(p.items[0].id, t);
+    assert_eq!(p.items[0].at_ms, updated_at);
+}
+
+/// An aged failure takes its `cards[card] = failed` with it: the same
+/// worker card's running attempt then folds to `working`, not `failed`
+/// (`failed > working` would otherwise win).
+#[tokio::test]
+async fn aged_failure_drops_its_card_verdict() {
+    let f = fx().await;
+    let t = f.track("w").await;
+    f.set_lifecycle(&t, TrackLifecycle::Planning).await;
+    let (_planner, planner_ws) = planner_on(&f, &t, "card-planner", "ws-planner").await;
+    let worker = f.card(&t, "card-w", "codex", CardRole::Worker).await;
+    f.session(
+        &worker,
+        "ws-w",
+        WorkerSessionKind::CodexCard,
+        WorkerSessionState::Running,
+        Some("th-w"),
+        None,
+        1_000,
+    )
+    .await;
+    f.plan_tasks(
+        &t,
+        &[
+            ("build", "codex", TASK_IN_TRACK_ROUTE, None),
+            ("test", "codex", TASK_IN_TRACK_ROUTE, None),
+        ],
+    )
+    .await;
+    f.claim(&t, "build", 2_000).await;
+    f.mark_running(&t, "build", &worker, 3_000).await;
+    f.fail(&t, "build", &worker, 4_000).await;
+    f.claim(&t, "test", 5_000).await;
+    f.mark_running(&t, "test", &worker, 6_000).await;
+    let before = f.recompute(&t).await;
+    assert!(before.working);
+    assert_eq!(before.attention, Attention::Failed);
+    assert_eq!(
+        card_state(&before, &worker),
+        Some(CardState::Failed),
+        "failed > working while the failure counts: {before:?}"
+    );
+
+    f.planner_turn_completed(&planner_ws, Some(4_500)).await;
+    let p = f.recompute(&t).await;
+    assert!(p.working, "{p:?}");
+    assert_eq!(p.attention, Attention::None);
+    assert!(p.items.is_empty());
+    assert_eq!(
+        p.cards,
+        vec![CardActivity {
+            card_id: worker.clone(),
+            state: CardState::Working
+        }],
+        "the aged failure no longer raises the card: {p:?}"
     );
 }
 
