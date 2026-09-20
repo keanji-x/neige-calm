@@ -144,6 +144,27 @@ const ORPHAN_GRACE_SECONDS: i64 = 60;
 /// block the sweep tick.
 const GRACEFUL_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// #1743 §4.2 — the set the completed-track arm ends, one autocommit
+/// SELECT: worker sessions still `running` whose PTY (`terminal_run_id`)
+/// has no recorded exit, on a track that was completed (`done`, K20's
+/// `terminal_at`) or archived AFTER the session was minted
+/// (`created_at_ms <=`) — so a terminal the user opens on a done track, a
+/// reopened card or a new planner round survive — and whose card has no
+/// task in flight (`NOT EXISTS`: a `dispatched` / `running` / `verifying`
+/// worker is settled by its own path first, next tick ends it). Harness
+/// rows (planner / assistant) are outside structurally: never `running`
+/// and no `terminal_run_id`; isolated sessions have no PTY (K24). A done
+/// track with `terminal_at` NULL is not collected (fail-closed to "leave
+/// it"). `pub` so the test suite runs THIS text.
+pub const COMPLETED_TRACK_LIVE_SESSIONS_SQL: &str = "SELECT ws.id, ws.provider, ws.card_id, te.id AS terminal_id \
+       FROM worker_sessions ws JOIN tracks t ON t.id = ws.track_id \
+       JOIN terminals te ON te.id = ws.terminal_run_id AND te.exit_code IS NULL AND te.signal_killed = 0 \
+      WHERE ws.state = 'running' \
+        AND ( (t.lifecycle = 'done' AND ws.created_at_ms <= t.terminal_at) \
+           OR (t.archived_at IS NOT NULL AND ws.created_at_ms <= t.archived_at) ) \
+        AND NOT EXISTS (SELECT 1 FROM current_tasks ct WHERE ct.track_id = t.id AND ct.worker_card_id = ws.card_id \
+                          AND ct.status IN ('dispatched','running','verifying'))";
+
 /// Spawn the sweeper task. Subscribes to no events; purely time-driven.
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
