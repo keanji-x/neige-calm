@@ -1560,6 +1560,27 @@ async fn cli_query_installs_and_enables_and_publishes_its_tool() {
         "the declared tool must be visible: {tools:?}"
     );
 
+    // #1744: these tools were materialized with `annotations: None`, which
+    // Codex under `approval_policy: never` refused on every call. cli-query is
+    // read-only by contract (#1164 §2.3), so every published tool carries
+    // `readOnlyHint: true`; the general waiver rule lives at
+    // `mcp_server::registry::role_gated_write_annotations`, and
+    // `report_series::resolver` reads the same hint to admit a series source.
+    let manifest = host.registry().get(CLI_ID).expect("registry entry");
+    assert!(
+        !manifest.exposes_tools.is_empty(),
+        "the annotation check must not be vacuous"
+    );
+    for tool in &manifest.exposes_tools {
+        assert_eq!(
+            tool.annotations,
+            Some(json!({ "readOnlyHint": true })),
+            "cli-query tool `{}` must publish readOnlyHint: true; without it \
+             (annotations: None) Codex under approval_policy: never refuses the call (#1744)",
+            tool.name
+        );
+    }
+
     // The client is the new variant, and the command was pinned absolute.
     let client = state
         .plugin

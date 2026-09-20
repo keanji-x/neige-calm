@@ -163,6 +163,8 @@ enum ConnectorClient {
 
 **执行**：直接 `Command::new(<钉住的绝对路径>).args(...)`，**没有 shell**（与 forge 路径不同，后者生成 `/bin/sh` 脚本并 `sh -c`，`forge_action_adapter/mod.rs:200-211, 1303-1306`）。
 
+**工具注解**：kernel 给每个 `cli-query` 工具发布 `readOnlyHint: true`（该 kind 按契约只读）；`annotations` 为空的工具在 `approval_policy: never` 下会被 Codex 拒绝（#1744，通用免审批规则见 `mcp_server/registry.rs` 的 `role_gated_write_annotations`）。同一个 hint 也是 `report_series/resolver.rs` 判定插件工具可作为 series 来源的依据。
+
 **argv 模板**：`{{x}}` 必须**整体占据一个 argv 元素**，只做单参数替换，不拼字符串、不做 shell 解析。槽位名必须是 `input_schema` 的顶层 key；未在 schema 中出现 → parse 期报错。
 
 **环境**：`env_clear()` + `{PATH, HOME, LANG}` 基础集 + `env_allow` + `secret_env`。子进程 `PATH` = 服务 PATH + `search_path_extra`，**只影响本 connector**。
