@@ -57,12 +57,13 @@ describe('degraded workspace reads stay usable', () => {
     });
     const main = await screen.findByRole('main');
     await within(main).findByRole('alert');
-    expect(within(main).getByRole('banner').textContent).not.toMatch(/\d(?:waiting|in progress)/);
+    expect(within(main).getByRole('banner').textContent).not.toMatch(/\d(?:waiting|working)/);
     expect(within(main).queryByText('Nothing scheduled.')).toBeNull();
     if (resource === 'activity') expect(within(main).getAllByText('Reliable').length).toBeGreaterThan(0);
     broken = false;
     await userEvent.click(within(main).getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(within(main).getByRole('banner').textContent).toContain('1in progress'));
+    /* A `working`-phase track with no overlay is open but not working: the second number is the kernel's verdict. */
+    await waitFor(() => expect(within(main).getByRole('banner').textContent).toContain('0working'));
   });
 
   it('mounts navigation while an offline startup Areas query is paused', async () => {

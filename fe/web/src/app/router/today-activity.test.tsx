@@ -65,14 +65,24 @@ const markerOf = (root: HTMLElement, title: string) => within(root).getByRole('b
 it('Today rows carry the track read receipt', async () => {
   renderToday();
   const main = await screen.findByRole('main');
-  const inProgress = (await within(main).findByRole('heading', { name: 'In progress' })).closest('section')!;
-  await waitFor(() => expect(markerOf(inProgress, 'Fresh result')).toBe('unread'));
-  expect(markerOf(inProgress, 'Seen result')).toBeNull();
-  expect(markerOf(inProgress, 'Still busy')).toBe('working');
+  const open = (await within(main).findByRole('heading', { name: 'Open' })).closest('section')!;
+  await waitFor(() => expect(markerOf(open, 'Fresh result')).toBe('unread'));
+  expect(markerOf(open, 'Seen result')).toBeNull();
+  expect(markerOf(open, 'Still busy')).toBe('working');
 
   // The same receipt key as the rail: both surfaces answer alike for one track.
   const rail = screen.getByRole('navigation', { name: 'Workspace' });
   expect(markerOf(rail, 'Fresh result')).toBe('unread');
   expect(markerOf(rail, 'Seen result')).toBeNull();
   expect(markerOf(rail, 'Still busy')).toBe('working');
+});
+
+/* Three tracks in the `working` phase, one of them with the kernel's `working` verdict: the
+ * header's second number is that verdict's count, not the phase's. */
+it('Today\'s second number counts the kernel\'s working verdict, not the running phase', async () => {
+  renderToday();
+  const main = await screen.findByRole('main');
+  await within(main).findByRole('heading', { name: 'Open' });
+  await waitFor(() => expect(within(main).getByRole('banner').textContent).toContain('1working'));
+  expect(within(main).getByRole('banner').textContent).not.toMatch(/3working|in progress/);
 });

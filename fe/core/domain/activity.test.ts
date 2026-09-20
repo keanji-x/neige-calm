@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activityLabelOf, activityNameBit, activityStateOf, attentionKindOf, attentionOfCard, cardActivityOf, cardActivityState,
-  type ActivityState, type AttentionKind, type CardActivity,
+  foldAttentionByCard,
+  type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 
 const ATTENTION: readonly AttentionKind[] = ['none', 'input', 'failed'];
@@ -70,6 +71,35 @@ describe('attentionKindOf', () => {
     expect(attentionKindOf([{ kind: 'input' }])).toBe('input');
     expect(attentionKindOf([{ kind: 'input' }, { kind: 'failed' }])).toBe('failed');
     expect(attentionKindOf([{ kind: 'failed' }, { kind: 'input' }])).toBe('failed');
+  });
+});
+
+describe('foldAttentionByCard', () => {
+  const item = (over: Partial<ActivityItem>): ActivityItem =>
+    ({ origin: 'task', id: 'impl', cardId: 'worker', atMs: 1, kind: 'failed', ...over });
+
+  it('folds a card\'s task and session items into one row carrying the later item\'s identity', () => {
+    const task = item({ origin: 'task', id: 'impl', cardId: 'worker', atMs: 6 });
+    const session = item({ origin: 'session', id: 'ws-worker', cardId: 'worker', atMs: 7 });
+    const row = { origin: 'session', id: 'ws-worker', cardId: 'worker', atMs: 7, kind: 'failed' };
+    expect(foldAttentionByCard([task, session])).toEqual([row]);
+    expect(foldAttentionByCard([session, task])).toEqual([row]);
+  });
+
+  it('breaks an at_ms tie between a card\'s items in favour of the task item', () => {
+    const task = item({ origin: 'task', id: 'impl', cardId: 'worker', atMs: 7 });
+    const session = item({ origin: 'session', id: 'ws-worker', cardId: 'worker', atMs: 7 });
+    expect(foldAttentionByCard([session, task])).toEqual([task]);
+    expect(foldAttentionByCard([task, session])).toEqual([task]);
+  });
+
+  it('keeps one row per card and every card-less item as its own row', () => {
+    const a = item({ id: 'impl-a', cardId: 'a', atMs: 3 });
+    const b = item({ id: 'impl-b', cardId: 'b', atMs: 2 });
+    const gate = item({ id: 'gate', cardId: null, atMs: 1 });
+    const track = item({ origin: 'lifecycle', id: 'w1', cardId: null, kind: 'input', atMs: 0 });
+    expect(foldAttentionByCard([a, b, gate, track])).toEqual([a, b, gate, track]);
+    expect(foldAttentionByCard([])).toEqual([]);
   });
 });
 
