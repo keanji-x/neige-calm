@@ -19,6 +19,9 @@ mod filesystem;
 mod git_index;
 #[cfg(target_os = "linux")]
 mod materialize;
+// The portable DTOs remain available to callers that refuse artifact delivery.
+// Their internal persistence validators are only consumed by the Linux backend.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod model;
 #[cfg(target_os = "linux")]
 mod store;

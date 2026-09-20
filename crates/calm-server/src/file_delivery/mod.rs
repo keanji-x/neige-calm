@@ -18,13 +18,19 @@ use crate::{
     error::{CalmError, Result},
     model::Task,
 };
-use calm_task_artifacts::{ArtifactStore, Limits};
+#[cfg(target_os = "linux")]
+use calm_task_artifacts::ArtifactStore;
+use calm_task_artifacts::Limits;
+#[cfg(not(target_os = "linux"))]
+mod unsupported_store;
 use calm_types::task_execution::{FileDelivery, IsolatedCodexSelection};
 pub(crate) use input::{
     bind_claim_tx, prepare_input, prompt_tx, require_recovery_input_tx, verify_input,
 };
 pub(crate) use publication::{PublicationPayload, source_tx};
 use std::path::Path;
+#[cfg(not(target_os = "linux"))]
+use unsupported_store::ArtifactStore;
 pub(crate) use view::view_tx;
 
 pub const OPERATION_KIND: &str = "task-file-publication";

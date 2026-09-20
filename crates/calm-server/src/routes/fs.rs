@@ -757,6 +757,32 @@ pub(crate) fn open_workspace_regular_file_fd(
     Ok(file)
 }
 
+/// Non-Linux stub: no `openat2`, so secure workspace reads fail closed as `Unsupported`.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn open_workspace_regular_file_fd(
+    _root: &std::fs::File,
+    _relative: &Path,
+    _symlinks: WorkspaceSymlinks,
+    _same_mount: bool,
+) -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "secure workspace reads require Linux openat2 support",
+    ))
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+#[test]
+fn unsupported_workspace_file_read_does_not_fall_back() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("file"), "private").unwrap();
+    let root = std::fs::File::open(temp.path()).unwrap();
+    let error =
+        open_workspace_regular_file_fd(&root, Path::new("file"), WorkspaceSymlinks::Refused, true)
+            .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+}
+
 #[cfg(target_os = "linux")]
 fn map_workspace_open_err(
     requested: &Path,
@@ -1278,21 +1304,33 @@ fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::card_role_cache::CardRoleCache;
+    #[cfg(target_os = "linux")]
     use crate::db::prelude::*;
+    #[cfg(target_os = "linux")]
     use crate::db::sqlite::SqlxRepo;
+    #[cfg(target_os = "linux")]
     use crate::event::EventBus;
+    #[cfg(target_os = "linux")]
     use crate::model::{NewArea, NewTrack};
+    #[cfg(target_os = "linux")]
     use crate::plugin_host::{PluginHost, PluginRegistry};
+    #[cfg(target_os = "linux")]
     use crate::routes::theme::RequestTheme;
+    #[cfg(target_os = "linux")]
     use crate::state::{AppState, CodexClient, DaemonClient, WriteContext};
+    #[cfg(target_os = "linux")]
     use crate::track_area_cache::TrackAreaCache;
+    #[cfg(target_os = "linux")]
     use axum::extract::FromRef;
     use axum::http::StatusCode;
     use http_body_util::BodyExt;
     use std::process::Command as StdCommand;
+    #[cfg(target_os = "linux")]
     use std::sync::Arc;
 
+    #[cfg(target_os = "linux")]
     async fn route_state_with_workspace_tracks(
         workspace_a: &Path,
         workspace_b: &Path,

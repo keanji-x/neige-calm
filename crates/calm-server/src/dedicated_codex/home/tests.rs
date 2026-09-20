@@ -8,7 +8,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        // PrivateHome canonicalizes its root. Match that spelling for fault
+        // injection too (macOS's default /var temporary directory is a symlink).
+        let temp_parent = std::env::temp_dir().canonicalize().unwrap();
+        let root = tempfile::tempdir_in(temp_parent).unwrap();
         let config = root.path().join("config.toml");
         let auth = root.path().join("auth.json");
         std::fs::write(&config, "model='fake'\n").unwrap();
@@ -26,6 +29,25 @@ impl Fixture {
             _listener: listener,
         }
     }
+}
+
+#[test]
+fn dedicated_codex_home_publication_never_replaces_existing_empty_directory() {
+    let _reset = io::faults::reset_on_drop();
+    let f = Fixture::new();
+    let root = f.root.path().join("private");
+    let home = PrivateHome::open(&root).unwrap();
+    let destination = root.join("owned");
+    let competing_destination = destination.clone();
+    io::faults::publish_once(move || {
+        std::fs::create_dir(&competing_destination).unwrap();
+    });
+    assert!(
+        home.prepare("owned", "request", &f.seed, &f.native)
+            .is_err()
+    );
+    assert!(destination.is_dir());
+    assert_eq!(std::fs::read_dir(destination).unwrap().count(), 0);
 }
 
 #[test]
