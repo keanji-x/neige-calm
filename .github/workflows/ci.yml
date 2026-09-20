@@ -712,6 +712,19 @@ jobs:
           key: ${{ hashFiles('**/*.rs') }}
           cache-workspace-crates: true
 
+      # #1747 — since #1731 two neige-app tailnet tests build the Go helper
+      # (`go build` / `go test -c` in tailnet/) at test time. Hosted runners
+      # ship a Go toolchain; the self-hosted main runner does not have one on
+      # PATH, so main was red on exactly those two tests on every push. Pin
+      # the same toolchain the e2e and tailnet jobs use (tailnet/go.mod).
+      # Module/build caching goes through GitHub's cache only on hosted
+      # runners — the persistent runner keeps its own GOMODCACHE/GOCACHE.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: tailnet/go.sum
+
       # #903 — cargo-nextest (prebuilt binary, ~5s). Profiles in
       # .config/nextest.toml; CI uses --profile ci below.
       - uses: taiki-e/install-action@nextest
