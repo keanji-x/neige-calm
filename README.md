@@ -105,11 +105,29 @@ This is a limited local-development path, not Linux feature parity. The Tailnet
 helper and the `make prod` build path remain Linux-only. Configure a local
 `neige-app` installation with Tailnet disabled and `child.fe_dist` pointing to
 the absolute `fe/web/dist` path; the frontend is served at `/next/`.
-Linux namespace-isolated workers, artifact delivery, secure workspace file
+Linux namespace-isolated workers (and with them every dedicated Codex home:
+the isolated-task path connects through `/proc/self/fd/<fd>/app-server.sock`,
+which does not exist on macOS), artifact delivery, secure workspace file
 access requiring `openat2`, and `/proc`-based process recovery are not ported.
 Unsupported isolation and file operations fail closed; they never fall back to
 less restrictive filesystem access. This build does not change Codex sandbox
 permissions or grant access to the user's home directory.
+
+Shared Codex daemon supervision on macOS is socket-driven only. A persisted
+daemon record always resolves as absent (the `/proc` identity probes return
+`false` without `/proc`), so reaping the live listener behind a stale socket
+before a respawn is the only protection against a still-running daemon. That
+reap observes the listener's exit through a kqueue `NOTE_EXIT` watch: it
+signals the listener's process group while the leader is alive, but there is
+no per-member straggler sweep afterwards (macOS has no `/proc` identity to
+sweep by). A group member that ignores SIGTERM and outlives a leader that
+exited on SIGTERM is left running; if it inherited the listening socket, the
+next daemon start can fail closed (the reap finds no live owner it can verify)
+until that process and the socket are removed by hand.
+
+`cargo test -p calm-server --lib` as a whole is not expected to pass on macOS:
+some Linux-only fixtures are not `cfg`-gated (for example the
+`file_delivery/input.rs` tests). Only filtered subsets were run there.
 
 ### Containerized development
 

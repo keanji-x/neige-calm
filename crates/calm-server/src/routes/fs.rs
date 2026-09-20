@@ -725,19 +725,6 @@ async fn open_workspace_regular_file_from_fd(
 
 /// Shared synchronous core for lazy descriptor-only artifact capture and async reads.
 /// `same_mount` is required for sealed outputs, whose source cannot cross mounts.
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn open_workspace_regular_file_fd(
-    _root: &std::fs::File,
-    _relative: &Path,
-    _symlinks: WorkspaceSymlinks,
-    _same_mount: bool,
-) -> std::io::Result<std::fs::File> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "secure workspace reads require Linux openat2 support",
-    ))
-}
-
 #[cfg(target_os = "linux")]
 pub(crate) fn open_workspace_regular_file_fd(
     root: &std::fs::File,
@@ -768,6 +755,20 @@ pub(crate) fn open_workspace_regular_file_fd(
         ));
     }
     Ok(file)
+}
+
+/// Non-Linux stub: no `openat2`, so secure workspace reads fail closed as `Unsupported`.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn open_workspace_regular_file_fd(
+    _root: &std::fs::File,
+    _relative: &Path,
+    _symlinks: WorkspaceSymlinks,
+    _same_mount: bool,
+) -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "secure workspace reads require Linux openat2 support",
+    ))
 }
 
 #[cfg(all(test, not(target_os = "linux")))]

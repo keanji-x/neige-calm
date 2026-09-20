@@ -5084,9 +5084,14 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
         }
         None
     };
-    // Register the kernel exit observation while the peer connection still
-    // proves which process owns the listener. The macOS path must not use the
-    // Linux `/proc` wait or unlink before the observed process has exited.
+    // Register the kernel exit observation right after the peer connection
+    // identified the listener. An open connection does not pin the peer pid:
+    // the listener can exit, be reaped and have its pid recycled before the
+    // watch is registered. Registering here narrows that window to the
+    // connect→register interval — the same ε as the Linux
+    // SO_PEERCRED→getpgid→kill path, so not a regression. The macOS path must
+    // not use the Linux `/proc` wait or unlink before the observed process
+    // has exited.
     let watcher = macos_process::ExitWatcher::new(peer_pid).map_err(|error| {
         CalmError::CodexAppServer(format!("watch listener process {peer_pid}: {error}"))
     })?;
