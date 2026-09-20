@@ -37,6 +37,23 @@
 //!      A terminal without a recorded exit (crash, partial write) and the
 //!      terminals of other card kinds (task/worker) keep the rule above.
 //!
+//! ## The completed-track arm (#1743 §4.2)
+//!
+//! The same tick runs a second, independent arm: every worker session that
+//! was still `running` on a PTY when its track was completed (`done`,
+//! `terminal_at`) or archived, and whose card has no task in flight, is
+//! ENDED — its row is written `exited` first (one IMMEDIATE transaction, no
+//! event, the shape of the attach reader's own exit path), then the process
+//! is killed through the renderer entry (or a lazy reattach after a kernel
+//! restart). Write-then-kill: the reader's ephemeral completion then finds
+//! no live session and is a no-op, so every provider ends as `exited`
+//! instead of `failed` (signalled) / `running` (resumable codex). The
+//! terminal row is NOT deleted here: an exited Terminal-card row follows its
+//! card (#1701); a worker card's row is the orphan arm's on its next pass.
+//! The set is [`COMPLETED_TRACK_LIVE_SESSIONS_SQL`]; a session opened AFTER
+//! the completion (`created_at_ms > terminal_at`) is never in it, which is
+//! what keeps "reopen" working with no event to tell the two apart.
+//!
 //! ## What the sweeper is *not*
 //!
 //! Pre-#197, the sweeper was documented as the cleanup path for the
@@ -75,14 +92,17 @@
 use std::time::Duration;
 
 use crate::db::sqlite::terminal_delete_tx;
-use crate::db::write_with_event_typed;
+use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::Terminal;
-use crate::state::AppState;
+use crate::session_projection_repo::WorkerSessionState;
+use crate::state::{AppState, CodexShellState};
 use crate::terminal_renderer::{RendererDropOutcome, TerminalRendererRegistry};
+use axum::extract::FromRef;
 use calm_session::control::ProcSignal;
+use sqlx::Row;
 
 /// A PTY exit ends an ephemeral session. For a resumable session it is only
 /// viewer/liveness evidence: the existing provider death arbiter and explicit
@@ -182,20 +202,137 @@ pub fn spawn(state: AppState) {
     });
 }
 
-/// One sweep pass. Public-in-crate so integration tests can drive it
-/// without standing up the interval task.
+/// One sweep pass: the orphan arm, then the completed-track arm (#1743
+/// §4.2). Public so integration tests can drive it without standing up the
+/// interval task.
 pub async fn sweep(state: &AppState) -> Result<()> {
     let orphans = state.repo.terminals_orphaned(ORPHAN_GRACE_SECONDS).await?;
-    if orphans.is_empty() {
-        return Ok(());
+    if !orphans.is_empty() {
+        tracing::info!(count = orphans.len(), "terminal_sweeper: reaping orphans");
     }
-    tracing::info!(count = orphans.len(), "terminal_sweeper: reaping orphans");
     for term in orphans {
         if let Err(e) = cleanup_terminal(state, &term).await {
             tracing::warn!(
                 terminal_id = %term.id,
                 error = %e,
                 "terminal_sweeper: cleanup failed (row will be retried next tick)"
+            );
+        }
+    }
+
+    let completed = completed_track_live_sessions(state).await?;
+    if !completed.is_empty() {
+        tracing::info!(
+            count = completed.len(),
+            "terminal_sweeper: ending sessions left running on completed tracks"
+        );
+    }
+    for session in completed {
+        if let Err(e) = end_completed_track_session(state, &session).await {
+            tracing::warn!(
+                worker_session_id = %session.id,
+                terminal_id = %session.terminal_id,
+                error = %e,
+                "terminal_sweeper: ending a completed-track session failed (retried next tick)"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// One row of [`COMPLETED_TRACK_LIVE_SESSIONS_SQL`].
+struct CompletedTrackSession {
+    id: String,
+    provider: String,
+    card_id: String,
+    terminal_id: String,
+}
+
+async fn completed_track_live_sessions(state: &AppState) -> Result<Vec<CompletedTrackSession>> {
+    let Some(pool) = state.sqlite_pool() else {
+        return Ok(Vec::new());
+    };
+    let rows = sqlx::query(COMPLETED_TRACK_LIVE_SESSIONS_SQL)
+        .fetch_all(&pool)
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| CompletedTrackSession {
+            id: r.get("id"),
+            provider: r.get("provider"),
+            card_id: r.get("card_id"),
+            terminal_id: r.get("terminal_id"),
+        })
+        .collect())
+}
+
+/// End one session of the completed-track set (#1743 §4.2, the four steps
+/// in order — the DELETE-card bottom half, K13, reused):
+///
+/// 1. the same guard as [`cleanup_terminal`] (`lock_for_track_delete` +
+///    `terminal_disposal::require_safe`); unsafe ⇒ `Err`, next tick;
+/// 2. codex: interrupt the shared thread's active turn (best-effort, no
+///    seal — sealing belongs to the delete saga);
+/// 3. WRITE first: one IMMEDIATE transaction, `session_complete_tx(Exited)`
+///    (`state`, `completed_at_ms`, `updated_at_ms`; no event);
+/// 4. then KILL: through the renderer entry, or a lazy reattach after a
+///    restart (`resolve_live_renderer_from_terminal`). `ChildExited` means
+///    no renderer was obtained on THIS call, not that the process is dead:
+///    nothing more is done this tick; the orphan arm (creation grace
+///    already spent) and the boot reconcile own what is left.
+///
+/// Every transaction here is short and the signals are outside all of them
+/// (§4.4).
+async fn end_completed_track_session(
+    state: &AppState,
+    session: &CompletedTrackSession,
+) -> Result<()> {
+    let _operation_guard = state.operation_runtime.lock_for_track_delete().await;
+    crate::operation::terminal_disposal::require_safe(
+        state.repo.as_ref(),
+        crate::operation::terminal_disposal::Scope::Terminal(session.terminal_id.clone()),
+        state.daemon.proc_supervisor_sock.as_deref(),
+    )
+    .await?;
+
+    if session.provider == "codex"
+        && let Some(card) = state.repo.card_get(&session.card_id).await?
+    {
+        let cs = CodexShellState::from_ref(state);
+        crate::routes::cards::interrupt_shared_card_active_turn(state.repo.as_ref(), &cs, &card)
+            .await;
+    }
+
+    let session_id = session.id.clone();
+    write_in_tx_typed(state.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::db::sqlite::session_complete_tx(tx, &session_id, WorkerSessionState::Exited)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
+    tracing::info!(
+        worker_session_id = %session.id,
+        terminal_id = %session.terminal_id,
+        provider = %session.provider,
+        "terminal_sweeper: session left running on a completed track written exited"
+    );
+
+    let Some(term) = state.repo.terminal_get(&session.terminal_id).await? else {
+        return Ok(());
+    };
+    match crate::ws::terminal::resolve_live_renderer_from_terminal(state, term.clone()).await? {
+        crate::ws::terminal::LiveRenderer::Alive(_) => {
+            reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), &term)
+                .await;
+        }
+        crate::ws::terminal::LiveRenderer::ChildExited { exit_code } => {
+            tracing::info!(
+                terminal_id = %term.id,
+                ?exit_code,
+                "terminal_sweeper: no renderer obtained for a completed-track session; \
+                 left to the orphan arm / boot reconcile"
             );
         }
     }
